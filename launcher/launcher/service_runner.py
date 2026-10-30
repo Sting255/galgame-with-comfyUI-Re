@@ -546,7 +546,8 @@ class ServiceRunner(QObject):
             self.status_summary.emit(v, a, "partial")
 
     def _kill_port_processes(self):
-        """杀死 3099 和 8765 端口上残留的项目进程。"""
+        """杀死 3099 和 8765 端口上残留的项目进程，并等端口真正空出来。"""
+        killed = False
         try:
             import psutil
 
@@ -564,6 +565,7 @@ class ServiceRunner(QObject):
                             cmdline = " ".join(proc.cmdline()).lower()
                             if any(kw.lower() in cmdline for kw in keywords):
                                 proc.kill()
+                                killed = True
                                 self.output.emit(
                                     "system",
                                     f"  已终止残留进程: {proc.name()} (PID {conn.pid}) on port {conn.laddr.port}",
@@ -572,7 +574,36 @@ class ServiceRunner(QObject):
                         pass
         except Exception:
             pass  # psutil 不可用时静默跳过
+        # proc.kill() 是异步的：不等进程真正退出就拉起新进程，会撞
+        # 「WinError 10048 端口已占用」，向量服务/主控后端直接退出。
+        if killed:
+            self._wait_ports_released()
         self.output.emit("system", "端口清理完成")
+
+    def _wait_ports_released(self, timeout: float = 6.0):
+        """轮询到端口不再 LISTEN 为止；超时也放行，但明确提示。"""
+        try:
+            import time
+
+            import psutil
+        except Exception:
+            return
+        ports = {SERVICES[s]["port"] for s in SERVICES}
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                busy = any(
+                    conn.laddr.port in ports and conn.status == "LISTEN"
+                    for conn in psutil.net_connections(kind="inet")
+                )
+            except Exception:
+                return
+            if not busy:
+                return
+            time.sleep(0.2)
+        self.output.emit(
+            "system", "  [!] 端口仍被占用，继续启动；若服务起不来，再点一次启动"
+        )
 
 
 # ------------------------------------------------------------------
