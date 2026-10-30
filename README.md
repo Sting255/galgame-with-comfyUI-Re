@@ -1,6 +1,6 @@
 # 邻舍.EXE
 
-[English](./README_EN.md) · [下载](https://github.com/Sting255/galgame-with-comfyUI-Re/releases) · [夸克网盘](https://pan.quark.cn/s/f1f723d0d983?pwd=1ssP)（提取码 `1ssP`）
+[English](./README_EN.md) · [下载](https://github.com/Sting255/galgame-with-comfyUI-Re/releases) · [夸克网盘](https://pan.quark.cn/s/c97ca3eba622?pwd=RUEY)（提取码 `RUEY`）
 
 邻舍.EXE 是一款受 Galgame 启发的 AI 角色陪伴应用。用户可以创建具有独立人格、情绪、记忆和生活节奏的角色，与她们聊天，并在朋友圈、信箱、日程、群聊和随机事件中持续互动。角色还能够根据对话和当前场景主动调用 ComfyUI 生成图片，让文字交流自然延伸成视觉体验。
 
@@ -156,7 +156,7 @@
 
 1. 下载整合包，二选一：
    - [GitHub Releases](https://github.com/Sting255/galgame-with-comfyUI-Re/releases) — `EXE-vX.Y.Z.zip`
-   - [夸克网盘](https://pan.quark.cn/s/f1f723d0d983?pwd=1ssP)（提取码 `1ssP`）— 国内下载更快，内容与 Releases 一致
+   - [夸克网盘](https://pan.quark.cn/s/c97ca3eba622?pwd=RUEY)（提取码 `RUEY`）— 国内下载更快，内容与 Releases 一致
    解压后运行 `邻舍.EXE.exe`。
 2. 在启动器首页点击「启动邻舍」，浏览器会自动打开。
 3. 在网页「设置」中配置 LLM 的 API 地址、密钥和模型，支持 OpenAI 兼容接口。
