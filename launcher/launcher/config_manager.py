@@ -67,6 +67,22 @@ class ConfigManager(QObject):
         else:
             self._data = {}
             self._save()  # 写默认配置
+        self._migrate_repo_url()
+
+    # 仓库改过名：老版本包里写死的是旧地址。GitHub 会重定向，但一旦有人占用旧名，
+    # 重定向就失效，老用户的「检查更新」会打到别人的仓库上去（2026-10-30 换仓时定下的迁移）。
+    _LEGACY_REPO_URLS = {
+        "https://github.com/Sting255/linshe-gai.git",
+        "https://github.com/Sting255/galgame-with-comfyUI-.git",
+        "https://github.com/icecranberry/galgame-with-comfyUI.git",
+    }
+
+    def _migrate_repo_url(self):
+        """把配置里的旧仓库地址自动迁到当前默认值；用户手填的其它地址不动。"""
+        current = self._data.get("repo_url")
+        if current in self._LEGACY_REPO_URLS:
+            self._data["repo_url"] = DEFAULT_CONFIG["repo_url"]
+            self._save()
 
     def _save(self):
         try:
