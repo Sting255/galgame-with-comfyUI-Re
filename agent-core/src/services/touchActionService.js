@@ -328,7 +328,13 @@ export function getTouchGate({
   const adult = sensitive || explicit;
 
   if (sleeping && adult) {
-    return { ...base, code: 'sleeping_blocked', reason: 'sleeping_blocked', message: GATE_MESSAGES.sleeping_blocked };
+    // 群聊口径（2026-10-31 用户）：睡着的人在群里被摸不该硬拦——就当这一下把她弄醒了，
+    // 先迷糊一句再继续（touchReaction 侧已按 sleeping 注入「被这一下弄醒」的写法）。
+    // 私聊保持原状：睡着就是睡着，消息排队、可以去看她做梦。
+    if (scene !== 'group') {
+      return { ...base, code: 'sleeping_blocked', reason: 'sleeping_blocked', message: GATE_MESSAGES.sleeping_blocked };
+    }
+    return allow('ok', { wakesSleeping: true, wokenByTouch: true });
   }
   // 群聊成人内容：**Lv3 与 Lv4 同一口径** —— 吃 `touchGroupAdult` 开关（关着照样拦，文案不变）。
   // §一③（三期 2026-09-30）：用户期望变了（要群聊里也能用私密动作、还要有旁观者参与），
@@ -843,8 +849,6 @@ export function buildReactionPrompt({
     '【角色人格】',
     persona ? String(persona).trim() : '（未提供人格资料，请只按当前情绪与动作写出自然的反应）',
   ];
-  if (emotionText) systemParts.push('', '【当前情绪】', String(emotionText).trim());
-  if (hypnosisBlock) systemParts.push('', '【当前状态】', String(hypnosisBlock).trim());
   systemParts.push(
     '',
     '【她对「' + action.label + '」的偏好】' + likeRatioText(likeRatio),
@@ -880,6 +884,9 @@ export function buildReactionPrompt({
   // 生图规范由调用方传入（本模块零依赖，不 import builtinRules）；不传则一个字都不加，
   // 与改动前的 system 逐字一致 —— 这是既有调用方与测试的兼容底线。
   if (imagePromptRule) systemParts.push('', String(imagePromptRule).trim());
+  // 缓存口径（2026-10-31）：稳定规则在前，每轮会变的状态后置（同 intimate 那条链）。
+  if (emotionText) systemParts.push('', '【当前情绪】', String(emotionText).trim());
+  if (hypnosisBlock) systemParts.push('', '【当前状态】', String(hypnosisBlock).trim());
   const system = systemParts.join('\n');
 
   const recent = (Array.isArray(recentLines) ? recentLines : [])
@@ -985,11 +992,6 @@ export function buildConversationReactionPrompt({
     '【角色人格】',
     persona ? String(persona).trim() : '（未提供人格资料，请只按当前情绪与动作写出自然的反应）',
   ];
-  if (emotionText) systemParts.push('', '【当前情绪】', String(emotionText).trim());
-  if (affinity) systemParts.push('', '【你们的关系】', affinity);
-  if (schedule) systemParts.push('', '【她此刻正在做的事】', schedule);
-  if (intimate) systemParts.push('', '【亲密档案】', intimate);
-  if (hypnosis) systemParts.push('', '【当前状态】', hypnosis);
   systemParts.push(
     '',
     '【她对「' + action.label + '」的偏好】' + likeRatioText(likeRatio),
@@ -1035,6 +1037,14 @@ export function buildConversationReactionPrompt({
   // 生图规范由调用方传入（本模块零依赖，不 import builtinRules）；不传则一个字都不加，
   // 与改动前的 system 逐字一致 —— 这是既有调用方与测试的兼容底线。
   if (imagePromptRule) systemParts.push('', String(imagePromptRule).trim());
+  // 缓存口径（2026-10-31）：上面全是逐字节稳定的写法规则，下面才是每轮都可能变的状态。
+  // 之前情绪 / 日程 / 亲密档案夹在人格后面，从第 ~25 行起前缀就变，实测命中率只有 6~22%。
+  // 挪到末尾后稳定前缀覆盖到规则段；动态状态放最后也更贴近「越靠后权重越高」。
+  if (emotionText) systemParts.push('', '【当前情绪】', String(emotionText).trim());
+  if (affinity) systemParts.push('', '【你们的关系】', affinity);
+  if (schedule) systemParts.push('', '【她此刻正在做的事】', schedule);
+  if (intimate) systemParts.push('', '【亲密档案】', intimate);
+  if (hypnosis) systemParts.push('', '【当前状态】', hypnosis);
   const system = systemParts.join('\n');
 
   const limit = Math.max(0, Number.parseInt(maxRecentLines, 10) || CONVERSATION_RECENT_LINES);

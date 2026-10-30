@@ -3,7 +3,7 @@
  *
  * 真机证据：`完整/新建文件夹/新建文件夹/backend-2026-09-29.log`
  *   · `[error] [group] memory checkpoint did not advance for group 2: status=idle, raw=1535` 连报 12 次（14:31～14:41）；
- *   · 该日志最后一行是 `[memoryExtractor] skip curation: 34 条 < 40 条阈值，继续累积`。
+ *   · 该日志最后一行是 `[memoryExtractor] skip curation: 34 条 < 20 条阈值，继续累积`。
  *
  * 根因：群聊按**轮数**触发（`getGroupSummaryInterval()` = 2~6，默认 4），而 `curateChatMemories`
  * 内部按 **raw 条数**（`CURATE_EVERY_N_MESSAGES = 40`）决定是否真的整理。4 轮群聊大约只产生 34 条 raw，
@@ -54,11 +54,11 @@ async function runCapture(groupId) {
   return { errors, logs };
 }
 
-test('A 本批 raw 不足 40 条：不报错、pending 不扣减、checkpoint 不动', async t => {
+test('A 本批 raw 不足 20 条：不报错、pending 不扣减、checkpoint 不动', async t => {
   const db = getDb();
   t.after(() => closeDb());
   const interval = getGroupSummaryInterval();
-  const { gid, convId } = seedGroup(db, 34);   // 真机原样：4 轮 ≈ 34 条
+  const { gid, convId } = seedGroup(db, 19);   // 不足阈值样本（阈值 20；旧阈值 40 时这里用 34 条 ≈ 4 轮群聊）
   db.prepare('UPDATE group_chats SET rag_user_rounds_pending = ? WHERE id = ?').run(interval, gid);
   const before = getCheckpoint(convId).last_raw_msg_id;
 
@@ -73,15 +73,15 @@ test('A 本批 raw 不足 40 条：不报错、pending 不扣减、checkpoint �
   assert.equal(getCheckpoint(convId).last_raw_msg_id, before, 'checkpoint 不得改动');
 });
 
-test('B 本批 raw 达到 40 条：越过预检（不再走「继续累积」）', async t => {
+test('B 本批 raw 达到 20 条：越过预检（不再走「继续累积」）', async t => {
   const db = getDb();
   t.after(() => closeDb());
   const interval = getGroupSummaryInterval();
-  const { gid } = seedGroup(db, 40);
+  const { gid } = seedGroup(db, 20);
   db.prepare('UPDATE group_chats SET rag_user_rounds_pending = ? WHERE id = ?').run(interval, gid);
 
   const { logs } = await runCapture(gid);
-  assert.ok(logs.some(l => l.includes('batch=40')), '达到阈值应真的进入整理路径');
+  assert.ok(logs.some(l => l.includes('batch=20')), '达到阈值应真的进入整理路径');
   assert.ok(!logs.some(l => l.includes('继续累积')), '达到阈值不得再走累积分支');
 });
 
@@ -111,7 +111,7 @@ test('D 挂点：预检与整理器共用同一判定（decideCuration），不�
   );
 
   const extractor = await readFile(new URL('../src/services/memoryExtractor.js', import.meta.url), 'utf8');
-  assert.ok(extractor.includes('export const CURATE_EVERY_N_MESSAGES = 40;'), '整理器阈值保持 40');
+  assert.ok(extractor.includes('export const CURATE_EVERY_N_MESSAGES = 20;'), '整理器阈值保持 40');
   assert.ok(extractor.includes('export function decideCuration('), '判定必须是可测的纯函数（群聊预检共用）');
   assert.ok(extractor.includes('export const CURATE_MAX_PENDING_MINUTES = 6 * 60;'), '超时阈值 6 小时');
   assert.ok(extractor.includes('export const CURATE_MIN_PENDING_MESSAGES = 8;'), '超时路径的最小条数下限 8');

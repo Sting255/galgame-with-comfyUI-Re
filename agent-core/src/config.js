@@ -504,10 +504,11 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
       ? parseFloat(process.env.GROUP_CHAT_TEMPERATURE)
       : 0.7,
     // 群聊记忆总结/滑动窗口推进轮次（2~30），所有群共享；DB system_settings 持久化，启动时覆盖默认值
-    // 2026-10-31 用户要求把上限从 6 提到 30（要更长的对话记忆），transcript 上限随之放大
+    // 2026-10-31：用户要求更长的对话记忆。默认给 10（不是 30）—— 30 轮原文约 3~5 万 tokens，
+    // 与「省上下文 + 提速」直接冲突；10 轮原文 + 摘要 + 向量召回才是既记得久又不慢的组合。
     summaryInterval: (() => {
       const n = parseInt(process.env.GROUP_CHAT_SUMMARY_INTERVAL, 10);
-      return Number.isInteger(n) ? Math.max(2, Math.min(30, n)) : 4;
+      return Number.isInteger(n) ? Math.max(2, Math.min(30, n)) : 10;
     })(),
   },
   weather: {

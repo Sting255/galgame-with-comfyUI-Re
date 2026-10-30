@@ -10,7 +10,7 @@ import { buildAnalysisUserContent, buildChatLogLines, buildSharedAnalysisSystemP
 import { parseSqlUtc } from './programTime.js';
 
 const conversationQueues = new Map();
-export const CURATE_EVERY_N_MESSAGES = 40; // 每 40 句整理一次长期记忆
+export const CURATE_EVERY_N_MESSAGES = 20; // 每 20 句整理一次长期记忆（2026-10-31 从 40 下调：让它更早进向量，原文窗口就能压短）
 
 /**
  * 整理点的第二条触发条件（2026-10-17 新增，修「整理点停滞」）
