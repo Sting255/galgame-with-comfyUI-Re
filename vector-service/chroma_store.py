@@ -169,4 +169,14 @@ def delete_by_metadata(where_filter: dict, corpus: str = DEFAULT_CORPUS) -> int:
 
 
 def collection_count(corpus: str = DEFAULT_CORPUS) -> int:
-    return _get_collection(corpus).count()
+    # 换机器/拷贝旧 chroma_data 后，可能出现「集合元数据在、实际集合体不在」的情况，
+    # 此时 count() 抛 chromadb NotFoundError。健康检查不该因此 500：
+    # 先丢掉缓存的句柄重建一次，仍失败就按 0 报（真正缺数据时由上层重新灌索引）。
+    try:
+        return _get_collection(corpus).count()
+    except Exception:
+        _collections.pop(_collection_name(corpus), None)
+        try:
+            return _get_collection(corpus).count()
+        except Exception:
+            return 0
