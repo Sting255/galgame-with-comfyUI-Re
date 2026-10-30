@@ -1,0 +1,823 @@
+"""
+Git 管理器 —— 封装 git CLI 调用，所有耗时操作通过 QProcess 异步执行。
+"""
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from PySide6.QtCore import QObject, Signal, QProcess
+
+# Windows 下隐藏 subprocess 弹出的命令行窗口
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+_CACHE_TTL = 2.0  # 同一次初始化链内去重，2 秒内复用缓存
+# 部分 Windows 网络环境（防火墙/杀软/代理拦截）无法访问 CRL/OCSP 服务器，
+# schannel 证书吊销检查失败会导致 TLS 握手报错 CRYPT_E_NO_REVOCATION_CHECK。
+# 通过单次调用参数禁用该检查，不写入用户全局配置。
+_TLS_NO_REVOKE_ARGS = ["-c", "http.schannelCheckRevoke=false"]
+# 统一的 fetch 参数：--update-shallow 兼容 release 包的 shallow clone；
+# --prune --prune-tags 清理远程已删除的旧 tag，避免用户切到废弃版本。
+_FETCH_ARGS = ["fetch", "--update-shallow", "--prune", "--prune-tags",
+               "origin", "--tags"]
+
+
+def _cached(ttl: float = _CACHE_TTL):
+    """装饰器：短 TTL 内存缓存，消除启动时链式调用导致的重复 subprocess。"""
+
+    def deco(func):
+        def wrapper(self, *args, **kwargs):
+            now = time.monotonic()
+            key = func.__name__
+            entry = self._git_cache.get(key)
+            if entry and (now - entry["ts"]) < ttl:
+                return entry["value"]
+            value = func(self, *args, **kwargs)
+            self._git_cache[key] = {"value": value, "ts": now}
+            return value
+
+        return wrapper
+
+    return deco
+
+
+def _is_proxy_connection_error(stderr_lines: list[str]) -> str | None:
+    """检测是否为本地代理连接失败。
+
+    返回错误类型字符串用于日志提示，非代理错误返回 None。
+
+    典型 stderr:
+      fatal: unable to access 'https://github.com/.../': Failed to connect
+      to github.com port 443 via 127.0.0.1 after 210sms: Could not connect to server
+    """
+    joined = " ".join(stderr_lines).lower()
+
+    # 确认是本地代理地址
+    is_local_proxy = ("127.0.0.1" in joined or "localhost" in joined or "::1" in joined)
+    if not is_local_proxy:
+        return None
+
+    if "connection timed out" in joined:
+        return "timeout"   # 代理端口可达但上游超时 → 节点可能故障
+    # connection refused / could not connect 都说明端口无人监听
+    if "connection refused" in joined or "could not connect to server" in joined:
+        return "refused"   # 代理客户端未运行
+    return None
+
+
+def _is_schannel_revocation_error(stderr_lines: list[str]) -> bool:
+    """检测是否为 Windows schannel 后端的证书吊销检查失败。
+
+    典型 stderr:
+      fatal: unable to access 'https://github.com/.../': schannel: next
+      InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK (0x80092012)
+    """
+    joined = " ".join(stderr_lines).lower()
+    return ("schannel" in joined or "revocation check" in joined
+            or "no_revocation_check" in joined)
+
+
+def _find_ca_bundle(git_exe: str) -> str:
+    """定位随 Git 分发的 ca-bundle.crt（切换 OpenSSL 后端时依赖）。
+
+    从 git.exe 位置向上探测常见布局，找不到返回空字符串
+    （此时交给 git 使用其编译内置路径）。
+    """
+    base = os.path.dirname(os.path.abspath(git_exe))   # .../Git/cmd 或 .../Git/bin
+    roots = [base, os.path.dirname(base)]              # cmd/、Git/
+    rels = [
+        ("mingw64", "etc", "ssl", "certs", "ca-bundle.crt"),
+        ("mingw32", "etc", "ssl", "certs", "ca-bundle.crt"),
+        ("usr", "ssl", "certs", "ca-bundle.crt"),
+        ("etc", "ssl", "certs", "ca-bundle.crt"),
+        ("mingw64", "share", "ca-bundle.crt"),
+    ]
+    for root in roots:
+        for rel in rels:
+            candidate = os.path.join(root, *rel)
+            if os.path.isfile(candidate):
+                return candidate
+    return ""
+
+
+def _probe_github_reachable(timeout: float = 2.5) -> bool:
+    """快速探测 github.com:443 是否可达（TCP 握手测试）。"""
+    try:
+        sock = socket.create_connection(("github.com", 443), timeout=timeout)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
+# 常见本地代理端口（按优先级排序）
+_PROXY_PORTS = [7890, 7891, 10809, 10808, 7892, 8080, 8888]
+
+
+def _find_local_proxy(timeout: float = 1.2) -> int | None:
+    """探测本地常见代理端口，返回第一个可 TCP 连通的端口号。"""
+    for port in _PROXY_PORTS:
+        try:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+            sock.close()
+            return port
+        except Exception:
+            continue
+    return None
+
+
+def _set_git_global_proxy(git_exe: str, port: int) -> bool:
+    """使用指定 git 可执行文件设置全局 http.proxy 和 https.proxy。"""
+    proxy_url = f"http://127.0.0.1:{port}"
+    try:
+        subprocess.run(
+            [git_exe, "config", "--global", "http.proxy", proxy_url],
+            capture_output=True, text=True, timeout=10,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        subprocess.run(
+            [git_exe, "config", "--global", "https.proxy", proxy_url],
+            capture_output=True, text=True, timeout=10,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        return True
+    except Exception:
+        return False
+
+
+class GitManager(QObject):
+    """Git 操作：fetch、tags、checkout、检测更新。"""
+
+    # 信号
+    output = Signal(str)  # 操作输出（逐行）
+    operation_done = Signal(str, bool, str)  # (operation_name, success, message)
+
+    def __init__(self, project_path: str, repo_url: str = "", parent=None):
+        super().__init__(parent)
+        self._project_path = project_path
+        self._repo_url = repo_url
+        self._proc: QProcess | None = None
+        self._pending_op = ""
+        self._fetch_gen = 0          # fetch 代际：递增以忽略被 kill 的 stale callback
+        self._finished_fetch_gen = 0 # 当前完成的 fetch 代际
+        self._git_cache: dict[str, dict] = {}  # key → {value, ts}
+        self._stderr_lines: list[str] = []     # 累积当前操作的 stderr
+        self._proxy_retried = False     # 当前网络操作是否已尝试过绕过代理重试
+        self._auto_proxy_tried = False  # 当前网络操作是否已尝试过自动探测本地代理
+        self._ssl_backend_retried = False  # 当前网络操作是否已尝试过切换 OpenSSL 后端
+
+    @property
+    def project_path(self) -> str:
+        return self._project_path
+
+    def set_project_path(self, path: str):
+        self._project_path = path
+
+    def set_repo_url(self, url: str):
+        self._repo_url = url
+
+    def clear_cache(self):
+        """清除 _cached 装饰器的内存缓存。"""
+        self._git_cache.clear()
+
+    def is_busy(self) -> bool:
+        """是否有正在进行的异步操作。"""
+        return bool(self._pending_op)
+
+    def _cleanup_locks(self):
+        """清理残留的 git 锁文件（进程被 kill 后可能遗留）。"""
+        for name in ("index.lock", "HEAD.lock", "config.lock",
+                     "packed-refs.lock", "shallow.lock"):
+            lock = os.path.join(self._project_path, ".git", name)
+            try:
+                if os.path.isfile(lock):
+                    os.remove(lock)
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------
+    # 同步方法（快速，不阻塞）
+    # ------------------------------------------------------------------
+
+    def is_git_repo(self) -> bool:
+        """检查是否为 git 仓库。"""
+        return os.path.isdir(os.path.join(self._project_path, ".git"))
+
+    def get_remote_url(self) -> str | None:
+        """获取当前 origin remote URL。"""
+        try:
+            git_exe = self._resolve_git()
+            result = subprocess.run(
+                [git_exe, "remote", "get-url", "origin"],
+                cwd=self._project_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    def is_remote_local_path(self) -> bool:
+        """检查 remote URL 是否为本地路径（构建机遗留）。"""
+        url = self.get_remote_url()
+        if not url:
+            return False
+        # 本地路径特征：盘符开头(Windows) 或 / 开头但不含 ://
+        if sys.platform == "win32":
+            if len(url) >= 2 and url[1] == ":":
+                return True
+        if url.startswith("/") and "://" not in url:
+            return True
+        return False
+
+    def repair_remote(self) -> bool:
+        """如果 origin URL 是本地路径（构建机遗留），修正为 GitHub URL。"""
+        if not self._repo_url:
+            return False
+        if not self.is_git_repo():
+            return False
+        if not self.is_remote_local_path():
+            return True  # 已经是正常 URL，无需修复
+
+        try:
+            git_exe = self._resolve_git()
+            result = subprocess.run(
+                [git_exe, "remote", "set-url", "origin", self._repo_url],
+                cwd=self._project_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @_cached()
+    def get_tags(self) -> list[dict]:
+        """获取所有 tags，按创建时间倒序。每条含 name / message / date。"""
+        try:
+            git_exe = self._resolve_git()
+            result = subprocess.run(
+                [git_exe, "for-each-ref", "--sort=-creatordate",
+                 "--format=%(refname:short)%00%(subject)%00%(creatordate:short)", "refs/tags/"],
+                cwd=self._project_path,
+                capture_output=True,
+                timeout=10,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                tags = []
+                # null-byte 分隔，先按换行拆条目，再按 \0 拆字段
+                for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+                    if not line.strip():
+                        continue
+                    parts = line.split("\0")
+                    name = parts[0].strip()
+                    message = parts[1].strip() if len(parts) > 1 else ""
+                    date = parts[2].strip() if len(parts) > 2 else ""
+                    tags.append({"name": name, "message": message, "date": date})
+                return tags
+        except Exception:
+            pass
+        return []
+
+    @_cached()
+    def get_current_tag(self) -> str | None:
+        """获取 HEAD 对应的 tag 名（精确匹配），不在 tag 上则返回 None。"""
+        try:
+            git_exe = self._resolve_git()
+            result = subprocess.run(
+                [git_exe, "describe", "--tags", "--exact-match", "--abbrev=0"],
+                cwd=self._project_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    @_cached()
+    def get_current_branch(self) -> str:
+        """获取当前分支名。"""
+        try:
+            git_exe = self._resolve_git()
+            result = subprocess.run(
+                [git_exe, "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self._project_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return "unknown"
+
+    @_cached(ttl=5.0)  # ls-remote 走网络，缓存稍长
+    def get_latest_remote_tag(self) -> str | None:
+        """获取远程最新 tag（需要先 fetch）。
+
+        先使用系统代理设置尝试；若检测到本地代理连接失败则自动直连重试；
+        最后再尝试切换 OpenSSL 后端（规避 Windows 吊销检查故障）。
+        """
+        for attempt in (0, 1, 2):
+            bypass = (attempt >= 1)
+            use_openssl = (attempt == 2)
+            cmd = [self._resolve_git()] + _TLS_NO_REVOKE_ARGS
+            if use_openssl:
+                cmd += ["-c", "http.sslBackend=openssl"]
+                ca_bundle = _find_ca_bundle(self._resolve_git())
+                if ca_bundle:
+                    cmd += ["-c", f"http.sslCAInfo={ca_bundle}"]
+            if bypass:
+                cmd += ["-c", "http.proxy=", "-c", "https.proxy="]
+            cmd += ["ls-remote", "--tags", "--sort=-creatordate", "origin"]
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=self._project_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    creationflags=_CREATE_NO_WINDOW,
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        m = re.search(r"refs/tags/(.+?)(?:\^\{\})?$", line.strip())
+                        if m and not m.group(1).endswith("^{}"):
+                            return m.group(1)
+                    return None  # 命令成功但无 tag，无需重试
+
+                # 失败：检查是否需要绕过代理重试
+                # text=True 时 stderr 已是 str，不能再调用 .decode()
+                if not bypass and _is_proxy_connection_error(
+                    result.stderr.splitlines()
+                ) is not None:
+                    continue  # 重试直连
+                return None  # 非代理错误，不再重试
+            except Exception:
+                if not bypass:
+                    continue  # 超时等异常也尝试直连
+                return None
+        return None
+
+    def has_updates(self) -> bool | None:
+        """检查远程是否有更新的 tag（语义化版本比较）。返回 None 表示无法判断。
+
+        fetch 成功后本地 refs/tags 已是最新，优先用本地 tag 比较（零网络，
+        避免在 UI 主线程同步跑 ls-remote 造成最长约 30 秒卡顿）；
+        本地无任何 tag 时才回退到 ls-remote 联网查询。
+        """
+        current = self.get_current_tag()
+        if current is None:
+            return None
+        # fetch 后 get_tags 的 2 秒缓存可能还存着旧数据，强制失效重读
+        self._git_cache.pop("get_tags", None)
+        tags = self.get_tags()
+        latest = tags[0]["name"] if tags else self.get_latest_remote_tag()
+        if latest is None:
+            return None
+        return _version_greater(latest, current)
+
+    # ------------------------------------------------------------------
+    # 异步方法（通过 QProcess）
+    # ------------------------------------------------------------------
+
+    def _precheck(self) -> str | None:
+        """执行 git 前的快速环境预检，返回错误信息或 None。"""
+        # 1. Git 可执行文件是否存在
+        git_exe = self._resolve_git()
+        if not os.path.isfile(git_exe):
+            return "没有找到 Git，请重新安装启动器后再试"
+        # 2. DNS 是否能解析 github.com
+        try:
+            socket.getaddrinfo("github.com", 443)
+        except socket.gaierror:
+            return "域名解析失败，请检查网络连接或开启 VPN 后重试"
+        # 3. 磁盘空间是否足够
+        try:
+            usage = shutil.disk_usage(self._project_path)
+            if usage.free < 300 * 1024 * 1024:
+                return "磁盘空间不足（至少需要 300MB 剩余空间），请清理一些文件后重试"
+        except Exception:
+            pass
+        return None
+
+    def fetch_remote(self) -> str | None:
+        """异步 fetch origin。返回 None 表示启动成功，否则返回错误信息。"""
+        if not self.is_git_repo():
+            return "不是有效的 git 仓库"
+        if self.is_busy():
+            return "上一个操作仍在进行中，请稍后再试"
+
+        precheck_err = self._precheck()
+        if precheck_err:
+            return precheck_err
+
+        self._cleanup_locks()
+        self._fetch_gen += 1
+        self._pending_op = "fetch"
+        self._proxy_retried = False
+        self._auto_proxy_tried = False
+        self._ssl_backend_retried = False
+        self._run_git(_FETCH_ARGS)
+        return None
+
+    def checkout_tag(self, tag: str) -> str | None:
+        """异步 checkout 指定 tag。使用 --force 覆盖本地修改（预构建产物等）。"""
+        if not self.is_git_repo():
+            return "不是有效的 git 仓库"
+        if self.is_busy():
+            return "上一个操作仍在进行中，请稍后再试"
+
+        self._cleanup_locks()
+        self._pending_op = "checkout"
+        self._run_git(["checkout", "--force", f"tags/{tag}"])
+        return None
+
+    def init_repo(self) -> str | None:
+        """异步初始化 git 仓库（无 .git 目录时）。
+
+        链式执行: git init → git remote add origin → git fetch origin --tags。
+        返回 None 表示启动成功，否则返回错误信息。
+        """
+        if self.is_git_repo():
+            return "已是有效的 git 仓库"
+        if not self._repo_url:
+            return "未配置远程仓库地址"
+        if self.is_busy():
+            return "上一个操作仍在进行中，请稍后再试"
+
+        self._fetch_gen += 1
+        self._pending_op = "init_repo"
+        self._proxy_retried = False
+        self._auto_proxy_tried = False
+        self._ssl_backend_retried = False
+        self._init_repo_steps = [
+            (["init"], "git init"),
+            (["remote", "add", "origin", self._repo_url], "git remote add"),
+            (["fetch", "origin", "--tags"], "git fetch"),
+        ]
+        self._init_repo_step_idx = 0
+        self._run_git(self._init_repo_steps[0][0])
+        return None
+
+    def cancel(self):
+        """取消当前操作。"""
+        if self._proc and self._proc.state() != QProcess.NotRunning:
+            self._proc.kill()
+        self._init_repo_steps = []
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _run_git(self, args: list[str], bypass_proxy: bool = False,
+                 ssl_backend: str = ""):
+        if self._proc is not None:
+            self._proc.kill()
+            self._proc.deleteLater()
+
+        self._stderr_lines.clear()
+        args = _TLS_NO_REVOKE_ARGS + args
+        if ssl_backend:
+            # 切换 TLS 后端（如 openssl）；显式指定 CA 包，兼容便携版 Git
+            args = ["-c", f"http.sslBackend={ssl_backend}"] + args
+            ca_bundle = _find_ca_bundle(self._resolve_git())
+            if ca_bundle:
+                args = ["-c", f"http.sslCAInfo={ca_bundle}"] + args
+
+        self._proc = QProcess(self)
+        self._proc.setWorkingDirectory(self._project_path)
+        self._proc.setProcessChannelMode(QProcess.SeparateChannels)
+        self._proc.readyReadStandardOutput.connect(self._on_stdout)
+        self._proc.readyReadStandardError.connect(self._on_stderr)
+        self._proc.finished.connect(self._on_finished)
+
+        # 注入关键环境变量，避免 git 因找不到 HOME/.gitconfig 而崩溃
+        env = self._proc.processEnvironment()
+        for key in ("USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH",
+                     "TEMP", "TMP", "SystemRoot", "PATH",
+                     "APPDATA", "LOCALAPPDATA", "SSH_AUTH_SOCK"):
+            if key in os.environ and key not in env.keys():
+                env.insert(key, os.environ[key])
+        # 禁止 git 弹出交互式认证窗口（否则 QProcess 无法处理会导致挂死）
+        env.insert("GIT_TERMINAL_PROMPT", "0")
+
+        if bypass_proxy:
+            # 绕过代理：清除环境变量中的代理配置 + git -c 覆盖全局 http.proxy
+            for proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                               "http_proxy", "https_proxy", "all_proxy",
+                               "NO_PROXY", "no_proxy"):
+                env.remove(proxy_key)
+            args = ["-c", "http.proxy=", "-c", "https.proxy="] + args
+        # 默认不清理代理：让 git 继承系统环境变量和全局 git config 中的代理设置
+
+        self._proc.setProcessEnvironment(env)
+
+        # 记录当前 fetch 代际，用于 _on_finished 忽略 stale callback
+        self._started_fetch_gen = self._fetch_gen
+
+        git_exe = self._resolve_git()
+        self._proc.start(git_exe, args)
+
+    def _resolve_git(self) -> str:
+        """解析 git.exe 路径: 捆绑 Git > 系统 Git。"""
+        from .service_runner import find_bundled_git
+        bundled = find_bundled_git(self._project_path)
+        if bundled:
+            return bundled
+        return _find_git()
+
+    def _on_stdout(self):
+        data = self._proc.readAllStandardOutput()
+        text = _decode_output(data.data())
+        if text.strip():
+            self.output.emit(text.strip())
+
+    def _on_stderr(self):
+        data = self._proc.readAllStandardError()
+        text = _decode_output(data.data())
+        if text.strip():
+            self._stderr_lines.append(text.strip())
+            self.output.emit(text.strip())
+
+    def _on_finished(self, exit_code, exit_status):
+        # 忽略被 kill 的旧 QProcess 的 stale callback
+        finished_gen = getattr(self, '_started_fetch_gen', 0)
+        if self._pending_op in ("fetch", "init_repo") and finished_gen != self._fetch_gen:
+            # 这是上一个 fetch 进程的回调，已被新 fetch kill，忽略
+            return
+
+        ok = exit_code == 0 and exit_status == QProcess.NormalExit
+
+        # init_repo 是多步链式操作
+        if self._pending_op == "init_repo" and ok:
+            self._init_repo_step_idx += 1
+            steps = getattr(self, '_init_repo_steps', [])
+            if self._init_repo_step_idx < len(steps):
+                # 继续下一步
+                step_label = steps[self._init_repo_step_idx][1]
+                self.output.emit(f"[init] {step_label}...")
+                self._run_git(steps[self._init_repo_step_idx][0])
+                return
+            # 全部完成
+            self._init_repo_steps = []
+
+        # ---- schannel 证书吊销检查失败 → 自动切换 OpenSSL 后端重试 ----
+        # 注意：必须放在代理重试之前，schannel 错误同样含 "unable to access"，
+        # 否则会被下方的直连阻断逻辑误判并触发无意义的代理探测。
+        # TCP/代理链路是通的（错误发生在 TLS 握手阶段），换后端即可修复。
+        if (not ok and not self._ssl_backend_retried
+                and _is_schannel_revocation_error(self._stderr_lines)):
+            self._ssl_backend_retried = True
+            self.output.emit("[tls] 检测到 Windows 证书吊销检查失败，自动切换 OpenSSL 后端重试...")
+            if self._pending_op == "fetch":
+                self._run_git(_FETCH_ARGS, ssl_backend="openssl")
+            elif self._pending_op == "init_repo":
+                steps = getattr(self, '_init_repo_steps', [])
+                idx = getattr(self, '_init_repo_step_idx', 0)
+                if steps and idx < len(steps):
+                    self._run_git(steps[idx][0], ssl_backend="openssl")
+                else:
+                    self._run_git(["fetch", "origin", "--tags"], ssl_backend="openssl")
+            return
+        # ----------------------------------------------------
+
+        # ---- 代理连接失败 → 探测直连可行性 → 自动重试或提示 ----
+        if not ok and not self._proxy_retried:
+            proxy_err = _is_proxy_connection_error(self._stderr_lines)
+            if proxy_err is not None:
+                self._proxy_retried = True
+
+                if proxy_err == "refused":
+                    self.output.emit("[proxy] 代理客户端未运行，已自动切换直连重试...")
+                else:
+                    self.output.emit("[proxy] 代理节点连接超时，已自动切换直连重试...")
+
+                # 快速探测直连是否可行
+                if _probe_github_reachable():
+                    self.output.emit("[proxy] 直连 github.com 正常，继续下载...")
+                    if self._pending_op == "fetch":
+                        self._run_git(_FETCH_ARGS, bypass_proxy=True)
+                    elif self._pending_op == "init_repo":
+                        steps = getattr(self, '_init_repo_steps', [])
+                        if steps:
+                            self._run_git(steps[-1][0], bypass_proxy=True)
+                        else:
+                            self._run_git(_FETCH_ARGS, bypass_proxy=True)
+                    return
+                else:
+                    self.output.emit("[proxy] 直连 github.com 也不通，请开启 VPN 后重试")
+                    self.operation_done.emit(
+                        self._pending_op, False,
+                        "代理用不了，直连也不通 — 请检查网络或开启 VPN"
+                    )
+                    self._pending_op = ""
+                    return
+        # ----------------------------------------------------
+
+        # ---- 直连被阻断 → 自动探测本地代理端口 ----
+        if not ok and not self._proxy_retried and not self._auto_proxy_tried:
+            stderr_check = " ".join(self._stderr_lines).lower()
+            is_direct_block = (
+                "connection was reset" in stderr_check or
+                "unable to access" in stderr_check or
+                "could not resolve host" in stderr_check or
+                ("connection timed out" in stderr_check and
+                 "127.0.0.1" not in stderr_check and
+                 "localhost" not in stderr_check)
+            )
+            if is_direct_block:
+                self._auto_proxy_tried = True
+                self.output.emit("[proxy] 检测到直连 GitHub 被阻断，正在自动搜索本地代理...")
+                proxy_port = _find_local_proxy()
+                if proxy_port:
+                    self.output.emit(
+                        f"[proxy] 发现本地代理端口 {proxy_port}，自动配置 git 代理..."
+                    )
+                    git_exe = self._resolve_git()
+                    if _set_git_global_proxy(git_exe, proxy_port):
+                        self.output.emit(
+                            f"[proxy] git 代理已自动设为 http://127.0.0.1:{proxy_port}，重试中..."
+                        )
+                        if self._pending_op == "fetch":
+                            self._run_git(_FETCH_ARGS)
+                        elif self._pending_op == "init_repo":
+                            steps = getattr(self, "_init_repo_steps", [])
+                            if steps and self._init_repo_step_idx < len(steps):
+                                self._run_git(steps[self._init_repo_step_idx][0])
+                            else:
+                                self._run_git(["fetch", "origin", "--tags"])
+                        return
+                    else:
+                        self.output.emit("[proxy] 代理配置写入失败，继续...")
+                else:
+                    self.output.emit(
+                        "[proxy] 未找到本地代理，请手动开启 VPN 或在启动器设置中配置代理后重试"
+                    )
+        # ----------------------------------------------------
+
+        if ok:
+            msg = "操作成功"
+        else:
+            stderr_tail = ""
+            if self._stderr_lines:
+                joined = "; ".join(self._stderr_lines[-3:])
+                stderr_tail = f" | stderr: {joined}"
+
+            # 区分失败场景给出小白也能看懂的提示
+            hint = ""
+            stderr_lower = stderr_tail.lower()
+            if "empty reply from server" in stderr_lower:
+                hint = " — 无法连接 GitHub（可能被网络拦截），请尝试开启 VPN"
+            elif "could not resolve host" in stderr_lower:
+                hint = " — 域名解析失败，请检查网络是否正常，或开启 VPN"
+            elif "connection timed out" in stderr_lower:
+                if self._proxy_retried:
+                    hint = " — 直连超时，请关闭代理后重试"
+                else:
+                    hint = " — 连接超时，请检查网络或开启 VPN"
+            elif "rpc failed" in stderr_lower or "connection was reset" in stderr_lower:
+                if self._proxy_retried:
+                    hint = " — 直连被断开（可能网络不稳定），请开启 VPN 后重试"
+                else:
+                    hint = " — 连接被断开（可能是网络干扰），请开启 VPN"
+            # 证书/TLS 拦截类错误必须排在通用 "unable to access" 之前：
+            # 所有 HTTPS 错误都含该字符串，放后面会导致专属提示永远匹配不到
+            elif ("revocation check" in stderr_lower or "no_revocation_check" in stderr_lower
+                  or "schannel" in stderr_lower):
+                hint = (" — 加密连接被安全软件或网络设备扫描拦截，"
+                        "请关闭杀毒软件的「加密连接扫描 / HTTPS 检查」功能后重试，"
+                        "也可用手机热点对照测试")
+            elif ("peer certificate" in stderr_lower or "remote key was not ok" in stderr_lower
+                  or "ssl certificate" in stderr_lower or "certificate verify" in stderr_lower
+                  or "unable to get local issuer certificate" in stderr_lower
+                  or "self signed certificate" in stderr_lower):
+                hint = (" — GitHub 安全证书校验未通过（网络中存在解密拦截设备，"
+                        "常见于杀毒软件的 HTTPS 扫描），"
+                        "请关闭相关扫描功能，或改用手机热点重试")
+            elif "unable to access" in stderr_lower:
+                if self._proxy_retried:
+                    hint = " — 直连不上 GitHub，请检查网络或开启 VPN"
+                else:
+                    hint = " — 无法连接 GitHub，请检查网络或开启 VPN"
+            elif "gnutls_handshake" in stderr_lower:
+                hint = " — 连接方式不兼容，请将 Git 更新到最新版本"
+            elif "the remote end hung up" in stderr_lower or "early eof" in stderr_lower or "transfer closed" in stderr_lower:
+                hint = " — 网络不稳定导致下载中断，请尝试开启 VPN 后重试"
+            elif "repository not found" in stderr_lower or "could not read from remote repository" in stderr_lower:
+                hint = " — 远程仓库不存在或无访问权限，请联系开发者"
+            elif "unable to create file" in stderr_lower or "filename too long" in stderr_lower:
+                hint = " — 文件写入失败，请尝试用管理员身份运行启动器"
+            elif "bad object" in stderr_lower or "object file is" in stderr_lower:
+                hint = " — 本地数据异常，可能需要重新下载完整版本"
+            elif "unable to update" in stderr_lower:
+                hint = " — 文件被占用无法更新，请先关闭其他程序后重试"
+            crash_hint = ""
+            if exit_status != QProcess.NormalExit:
+                crash_hint = "（程序意外崩溃）"
+            msg = f"操作失败{crash_hint}: {stderr_tail}{hint}"
+        self.operation_done.emit(self._pending_op, ok, msg)
+        self._pending_op = ""
+
+
+# ------------------------------------------------------------------
+# Helper
+# ------------------------------------------------------------------
+
+
+def _decode_output(data: bytes) -> str:
+    """Windows 兼容解码：UTF-8 → GBK → 替换模式。"""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return data.decode("gbk")
+        except UnicodeDecodeError:
+            return data.decode("utf-8", errors="replace")
+
+
+def _version_greater(a: str, b: str) -> bool:
+    """语义化版本比较。返回 a > b。
+
+    例如: _version_greater("v1.0.22", "v1.0.21") → True
+          _version_greater("v1.0.9", "v1.0.21")  → False
+
+    预发布版本规则（避免给用户推送 rc/beta 更新提示）:
+      a 为预发布、b 为正式版  → 永远不算更新（等正式版再推）
+      a 为正式版、b 为预发布  → 数字相同也算更新（正式版覆盖同号 rc）
+    """
+    import re
+
+    def parse(v: str):
+        # 只取主版本号部分，避免 "-rc1" 等预发布后缀的数字污染比较
+        core = v.split("-", 1)[0]
+        nums = re.findall(r"\d+", core.lstrip("vV"))
+        return tuple(int(n) for n in nums)
+
+    def is_prerelease(v: str) -> bool:
+        # v1.0.2-rc1 / v1.0.2-beta.1 等带连字符后缀的视为预发布
+        return "-" in v
+
+    try:
+        pa = parse(a)
+        pb = parse(b)
+        if not pa or not pb:
+            return a != b
+        if pa != pb:
+            if is_prerelease(a) and not is_prerelease(b):
+                return False  # 预发布不作为正式更新推送
+            return pa > pb
+        # 数字部分相同：正式版 > 预发布
+        return not is_prerelease(a) and is_prerelease(b)
+    except Exception:
+        return a != b
+
+
+def _find_git() -> str:
+    """查找 git.exe 的完整路径。QProcess 不像 subprocess 那样自动搜索 PATH。
+
+    优先级: 捆绑 Git (runtime/git/) > PATH > 已知安装路径
+    """
+    import shutil
+
+    # 0. 捆绑 Git（预构建 release）
+    # 从调用栈推断 project_path —— 遍历 _project_path 属性
+    # 但这里没有 project_path，所以检查常见相对路径
+    # _find_git 被 GitManager 调用，GitManager 有 self._project_path
+    # 我们改为在 GitManager 实例方法中处理
+
+    # 1. shutil.which 搜索系统 PATH
+    found = shutil.which("git")
+    if found:
+        return found
+
+    # 2. Windows 已知安装路径
+    for base in [
+        os.path.expandvars(r"%ProgramFiles%\Git\bin"),
+        os.path.expandvars(r"%ProgramFiles%\Git\cmd"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Git\bin"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Git\cmd"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\cmd"),
+    ]:
+        candidate = os.path.join(base, "git.exe")
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 3. 兜底
+    return "git"

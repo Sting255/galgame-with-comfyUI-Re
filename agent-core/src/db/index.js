@@ -1,0 +1,4079 @@
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { config } from '../config.js';
+import { initSettingsHandle, loadSystemSettings } from './settings.js';
+import { initWorldRepository } from './worldRepository.js';
+import { migrateLorebooks } from './lorebookRepository.js';
+import { migratePresets } from './presetRepository.js';
+import { seedAll } from './seedData.js';
+import { DEFAULT_EVENT_TYPES } from './seedEventTypes.js';
+import { DEFAULT_MOMENT_TOPICS } from './seedTopics.js';
+import { IMAGE_PROMPT_KNOWLEDGE, IMAGE_PROMPT_KNOWLEDGE_VERSION } from './imagePromptKnowledgeData.js';
+// 84 条体位知识：独立数据源与独立版本号（用户裁定不过滤，见文件头注释）
+import { POSITION_KNOWLEDGE, POSITION_KNOWLEDGE_VERSION } from './positionKnowledgeData.js';
+import { migrateTownSchema } from './townSchema.js';
+import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
+import { migrateTownActionSchema } from './townActionSchema.js';
+import { ensureTownDialogueSchema } from './townDialogueSchema.js';
+import { ensureWorldMapSchema } from './worldMapSchema.js';
+import { migrateTownEconomySchema } from './townEconomySchema.js';
+import { migrateTownNpcFunctionsSchema } from './townNpcFunctionsSchema.js';
+import { migrateTownNpcEventSchema } from './townNpcEventSchema.js';
+import { migrateTownResponsibilitySchema } from './townResponsibilitySchema.js';
+import { migrateTownCharacterCapabilitiesSchema } from './townCharacterCapabilitiesSchema.js';
+import { migrateTownCharacterProfileSchema } from './townCharacterProfileSchema.js';
+import { migrateTownExperienceSchema } from './townExperienceSchema.js';
+import { migrateTownServiceOfferSchema } from './townServiceOfferSchema.js';
+import { cleanupTownDialogueRequests } from '../services/town/townDialogueRequests.js';
+import { migrateTownItemSchema } from './townItemSchema.js';
+import { migrateTownItemTemplateSchema } from './townItemTemplateSchema.js';
+import { cleanupInterruptedChestItems } from '../services/itemLifecycle.js';
+import { migrateWeatherHourlySchema } from './weatherHourlySchema.js';
+// 上游 v3.9.0 合并：角色日记表 + 灵魂引擎表（见 services/diaryGenerator.js / services/soulEngine.js）
+import { migrateCharacterDiarySchema } from './diarySchema.js';
+import { migrateSoulSchema } from './soulSchema.js';
+
+import { migrateExpressionStandings, recoverExpressionStandingJobs } from './expressionStandingSchema.js';
+// 上游 v3.9.0 合并：立绘互动（空手触摸台词表 + 触碰配置/区域表）
+import { migrateStandingInteractions } from './standingInteractionSchema.js';
+import { migrateCharacterReactionPacksSchema } from './characterReactionPackSchema.js';
+// 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体，见 services/mediaService.js）
+import { createMediaTables, migrateMediaSchema } from './mediaSchema.js';
+// 上游 v3.9.0 合并：小镇特殊建筑「描述驱动的可执行玩法」（见 services/town/townBuildingFeature*）
+import { migrateTownBuildingFeatureSchema } from './townBuildingFeatureSchema.js';
+
+let db;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 语句缓存的**计数器**（只用于观测/测试，不影响行为）。
+ * 为什么要它：规划 §一-1 指出 chat.js 一轮聊天里 93 处 `db.prepare()` 都被重复编译
+ * （better-sqlite3 每次 prepare 要解析 SQL → 编译字节码 → 建 statement，20~80µs），
+ * 要证明"改完真的少编译了"，就得有一个能数出来的指标。
+ * `compiles` = 真正编译过的次数；`hits` = 命中缓存复用次数。
+ */
+const stmtStats = { compiles: 0, hits: 0, size: 0 };
+export function stmtCacheStats() {
+  return { ...stmtStats };
+}
+export function resetStmtCacheStats() {
+  stmtStats.compiles = 0;
+  stmtStats.hits = 0;
+}
+/**
+ * 拿一条**已编译语句**（懒编译 + 按库实例缓存）。
+ *
+ * 用法：把热路径上的 `getDb().prepare(SQL)` 换成 `stmt(SQL)`，其余 `.get/.all/.run` 照旧。
+ *
+ * 为什么按库实例缓存（WeakMap 键就是 db 实例）：
+ * 测试会换内存库、`closeDb()` 之后也会重开 ⇒ 语句必须跟着实例走，
+ * 否则复用到的会是"另一个库（甚至已关闭的库）"编译出来的 statement。
+ * WeakMap 让旧实例连同它的语句一起被回收，天然没有清缓存的心智负担。
+ *
+ * 为什么安全：better-sqlite3 是**同步**执行的，一条语句不会在一轮里被打断，
+ * 因此跨轮复用同一个 statement 对象不存在竞态；SQL 全是静态字符串 + 参数绑定（本仓抽查过），
+ * 缓存键就是 SQL 全文，没有拼接注入面。
+ */
+const stmtCaches = new WeakMap();
+export function stmt(sql, database = getDb()) {
+  let cache = stmtCaches.get(database);
+  if (!cache) {
+    cache = new Map();
+    stmtCaches.set(database, cache);
+  }
+  const cached = cache.get(sql);
+  if (cached) {
+    stmtStats.hits++;
+    return cached;
+  }
+  const compiled = database.prepare(sql);
+  cache.set(sql, compiled);
+  stmtStats.compiles++;
+  // WeakMap 不可迭代（拿不到 values()），所以条目数自己记：只用于观测。
+  stmtStats.size++;
+  return compiled;
+}
+
+/** getDb 自愈只提醒一次（见下）；测试要能重置 */
+let reopenedAfterCloseWarned = false;
+
+/** 测试用：重置"已提醒过自愈"标志 */
+export function resetDbReopenWarning() {
+  reopenedAfterCloseWarned = false;
+}
+
+export function getDb() {
+  // 2026-10-02 自愈（真机日志：某个路径直接 `db.close()` 之后，调度器每分钟刷一条
+  // `The database connection is not open`）：这里是**唯一入口**，句柄被关掉就地重开，
+  // 而不是让每个调用方自己判断。只提醒一次，避免刷屏（根因仍应在调用方查）。
+  if (db && !db.open) {
+    if (!reopenedAfterCloseWarned) {
+      reopenedAfterCloseWarned = true;
+      console.warn('[db] 检测到库句柄已被关闭（有人直接 db.close()？）—— 已自动重开；这条只提醒一次。');
+    }
+    db = undefined;
+  }
+  if (!db) {
+    const dbDir = path.dirname(config.dbPath);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+
+    db = new Database(config.dbPath);
+    // ⚠️ 顺序有讲究（2026-10-15 实测踩到）：`auto_vacuum` 必须在 `journal_mode = WAL` **之前**设置，
+    //    否则静默失效（实测设了还是 0=NONE）。所以先定 auto_vacuum，再切 WAL。
+    applyAutoVacuumPolicy(db);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    // 建表之后的轻量维护（详见 runStartupDbMaintenance）
+    try {
+      initSchema(db);
+      cleanupOrphanedInFlight(db);
+      runStartupDbMaintenance(db);
+    } catch (error) {
+      db.close();
+      db = undefined;
+      throw error;
+    }
+  }
+  return db;
+}
+
+/**
+ * `auto_vacuum` 策略（2026-10-15）：
+ *   · 新库 ⇒ 设成 INCREMENTAL（配合 PRAGMA incremental_vacuum 可以"按需回收"，不必整库 VACUUM）；
+ *   · 老库 ⇒ 不动它（切换要整库 VACUUM，用户库 9.5MB / 5000+ 消息，不值得为这点空间冒重写风险），
+ *     只记一行日志让运维知道"可以手动做一次"。
+ *
+ * ⚠️ **必须在 `journal_mode = WAL` 之前调用** —— SQLite 的规则：auto_vacuum 在 WAL 模式下设置会静默失效。
+ *    （本轮第一版就是先切 WAL 再设，实测新库仍是 0=NONE，白写。）
+ * ⚠️ 本文件里是 `db.exec(\`...\`)` 的模板字符串上下文，注释里**别写反引号**（会截断字符串，踩过两次）。
+ */
+function applyAutoVacuumPolicy(database) {
+  let current = 0;
+  try {
+    current = database.pragma('auto_vacuum', { simple: true });
+  } catch {
+    return; // 老 SQLite 没这个 pragma：跳过，不影响启动
+  }
+  // 0=NONE 1=FULL 2=INCREMENTAL
+  const isEmptyDb = (() => {
+    try {
+      const n = database.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table'").get().n;
+      return n === 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  if (isEmptyDb && current !== 2) {
+    try {
+      database.pragma('auto_vacuum = INCREMENTAL');
+      console.log('[db] 新建库：auto_vacuum = INCREMENTAL（可随时用 incremental_vacuum 按需回收）');
+    } catch (err) {
+      console.warn('[db] 设置 auto_vacuum 失败（不影响使用）:', err?.message || err);
+    }
+    return;
+  }
+  if (!isEmptyDb && current === 0) {
+    // 只说一次、且不吓人：老库不切换是完全正常的取舍
+    console.log('[db] 已有库 auto_vacuum = NONE（正常）：如需回收空洞，关机后手动执行一次 VACUUM 即可');
+  }
+}
+
+/**
+ * 启动时的轻量维护（2026-10-15）：
+ *   · PRAGMA optimize —— 官方推荐的启动动作，按需更新统计信息（无统计信息时查询计划会退化）；
+ *   · INCREMENTAL 模式且 WAL 积累较多时，回收一页（一次调用只回收少量，绝不阻塞启动）。
+ * 两条都包在 try 里、失败只 warn：维护动作**绝不允许**挡住启动。
+ *
+ * ⚠️ 本文件里有 db.exec 的模板字符串，**注释里一律不写反引号**（一个就截断整段 SQL，踩过三次）。
+ */
+function runStartupDbMaintenance(database) {
+  try {
+    database.pragma('optimize');
+  } catch (err) {
+    console.warn('[db] PRAGMA optimize 失败（不影响使用）:', err?.message || err);
+  }
+  try {
+    if (database.pragma('auto_vacuum', { simple: true }) === 2) {
+      const reclaimed = database.pragma('incremental_vacuum(16)', { simple: true });
+      if (reclaimed) console.log(`[db] 启动回收空闲页: ${reclaimed} 页`);
+    }
+  } catch {
+    // 空库 / 不支持：静默跳过
+  }
+}
+
+// ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
+// moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
+function cleanupOrphanedInFlight(database) {
+  recoverExpressionStandingJobs(database);
+  cleanupTownDialogueRequests(database);
+  const tasks = [
+    // 表名, 中断状态, 回收为（interrupted 后可重新生成的状态）
+    ['character_emojis', `status = 'generating'`, `status = 'failed', error_message = '服务重启导致生成中断，请重新生成'`],
+    ['image_tasks', `status IN ('pending','running')`, `status = 'failed', error_message = '服务重启导致任务中断', finished_at = datetime('now')`],
+    ['reply_queue', `status = 'processing'`, `status = 'waiting'`],
+    ['character_dreams', `status = 'generating'`, `status = 'failed'`],
+    ['town_npc_service_sessions', `status = 'generating'`, `status = 'failed'`],
+  ];
+  for (const [table, where, set] of tasks) {
+    try {
+      const result = database.prepare(`UPDATE ${table} SET ${set} WHERE ${where}`).run();
+      if (result.changes > 0) {
+        console.log(`[db] 启动清理: ${table} ${result.changes} 条中断状态已回收`);
+      }
+    } catch (err) {
+      console.warn(`[db] 启动清理 ${table} 失败:`, err.message);
+    }
+  }
+
+  // 宝箱道具：中断的 generating 未完成图片，也不应占用冷却；直接清掉，允许下次重新开箱
+  try {
+    const interruptedItems = cleanupInterruptedChestItems(database);
+    if (interruptedItems > 0) {
+      console.log(`[db] 启动清理: backpack_items ${interruptedItems} 条中断生成任务已清理`);
+    }
+  } catch (err) {
+    console.warn(`[db] 启动清理 backpack_items 失败:`, err.message);
+  }
+}
+
+function initSchema(db) {
+  db.exec(`
+    -- 原始完整消息表（LLM 上下文用，不拆分）
+    CREATE TABLE IF NOT EXISTS raw_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+      content TEXT NOT NULL,
+      prompt TEXT,
+      client_msg_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 分句展示消息表（前端用，每个气泡一条）
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      raw_id INTEGER REFERENCES raw_messages(id),
+      role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+      content TEXT NOT NULL,
+      images TEXT,
+      seq INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+
+    -- MaiBot 桥接：最新一份记忆整理（覆盖式，供 MaiBot 主聊天流注入）
+    CREATE TABLE IF NOT EXISTS maibot_latest_memory (
+      session_id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 记忆碎片表（事实/偏好/情绪）
+    CREATE TABLE IF NOT EXISTS memory_fragments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT,
+      source_msg_id INTEGER REFERENCES messages(id),
+      source_raw_start_id INTEGER,
+      source_raw_end_id INTEGER,
+      fragment_type TEXT NOT NULL CHECK(fragment_type IN ('fact','preference','emotion')),
+      content TEXT NOT NULL,
+      entities TEXT DEFAULT '[]',
+      chroma_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 滚动摘要表
+    CREATE TABLE IF NOT EXISTS rolling_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      start_msg_id INTEGER NOT NULL,
+      end_msg_id INTEGER NOT NULL,
+      summary TEXT NOT NULL,
+      checkpoint_version INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+
+    -- 情绪快照表（每 conversation 仅保留最新一条）
+    CREATE TABLE IF NOT EXISTS emotion_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL UNIQUE,
+      after_msg_id INTEGER REFERENCES messages(id),
+      valence REAL NOT NULL DEFAULT 0.5,
+      arousal REAL NOT NULL DEFAULT 0.5,
+      dominance REAL NOT NULL DEFAULT 0.5,
+      mood_valence REAL DEFAULT 0.5,
+      mood_arousal REAL DEFAULT 0.5,
+      mood_dominance REAL DEFAULT 0.5,
+      dominant_emotion TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 生图任务表
+    CREATE TABLE IF NOT EXISTS image_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT,
+      source_msg_id INTEGER REFERENCES messages(id),
+      prompt_original TEXT NOT NULL,
+      prompt_refined TEXT,
+      style TEXT,
+      resolution TEXT DEFAULT '1024x1024',
+      workflow_template TEXT,
+      -- ⚠️ 死列（2026-10-15 标注，**只标注不删**）：全仓只有这一处定义，服务层与测试零引用。
+      -- 原意是存 ComfyUI 的 prompt_id（便于按 id 查队列/中断任务），但出图走的是"提交后等结果"，
+      -- 没用到这个 id ⇒ 从没写入过。保留原因：改 schema 要走迁移，而 ALTER TABLE DROP COLUMN 在
+      -- 老 SQLite 上不可用；真要清就**连同另外 7 个死列一起**在一次性迁移里做（见下方各列的标注）。
+      comfyui_prompt_id TEXT,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+      output_paths TEXT DEFAULT '[]',
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      finished_at DATETIME
+    );
+
+
+    -- 生图提示词知识库（独立于聊天记忆，仅供生图 prompt 生产链检索）
+    CREATE TABLE IF NOT EXISTS image_prompt_knowledge (
+      knowledge_id TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      search_terms TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL,
+      executable_tags TEXT NOT NULL DEFAULT '[]',
+      scenes TEXT NOT NULL DEFAULT '[]',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      priority INTEGER NOT NULL DEFAULT 0,
+      version TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 全局规则表（追加到每个角色的 system prompt 末尾）
+    CREATE TABLE IF NOT EXISTS global_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rule_key TEXT NOT NULL UNIQUE,
+      rule_content TEXT NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 系统设置表（画师串/分辨率/功能开关，替代 .env 中的对应字段）
+    CREATE TABLE IF NOT EXISTS system_settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 朋友圈帖子表
+    CREATE TABLE IF NOT EXISTS moment_posts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,  -- 入住角色作者；镇民作者时为 NULL（二选一，见下方 CHECK）
+      npc_id INTEGER REFERENCES town_npcs(id) ON DELETE CASCADE,         -- 镇民作者；角色作者时为 NULL
+      content TEXT NOT NULL,
+      images TEXT DEFAULT '[]',
+      prompt TEXT,
+      style TEXT,
+      resolution TEXT DEFAULT '1600x1200',
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','generating','done','failed')),
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      -- 作者三选一：角色 / 镇民 / 用户（用户发帖时两者均为 NULL，见 migrateMomentPostUserAuthors）
+      CHECK (character_id IS NULL OR npc_id IS NULL)
+    );
+
+    -- 朋友圈评论表
+    CREATE TABLE IF NOT EXISTS moment_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      post_id INTEGER NOT NULL REFERENCES moment_posts(id) ON DELETE CASCADE,
+      author_type TEXT NOT NULL CHECK(author_type IN ('user','character')),
+      author_id INTEGER,
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 朋友圈点赞表（单用户：每个帖子最多一个赞，UNIQUE 约束 + toggle）
+    CREATE TABLE IF NOT EXISTS moment_likes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      post_id INTEGER NOT NULL REFERENCES moment_posts(id) ON DELETE CASCADE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(post_id)
+    );
+
+    -- 朋友圈未读计数已迁移为时序方案（last_moments_seen_at）
+    -- moment_unread 表如有残留，由下方 migrateMomentUnreadToTimestamp() 清理
+
+    -- 用户关系表（用户 → 角色，用户为单例无 user_id，每个角色唯一一条）
+    CREATE TABLE IF NOT EXISTS user_relationships (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      relationship_text TEXT NOT NULL DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(character_id)
+    );
+
+    -- 用户画像表（角色视角下的用户特征，AI 自动从对话中提取）
+    -- trait_type: appearance(外貌) / personality(性格) / preference(偏好)
+    CREATE TABLE IF NOT EXISTS user_portraits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      trait_type TEXT NOT NULL CHECK(trait_type IN ('appearance','personality','preference')),
+      content TEXT NOT NULL,
+      confidence REAL DEFAULT 0.5,
+      source_msg_id INTEGER REFERENCES messages(id),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(character_id, trait_type, content)
+    );
+
+    -- 世界观收藏表（多套设定，可切换激活）
+    CREATE TABLE IF NOT EXISTS world_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      is_active INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 角色关系表（有向：from → to，关系文本存储在 relationship_text 中）
+    CREATE TABLE IF NOT EXISTS character_relationships (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      to_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      relationship_text TEXT NOT NULL DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(from_character_id, to_character_id)
+    );
+
+    -- 角色配置表
+    CREATE TABLE IF NOT EXISTS characters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      base_prompt TEXT NOT NULL,
+      avatar_path TEXT,
+      standing_url TEXT,
+      emotion_baseline TEXT NOT NULL DEFAULT '{"valence":0.5,"arousal":0.5,"dominance":0.5}',
+      moments_disabled INTEGER DEFAULT 0,
+      short_prompt TEXT,
+      artist_override TEXT,
+      handwriting_font TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+      -- 表情包配置单（一个角色可建多张，聊天只使用启用中的那张；启用互斥由服务层在事务里保证。
+      -- 删除配置单仅删数据库行，不清理磁盘图片文件，历史消息贴图不受影响）
+      CREATE TABLE IF NOT EXISTS emoji_sets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_emoji_sets_char ON emoji_sets(character_id);
+
+      -- 角色表情包表（每张配置单每种表情一条，prompt 生成与图片生成分离）
+      CREATE TABLE IF NOT EXISTS character_emojis (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        set_id INTEGER NOT NULL REFERENCES emoji_sets(id) ON DELETE CASCADE,
+        emoji_key TEXT NOT NULL,
+        prompt TEXT NOT NULL DEFAULT '',
+        image_path TEXT,
+        style TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(status IN ('pending','prompt_ready','generating','done','failed')),
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(set_id, emoji_key)
+      );
+
+      -- 表情类别表（可编辑的 15 个默认类别，按 sort_order 排序）
+      CREATE TABLE IF NOT EXISTS emoji_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emoji_key TEXT NOT NULL UNIQUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+    -- 角色专属外观/形态/装甲/衣服（每个角色可定义多套，同时只启用一套，启用互斥由服务层保证）。
+    -- expires_at：道具变身卡写入的临时形态到期时间（空 = 永久），由 getActiveOutfits 惰性过滤
+    -- scene：场景服装标记（NULL = 普通换装行；'nude'/'work'/'casual'/'home'/'sleep' = 场景服装那一族）
+    -- body：**身体描述**（英文 tag 风格：发色/发型/瞳色/肤色/体型/显著特征）。该角色 5 套场景服装**共用同一份**，
+    --   description 只存"这一套的衣服"，注入时由 outfitScene.composeOutfitText() 拼成自包含文本。
+    --   单一真源：写 body 时同步到该角色全部服装行（outfitScene.setCharacterBody）。
+    CREATE TABLE IF NOT EXISTS character_outfits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      expires_at DATETIME,
+      scene TEXT,
+      body TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_character_outfits_char ON character_outfits(character_id);
+
+    -- 场景立绘（工装/常服/私服/居家/睡衣/裸体六套形象，供角色详情页左右切换查看）。
+    -- 与 character_outfits 的「场景服装」是两回事：服装是**文字描述**（驱动生图），立绘是**已画好的图**。
+    -- 刻意分表 —— 角色可以还没配服装就先有立绘，也可以配了服装但某套还没出图，两者解耦。
+    -- scene 取值同 services/outfitScene.js 的 OUTFIT_SCENES。
+    -- 注意：characters.standing_url 仍是「角色默认形象」，被聊天/朋友圈/群聊等各处引用，本表不动它；
+    -- work 槽在读取时以 standing_url 兜底（见 services/characterStanding.js），
+    -- 这样「已有的那张立绘」天然就是常服形象，用户不会觉得立绘凭空消失。
+    CREATE TABLE IF NOT EXISTS character_standings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      scene TEXT NOT NULL,
+      image_url TEXT,
+      prompt_text TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(character_id, scene)
+    );
+    CREATE INDEX IF NOT EXISTS idx_character_standings_char ON character_standings(character_id);
+
+    -- 通用限时服饰（如一套女仆装的 tag 组合）。character_id 为空 = 全员可见的全局服饰；
+    -- 指定角色 = 道具系统写入的该角色专属限时服饰。expires_at 为过期时间（空 = 永久生效），
+    -- 两者均由 outfitService.getActiveOutfits 惰性过滤。condition_json 预留未来更复杂的注入条件，当前不解析
+    CREATE TABLE IF NOT EXISTS global_outfits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      expires_at DATETIME,
+      condition_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 背包道具（宝箱开出的道具；status: generating → ready → used；
+    -- collected_at 为空 = 待收下，未收下的道具不进背包列表、不可使用）
+    CREATE TABLE IF NOT EXISTS backpack_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      effect_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      rarity TEXT NOT NULL DEFAULT 'common',
+      image_url TEXT,
+      status TEXT NOT NULL DEFAULT 'generating',
+      payload_json TEXT,
+      collected_at DATETIME,
+      acquired_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      used_at DATETIME
+    );
+    CREATE INDEX IF NOT EXISTS idx_backpack_items_status ON backpack_items(status);
+
+    -- 道具生效中的效果（buff 到期失效；变身卡靠 payload 恢复原专属形态）
+    CREATE TABLE IF NOT EXISTS item_effects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id INTEGER NOT NULL REFERENCES backpack_items(id) ON DELETE CASCADE,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      effect_key TEXT NOT NULL,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME
+    );
+    CREATE INDEX IF NOT EXISTS idx_item_effects_char ON item_effects(character_id);
+
+    -- 画师串收藏夹
+    CREATE TABLE IF NOT EXISTS artist_favorites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 奇遇事件表（每角色同时最多一个活跃事件）
+    CREATE TABLE IF NOT EXISTS character_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      event_type_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','open','engaged','completed','expired','cancelled')),
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      image TEXT,
+      prompt TEXT,
+      style TEXT,
+      resolution TEXT DEFAULT '1600x1200',
+      choice_a TEXT NOT NULL DEFAULT '',
+      choice_b TEXT NOT NULL DEFAULT '',
+      choice_c_label TEXT NOT NULL DEFAULT '自由行动',
+      current_branch INTEGER DEFAULT 0,
+      max_branches INTEGER DEFAULT 3,
+      choice_history TEXT DEFAULT '[]',
+      summary TEXT DEFAULT '',
+      engaged INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      last_interaction_at DATETIME,
+      half_time_notified INTEGER DEFAULT 0,
+      error_message TEXT
+    );
+
+    -- 日程模板表（每个角色一条，LLM 生成后缓存）
+    CREATE TABLE IF NOT EXISTS schedule_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL UNIQUE REFERENCES characters(id) ON DELETE CASCADE,
+      schedule_json TEXT NOT NULL DEFAULT '[]',
+      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      version INTEGER DEFAULT 1
+    );
+
+    -- 每日日程实例表（从 template 快照，独立于模板可微调）
+    CREATE TABLE IF NOT EXISTS daily_schedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      schedule_date TEXT NOT NULL,
+      schedule_json TEXT NOT NULL DEFAULT '[]',
+      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(character_id, schedule_date)
+    );
+
+    -- 待应用日程变更队列（聊天约定的是未来某天时先入队，到那天再合并进当日日程）
+    CREATE TABLE IF NOT EXISTS pending_schedule_changes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      target_date TEXT NOT NULL,
+      activity_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      source TEXT NOT NULL DEFAULT 'chat',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 消息回复队列表（延迟回复 + 睡眠合并）
+    CREATE TABLE IF NOT EXISTS reply_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL,
+      user_raw_msg_id INTEGER NOT NULL,
+      user_msg_id INTEGER NOT NULL,
+      user_content TEXT NOT NULL,
+      client_msg_id TEXT,
+      scheduled_reply_at DATETIME NOT NULL,
+      status TEXT DEFAULT 'waiting' CHECK(status IN ('waiting','processing','done','cancelled')),
+      -- ⚠️ 死列 ×3（2026-10-15 标注，只标注不删）：reply_raw_msg_id / reply_msg_ids / processed_at
+      -- 全仓只有这三行定义、服务层与测试零引用。原意是"回复生成后把落库的消息 id 回填到队列行"，
+      -- 但实际流程是回复直接写 raw_messages、队列行用完就按 status 标记，从没回填过 ⇒ 三列恒为 NULL/默认。
+      -- 保留原因同 image_tasks.comfyui_prompt_id：改 schema 要迁移，真要清就**同批处理**全部死列。
+      reply_raw_msg_id INTEGER,
+      reply_msg_ids TEXT DEFAULT '[]',
+      current_activity TEXT,
+      delay_minutes INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      processed_at DATETIME
+    );
+
+    -- 奇遇事件历史表
+    CREATE TABLE IF NOT EXISTS event_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      event_type_key TEXT,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      final_image TEXT,
+      summary TEXT NOT NULL DEFAULT '',
+      conclusion TEXT,
+      choice_history TEXT DEFAULT '[]',
+      total_branches INTEGER DEFAULT 0,
+      engaged INTEGER DEFAULT 0,
+      outcome TEXT DEFAULT 'expired' CHECK(outcome IN ('completed','expired','cancelled')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      ended_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 梦境表（睡眠会话内共享；talk_schedule 为本次睡眠已排定的梦话时刻 ISO 数组）
+    CREATE TABLE IF NOT EXISTS character_dreams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      dream_type TEXT,
+      content TEXT NOT NULL,
+      image_prompt TEXT,
+      image_path TEXT,
+      -- ⚠️ 死列 ×2（2026-10-15 标注，只标注不删）：dream_talks / talks_emitted
+      -- 梦话最终走的是**下面那对** talk_schedule（排定时刻）+ 直接按时刻发，不在这里记"已说了几条"。
+      -- 全仓只有这两行定义、服务层与测试零引用 ⇒ 恒为 '[]' / 0。保留原因同其它死列（改 schema 要迁移）。
+      dream_talks TEXT DEFAULT '[]',
+      talk_schedule TEXT DEFAULT '[]',
+      talks_emitted INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'generating' CHECK(status IN ('generating','ready','failed')),
+      sleep_until DATETIME,
+      shared_at DATETIME,
+      shared_via TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_dreams_char_created ON character_dreams(character_id, created_at DESC);
+
+    -- 信箱信件表
+    CREATE TABLE IF NOT EXISTS mailbox_letters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      direction TEXT NOT NULL CHECK(direction IN ('user_to_char','char_to_user')),
+      title TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      reply_content TEXT DEFAULT '',
+      content_short TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed','failed')),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      reply_at DATETIME,
+      paper_path TEXT DEFAULT '',
+      portrait_path TEXT DEFAULT '',
+      illustration_path TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      replied_at DATETIME,
+      is_read INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- 逐小时天气缓存表（仅保留 24 条，weather_time 为 HH:00）
+    CREATE TABLE IF NOT EXISTS weather_hourly (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      weather_time TEXT NOT NULL UNIQUE,
+      weather_text TEXT NOT NULL,
+      temperature TEXT NOT NULL,
+      wind_speed TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 群聊表（conversation_id = 'group_' || id，消息复用 raw_messages/messages 双表）
+    CREATE TABLE IF NOT EXISTS group_chats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      topic TEXT DEFAULT '',
+      avatar_path TEXT,
+      created_by TEXT NOT NULL DEFAULT 'user' CHECK(created_by IN ('user','character')),
+      creator_character_id INTEGER REFERENCES characters(id) ON DELETE SET NULL,
+      idle_enabled INTEGER DEFAULT 1,
+      next_idle_at DATETIME,
+      idle_budget INTEGER DEFAULT 2,
+      idle_budget_date TEXT,
+      idle_budget_used INTEGER DEFAULT 0,
+      last_message_at DATETIME,
+      last_seen_at DATETIME,
+      rag_last_extracted_raw_id INTEGER DEFAULT 0,
+      rag_user_rounds_pending INTEGER DEFAULT 0,
+      -- 《邻舍日报》群聊注入记账：newspaper_paper_id 是已计数的报纸 id（换期即重置），
+      -- newspaper_rounds_used 是该群对本期报纸已注入的轮数（限额见 newspaperService.GROUP_INJECT_ROUNDS）
+      newspaper_paper_id INTEGER,
+      newspaper_rounds_used INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 群成员表
+    CREATE TABLE IF NOT EXISTS group_members (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL REFERENCES group_chats(id) ON DELETE CASCADE,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(group_id, character_id)
+    );
+
+    -- 奇遇事件类型库（系统 default + 用户自定义 custom）
+    CREATE TABLE IF NOT EXISTS event_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      duration_min INTEGER NOT NULL DEFAULT 20,
+      urgency INTEGER NOT NULL DEFAULT 1,
+      fun_from TEXT NOT NULL DEFAULT '[]',
+      desc TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'default' CHECK(source IN ('default','custom')),
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 朋友圈话题库（系统 default + 用户自定义 custom）
+    -- 判重口径（2026-10-14）：**同来源内 name 唯一**，不再全库唯一 ——
+    -- 自定义话题允许与系统话题同名（用户想「用系统那套名字写自己的描述」是合理需求），
+    -- 故选 id 时靠 (id) 而不是 (name) 定位；唯一性由 idx_moment_topics_name_source 保证。
+    -- checked：是否参与「自动抽取」（手动点题不受它限制）。注意存 0/1 整数，不存布尔。
+    CREATE TABLE IF NOT EXISTS moment_topics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      desc TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'default' CHECK(source IN ('default','custom')),
+      is_active INTEGER NOT NULL DEFAULT 1,
+      checked INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    -- 同来源判重：老库（真库）当年建的是 name 单列 UNIQUE，
+    -- 由 migrateMomentTopicsSchema 做幂等重建搬到这条复合唯一索引上。
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_moment_topics_name_source ON moment_topics(name, source);
+
+    -- ── AI 小镇（世界页 v2）：瓦片地图 / 素材库 / 轻量 NPC / POI / 相遇对话 ──
+    CREATE TABLE IF NOT EXISTS town_maps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      image_path TEXT,                   -- v1 遗留：整图插画（v2 弃用，保留列兼容旧库）
+      grid_cols INTEGER NOT NULL,
+      grid_rows INTEGER NOT NULL,
+      -- ⚠️ 死列（2026-10-15 标注，**只标注不删**）：v1 遗留，可走性已改为按 layers_json 运行时计算
+      -- （见 services/town/townPathfinding.js 的说明）。列本身仍 NOT NULL 有默认值，所以旧库无需迁移。
+      -- 与另外 8 个死列同批（清单跑 scripts/scan-dead-code.mjs），要清就一起清。
+      -- ⚠️ 在这段 SQL 里写注释**不要用反引号** —— 整段是 JS 模板字符串，一个反引号就把它截断（踩过两次）。
+      walk_grid TEXT NOT NULL DEFAULT '[]',
+      layers_json TEXT,                  -- v2：{ground,road,objects,blockOverride} 图层数据
+      tile_size INTEGER DEFAULT 32,      -- 世界像素/格（1x 缩放下）
+      world_setting_id INTEGER,          -- 初始化用的世界观
+      version INTEGER DEFAULT 1,         -- 编辑保存版本号（SSE 通知其他端重载）
+      status TEXT NOT NULL DEFAULT 'ready',  -- ready | archived（多地图：出行目录只列 ready）
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 像素素材库（ComfyUI 生成 → 抠白/像素化 → data/town/assets/）
+    CREATE TABLE IF NOT EXISTS town_assets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,          -- ground | road | building | prop | npc | player
+      key TEXT,                    -- grass_01 / residential / npc_3_down / char_12_right / player_down
+      name TEXT NOT NULL,          -- 显示名（青草地 / 普通居民楼）
+      image_path TEXT NOT NULL,    -- /town-assets/xxx.png
+      meta_json TEXT DEFAULT '{}', -- footprint{w,h}/blocking/doorOffset/cellW,cellH/direction/reusable/maxInstances/styleTags/pixelSize
+      source_prompt TEXT DEFAULT '',
+      world_setting_id INTEGER,
+      status TEXT DEFAULT 'pending',  -- pending | ready | failed
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_town_assets_kind ON town_assets(kind, status);
+
+    CREATE TABLE IF NOT EXISTS town_map_assets (
+      map_id INTEGER NOT NULL REFERENCES town_maps(id) ON DELETE CASCADE,
+      asset_id INTEGER NOT NULL REFERENCES town_assets(id) ON DELETE CASCADE,
+      PRIMARY KEY (map_id, asset_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS town_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_id INTEGER NOT NULL REFERENCES town_maps(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,                 -- 'cafe'（图内唯一，两张镇可以各有自己的咖啡馆）
+      name TEXT NOT NULL,                -- '兽人咖啡厅'
+      aliases_json TEXT NOT NULL DEFAULT '[]',
+      kind TEXT NOT NULL DEFAULT 'place' CHECK(kind IN ('home','place','outdoor')),
+      grid_x INTEGER NOT NULL,
+      grid_y INTEGER NOT NULL,
+      radius INTEGER NOT NULL DEFAULT 2, -- 锚点周围可站立半径
+      ambient TEXT DEFAULT '',           -- 环境氛围描述（注入对话 prompt）
+      object_id INTEGER,                 -- v2：绑定的地图对象 id（建筑 POI）
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(map_id, key)
+    );
+
+    -- 轻量小镇居民（世界观生成，不进 characters 表）
+    CREATE TABLE IF NOT EXISTS town_npcs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_id INTEGER NOT NULL,
+      display_name TEXT NOT NULL,
+      persona TEXT DEFAULT '',           -- 完整人格卡（建档时按 brief 生成）
+      brief TEXT DEFAULT '',             -- 一句话人设（名单生成/用户手填，人格卡生成种子）
+      appearance_desc TEXT DEFAULT '',   -- spirit生成用外观描述
+      job TEXT DEFAULT '', home_location_id INTEGER,
+      routine_json TEXT DEFAULT '[]',    -- [{start:"08:00",end:"12:00",activity,locationKey}]
+      traits_json TEXT DEFAULT '{}',     -- {social, outdoor, nightOwl, 作息偏移}
+      sprite_ready INTEGER DEFAULT 0,    -- 4 方向素材齐备标记
+      town_enabled INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 玩家与 NPC 就地对话历史（注入后续对话）
+    CREATE TABLE IF NOT EXISTS town_npc_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      npc_id INTEGER NOT NULL REFERENCES town_npcs(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,                -- user | npc
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_town_npc_chat ON town_npc_chat_messages(npc_id, id DESC);
+
+    CREATE TABLE IF NOT EXISTS town_characters (
+      character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+      map_id INTEGER,                    -- 入住镇（多地图）；NULL = 尚未指定，按住宅推断
+      home_location_id INTEGER REFERENCES town_locations(id),
+      town_enabled INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 运行时状态快照（v2：agent_key = 'npc:3' / 'char:12' / 'me'，进程重启后由作息/日程重建）
+    CREATE TABLE IF NOT EXISTS town_agent_state (
+      agent_key TEXT NOT NULL,
+      map_id INTEGER NOT NULL,           -- 运行时快照按图保存：玩家每图一份最近坐标
+      grid_x INTEGER,
+      grid_y INTEGER,
+      path_json TEXT DEFAULT '[]',
+      current_location_id INTEGER,
+      activity_text TEXT DEFAULT '',
+      updated_at DATETIME,
+      PRIMARY KEY (agent_key, map_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS town_encounters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_id INTEGER NOT NULL,
+      char_a INTEGER NOT NULL,
+      char_b INTEGER NOT NULL,
+      location_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'chatting' CHECK(status IN ('chatting','done','cancelled')),
+      summary TEXT DEFAULT '',              -- 规则结算的模板摘要（M0：唯一权威事实文本）
+      outcome_json TEXT,                    -- 规则结算的结构化结果 {interactionType,resultCode,ruleVersion,settledAtUtcMs}
+      polished_summary TEXT DEFAULT '',     -- LLM 润色摘要（仅附加表现，不参与结算校验）
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      ended_at DATETIME
+    );
+
+    CREATE TABLE IF NOT EXISTS town_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      encounter_id INTEGER NOT NULL REFERENCES town_encounters(id) ON DELETE CASCADE,
+      speaker_char_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS town_players (
+      id TEXT PRIMARY KEY,               -- 'me'（单用户）
+      display_name TEXT NOT NULL,
+      map_id INTEGER,                    -- 玩家当前所在地图（聚焦口径的权威来源）
+      grid_x INTEGER,
+      grid_y INTEGER,
+      sprite_asset_id INTEGER,           -- v2：玩家spirit素材（player_down 等 4 方向共用一套 meta）
+      appearance_desc TEXT DEFAULT '',   -- v2：spirit生成用外观描述（用户配置外观）
+      updated_at DATETIME
+    );
+
+    -- 小镇预告报纸《邻舍日报》：每日一份，每天零点后由 replyQueueScheduler 补当天份
+    -- items_json：普通新闻 [{category,title,content,image}]；character_event_json：绑定角色的特稿
+    -- {title,content,image,note,character_name,character_avatar}；world_state_json：15% 概率出现的当日全员状态
+    -- {name,description,news,image,effect_prompt}（注入口与道具 buff 同位，见 chat.js 稳定块[1]）
+    -- moment_done/complaint_after：绑定角色当日吐槽朋友圈的排期与完成标记（momentScheduler 消费）
+    -- world_dismissed：读者在日报里手动「消除影响」的标记；置 1 后当天世界状态不再注入任何提示词
+    -- character_id 不设外键：报纸是"已印出的历史"，角色之后被删除也不得抹掉主角链接
+    -- （旧库带 ON DELETE SET NULL 的版本由 migrateNewspaperDropForeignKey 重建）
+    CREATE TABLE IF NOT EXISTS town_newspapers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      publish_date TEXT NOT NULL UNIQUE,             -- 本地日期 YYYY-MM-DD（getLocalDateKey 口径）
+      name TEXT NOT NULL DEFAULT '',                 -- 报头名
+      edition INTEGER NOT NULL DEFAULT 1,            -- 期号（历史最大期号 + 1）
+      items_json TEXT NOT NULL DEFAULT '[]',
+      character_id INTEGER,
+      character_event_json TEXT,
+      world_state_json TEXT,
+      world_dismissed INTEGER NOT NULL DEFAULT 0,
+      moment_done INTEGER NOT NULL DEFAULT 0,
+      complaint_after DATETIME,                      -- UTC（与 datetime('now') 同口径比较）
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_town_newspapers_date ON town_newspapers(publish_date);
+  `);
+
+  // 只补齐历史 NULL；保留用户显式关闭后台闲聊的 idle_enabled=0。
+  db.prepare(`UPDATE group_chats SET idle_enabled = 1 WHERE idle_enabled IS NULL`).run();
+
+  // FTS5 external content table — drop & recreate to handle schema changes
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      content,
+      content='messages',
+      content_rowid='id'
+    );
+  `);
+
+  // Triggers to keep FTS5 index in sync
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    END;
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+  `);
+
+  // Indexes
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_raw ON messages(raw_id);
+    CREATE INDEX IF NOT EXISTS idx_raw_messages_conv ON raw_messages(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_fragments_conv ON memory_fragments(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_fragments_type ON memory_fragments(fragment_type);
+    CREATE INDEX IF NOT EXISTS idx_summaries_conv ON rolling_summaries(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_summaries_checkpoint ON rolling_summaries(conversation_id, end_msg_id);
+
+    CREATE INDEX IF NOT EXISTS idx_image_tasks_conv ON image_tasks(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_image_tasks_status ON image_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_image_prompt_knowledge_category ON image_prompt_knowledge(category, is_active);
+    CREATE INDEX IF NOT EXISTS idx_image_prompt_knowledge_priority ON image_prompt_knowledge(priority DESC);
+    CREATE INDEX IF NOT EXISTS idx_moment_posts_character ON moment_posts(character_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_moment_posts_created ON moment_posts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_moment_posts_filter ON moment_posts(status);
+    CREATE INDEX IF NOT EXISTS idx_moment_comments_post ON moment_comments(post_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_user_rels_char ON user_relationships(character_id);
+    CREATE INDEX IF NOT EXISTS idx_portraits_char ON user_portraits(character_id);
+    CREATE INDEX IF NOT EXISTS idx_portraits_type ON user_portraits(trait_type);
+    CREATE INDEX IF NOT EXISTS idx_char_rels_from ON character_relationships(from_character_id);
+    CREATE INDEX IF NOT EXISTS idx_char_rels_to ON character_relationships(to_character_id);
+      CREATE INDEX IF NOT EXISTS idx_character_emojis_character ON character_emojis(character_id, status);
+      CREATE INDEX IF NOT EXISTS idx_emoji_categories_sort ON emoji_categories(sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_ce_char_status ON character_events(character_id, status);
+    CREATE INDEX IF NOT EXISTS idx_ce_expires ON character_events(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_eh_char ON event_history(character_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ds_char_date ON daily_schedules(character_id, schedule_date);
+    CREATE INDEX IF NOT EXISTS idx_psc_status_date ON pending_schedule_changes(status, target_date);
+    CREATE INDEX IF NOT EXISTS idx_rq_scheduled ON reply_queue(scheduled_reply_at, status);
+    CREATE INDEX IF NOT EXISTS idx_rq_character ON reply_queue(character_id, status);
+    CREATE INDEX IF NOT EXISTS idx_weather_lookup ON weather_hourly(weather_time);
+    CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
+    CREATE INDEX IF NOT EXISTS idx_group_members_char ON group_members(character_id);
+    CREATE INDEX IF NOT EXISTS idx_group_chats_idle ON group_chats(next_idle_at, idle_enabled);
+    CREATE INDEX IF NOT EXISTS idx_town_locations_map ON town_locations(map_id);
+    CREATE INDEX IF NOT EXISTS idx_town_encounters_status ON town_encounters(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_town_chat_enc ON town_chat_messages(encounter_id, created_at);
+  `);
+
+  // Partial unique index for raw_messages client_msg_id (SQLite 3.8+)
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_client_msg ON raw_messages(client_msg_id) WHERE client_msg_id IS NOT NULL`);
+  } catch (err) {
+    console.log('[db] idx_raw_client_msg skipped:', err.message);
+  }
+
+  // Partial unique index: 每角色最多一个活跃事件
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_event ON character_events(character_id) WHERE status IN ('pending','open','engaged')`);
+  } catch (err) {
+    console.log('[db] idx_one_active_event skipped:', err.message);
+  }
+
+  // 保留完整预报时间；历史天气缓存不推断日期或回填。
+  migrateWeatherHourlySchema(db);
+  migrateExpressionStandings(db);
+  // 上游 v3.9.0 合并：立绘互动（空手触摸台词 + 触碰配置/区域，见 services/standingTouchLines.js
+  // 与 services/standingInteractionService.js）。必须排在 migrateExpressionStandings 之后：
+  // standing_interaction_regions 外键引用 character_expression_standings。
+  migrateStandingInteractions(db);
+
+  // 上游 v3.9.0 合并：媒体内容页建表（传媒 / 数字媒体，见 services/mediaService.js）
+  createMediaTables(db);
+
+  // 迁移: characters 表新增 next_moment_at 列
+  migrateMomentsSchema(db);
+
+  // 迁移: town_newspapers 去掉 character_id 外键（报纸主角链接不随角色删除被置空）
+  migrateNewspaperDropForeignKey(db);
+
+  // 迁移: town_newspapers 加 world_dismissed 列（日报手动消除世界影响）；
+  // 必须在外键重建之后执行——重建出的表不带该列
+  migrateNewspaperWorldDismissed(db);
+
+  // 迁移: town_encounters 加 outcome_json / polished_summary（M0 相遇规则结算）
+  migrateTownEncounterOutcome(db);
+
+  // 迁移: 删除 image_prompt_preparations（生图提示词诊断留档，全项目无读者，
+  // 曾是全库最大表：113MB/1.7 万行；写入路径已一并移除）
+  dropImagePromptPreparations(db);
+
+  // 迁移: moment_unread 计数 → 时序方案 (last_moments_seen_at)
+  migrateMomentUnreadToTimestamp(db);
+
+  // 迁移: 好感度系统 — user_relationships 和 emotion_snapshots 新增 affinity 列
+  migrateAffinitySchema(db);
+
+  // 迁移: characters 表新增 next_proactive_at 和 proactive_disabled 列（主动聊天）
+  migrateProactiveSchema(db);
+
+  // 迁移: emotion_snapshots 改为每 conversation 仅保留最新一条（UNIQUE 约束 + 清理历史）
+  migrateEmotionSnapshotsUnique(db);
+
+  // 迁移: 好感度回归系统 — user_relationships 加 last_interaction_at + gift_history 表
+  migrateTownItemSchema(db);
+  migrateTownItemTemplateSchema(db);
+  migrateAffinityRegressionSchema(db);
+
+  // 迁移: artist_favorites.artist 加 UNIQUE 约束（防止重复收藏）
+  migrateArtistFavoritesUnique(db);
+
+  // 迁移: characters 表新增 events_disabled 列（奇遇系统）
+  migrateEventsSchema(db);
+
+  // 迁移: 防打扰模式 — characters 表新增 dnd_original_state 列
+  migrateDisturbSchema(db);
+
+  // 迁移: 日程系统 — characters 表新增 schedule 相关列
+  migrateScheduleSchema(db);
+
+  // 迁移: moment_comments 新增 auto_trigger + thread_root_id（朋友圈关系网互动）
+  migrateMomentAutoTrigger(db);
+
+  // 系统设置迁移: 清理历史遗留键（idempotent，需在种子注入前执行）
+  migrateSystemSettings(db);
+  migrateTownGenerationSettings(db);
+
+  // 迁移: 绘图知识词库保留可直接注入的结构化 tag。
+  migrateImagePromptKnowledgeSchema(db);
+
+  // 迁移: PAI 风格聊天记忆单元、全文索引、提取 checkpoint 与索引任务
+  migrateChatMemoryV2Schema(db);
+
+  // 迁移: 记忆 v3 —— 多重表示 + 双时态演化 + 实体/三元组索引层（见 docs/memory-upgrade-plan.md）
+  migrateChatMemoryV3Schema(db);
+
+  // 迁移: 记忆整理记账表（防同一批候选被反复送进 LLM）+ 整理/审计表维护索引
+  migrateMemoryConsolidationMarks(db);
+
+  // 迁移: 把整理 daemon 的显式配置写进既有 memory_settings 行（缺失才补，不覆盖用户值）
+  migrateMemoryConsolidationSettings(db);
+
+  // 迁移: 把 v3 / activeSearch / contextBudget 等阶段开关也显式化，让库里能读出实际生效值
+  migrateMemorySettingsExplicitBlocks(db);
+
+  // 迁移: 叫醒系统 — characters 表新增 wake 相关列
+  migrateWakeSchema(db);
+
+  // 迁移: characters 表新增 lora 列
+  migrateLoraSchema(db);
+
+  // characters 表新增 loras JSON 列
+  migrateLorasArraySchema(db);
+
+  // characters 表新增角色单独画师串列
+  migrateArtistOverrideSchema(db);
+
+  // 迁移: 将 global_rules.world_setting 移至 world_settings 表（多套世界观）
+  migrateWorldSettings(db);
+
+  // 空表补默认激活世界观：前端世界观弹窗的保存依赖选中项，空表时写入无法落库
+  seedDefaultWorldSetting(db);
+
+  // 迁移: LLM 多配置切换（需在 seed 之后，确保 DB 已初始化）
+  migrateLlmProfiles(db);
+
+  // 迁移: 信箱系统
+  migrateMailboxSchema(db);
+
+  // 迁移: 手写字体 — characters 表新增 handwriting_font 列
+  migrateHandwritingFont(db);
+
+  // 迁移: 角色聊天背景 — characters 表新增 chat_bg_path 列
+  migrateChatBgSchema(db);
+
+  // 迁移: 群头像 — group_chats 表新增 avatar_path 列
+  migrateGroupAvatarSchema(db);
+
+  // 迁移: 朋友圈话题库 — 判重从「全库 name 唯一」改成「同来源内唯一」+ 新增 checked 列
+  // （老库建的是 name 单列 UNIQUE，不重建真机一升级就插不进同名话题；幂等）
+  migrateMomentTopicsSchema(db);
+
+  // 迁移: 角色置顶 — characters 表新增 pinned 列
+  migratePinSchema(db);
+
+  // 迁移: 奇遇强调降格 — character_events 表新增 emphasis_delivered 列
+  migrateEventEmphasisSchema(db);
+
+  // 迁移: 摘要 checkpoint 版本标记；旧摘要边界不可信，不能直接用于历史截断
+  migrateRollingSummaryCheckpointSchema(db);
+
+  // 迁移: 誓约系统 — user_relationships 表新增 is_oath 列
+  migrateOathSchema(db);
+
+  // 迁移: 交叉角色引用 — character_events 表新增 referenced_character_ids 列
+  migrateEventCrossRef(db);
+
+  // 迁移: 群聊系统 — raw_messages/messages 新增 speaker_character_id 列
+  migrateGroupChatSchema(db);
+
+  // 迁移: 深度思考 — raw_messages 新增 thinking 列（存 planner 思考+计划原文，历史回看用）
+  migrateDeepThinkSchema(db);
+
+  // 迁移: 角色立绘 — characters 表新增 standing_url 列
+  migrateStandingSchema(db);
+
+  // 迁移: AI 小镇 v2 — town_maps/locations/players 加列（新表由上方 CREATE IF NOT EXISTS 覆盖）
+  migrateTownV2Schema(db);
+  migrateTownSchema(db);
+  migrateTownActionSchema(db);
+  ensureTownDialogueSchema(db);
+  // 迁移: 世界地图骨架（叙事地理，「地图」页）—— 与 town_maps 网格图刻意分开
+  ensureWorldMapSchema(db);
+  migrateTownEconomySchema(db);
+  migrateTownNpcFunctionsSchema(db);
+  migrateTownNpcEventSchema(db);
+  migrateTownResponsibilitySchema(db);
+  migrateTownCharacterCapabilitiesSchema(db);
+  migrateTownCharacterProfileSchema(db);
+  migrateTownExperienceSchema(db);
+  migrateTownServiceOfferSchema(db);
+  migrateTownMultiMapSchema(db);
+  // 迁移: 小镇特殊建筑功能（配置/操作/配额/模板事件 + 地点用途描述列）；依赖 town_locations
+  //       （上游 v3.9.0 合并，见 services/town/townBuildingFeature*）
+  migrateTownBuildingFeatureSchema(db);
+
+  // 迁移: 建筑地点不再携带 trade 能力位（一次性，幂等）。店内买卖全部走功能模板货架
+  // （店铺舞台），地点上的 trade 只会喂出打不开东西的「交易」入口与旧层货架数据。
+  try {
+    const rows = db.prepare("SELECT id, capabilities_json FROM town_locations WHERE capabilities_json LIKE '%trade%'").all();
+    let cleaned = 0;
+    for (const row of rows) {
+      try {
+        const caps = JSON.parse(row.capabilities_json);
+        if (!Array.isArray(caps) || !caps.includes('trade')) continue;
+        db.prepare('UPDATE town_locations SET capabilities_json = ? WHERE id = ?')
+          .run(JSON.stringify(caps.filter(c => c !== 'trade')), row.id);
+        cleaned += 1;
+      } catch { /* 单行坏数据跳过，不影响其余清理 */ }
+    }
+    if (cleaned > 0) console.log(`[db] migration: removed trade capability from ${cleaned} town location(s)`);
+  } catch (err) {
+    console.log('[db] trade capability cleanup skipped:', err.message);
+  }
+
+  // 迁移: 亲密档案与统计看板 — character_body_profile / character_intimate_log /
+  //       character_intimate_firsts / character_intimate_stats / character_intimate_backfill /
+  //       character_intimate_suggestions（AI 待确认提议）
+  //       （见 services/intimateService.js 与 services/intimateAiEdit.js）
+  migrateIntimateSchema(db);
+
+  // 迁移: 性爱交互「可点击推进」进行中状态 — character_intimate_scene（每角色一行，
+  //       体位 / 是否插入中 / 节奏档 / 累积度；见 services/intimateActionService.js）
+  migrateIntimateSceneSchema(db);
+
+  // 迁移: 催眠手机 — character_hypnosis / hypnosis_forgotten_windows（见 services/hypnosisService.js）
+  migrateHypnosisSchema(db);
+
+  // 迁移: SLG 动作系统 — character_touch_state（腻烦 / 偏好）/ touch_events（动作待反应，见 routes/touch.js）
+  migrateTouchSchema(db);
+
+  // 迁移: 成人玩具系统 — character_worn_toys（佩戴状态，专题-玩具系统 §2.2，见 services/toyService.js）
+  migrateWornToysSchema(db);
+
+  // 玩具玩法状态 — toy_play_state / toy_self_play_log（2026-10-02 玩法扩充；
+  // 与佩戴表紧邻，因为两者是同一套玩法的状态与流水）
+  migrateToyPlaySchema(db);
+
+  // 迁移: 私密时刻 — character_private_moments（2026-10-02「自慰事件 / 闯入」，
+  // 见 services/privateMomentService.js：一天一条，落在她**日程里的独处时段**上）
+  migratePrivateMomentSchema(db);
+
+  // 迁移: 灵魂系统 — soul_states 表 + memory_fragments.soul_snapshot 列（上游 v3.9.0 合并，
+  // 见 services/soulEngine.js）。排在这附近与上游 index.js 的调用顺序一致（都在记忆整理之前）
+  migrateSoulSchema(db);
+
+  // 迁移: 角色日记（每角色每日一篇，同日覆盖、历史保留；上游 v3.9.0 合并，
+  // 见 services/diaryGenerator.js）
+  migrateCharacterDiarySchema(db);
+
+  // 迁移: 场景服装系统 — character_outfits.scene / body + character_standings（2026-10-13，
+  // 上游 v3.9.0 的 4 态场景服装 + PR #24 的五态与身体分层，见 services/outfitScene.js）
+  migrateCharacterOutfitScene(db);
+
+  // 迁移: 角色操作反馈短句包 — character_reaction_packs（每角色一份有效包，
+  // 保存完整 JSON + 协议版本 + 人格指纹；见 services/characterReactionPackService.js）
+  migrateCharacterReactionPacksSchema(db);
+
+  // 迁移: 角色文件夹 — character_folders 表 + characters.folder_id 列（上游 v3.9.0 合并，
+  //       单层分类：一个角色只属于一个文件夹，folder_id 为 NULL 表示「未分类」；
+  //       删除文件夹只把成员置回未分类，不动角色本体）
+  migrateCharacterFolderSchema(db);
+
+  // 迁移: 媒体内容页 — media_outlets / media_boards / media_posts 结构升级 + 默认媒体种子
+  //       （上游 v3.9.0 合并，见 db/mediaSchema.js 与 services/mediaService.js）
+  migrateMediaSchema(db);
+
+  // 迁移: 移除 user_portraits 的 appearance 维度（用户外观由 config.user.appearance 自述，
+  // 不再需要角色视角提取；幂等清理，每次启动执行。表的 CHECK 枚举保留 'appearance' 不重建表，无害）
+  try {
+    const r = db.prepare(`DELETE FROM user_portraits WHERE trait_type = 'appearance'`).run();
+    if (r.changes > 0) console.log(`[db] migration: removed ${r.changes} appearance portrait row(s)`);
+  } catch (err) {
+    console.log('[db] appearance portrait cleanup skipped:', err.message);
+  }
+
+  // 迁移: 梦境系统已改为常驻逻辑（无开关），清理残留的 flag 设置行
+  try {
+    db.prepare(`DELETE FROM system_settings WHERE setting_key = 'feature_dreams'`).run();
+  } catch (err) {
+    console.log('[db] feature_dreams cleanup skipped:', err.message);
+  }
+
+  // 种子: 注入全部初始数据（仅首次运行生效）
+  seedAll(db);
+  // 新存档 seed 会创建默认角色；首启就完成 actor 回填，避免第二次启动才补身份。
+  createTownActorRegistry(db).synchronize();
+  // 种子: 表情类别（仅首次运行插入默认 15 类）
+  seedEmojiCategories(db);
+  migrateEmojiCategoriesV2(db);
+  // 迁移: 表情包多配置单（emoji_sets + character_emojis.set_id，旧数据回填默认配置单）
+  migrateEmojiSetsSchema(db);
+
+  // 种子: 奇遇事件类型库 + 朋友圈话题库（INSERT OR IGNORE，仅插入缺失的系统条目，不覆盖用户编辑）
+  seedEventLibraries(db);
+
+  // 图片提示词知识使用独立版本化种子；版本升级时只覆盖内置同 ID 条目，保留用户自建条目。
+  seedImagePromptKnowledge(db);
+
+  // 系统设置: 注入句柄并从 DB 加载覆盖 config 内存（DB 优先于代码默认值）
+  initSettingsHandle(db);
+  loadSystemSettings(db);
+  initWorldRepository(db);
+  migrateLorebooks(db);
+  migratePresets(db);
+
+  // 重建 FTS5 索引
+  rebuildFtsIndex(db);
+
+  // 启动时 FTS 写入测试：部分损坏场景下 SELECT 能过但 INSERT 会炸，提前修复
+  try {
+    db.prepare(`INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', -1, 'fts_write_test')`).run();
+  } catch (writeErr) {
+    if (writeErr.code === 'SQLITE_CORRUPT_VTAB') {
+      console.log('[db] FTS5 write-test failed at startup, force rebuilding...');
+      // 用导出的 repairFtsIndex 不行（circular），直接内联重建
+      db.exec(`DROP TRIGGER IF EXISTS messages_ai`);
+      db.exec(`DROP TRIGGER IF EXISTS messages_ad`);
+      db.exec(`DROP TRIGGER IF EXISTS messages_au`);
+      db.exec(`DROP TABLE IF EXISTS messages_fts`);
+      db.exec(`CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id')`);
+      db.exec(`CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content); END;`);
+      db.exec(`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content); END;`);
+      db.exec(`CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content); INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content); END;`);
+      // 全量重建索引
+      const msgs = db.prepare(`SELECT id, content FROM messages`).all();
+      const insert = db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+      for (const m of msgs) insert.run(m.id, m.content);
+      console.log(`[db] FTS5 startup force-rebuild: ${msgs.length} messages indexed`);
+    } else {
+      throw writeErr;
+    }
+  }
+}
+
+/**
+ * 种子：奇遇事件类型库 + 朋友圈话题库
+ * 仅插入缺失的系统条目（INSERT OR IGNORE），不覆盖用户对已有条目的编辑；
+ * 软删除（is_active=0）的条目行仍存在，因此不会在下次启动时复活。
+ */
+/** 种子：默认表情类别（仅当 emoji_categories 为空时插入） */
+function seedEmojiCategories(db) {
+  const row = db.prepare('SELECT COUNT(*) AS c FROM emoji_categories').get();
+  if (row?.c > 0) return;
+  const insert = db.prepare('INSERT INTO emoji_categories (emoji_key, sort_order) VALUES (?, ?)');
+  const keys = ['开心', '难过', '哭', '生气', '哈哈大笑', '卖萌', '晕倒', '害羞', '惊讶', '委屈', '得意', '比心', '无语', '嫌弃', '心虚'];
+  for (let i = 0; i < keys.length; i++) insert.run(keys[i], i + 1);
+}
+
+/** 迁移：给旧默认 12 类追加新增的 3 个默认类别，不打扰已自定义的列表 */
+function migrateEmojiCategoriesV2(db) {
+  try {
+    const existing = new Set(db.prepare('SELECT emoji_key FROM emoji_categories').all().map(r => r.emoji_key));
+    const legacyDefaults = ['开心', '难过', '悲伤', '生气', '哈哈大笑', '卖萌', '晕倒', '害羞', '惊讶', '委屈', '得意', '比心'];
+    if (!legacyDefaults.every(k => existing.has(k))) return;
+    const newKeys = ['无语', '嫌弃', '心虚'].filter(k => !existing.has(k));
+    if (newKeys.length === 0) return;
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM emoji_categories').get().m;
+    const insert = db.prepare('INSERT OR IGNORE INTO emoji_categories (emoji_key, sort_order) VALUES (?, ?)');
+    newKeys.forEach((k, i) => insert.run(k, maxOrder + i + 1));
+    console.log(`[db] migrateEmojiCategoriesV2: appended ${newKeys.join('、')}`);
+  } catch (err) {
+    console.log('[db] migrateEmojiCategoriesV2 error:', err.message);
+  }
+}
+/** 迁移：表情包多配置单 — character_emojis 加 set_id 列（唯一约束从 character_id+emoji_key
+ * 换成 set_id+emoji_key，SQLite 改约束需整表重建），并为已有表情的角色各回填一张启用中的
+ * 「默认表情包」配置单；从没生成过表情的角色不建单，首次生成时由服务层自动补建 */
+function migrateEmojiSetsSchema(db) {
+  try {
+    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'character_emojis'`).get();
+    if (!tableExists) return; // 全新库：initSchema 已按新结构建表，只需确保索引
+    const cols = db.prepare('PRAGMA table_info(character_emojis)').all();
+    if (cols.some(c => c.name === 'set_id')) {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_character_emojis_set ON character_emojis(set_id, status)`);
+      return;
+    }
+
+    // 1) 为已有表情的角色各回填一张启用中的默认配置单。
+    //    先清掉孤儿表情行（角色已删但行残留）：否则回填默认组会因 FK 校验失败中断整个迁移，
+    //    新代码就会对着旧表结构跑（查 set_id 直接报错）
+    const orphanRemoved = db.prepare(`
+      DELETE FROM character_emojis WHERE character_id NOT IN (SELECT id FROM characters)
+    `).run();
+    if (orphanRemoved.changes > 0) {
+      console.log(`[db] migrateEmojiSetsSchema: removed ${orphanRemoved.changes} orphaned character_emojis row(s)`);
+    }
+    const charIds = db.prepare('SELECT DISTINCT character_id FROM character_emojis ORDER BY character_id').all().map(r => r.character_id);
+    const insertSet = db.prepare(`INSERT INTO emoji_sets (character_id, name, is_active) VALUES (?, '默认表情包', 1)`);
+    db.transaction(() => { for (const cid of charIds) insertSet.run(cid); })();
+
+    // 2) 重建 character_emojis，把存量行挂到各自角色的默认配置单上
+    db.exec(`DROP TABLE IF EXISTS character_emojis_new`);
+    db.exec(`
+      CREATE TABLE character_emojis_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        set_id INTEGER NOT NULL REFERENCES emoji_sets(id) ON DELETE CASCADE,
+        emoji_key TEXT NOT NULL,
+        prompt TEXT NOT NULL DEFAULT '',
+        image_path TEXT,
+        style TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(status IN ('pending','prompt_ready','generating','done','failed')),
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(set_id, emoji_key)
+      );
+      INSERT INTO character_emojis_new (id, character_id, set_id, emoji_key, prompt, image_path, style, status, error_message, created_at, updated_at)
+        SELECT ce.id, ce.character_id, es.id, ce.emoji_key, ce.prompt, ce.image_path, ce.style, ce.status, ce.error_message, ce.created_at, ce.updated_at
+        FROM character_emojis ce
+        JOIN emoji_sets es ON es.character_id = ce.character_id AND es.is_active = 1;
+      DROP TABLE character_emojis;
+      ALTER TABLE character_emojis_new RENAME TO character_emojis;
+      CREATE INDEX IF NOT EXISTS idx_character_emojis_character ON character_emojis(character_id, status);
+      CREATE INDEX IF NOT EXISTS idx_character_emojis_set ON character_emojis(set_id, status);
+    `);
+    console.log(`[db] migrateEmojiSetsSchema: character_emojis rebuilt with set_id, ${charIds.length} default emoji set(s) backfilled`);
+  } catch (err) {
+    console.log('[db] migrateEmojiSetsSchema error:', err.message);
+  }
+}
+
+function seedEventLibraries(db) {
+  // 事件类型库
+  const seedEventType = db.prepare(`
+    INSERT OR IGNORE INTO event_types (key, name, duration_min, urgency, fun_from, desc, source, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, 'default', 1)
+  `);
+  let eventCount = 0;
+  for (const e of DEFAULT_EVENT_TYPES) {
+    const result = seedEventType.run(
+      e.key, e.name, e.durationMin ?? 20, e.urgency ?? 1,
+      JSON.stringify(e.funFrom ?? []), e.desc ?? ''
+    );
+    if (result.changes > 0) eventCount++;
+  }
+  if (eventCount > 0) console.log(`[seed] event_types: ${eventCount} seeded`);
+
+  // 朋友圈话题库
+  const seedTopic = db.prepare(`
+    INSERT OR IGNORE INTO moment_topics (name, desc, source, is_active)
+    VALUES (?, ?, 'default', 1)
+  `);
+  let topicCount = 0;
+  for (const t of DEFAULT_MOMENT_TOPICS) {
+    const result = seedTopic.run(t.name, t.desc ?? '');
+    if (result.changes > 0) topicCount++;
+  }
+  if (topicCount > 0) console.log(`[seed] moment_topics: ${topicCount} seeded`);
+}
+
+export function seedImagePromptKnowledge(db) {
+  // 两套知识**各自独立版本号**（2026-10-21）：
+  //   · ipk.*  = YAML 生成的通用标签库（带过滤，版本随 sha256 变）
+  //   · pose.pr24.* = 84 条体位（用户裁定**不过滤**，全场景，版本独立）
+  // 早退条件必须"两套都已完成"才 return，否则会出现"只更新了一半知识库"的半吊子状态。
+  const currentVersion = db.prepare(
+    `SELECT setting_value FROM system_settings WHERE setting_key = 'image_prompt_knowledge_version'`
+  ).pluck().get();
+  const currentPoseVersion = db.prepare(
+    `SELECT setting_value FROM system_settings WHERE setting_key = 'image_prompt_knowledge_pose_version'`
+  ).pluck().get();
+  const ipkDone = currentVersion === IMAGE_PROMPT_KNOWLEDGE_VERSION;
+  const poseDone = currentPoseVersion === POSITION_KNOWLEDGE_VERSION;
+  if (ipkDone && poseDone) return;
+
+  const upsert = db.prepare(`
+    INSERT INTO image_prompt_knowledge (
+      knowledge_id, category, title, search_terms, content, executable_tags, scenes,
+      is_default, priority, version, is_active, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+    ON CONFLICT(knowledge_id) DO UPDATE SET
+      category = excluded.category,
+      title = excluded.title,
+      search_terms = excluded.search_terms,
+      content = excluded.content,
+      executable_tags = excluded.executable_tags,
+      scenes = excluded.scenes,
+      is_default = excluded.is_default,
+      priority = excluded.priority,
+      version = excluded.version,
+      is_active = 1,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+  const setVersion = db.prepare(`
+    INSERT INTO system_settings (setting_key, setting_value, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(setting_key) DO UPDATE SET
+      setting_value = excluded.setting_value,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
+  const seed = db.transaction(() => {
+    if (!ipkDone) {
+      for (const item of IMAGE_PROMPT_KNOWLEDGE) {
+        upsert.run(
+          item.knowledgeId,
+          item.category,
+          item.title,
+          item.searchTerms,
+          item.content,
+          JSON.stringify(item.executableTags || []),
+          JSON.stringify(item.scenes),
+          item.isDefault ? 1 : 0,
+          item.priority,
+          IMAGE_PROMPT_KNOWLEDGE_VERSION,
+        );
+      }
+      db.prepare(`
+        UPDATE image_prompt_knowledge
+        SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE knowledge_id LIKE 'ipk.lib.%' AND version <> ?
+      `).run(IMAGE_PROMPT_KNOWLEDGE_VERSION);
+      setVersion.run('image_prompt_knowledge_version', IMAGE_PROMPT_KNOWLEDGE_VERSION);
+    }
+
+    if (!poseDone) {
+      // 84 条体位：不过滤、全场景（见 db/positionKnowledgeData.js 顶部裁定说明）
+      for (const item of POSITION_KNOWLEDGE) {
+        upsert.run(
+          item.knowledgeId,
+          item.category,
+          item.title,
+          item.searchTerms,
+          item.content,
+          JSON.stringify(item.executableTags || []),
+          JSON.stringify(item.scenes),
+          item.isDefault ? 1 : 0,
+          item.priority,
+          POSITION_KNOWLEDGE_VERSION,
+        );
+      }
+      // 只下线"旧版体位"，绝不碰 ipk.*（两套版本号互不干扰）
+      db.prepare(`
+        UPDATE image_prompt_knowledge
+        SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE knowledge_id LIKE 'pose.pr24.%' AND version <> ?
+      `).run(POSITION_KNOWLEDGE_VERSION);
+      setVersion.run('image_prompt_knowledge_pose_version', POSITION_KNOWLEDGE_VERSION);
+    }
+  });
+  seed();
+  if (!ipkDone) console.log(`[db] image prompt knowledge seeded: ${IMAGE_PROMPT_KNOWLEDGE.length} items, version=${IMAGE_PROMPT_KNOWLEDGE_VERSION}`);
+  if (!poseDone) console.log(`[db] pose knowledge seeded: ${POSITION_KNOWLEDGE.length} items, version=${POSITION_KNOWLEDGE_VERSION}`);
+}
+
+/**
+ * 迁移: emotion_snapshots 改为每 conversation 仅保留最新一条
+ * - 清理历史数据（只保留每个 conversation_id 的 max(id)）
+ * - 将 conversation_id 改为 UNIQUE 约束（如果尚未）
+ */
+function migrateEmotionSnapshotsUnique(db) {
+  try {
+    const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'emotion_snapshots'`).get();
+    if (!tableInfo) return; // 表不存在，CREATE TABLE 会建新的
+
+    // 删除历史数据：每个 conversation_id 只保留最新一条
+    const deleted = db.prepare(`
+      DELETE FROM emotion_snapshots
+      WHERE id NOT IN (SELECT MAX(id) FROM emotion_snapshots GROUP BY conversation_id)
+    `).run();
+    if (deleted.changes > 0) {
+      console.log(`[db] emotion_snapshots cleaned: ${deleted.changes} old snapshots removed`);
+    }
+
+    // 如果 conversation_id 还没有 UNIQUE 约束，重建表
+    if (!/UNIQUE/.test(tableInfo.sql)) {
+      db.exec(`
+        CREATE TABLE emotion_snapshots_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id TEXT NOT NULL UNIQUE,
+          after_msg_id INTEGER REFERENCES messages(id),
+          valence REAL NOT NULL DEFAULT 0.5,
+          arousal REAL NOT NULL DEFAULT 0.5,
+          dominance REAL NOT NULL DEFAULT 0.5,
+          mood_valence REAL DEFAULT 0.5,
+          mood_arousal REAL DEFAULT 0.5,
+          mood_dominance REAL DEFAULT 0.5,
+          dominant_emotion TEXT,
+          affinity REAL,
+          affinity_delta REAL,
+          reason TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO emotion_snapshots_new SELECT * FROM emotion_snapshots;
+        DROP TABLE emotion_snapshots;
+        ALTER TABLE emotion_snapshots_new RENAME TO emotion_snapshots;
+      `);
+      console.log('[db] emotion_snapshots rebuilt with UNIQUE constraint');
+    }
+  } catch (err) {
+    console.log('[db] migrateEmotionSnapshotsUnique error:', err.message);
+  }
+}
+
+function migrateImagePromptKnowledgeSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(image_prompt_knowledge)`).all();
+    if (!cols.some(column => column.name === 'executable_tags')) {
+      db.exec(`ALTER TABLE image_prompt_knowledge ADD COLUMN executable_tags TEXT NOT NULL DEFAULT '[]'`);
+      console.log('[db] Added image_prompt_knowledge.executable_tags column');
+    }
+  } catch (err) {
+    console.log('[db] migrateImagePromptKnowledgeSchema error:', err.message);
+  }
+}
+
+function migrateRollingSummaryCheckpointSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(rolling_summaries)`).all();
+    if (!cols.some(c => c.name === 'checkpoint_version')) {
+      // 旧算法的 end_msg_id 可能超过实际摘要范围；新增列时将历史记录标为 0。
+      db.exec(`ALTER TABLE rolling_summaries ADD COLUMN checkpoint_version INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch (err) {
+    console.log('[db] migrateRollingSummaryCheckpointSchema error:', err.message);
+  }
+}
+
+/** 镇民朋友圈：moment_posts 作者扩展为「角色或镇民二选一」。
+ * 老库的 character_id 带 NOT NULL，只能整体重建才能挂 npc_id；
+ * FK 子表（评论/点赞）按表名解析，重建后自动指向新表。 */
+export function migrateMomentPostNpcAuthors(db) {
+  const cols = db.prepare('PRAGMA table_info(moment_posts)').all();
+  const charCol = cols.find(c => c.name === 'character_id');
+  if (!charCol) return;
+  if (!charCol.notnull) {
+    if (!cols.find(c => c.name === 'npc_id')) {
+      db.exec(`ALTER TABLE moment_posts ADD COLUMN npc_id INTEGER REFERENCES town_npcs(id) ON DELETE CASCADE`);
+      console.log('[db] Added moment_posts.npc_id column');
+    }
+    return;
+  }
+  const rebuild = () => {
+    db.exec(`
+      CREATE TABLE moment_posts_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+        npc_id INTEGER REFERENCES town_npcs(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        images TEXT DEFAULT '[]',
+        prompt TEXT,
+        style TEXT,
+        resolution TEXT DEFAULT '1600x1200',
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending','generating','done','failed')),
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        CHECK ((character_id IS NULL) != (npc_id IS NULL))
+      );
+      INSERT INTO moment_posts_new (id, character_id, npc_id, content, images, prompt, style, resolution, status, error_message, created_at)
+        SELECT id, character_id, NULL, content, images, prompt, style, resolution, status, error_message, created_at FROM moment_posts;
+      DROP TABLE moment_posts;
+      ALTER TABLE moment_posts_new RENAME TO moment_posts;
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_character ON moment_posts(character_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_created ON moment_posts(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_filter ON moment_posts(status);
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_npc ON moment_posts(npc_id, created_at DESC);
+    `);
+  };
+  const fkWasOn = db.pragma('foreign_keys', { simple: true });
+  if (fkWasOn) db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(rebuild)();
+    console.log('[db] Rebuilt moment_posts to support town npc authors');
+  } finally {
+    if (fkWasOn) db.pragma('foreign_keys = ON');
+  }
+}
+
+/** 用户朋友圈：moment_posts 允许「用户作者」（character_id 与 npc_id 同时为 NULL）。
+ * 老库/上一版建表带严格 CHECK（恰一作者），需整体重建为「至多一作者」。 */
+export function migrateMomentPostUserAuthors(db) {
+  const row = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'moment_posts'`
+  ).get();
+  if (!row?.sql) return;
+  if (!row.sql.includes('(character_id IS NULL) != (npc_id IS NULL)')) return;
+
+  const rebuild = () => {
+    db.exec(`
+      CREATE TABLE moment_posts_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+        npc_id INTEGER REFERENCES town_npcs(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        images TEXT DEFAULT '[]',
+        prompt TEXT,
+        style TEXT,
+        resolution TEXT DEFAULT '1600x1200',
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending','generating','done','failed')),
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        CHECK (character_id IS NULL OR npc_id IS NULL)
+      );
+      INSERT INTO moment_posts_new (id, character_id, npc_id, content, images, prompt, style, resolution, status, error_message, created_at)
+        SELECT id, character_id, npc_id, content, images, prompt, style, resolution, status, error_message, created_at FROM moment_posts;
+      DROP TABLE moment_posts;
+      ALTER TABLE moment_posts_new RENAME TO moment_posts;
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_character ON moment_posts(character_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_created ON moment_posts(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_filter ON moment_posts(status);
+      CREATE INDEX IF NOT EXISTS idx_moment_posts_npc ON moment_posts(npc_id, created_at DESC);
+    `);
+  };
+  const fkWasOn = db.pragma('foreign_keys', { simple: true });
+  if (fkWasOn) db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(rebuild)();
+    console.log('[db] Rebuilt moment_posts to support user authors');
+  } finally {
+    if (fkWasOn) db.pragma('foreign_keys = ON');
+  }
+}
+
+function migrateMomentsSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'next_moment_at')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN next_moment_at DATETIME`);
+      console.log('[db] Added characters.next_moment_at column');
+    }
+    if (!cols.find(c => c.name === 'moments_disabled')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN moments_disabled INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.moments_disabled column (default 0)');
+    }
+    migrateMomentPostNpcAuthors(db);
+    migrateMomentPostUserAuthors(db);
+  } catch (err) {
+    console.log('[db] migrateMomentsSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: town_newspapers 重建为无外键版本。
+ * 初版把 character_id 设了 REFERENCES characters(id) ON DELETE SET NULL，角色被删除时
+ * 报纸的主角链接会被置空——报纸是"已印出的历史"，不应随角色删除失联。
+ */
+export function migrateNewspaperDropForeignKey(db) {
+  try {
+    const fks = db.pragma('foreign_key_list(town_newspapers)');
+    if (!Array.isArray(fks) || fks.length === 0) return; // 新库或已迁移
+    const fkWasOn = db.pragma('foreign_keys', { simple: true });
+    if (fkWasOn) db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE town_newspapers_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        publish_date TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL DEFAULT '',
+        edition INTEGER NOT NULL DEFAULT 1,
+        items_json TEXT NOT NULL DEFAULT '[]',
+        character_id INTEGER,
+        character_event_json TEXT,
+        world_state_json TEXT,
+        moment_done INTEGER NOT NULL DEFAULT 0,
+        complaint_after DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO town_newspapers_new (id, publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, moment_done, complaint_after, created_at)
+        SELECT id, publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, moment_done, complaint_after, created_at FROM town_newspapers;
+      DROP TABLE town_newspapers;
+      ALTER TABLE town_newspapers_new RENAME TO town_newspapers;
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_town_newspapers_date ON town_newspapers(publish_date)`);
+    if (fkWasOn) db.pragma('foreign_keys = ON');
+    console.log('[db] town_newspapers: dropped character_id foreign key (paper survives character deletion)');
+  } catch (err) {
+    console.log('[db] migrateNewspaperDropForeignKey error:', err.message);
+  }
+}
+
+/**
+ * 迁移: town_newspapers 加 world_dismissed 列（默认 0）。
+ * 读者可在日报里手动「消除影响」当天世界状态；旧库缺列时补齐。
+ */
+export function migrateNewspaperWorldDismissed(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(town_newspapers)`).all();
+    if (!cols.length) return; // 表还没建（新库走 CREATE TABLE 分支）
+    if (!cols.find(c => c.name === 'world_dismissed')) {
+      db.exec(`ALTER TABLE town_newspapers ADD COLUMN world_dismissed INTEGER NOT NULL DEFAULT 0`);
+      console.log('[db] Added town_newspapers.world_dismissed column (default 0)');
+    }
+  } catch (err) {
+    console.log('[db] migrateNewspaperWorldDismissed error:', err.message);
+  }
+}
+
+/**
+ * M0 相遇结算：town_encounters 加 outcome_json（规则结算的结构化结果）与
+ * polished_summary（LLM 润色，仅表现）。可重复执行；旧库旧行两列为空即走兼容路径。
+ */
+export function dropImagePromptPreparations(db) {
+  try {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_prompt_preparations'").get();
+    if (!exists) return;
+    const before = db.prepare('SELECT count(*) n FROM image_prompt_preparations').get().n;
+    db.exec('DROP TABLE image_prompt_preparations');
+    console.log(`[db] 已删除 image_prompt_preparations（${before} 行诊断留档，无读者）`);
+  } catch (err) {
+    console.log('[db] dropImagePromptPreparations skipped:', err.message);
+  }
+}
+
+export function migrateTownEncounterOutcome(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(town_encounters)`).all();
+    if (!cols.length) return; // 表还没建（新库走 CREATE TABLE 分支）
+    if (!cols.find(c => c.name === 'outcome_json')) {
+      db.exec(`ALTER TABLE town_encounters ADD COLUMN outcome_json TEXT DEFAULT NULL`);
+      console.log('[db] Added town_encounters.outcome_json column (default NULL)');
+    }
+    if (!cols.find(c => c.name === 'polished_summary')) {
+      db.exec(`ALTER TABLE town_encounters ADD COLUMN polished_summary TEXT DEFAULT ''`);
+      console.log('[db] Added town_encounters.polished_summary column (default \'\')');
+    }
+  } catch (err) {
+    console.log('[db] migrateTownEncounterOutcome error:', err.message);
+  }
+}
+
+function migrateEventsSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'events_disabled')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN events_disabled INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.events_disabled column (default 0)');
+    }
+
+    // character_events 加 processing 列：标记分支生成进行中，防止切页后重复提交
+    const ceCols = db.prepare(`PRAGMA table_info(character_events)`).all();
+    if (!ceCols.find(c => c.name === 'processing')) {
+      db.exec(`ALTER TABLE character_events ADD COLUMN processing INTEGER DEFAULT 0`);
+      console.log('[db] Added character_events.processing column (default 0)');
+    }
+  } catch (err) {
+    console.log('[db] migrateEventsSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 奇遇强调降格 — character_events 表新增 emphasis_delivered 列
+ * 0 = 首轮强调尚未触发，1 = 已触发过首轮强调（后续降格为日程同级）
+ */
+function migrateEventEmphasisSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(character_events)`).all();
+    if (!cols.find(c => c.name === 'emphasis_delivered')) {
+      db.exec(`ALTER TABLE character_events ADD COLUMN emphasis_delivered INTEGER DEFAULT 0`);
+      console.log('[db] Added character_events.emphasis_delivered column (default 0)');
+    }
+  } catch (err) {
+    console.log('[db] migrateEventEmphasisSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 防打扰模式 — characters 表新增 dnd_original_state 列
+ * 存储被 DND 覆盖前的原始状态 JSON: {"moments_disabled":0,"proactive_disabled":0,"events_disabled":0}
+ * NULL 表示该角色当前未被 DND 覆盖
+ */
+function migrateDisturbSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'dnd_original_state')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN dnd_original_state TEXT`);
+      console.log('[db] Added characters.dnd_original_state column');
+    }
+  } catch (err) {
+    console.log('[db] migrateDisturbSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 日程系统 — characters 表新增 schedule 相关列
+ */
+export function migrateScheduleSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'schedule_enabled')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN schedule_enabled INTEGER DEFAULT 1`);
+      console.log('[db] Added characters.schedule_enabled column (default 1)');
+    }
+    if (!cols.find(c => c.name === 'is_sleeping')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN is_sleeping INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.is_sleeping column (default 0)');
+    }
+    if (!cols.find(c => c.name === 'sleep_until')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN sleep_until DATETIME`);
+      console.log('[db] Added characters.sleep_until column');
+    }
+    if (!cols.find(c => c.name === 'next_schedule_refresh_at')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN next_schedule_refresh_at DATETIME`);
+      console.log('[db] Added characters.next_schedule_refresh_at column');
+    }
+    // 2026-10-02 敏感度（用户提的新数值系统，见 src/services/sensitivityService.js）：
+    //   sensitivity           0~100，所有性爱相关内容都读它（增益 / 高潮强度与频率 / 自慰概率 / prompt 表现）
+    //   sensitivity_updated_at 上一次变化的时间 —— 用来做"很久没碰会缓慢回落"
+    //   heat_mode / heat_until 催眠手机里的「发情模式」：直接拉满，到点自然回落
+    //
+    // ⚠️⚠️ 这一段**绝不能**放进上面那个 `if (!next_schedule_refresh_at)` 里（我第一版就是：
+    //   写代码时手滑嵌进去了）。后果非常隐蔽：`characters` 建表语句里**已经**有
+    //   `next_schedule_refresh_at` ⇒ 真空库（测试用 `:memory:`）永远跳过整段、列建不出来，
+    //   而"列不存在"会被 `getSensitivity` 的 try/catch 兜成 0/冷淡、`addSensitivity` 兜成 null ⇒
+    //   **所有单测与前端守卫全绿，只有真机的 POST /heat 500**（第五十一轮 E2E 的 H1 抓到的就是这个：
+    //   `500 POST /api/characters/6/heat`）。凡是"补列"的迁移，判断条件只能是"这一列在不在"。
+    for (const [col, ddl] of [
+      ['sensitivity', 'REAL DEFAULT 0'],
+      ['sensitivity_updated_at', 'DATETIME'],
+      ['heat_mode', 'INTEGER DEFAULT 0'],
+      ['heat_until', 'DATETIME'],
+      // 2026-10-03 复查补的三列（各自的"为什么"见 sensitivityService 里的长注释）：
+      //   · sensitivity_before_heat   发情模式**开之前**的值 —— 到点/关掉时还给她
+      //     （不加这一列的话：到点后 100 没人写回、要 15 天才掉到 55；关掉时又一律砍成 55，
+      //      把她本来 80 的真实值也砍掉）
+      //   · sensitivity_sex_day / _gain / _last_at
+      //       「缓慢累加」的两道闸门：性相关来源 15 秒内只记一次 + 每天最多 +20（跨日归零）。
+      //       没有它，"自动插入"冲刺档 = 每分钟 +20 ⇒ 五分钟顶满，等于发情模式白给。
+      ['sensitivity_before_heat', 'REAL'],
+      ['sensitivity_sex_day', 'TEXT'],
+      ['sensitivity_sex_day_gain', 'REAL DEFAULT 0'],
+      ['sensitivity_sex_last_at', 'DATETIME'],
+    ]) {
+      const has = db.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('characters') WHERE name = ?").get(col).n;
+      if (!has) {
+        db.exec(`ALTER TABLE characters ADD COLUMN ${col} ${ddl}`);
+        console.log(`[db] Added characters.${col} column (sensitivity 系统)`);
+      }
+    }
+  } catch (err) {
+    console.log('[db] migrateScheduleSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 叫醒系统 — characters 表新增 wake 相关列
+ */
+function migrateWakeSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'wake_attempts')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN wake_attempts INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.wake_attempts column (default 0)');
+    }
+    if (!cols.find(c => c.name === 'was_door_woken')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN was_door_woken INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.was_door_woken column (default 0)');
+    }
+    if (!cols.find(c => c.name === 'temporary_wake_until')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN temporary_wake_until DATETIME`);
+      console.log('[db] Added characters.temporary_wake_until column');
+    }
+    if (!cols.find(c => c.name === 'wake_mode')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN wake_mode TEXT`);
+      console.log('[db] Added characters.wake_mode column');
+    }
+  } catch (err) {
+    console.log('[db] migrateWakeSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: moment_comments 新增 auto_trigger + thread_root_id + reply_to_comment_id
+ * （朋友圈关系网互动 / 用户楼中楼回复与 @ 点名）
+ */
+function migrateMomentAutoTrigger(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(moment_comments)`).all();
+    if (!cols.find(c => c.name === 'auto_trigger')) {
+      db.exec(`ALTER TABLE moment_comments ADD COLUMN auto_trigger INTEGER DEFAULT 0`);
+      console.log('[db] Added moment_comments.auto_trigger column (default 0)');
+    }
+    if (!cols.find(c => c.name === 'thread_root_id')) {
+      db.exec(`ALTER TABLE moment_comments ADD COLUMN thread_root_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added moment_comments.thread_root_id column (nullable)');
+    }
+    if (!cols.find(c => c.name === 'reply_to_comment_id')) {
+      db.exec(`ALTER TABLE moment_comments ADD COLUMN reply_to_comment_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added moment_comments.reply_to_comment_id column (nullable)');
+    }
+  } catch (err) {
+    console.log('[db] migrateMomentAutoTrigger error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 好感度系统 — user_relationships 和 emotion_snapshots 新增 affinity 列
+ */
+function migrateAffinitySchema(db) {
+  try {
+    // user_relationships 表
+    const urCols = db.prepare(`PRAGMA table_info(user_relationships)`).all();
+    if (!urCols.find(c => c.name === 'affinity')) {
+      db.exec(`ALTER TABLE user_relationships ADD COLUMN affinity REAL DEFAULT 50`);
+      console.log('[db] Added user_relationships.affinity column (default 50)');
+      // 已有关系的行设置为默认值 50
+      db.prepare(`UPDATE user_relationships SET affinity = 50 WHERE affinity IS NULL`).run();
+    }
+
+    // emotion_snapshots 表
+    const esCols = db.prepare(`PRAGMA table_info(emotion_snapshots)`).all();
+    if (!esCols.find(c => c.name === 'affinity')) {
+      db.exec(`ALTER TABLE emotion_snapshots ADD COLUMN affinity REAL`);
+      console.log('[db] Added emotion_snapshots.affinity column');
+    }
+    if (!esCols.find(c => c.name === 'affinity_delta')) {
+      db.exec(`ALTER TABLE emotion_snapshots ADD COLUMN affinity_delta REAL`);
+      console.log('[db] Added emotion_snapshots.affinity_delta column');
+    }
+    if (!esCols.find(c => c.name === 'reason')) {
+      db.exec(`ALTER TABLE emotion_snapshots ADD COLUMN reason TEXT`);
+      console.log('[db] Added emotion_snapshots.reason column');
+    }
+  } catch (err) {
+    console.log('[db] migrateAffinitySchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: characters 表新增 proactive 相关列
+ * - next_proactive_at: 下次主动聊天时间
+ * - proactive_disabled: 是否禁用主动聊天
+ * - proactive_last_read_at: 用户最后一次查看该角色主动消息的时间（用于未读红点判断）
+ */
+function migrateProactiveSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'next_proactive_at')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN next_proactive_at DATETIME`);
+      console.log('[db] Added characters.next_proactive_at column');
+    }
+    if (!cols.find(c => c.name === 'proactive_disabled')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN proactive_disabled INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.proactive_disabled column (default 0)');
+    }
+    if (!cols.find(c => c.name === 'proactive_last_read_at')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN proactive_last_read_at DATETIME`);
+      console.log('[db] Added characters.proactive_last_read_at column');
+    }
+    if (!cols.find(c => c.name === 'proactive_streak')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN proactive_streak INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.proactive_streak column (default 0)');
+    }
+
+    // messages 表：is_proactive 标记主动聊天消息
+    const msgCols = db.prepare(`PRAGMA table_info(messages)`).all();
+    if (!msgCols.find(c => c.name === 'is_proactive')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN is_proactive INTEGER DEFAULT 0`);
+      console.log('[db] Added messages.is_proactive column (default 0)');
+    }
+    // messages 表：event_id 关联奇遇事件（仅分句展示表，不污染 raw_messages）
+    if (!msgCols.find(c => c.name === 'event_id')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN event_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added messages.event_id column (nullable, no FK)');
+    }
+  } catch (err) {
+    console.log('[db] migrateProactiveSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 深度思考 — raw_messages 新增 thinking 列（nullable）
+ * 存 planner 的思考+计划原文 JSON（{think, plan}），GET messages 带出供前端历史回看折叠块
+ */
+function migrateDeepThinkSchema(db) {
+  try {
+    const rawCols = db.prepare(`PRAGMA table_info(raw_messages)`).all();
+    if (!rawCols.find(c => c.name === 'thinking')) {
+      db.exec(`ALTER TABLE raw_messages ADD COLUMN thinking TEXT DEFAULT NULL`);
+      console.log('[db] Added raw_messages.thinking column');
+    }
+  } catch (err) {
+    console.log('[db] migrateDeepThinkSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 角色立绘 — characters 表新增 standing_url 列
+ * 存放角色立绘图片 URL（/images/standing/...），NULL 表示尚未生成
+ */
+function migrateStandingSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'standing_url')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN standing_url TEXT`);
+      console.log('[db] Added characters.standing_url column');
+    }
+    // 2026-10-01（用户：「同步形象展示那边的立绘，需要根据现在的世界观去生成」）：
+    // 记录这张立绘是在**哪个世界观**下生成的（签名 = 世界观 id + 内容哈希，见 services/worldSignature.js）。
+    // 没有这一列时：世界观改了/换了，立绘静默过期——用户点开形象展示看到的还是旧世界的图，
+    // 而系统一无所知。有了它才能提示"待同步"并一键按当前世界观重生成。
+    // 老数据为 NULL（生成于本列存在之前）⇒ 判为"未知来源"，见 isStandingStale 的口径。
+    if (!cols.find(c => c.name === 'standing_world_sig')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN standing_world_sig TEXT`);
+      console.log('[db] Added characters.standing_world_sig column');
+    }
+  } catch (err) {
+    console.log('[db] migrateStandingSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: AI 小镇 v2（瓦片地图 + 素材库 + 轻量 NPC）
+ * - town_maps 加 layers_json / tile_size / world_setting_id / version
+ * - town_locations 加 object_id
+ * - town_players 加 sprite_asset_id / appearance_desc
+ * 新表（town_assets / town_npcs / town_npc_chat_messages）由 CREATE TABLE IF NOT EXISTS 建出
+ */
+function migrateTownV2Schema(db) {
+  try {
+    const mapCols = db.prepare(`PRAGMA table_info(town_maps)`).all();
+    if (mapCols.length > 0 && !mapCols.find(c => c.name === 'layers_json')) {
+      db.exec(`ALTER TABLE town_maps ADD COLUMN layers_json TEXT`);
+      db.exec(`ALTER TABLE town_maps ADD COLUMN tile_size INTEGER DEFAULT 32`);
+      db.exec(`ALTER TABLE town_maps ADD COLUMN world_setting_id INTEGER`);
+      db.exec(`ALTER TABLE town_maps ADD COLUMN version INTEGER DEFAULT 1`);
+      console.log('[db] Added town_maps v2 columns (layers_json/tile_size/world_setting_id/version)');
+    }
+    // v1→v2 行为切换（once 标记）：v1 默认全员进镇；v2 角色默认不进镇（管理面板里手动入住）
+    const marker = db.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'town_v2_optin_reset'`).get();
+    if (!marker && db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='town_characters'`).get()) {
+      try {
+        db.exec(`UPDATE town_characters SET town_enabled = 0`);
+        db.prepare(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('town_v2_optin_reset', '1')`).run();
+        console.log('[db] town_characters reset to opt-in (v2 behavior, one-time)');
+      } catch { /* 表可能不存在 */ }
+    }
+    const locCols = db.prepare(`PRAGMA table_info(town_locations)`).all();
+    if (locCols.length > 0 && !locCols.find(c => c.name === 'object_id')) {
+      db.exec(`ALTER TABLE town_locations ADD COLUMN object_id INTEGER`);
+      console.log('[db] Added town_locations.object_id column');
+    }
+    // 邀请入邻舍：NPC 对应的 characters.id（未邀请为 NULL）
+    const npcCols = db.prepare(`PRAGMA table_info(town_npcs)`).all();
+    if (npcCols.length > 0 && !npcCols.find(c => c.name === 'character_id')) {
+      db.exec(`ALTER TABLE town_npcs ADD COLUMN character_id INTEGER`);
+      console.log('[db] Added town_npcs.character_id column');
+    }
+    // 向导「一句话人设」：人格卡生成种子，重掷人格卡时复用（旧库无此列）
+    if (npcCols.length > 0 && !npcCols.find(c => c.name === 'brief')) {
+      db.exec(`ALTER TABLE town_npcs ADD COLUMN brief TEXT DEFAULT ''`);
+      console.log('[db] Added town_npcs.brief column');
+    }
+    // 向导提前建档：map_id 需可空（建档时地图尚未生成）
+    const mapIdCol = npcCols.find(c => c.name === 'map_id');
+    if (mapIdCol && mapIdCol.notnull) {
+      const chatExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='town_npc_chat_messages'`).get();
+      if (chatExists) db.exec('DELETE FROM town_npc_chat_messages');
+      db.exec(`
+        CREATE TABLE town_npcs_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          map_id INTEGER,
+          display_name TEXT NOT NULL,
+          persona TEXT DEFAULT '',
+          brief TEXT DEFAULT '',
+          appearance_desc TEXT DEFAULT '',
+          job TEXT DEFAULT '', home_location_id INTEGER,
+          routine_json TEXT DEFAULT '[]',
+          traits_json TEXT DEFAULT '{}',
+          sprite_ready INTEGER DEFAULT 0,
+          town_enabled INTEGER DEFAULT 1,
+          character_id INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO town_npcs_new (id, map_id, display_name, persona, brief, appearance_desc, job, home_location_id, routine_json, traits_json, sprite_ready, town_enabled, character_id, created_at)
+          SELECT id, map_id, display_name, persona, brief, appearance_desc, job, home_location_id, routine_json, traits_json, sprite_ready, town_enabled, character_id, created_at FROM town_npcs;
+        DROP TABLE town_npcs;
+        ALTER TABLE town_npcs_new RENAME TO town_npcs;
+      `);
+      console.log('[db] town_npcs.map_id made nullable (wizard early-create)');
+    }
+    const playerCols = db.prepare(`PRAGMA table_info(town_players)`).all();
+    if (playerCols.length > 0 && !playerCols.find(c => c.name === 'sprite_asset_id')) {
+      db.exec(`ALTER TABLE town_players ADD COLUMN sprite_asset_id INTEGER`);
+      db.exec(`ALTER TABLE town_players ADD COLUMN appearance_desc TEXT DEFAULT ''`);
+      console.log('[db] Added town_players v2 columns (sprite_asset_id/appearance_desc)');
+    }
+    // town_agent_state：v1 主键是 character_id（带 characters 外键），NPC 无法落库 → 整表重建
+    // （v1 快照绑定已作废的种子地图，无保留价值）
+    const agentCols = db.prepare(`PRAGMA table_info(town_agent_state)`).all();
+    if (agentCols.length > 0 && agentCols.find(c => c.name === 'character_id')) {
+      db.exec(`DROP TABLE town_agent_state`);
+      db.exec(`
+        CREATE TABLE town_agent_state (
+          agent_key TEXT PRIMARY KEY,
+          grid_x INTEGER,
+          grid_y INTEGER,
+          path_json TEXT DEFAULT '[]',
+          current_location_id INTEGER,
+          activity_text TEXT DEFAULT '',
+          updated_at DATETIME
+        )
+      `);
+      console.log('[db] town_agent_state rebuilt with agent_key primary key (v2)');
+    }
+  } catch (err) {
+    console.log('[db] migrateTownV2Schema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: AI 小镇多地图
+ * - town_maps 加 status（出行目录只列 ready）
+ * - town_players 加 map_id（玩家所在地图 = 聚焦口径的权威来源）
+ * - town_characters 加 map_id（入住镇），旧数据按住宅所在图回填，缺住宅落到默认图
+ * - town_npcs.map_id 为空的历史行（向导提前建档）落到默认图
+ * - town_locations 的 key 唯一约束从「全库唯一」改为「图内唯一」（重建表，行 id 原样保留）
+ * - town_agent_state 主键从 agent_key 改为 (agent_key, map_id)（重建表，旧快照归入默认图）
+ * 幂等：已迁移的库不会重复重建。
+ */
+export function migrateTownMultiMapSchema(db) {
+  try {
+    const tableSql = name => db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`).get(name)?.sql || '';
+    const columns = name => db.prepare(`PRAGMA table_info(${name})`).all().map(c => c.name);
+    const defaultMapId = db.prepare('SELECT id FROM town_maps ORDER BY id LIMIT 1').get()?.id ?? null;
+
+    const mapCols = columns('town_maps');
+    if (mapCols.length > 0 && !mapCols.includes('status')) {
+      db.exec(`ALTER TABLE town_maps ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`);
+      console.log('[db] Added town_maps.status column (multi-map)');
+    }
+
+    const playerCols = columns('town_players');
+    if (playerCols.length > 0 && !playerCols.includes('map_id')) {
+      db.exec('ALTER TABLE town_players ADD COLUMN map_id INTEGER');
+      console.log('[db] Added town_players.map_id column (multi-map)');
+    }
+
+    const charCols = columns('town_characters');
+    if (charCols.length > 0 && !charCols.includes('map_id')) {
+      db.exec('ALTER TABLE town_characters ADD COLUMN map_id INTEGER');
+      console.log('[db] Added town_characters.map_id column (multi-map)');
+    }
+
+    // 旧库单图：地点归属天然就是默认图；居民、角色、玩家与快照按默认图补齐
+    if (defaultMapId != null) {
+      db.prepare('UPDATE town_npcs SET map_id = ? WHERE map_id IS NULL').run(defaultMapId);
+      db.prepare(`UPDATE town_characters SET map_id = (SELECT map_id FROM town_locations WHERE id = town_characters.home_location_id)
+        WHERE home_location_id IS NOT NULL AND map_id IS NULL`).run();
+      db.prepare('UPDATE town_characters SET map_id = ? WHERE map_id IS NULL').run(defaultMapId);
+      db.prepare('UPDATE town_players SET map_id = ? WHERE map_id IS NULL').run(defaultMapId);
+    }
+
+    const fkWasOn = db.pragma('foreign_keys', { simple: true });
+    // 重建表：先建新表并逐列搬运（保留行 id），再换名。外键约束临时关闭。
+    const rebuild = (name, { create, columns: nextColumns, select }) => {
+      if (fkWasOn) db.pragma('foreign_keys = OFF');
+      try {
+        db.transaction(() => {
+          db.exec(`DROP TABLE IF EXISTS ${name}_multimap_mig`);
+          db.exec(create);
+          db.exec(`INSERT INTO ${name}_multimap_mig (${nextColumns.join(', ')}) SELECT ${select} FROM ${name}`);
+          db.exec(`DROP TABLE ${name}`);
+          db.exec(`ALTER TABLE ${name}_multimap_mig RENAME TO ${name}`);
+        })();
+      } finally {
+        if (fkWasOn) db.pragma('foreign_keys = ON');
+      }
+    };
+
+    const locSql = tableSql('town_locations');
+    if (locSql && !locSql.includes('UNIQUE(map_id, key)')) {
+      const cols = columns('town_locations');
+      rebuild('town_locations', {
+        create: `CREATE TABLE town_locations_multimap_mig (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          map_id INTEGER NOT NULL REFERENCES town_maps(id) ON DELETE CASCADE,
+          key TEXT NOT NULL,
+          name TEXT NOT NULL,
+          aliases_json TEXT NOT NULL DEFAULT '[]',
+          kind TEXT NOT NULL DEFAULT 'place' CHECK(kind IN ('home','place','outdoor')),
+          grid_x INTEGER NOT NULL,
+          grid_y INTEGER NOT NULL,
+          radius INTEGER NOT NULL DEFAULT 2,
+          ambient TEXT DEFAULT '',
+          object_id INTEGER,
+          business_kind TEXT,
+          capabilities_json TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(map_id, key)
+        )`,
+        columns: cols,
+        select: cols.join(', '),
+      });
+      db.exec('CREATE INDEX IF NOT EXISTS idx_town_locations_map ON town_locations(map_id)');
+      console.log('[db] Rebuilt town_locations with UNIQUE(map_id, key) (multi-map)');
+    }
+
+    const agentSql = tableSql('town_agent_state');
+    if (agentSql && !agentSql.includes('PRIMARY KEY (agent_key, map_id)')) {
+      const cols = columns('town_agent_state');
+      if (defaultMapId == null) {
+        // 没有地图可归属的库（升级后还没开镇）：旧快照本就无意义，清空后照样重建表结构，
+        // 否则后续 persistAgent 的 ON CONFLICT(agent_key, map_id) 会因为旧主键直接报错。
+        db.exec('DELETE FROM town_agent_state');
+      }
+      const carried = cols.filter(c => c !== 'agent_key');
+      rebuild('town_agent_state', {
+        create: `CREATE TABLE town_agent_state_multimap_mig (
+          agent_key TEXT NOT NULL,
+          map_id INTEGER NOT NULL,
+          grid_x INTEGER,
+          grid_y INTEGER,
+          path_json TEXT DEFAULT '[]',
+          current_location_id INTEGER,
+          activity_text TEXT DEFAULT '',
+          updated_at DATETIME,
+          PRIMARY KEY (agent_key, map_id)
+        )`,
+        columns: ['agent_key', 'map_id', ...carried],
+        // 表已清空时这里没有行，取值只为满足 NOT NULL 的列定义
+        select: `agent_key, ${defaultMapId ?? 0}, ${carried.join(', ')}`,
+      });
+      console.log('[db] Rebuilt town_agent_state keyed by (agent_key, map_id) (multi-map)');
+    }
+  } catch (err) {
+    console.log('[db] migrateTownMultiMapSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 好感度回归系统
+ * - user_relationships 表新增 last_interaction_at（记录最近一次互动时间）
+ * - 新建 gift_history 表（全局冷却记录，含送礼与宝箱开箱的冷却检查）
+ */
+function migrateAffinityRegressionSchema(db) {
+  try {
+    // user_relationships 表
+    const urCols = db.prepare(`PRAGMA table_info(user_relationships)`).all();
+    if (!urCols.find(c => c.name === 'last_interaction_at')) {
+      db.exec(`ALTER TABLE user_relationships ADD COLUMN last_interaction_at DATETIME`);
+      console.log('[db] Added user_relationships.last_interaction_at column');
+    }
+
+    // gift_history 表：全局冷却（跟系统不跟角色），仅需 gift_type + created_at。
+    // chest = 每日宝箱开箱冷却（与送礼同构的惰性冷却记录，见 itemService.getChestState）
+    const ghCols = db.prepare(`PRAGMA table_info(gift_history)`).all();
+    const hasCharId = ghCols.some(c => c.name === 'character_id');
+    if (ghCols.length === 0) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS gift_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          gift_type TEXT NOT NULL CHECK(gift_type IN ('small','large','chest')),
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      console.log('[db] Created gift_history table (global cooldown)');
+    } else if (hasCharId) {
+      // 迁移：去掉 character_id，改为全局冷却，每种礼物只保留最新一条
+      db.exec(`DROP TABLE IF EXISTS gift_history_new`);
+      db.exec(`CREATE TABLE gift_history_new (id INTEGER PRIMARY KEY AUTOINCREMENT, gift_type TEXT NOT NULL CHECK(gift_type IN ('small','large','chest')), created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+      db.exec(`INSERT INTO gift_history_new (gift_type, created_at) SELECT gift_type, MAX(created_at) FROM gift_history GROUP BY gift_type`);
+      db.exec(`DROP TABLE gift_history`);
+      db.exec(`ALTER TABLE gift_history_new RENAME TO gift_history`);
+      console.log('[db] gift_history migrated to global cooldown (removed character_id, deduplicated)');
+    } else {
+      // 兜底：v3.2.0 前建的全局表 CHECK 不含 chest 且无 character_id，走不到上面两个分支——
+      // 开箱冷却 INSERT 会 CHECK 失败并被 recordChestOpen 静默吞掉 → 可无限开箱，按建表 SQL 检测后重建
+      const tableSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gift_history'`).get()?.sql || '';
+      if (!tableSql.includes(`'chest'`)) {
+        db.exec(`DROP TABLE IF EXISTS gift_history_new`);
+        db.exec(`CREATE TABLE gift_history_new (id INTEGER PRIMARY KEY AUTOINCREMENT, gift_type TEXT NOT NULL CHECK(gift_type IN ('small','large','chest')), created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+        db.exec(`INSERT INTO gift_history_new (gift_type, created_at) SELECT gift_type, MAX(created_at) FROM gift_history WHERE gift_type IN ('small','large','chest') GROUP BY gift_type`);
+        db.exec(`DROP TABLE gift_history`);
+        db.exec(`ALTER TABLE gift_history_new RENAME TO gift_history`);
+        // backpack_items 只由开箱写入，用最近一次开箱时间回填冷却（无开箱记录则不回填）
+        const lastItem = db.prepare(`SELECT MAX(acquired_at) AS acquired_at FROM backpack_items
+          WHERE owner_key = 'me' AND source_type IN ('legacy_chest', 'chest')`).get();
+        if (lastItem?.acquired_at) {
+          db.prepare(`INSERT INTO gift_history (gift_type, created_at) VALUES ('chest', ?)`).run(lastItem.acquired_at);
+        }
+        console.log(`[db] gift_history CHECK 缺 chest，已重建补齐${lastItem?.acquired_at ? `（开箱冷却回填至 ${lastItem.acquired_at}）` : ''}`);
+      }
+    }
+
+    // 启动时去重：每种类型只保留最新一条（冷却只看最近一次）
+    for (const type of ['small', 'large', 'chest']) {
+      const rows = db.prepare(`SELECT id FROM gift_history WHERE gift_type = ? ORDER BY id DESC`).all(type);
+      if (rows.length > 1) {
+        const keepId = rows[0].id;
+        db.prepare(`DELETE FROM gift_history WHERE gift_type = ? AND id != ?`).run(type, keepId);
+        console.log(`[db] gift_history pruned ${rows.length - 1} old ${type} row(s), kept #${keepId}`);
+      }
+    }
+
+    // chest_opens 已并入本表（gift_type='chest'）：搬最后一次开箱时间（保住进行中的冷却）后删表
+    const hasChestOpens = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='chest_opens'`).get();
+    if (hasChestOpens) {
+      const lastOpen = db.prepare(`SELECT opened_at FROM chest_opens ORDER BY id DESC LIMIT 1`).get();
+      const lastChest = db.prepare(`SELECT created_at FROM gift_history WHERE gift_type = 'chest' ORDER BY id DESC LIMIT 1`).get();
+      if (lastOpen && (!lastChest || String(lastOpen.opened_at) > String(lastChest.created_at))) {
+        db.prepare(`DELETE FROM gift_history WHERE gift_type = 'chest'`).run();
+        db.prepare(`INSERT INTO gift_history (gift_type, created_at) VALUES ('chest', ?)`).run(lastOpen.opened_at);
+      }
+      db.exec(`DROP TABLE chest_opens`);
+      console.log('[db] chest_opens merged into gift_history (gift_type=chest) and dropped');
+    }
+  } catch (err) {
+    console.log('[db] migrateAffinityRegressionSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: artist_favorites.artist 加 UNIQUE 约束（防止重复收藏）
+ */
+function migrateArtistFavoritesUnique(db) {
+  try {
+    db.exec(`CREATE UNIQUE INDEX idx_artist_fav_artist ON artist_favorites(artist)`);
+    console.log('[db] Added UNIQUE index on artist_favorites.artist');
+  } catch (err) {
+    // 索引已存在则忽略
+    if (!err.message.includes('already exists')) {
+      console.log('[db] migrateArtistFavoritesUnique error:', err.message);
+    }
+  }
+}
+
+/**
+ * 迁移: moment_unread 计数 → 时序方案 (last_moments_seen_at)
+ *
+ * 旧方案：moment_unread 表中维护一个 count 整数，broadcastNewPost +1，markRead 清零。
+ * 新方案：system_settings 中存 last_moments_seen_at 时间戳，
+ *         未读数 = COUNT(*) FROM moment_posts WHERE created_at > last_moments_seen_at。
+ *
+ * 迁移时尽可能保留旧计数的语义：如果旧 count = N，则 last_moments_seen_at
+ * 设为第 N 篇最旧未读帖子的 created_at（即从该帖之后开始算未读）。
+ */
+function migrateMomentUnreadToTimestamp(db) {
+  try {
+    // 检查旧表是否存在
+    const tableExists = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'moment_unread'`
+    ).get();
+
+    if (!tableExists) {
+      // 全新安装：直接种子默认值（epoch，所有帖子都视为已读）
+      seedLastMomentsSeenAt(db, new Date(0).toISOString());
+      return;
+    }
+
+    // 读旧计数
+    const oldRow = db.prepare(`SELECT count FROM moment_unread WHERE id = 1`).get();
+    const oldCount = oldRow ? oldRow.count : 0;
+
+    let lastSeenAt;
+    if (oldCount > 0) {
+      // 第 N 篇最旧未读帖子 = 按时间升序的第 oldCount 篇（跳过已读的）
+      // OFFSET oldCount - 1：第 1 篇未读是最旧的未读帖
+      const boundary = db.prepare(
+        `SELECT created_at FROM moment_posts WHERE status = 'done' ORDER BY created_at DESC LIMIT 1 OFFSET ?`
+      ).get(oldCount);
+
+      if (boundary && boundary.created_at) {
+        // last_moments_seen_at = 边界帖的 created_at（created_at > last_seen 会包含该帖及更新的）
+        // 为了让 COUNT(*) WHERE created_at > last_seen 刚好 = oldCount，
+        // 设 last_seen = 边界帖 created_at 的前一秒
+        const boundaryDate = new Date(boundary.created_at.replace(' ', 'T') + 'Z');
+        boundaryDate.setSeconds(boundaryDate.getSeconds() - 1);
+        lastSeenAt = boundaryDate.toISOString();
+      } else {
+        // 没有帖子，置为当前时间
+        lastSeenAt = new Date().toISOString();
+      }
+    } else {
+      // count = 0：全部已读，设为当前时间
+      lastSeenAt = new Date().toISOString();
+    }
+
+    seedLastMomentsSeenAt(db, lastSeenAt);
+    console.log(`[db] migrateMomentUnreadToTimestamp: old count=${oldCount} → last_seen=${lastSeenAt}`);
+
+    // 删除旧表
+    db.exec(`DROP TABLE IF EXISTS moment_unread`);
+    console.log('[db] Dropped legacy moment_unread table');
+  } catch (err) {
+    console.log('[db] migrateMomentUnreadToTimestamp error:', err.message);
+  }
+}
+
+/** 种子 last_moments_seen_at（如已存在则保留现有值） */
+function seedLastMomentsSeenAt(db, defaultValue) {
+  db.prepare(
+    `INSERT OR IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, ?)`
+  ).run('last_moments_seen_at', defaultValue);
+}
+
+function rebuildFtsIndex(db) {
+  // ── 轻量完整性检查：不每次清空重建，只在确实损坏或计数不一致时才处理 ──
+  let ftsOk = false;
+  let ftsCount = 0;
+  try {
+    ftsCount = db.prepare(`SELECT count(*) AS c FROM messages_fts`).get().c;
+    ftsOk = true;
+  } catch (err) {
+    if (err.code === 'SQLITE_CORRUPT_VTAB') {
+      console.log('[db] FTS5 table corrupted, recreating...');
+      // 先删触发器（它们依赖 messages_fts）
+      db.exec(`DROP TRIGGER IF EXISTS messages_ai`);
+      db.exec(`DROP TRIGGER IF EXISTS messages_ad`);
+      db.exec(`DROP TRIGGER IF EXISTS messages_au`);
+      // 删掉损坏的虚拟表
+      db.exec(`DROP TABLE IF EXISTS messages_fts`);
+      // 重建
+      db.exec(`
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+          content,
+          content='messages',
+          content_rowid='id'
+        );
+      `);
+      // 重建触发器
+      db.exec(`
+        CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+      db.exec(`
+        CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        END;
+      `);
+      db.exec(`
+        CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+    } else {
+      throw err;
+    }
+  }
+
+  // 只在 FTS 损坏或计数不一致时才全量重建
+  const msgCount = db.prepare(`SELECT count(*) AS c FROM messages`).get().c;
+  if (!ftsOk || ftsCount !== msgCount) {
+    if (ftsOk) {
+      // 表完好但计数不一致 — 清空后重建
+      try {
+        db.exec(`DELETE FROM messages_fts`);
+      } catch (delErr) {
+        console.log('[db] DELETE FROM messages_fts failed, dropping and recreating...');
+        db.exec(`DROP TABLE IF EXISTS messages_fts`);
+        db.exec(`CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id')`);
+      }
+    }
+    const msgs = db.prepare(`SELECT id, content FROM messages`).all();
+    if (msgs.length > 0) {
+      const insert = db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+      for (const m of msgs) {
+        insert.run(m.id, m.content);
+      }
+      console.log(`[db] FTS5 index rebuilt: ${msgs.length} messages indexed`);
+    }
+  }
+}
+
+export function closeDb() {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
+
+/**
+ * 库句柄是否还开着（2026-10-02，真机日志：调度器每分钟刷一条
+ * `The database connection is not open` —— 那是**次生噪音**，根因在别处；
+ * 调度器用它做自愈判断：句柄被关掉时自己重开，而不是一路报错）。
+ */
+export function isDbOpen() {
+  try {
+    return Boolean(db && db.open);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 强制重建 FTS5 索引。当写入操作（DELETE/INSERT/UPDATE on messages）
+ * 因 FTS 虚拟表损坏（SQLITE_CORRUPT_VTAB）而失败时，路由层可调用此函数
+ * 完全重建 FTS 表结构和索引，之后重试原操作即可成功。
+ */
+export function repairFtsIndex() {
+  const database = getDb();
+  console.log('[db] repairFtsIndex: full FTS rebuild...');
+
+  // 1. 删触发器（它们依赖 messages_fts）
+  database.exec(`DROP TRIGGER IF EXISTS messages_ai`);
+  database.exec(`DROP TRIGGER IF EXISTS messages_ad`);
+  database.exec(`DROP TRIGGER IF EXISTS messages_au`);
+
+  // 2. 删损坏的虚拟表
+  database.exec(`DROP TABLE IF EXISTS messages_fts`);
+
+  // 3. 重建 FTS 表结构
+  database.exec(`
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+      content,
+      content='messages',
+      content_rowid='id'
+    );
+  `);
+
+  // 4. 重建触发器
+  database.exec(`
+    CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+  `);
+  database.exec(`
+    CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    END;
+  `);
+  database.exec(`
+    CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+  `);
+
+  // 5. 全量重建索引
+  const msgs = database.prepare(`SELECT id, content FROM messages`).all();
+  if (msgs.length > 0) {
+    const insert = database.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+    for (const m of msgs) {
+      insert.run(m.id, m.content);
+    }
+    console.log(`[db] repairFtsIndex: ${msgs.length} messages re-indexed`);
+  }
+  console.log('[db] repairFtsIndex: done');
+}
+
+// ── 世界观 / 全局规则仓储已下沉到 db/worldRepository.js（缩小本模块体积）──
+// 函数由 worldRepository 提供，此处兼容再导出；db 句柄在 getDb() 打开时注入。
+export {
+  getActiveGlobalRules,
+  getWorldSetting,
+  getSystemRulesWithWorld,
+  getGlobalRule,
+  getSystemRules,
+  listWorldSettings,
+  getActiveWorldSetting,
+  getWorldSettingById,
+  createWorldSetting,
+  updateWorldSetting,
+  deleteWorldSetting,
+  activateWorldSetting,
+} from './worldRepository.js';
+
+// ── 系统设置已下沉到 db/settings.js（打破 config↔db 循环依赖）──
+// getSetting/setSetting/SETTING_TO_CONFIG/loadSystemSettings 均由 settings.js 提供，
+// 此处仅做兼容再导出，既有 import 路径不受影响。
+export { getSetting, setSetting, SETTING_TO_CONFIG } from './settings.js';
+
+// ── 2026-10-14 补漏合并：上游 v3.9.0 把这两支迁移直接 export 在本模块 ──
+// 本地已分别下沉到 db/soulSchema.js 与 db/mediaSchema.js（内容与上游逐字节一致），
+// 但漏了从本模块再导出；上游测试按 `import ... from '../src/db/index.js'` 取，故补回。
+export { migrateSoulSchema } from './soulSchema.js';
+export { migrateMediaOutletLayouts } from './mediaSchema.js';
+
+
+// 迁移: 世界生成配置改为 system_settings 存储；首次启动写入与前端一致的默认值。
+function migrateTownGenerationSettings(db) {
+  try {
+    const existing = db.prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'town_generation_settings'").get();
+    if (existing) return;
+
+    // Upgrade compatibility: carry over a style preference that is still in the wizard state file.
+    let styleTags = '';
+    try {
+      const statePath = path.resolve(__dirname, '..', '..', 'data', 'town', 'init-state.json');
+      if (fs.existsSync(statePath)) {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        styleTags = String(state?.blueprint?.styleTags || '').slice(0, 200);
+      }
+    } catch { /* init state is optional */ }
+    db.prepare("INSERT INTO system_settings (setting_key, setting_value) VALUES ('town_generation_settings', ?)").run(JSON.stringify({
+      styleTags,
+      steps: {
+        tiles: { prefix: 'pixel art, game sprite, white background', artist: '@ebora', loras: [] },
+        buildings: { prefix: 'pixel art, game sprite, white background', artist: '@ebora', loras: [] },
+        npcs: { prefix: 'pixel art, game sprite, mini human sized, full body', artist: '@ebora', loras: [], portraitLoras: false },
+        player: { prefix: 'pixel art, game sprite, mini human sized, full body', artist: '@ebora', loras: [], portraitLoras: false },
+      },
+    }));
+    console.log('[db] system_settings: seeded town_generation_settings');
+  } catch (err) {
+    console.log('[db] migrateTownGenerationSettings error:', err.message);
+  }
+}
+
+/**
+ * 迁移: characters 表新增 lora 列（仅保留 custom_workflow 和 loras）
+ */
+function migrateLoraSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'custom_workflow')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN custom_workflow TEXT`);
+      console.log('[db] Added characters.custom_workflow column');
+    }
+  } catch (err) {
+    console.log('[db] migrateLoraSchema error:', err.message);
+  }
+}
+
+/**
+ * characters 表 loras JSON 列
+ * 格式: [{"path":"xxx.safetensors","weight":1,"triggerWord":"xxx"}]
+ */
+function migrateLorasArraySchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'loras')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN loras TEXT DEFAULT '[]'`);
+      console.log('[db] Added characters.loras column (JSON array, default [])');
+    }
+  } catch (err) {
+    console.log('[db] migrateLorasArraySchema error:', err.message);
+  }
+}
+
+/**
+ * characters 表 artist_override 列（角色单独画师串，非空时覆盖系统画师串）
+ */
+function migrateArtistOverrideSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'artist_override')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN artist_override TEXT`);
+      console.log('[db] Added characters.artist_override column');
+    }
+  } catch (err) {
+    console.log('[db] migrateArtistOverrideSchema error:', err.message);
+  }
+}
+
+// 迁移: LLM 多套配置切换 — 从当前 .env 生成默认 profile
+function migrateLlmProfiles(db) {
+  try {
+    const existing = db.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'llm_profiles'`).get();
+    if (existing) return;
+
+    const now = new Date().toISOString();
+    const defaultProfile = {
+      id: 'p_' + Date.now(),
+      name: '默认配置',
+      connectionType: config.llm.connectionType,
+      vertexRegion: config.llm.vertexRegion,
+      vertexServiceAccount: config.llm.vertexServiceAccount,
+      apiKey: config.llm.apiKey || '',
+      baseURL: config.llm.baseURL || 'https://api.deepseek.com',
+      model: config.llm.model || 'deepseek-flash',
+      headers: config.llm.headers || {},
+      extraBody: config.llm.extraBody || {},
+      serializeBackgroundLLM: config.features.serializeBackgroundLLM || false,
+      mergeMessages: config.features.mergeMessages || false,
+      backgroundConcurrency: config.features.backgroundLLMMaxConcurrency || 3,
+      createdAt: now,
+    };
+
+    const profiles = [defaultProfile];
+    db.prepare(`INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`)
+      .run('llm_profiles', JSON.stringify(profiles));
+    db.prepare(`INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`)
+      .run('active_llm_profile_id', defaultProfile.id);
+    console.log('[db] migrateLlmProfiles: created default profile from current config');
+  } catch (err) {
+    console.log('[db] migrateLlmProfiles error:', err.message);
+  }
+}
+
+// 迁移: 将 global_rules.world_setting 移至 world_settings 表（idempotent）
+function migrateWorldSettings(db) {
+  try {
+    const existing = db.prepare(`SELECT rule_content FROM global_rules WHERE rule_key = 'world_setting'`).get();
+    if (!existing) return;
+
+    const raw = existing.rule_content || '';
+    const match = raw.match(/^<world_setting>\s*([\s\S]*?)\s*<\/world_setting>$/);
+    const content = match ? match[1] : raw;
+
+    const already = db.prepare(`SELECT id FROM world_settings`).get();
+    if (content.trim() && !already) {
+      db.prepare(
+        `INSERT INTO world_settings (name, content, is_active, sort_order) VALUES (?, ?, 1, 0)`
+      ).run('默认世界观', content);
+      console.log('[db] migrateWorldSettings: moved existing world_setting to world_settings table');
+    }
+
+    // 迁移后删除旧行：残留会导致 getWorldSetting 回退时读到过期世界观
+    db.prepare(`DELETE FROM global_rules WHERE rule_key = 'world_setting'`).run();
+    console.log('[db] migrateWorldSettings: removed legacy global_rules.world_setting row');
+  } catch (err) {
+    console.log('[db] migrateWorldSettings error:', err.message);
+  }
+}
+
+// 空表补一套默认激活世界观（idempotent：仅在 world_settings 无任何行时插入）
+export function seedDefaultWorldSetting(db) {
+  try {
+    const already = db.prepare(`SELECT id FROM world_settings LIMIT 1`).get();
+    if (already) return;
+    db.prepare(
+      `INSERT INTO world_settings (name, content, is_active, sort_order) VALUES (?, '', 1, 0)`
+    ).run('默认世界观');
+    console.log('[db] seedDefaultWorldSetting: created default active world setting');
+  } catch (err) {
+    console.log('[db] seedDefaultWorldSetting error:', err.message);
+  }
+}
+
+// 迁移: 信箱系统 — mailbox_letters 表（由 CREATE TABLE IF NOT EXISTS 保证，仅新增索引）
+function migrateMailboxSchema(db) {
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mailbox_character_id ON mailbox_letters(character_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mailbox_status ON mailbox_letters(status)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mailbox_reply_at ON mailbox_letters(reply_at)`);
+    console.log('[db] mailbox indexes ensured');
+  } catch (err) {
+    console.log('[db] migrateMailboxSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 手写字体 — characters 表新增 handwriting_font 列
+ */
+function migrateHandwritingFont(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'handwriting_font')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN handwriting_font TEXT DEFAULT ''`);
+      console.log('[db] Added characters.handwriting_font column');
+    }
+  } catch (err) {
+    console.log('[db] migrateHandwritingFont error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 角色聊天背景 — characters 表新增 chat_bg_path 列
+ * （上游 v3.9.0 合并：同一迁移里补 galgame_bg_path，沉浸对话的独立背景槽位）
+ *
+ * 2026-10-14 补漏合并：上游此处是 `export function`，本地漏了 export。
+ * 上游测试按 `import { migrateChatBgSchema } from '../src/db/index.js'` 取，故补回 export。
+ */
+export function migrateChatBgSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'chat_bg_path')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN chat_bg_path TEXT`);
+      console.log('[db] Added characters.chat_bg_path column');
+    }
+    if (!cols.find(c => c.name === 'galgame_bg_path')) {
+      db.exec('ALTER TABLE characters ADD COLUMN galgame_bg_path TEXT');
+      console.log('[db] Added characters.galgame_bg_path column');
+    }
+  } catch (err) {
+    console.log('[db] migrateChatBgSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 朋友圈话题库 —— 判重口径 + checked 列（2026-10-14）
+ *
+ * 老库（真库）的 moment_topics 是 `name TEXT NOT NULL UNIQUE` 且没有 checked 列；
+ * 新口径是**同来源内 name 唯一**（自定义话题允许与系统话题同名）+ `checked`（是否参与自动抽取）。
+ * SQLite 改不了列上的 UNIQUE 约束，只能重建表。
+ *
+ * 幂等判定：已有 checked 列 **且** 没有「只针对 name 单列」的唯一索引 ⇒ 已迁过，直接返回。
+ * 有跨来源重名时用 INSERT OR IGNORE 保留先插入的那条、丢掉后面的，不让迁移炸掉。
+ */
+export function migrateMomentTopicsSchema(db = getDb()) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(moment_topics)`).all();
+    if (!cols.length) return;   // 表还没建（正常流程下 CREATE 块先跑，这里只兜底）
+    const hasChecked = cols.some(c => c.name === 'checked');
+    // 老库的 name 单列 UNIQUE 会以 sqlite_autoindex_* 形式出现在 index_list 里；
+    // 我们自己建的复合唯一索引是 (name, source)，两列，不会被误判。
+    const nameOnlyUnique = db.prepare(`PRAGMA index_list(moment_topics)`).all().some(index => {
+      if (!index.unique) return false;
+      const info = db.prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`).all();
+      return info.length === 1 && info[0].name === 'name';
+    });
+    if (hasChecked && !nameOnlyUnique) return;
+
+    let kept = 0, dropped = 0;
+    db.transaction(() => {
+      // 索引名在库内全局唯一：先丢掉旧的同名索引，否则重建表后 CREATE INDEX 会静默变成 no-op
+      db.exec('DROP INDEX IF EXISTS idx_moment_topics_name_source');
+      db.exec('ALTER TABLE moment_topics RENAME TO moment_topics_legacy');
+      db.exec(`
+        CREATE TABLE moment_topics (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          desc TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'default' CHECK(source IN ('default','custom')),
+          is_active INTEGER NOT NULL DEFAULT 1,
+          checked INTEGER NOT NULL DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_moment_topics_name_source ON moment_topics(name, source);
+      `);
+      // checked 老行统一按 1（照旧参与自动抽取，行为不变）
+      const res = db.prepare(`
+        INSERT OR IGNORE INTO moment_topics (id, name, desc, source, is_active, checked, created_at, updated_at)
+        SELECT id, name, desc, source, is_active, 1, created_at, updated_at FROM moment_topics_legacy
+      `).run();
+      kept = res.changes;
+      dropped = db.prepare('SELECT COUNT(*) AS n FROM moment_topics_legacy').get().n - kept;
+      db.exec('DROP TABLE moment_topics_legacy');
+    })();
+
+    console.log(`[db] migrateMomentTopicsSchema: moment_topics rebuilt (kept ${kept}${dropped > 0 ? `, dropped ${dropped}` : ''})`);
+    if (dropped > 0) console.warn(`[db] migrateMomentTopicsSchema: ${dropped} 条跨来源重名话题未能迁移（(name, source) 唯一，保留先插入的那条）`);
+  } catch (err) {
+    console.warn('[db] migrateMomentTopicsSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 群头像 — group_chats 表新增 avatar_path 列
+ */
+function migrateGroupAvatarSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(group_chats)`).all();
+    if (!cols.find(c => c.name === 'avatar_path')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN avatar_path TEXT`);
+      console.log('[db] Added group_chats.avatar_path column');
+    }
+  } catch (err) {
+    console.log('[db] migrateGroupAvatarSchema error:', err.message);
+  }
+}
+
+
+function migrateOathSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(user_relationships)`).all();
+    if (!cols.find(c => c.name === 'is_oath')) {
+      db.exec(`ALTER TABLE user_relationships ADD COLUMN is_oath INTEGER DEFAULT 0`);
+      console.log('[db] Added user_relationships.is_oath column (default 0)');
+    }
+  } catch (err) {
+    console.log('[db] migrateOathSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 角色置顶 — characters 表新增 pinned 列（默认 0，未置顶）
+ */
+export function migratePinSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'pinned')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN pinned INTEGER DEFAULT 0`);
+      console.log('[db] Added characters.pinned column');
+    }
+  } catch (err) {
+    console.log('[db] migratePinSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 群聊系统 — raw_messages/messages 新增 speaker_character_id 列
+ * NULL = 用户消息或 1 对 1 旧数据；群聊中角色消息填角色 id
+ */
+function migrateGroupChatSchema(db) {
+  try {
+    const rawCols = db.prepare(`PRAGMA table_info(raw_messages)`).all();
+    if (!rawCols.find(c => c.name === 'speaker_character_id')) {
+      db.exec(`ALTER TABLE raw_messages ADD COLUMN speaker_character_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added raw_messages.speaker_character_id column');
+    }
+    const msgCols = db.prepare(`PRAGMA table_info(messages)`).all();
+    if (!msgCols.find(c => c.name === 'speaker_character_id')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN speaker_character_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added messages.speaker_character_id column');
+    }
+    // 迁移: D4（2026-09-30）群聊围观落库 —— messages.onlooker_char_id
+    // 群聊轮里"围观/起哄的那位"由程序选定（planTouchBystander），本列把选择落库，
+    // 使「谁围观」可查询、可统计。NULL = 本轮无人围观 / 私聊消息。
+    if (!msgCols.find(c => c.name === 'onlooker_char_id')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN onlooker_char_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added messages.onlooker_char_id column');
+    }
+
+    const fragmentCols = db.prepare(`PRAGMA table_info(memory_fragments)`).all();
+    if (!fragmentCols.find(c => c.name === 'source_raw_start_id')) {
+      db.exec(`ALTER TABLE memory_fragments ADD COLUMN source_raw_start_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added memory_fragments.source_raw_start_id column');
+    }
+    if (!fragmentCols.find(c => c.name === 'source_raw_end_id')) {
+      db.exec(`ALTER TABLE memory_fragments ADD COLUMN source_raw_end_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added memory_fragments.source_raw_end_id column');
+    }
+
+    const imageTaskCols = db.prepare(`PRAGMA table_info(image_tasks)`).all();
+    if (!imageTaskCols.find(c => c.name === 'source_msg_id')) {
+      db.exec(`ALTER TABLE image_tasks ADD COLUMN source_msg_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added image_tasks.source_msg_id column');
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_image_tasks_source_msg ON image_tasks(source_msg_id)`);
+
+    const groupCols = db.prepare(`PRAGMA table_info(group_chats)`).all();
+    if (!groupCols.find(c => c.name === 'rag_last_extracted_raw_id')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN rag_last_extracted_raw_id INTEGER DEFAULT 0`);
+      console.log('[db] Added group_chats.rag_last_extracted_raw_id column');
+    }
+    if (!groupCols.find(c => c.name === 'rag_user_rounds_pending')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN rag_user_rounds_pending INTEGER DEFAULT 0`);
+      console.log('[db] Added group_chats.rag_user_rounds_pending column');
+    }
+    // 每群每日后台闲聊预算（默认 2），独立计数；用户发言或跨天重置
+    if (!groupCols.find(c => c.name === 'idle_budget')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN idle_budget INTEGER DEFAULT 2`);
+      console.log('[db] Added group_chats.idle_budget column (default 2)');
+    }
+    db.exec(`UPDATE group_chats SET idle_budget = 2 WHERE idle_budget IS NULL OR idle_budget <= 0`);
+
+    // 《邻舍日报》群聊注入轮数记账（报纸块只在主角所在群的前 4 轮注入，见 newspaperService）
+    if (!groupCols.find(c => c.name === 'newspaper_paper_id')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN newspaper_paper_id INTEGER`);
+      console.log('[db] Added group_chats.newspaper_paper_id column');
+    }
+    if (!groupCols.find(c => c.name === 'newspaper_rounds_used')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN newspaper_rounds_used INTEGER DEFAULT 0`);
+      console.log('[db] Added group_chats.newspaper_rounds_used column');
+    }
+
+    // main v2.4 beta 曾将群聊提取边界保存在 group_chats；升级后只回填到 v2 checkpoint。
+    // 同时兼容更早仅通过 source_msg_id 关联 raw 的记忆，且绝不回退已有 checkpoint。
+    db.exec(`
+      INSERT INTO memory_extraction_checkpoints(conversation_id, last_raw_msg_id, status, last_error, updated_at)
+      SELECT
+        'group_' || gc.id,
+        MAX(
+          COALESCE(gc.rag_last_extracted_raw_id, 0),
+          COALESCE((
+            SELECT MAX(COALESCE(mf.source_raw_end_id, msg.raw_id, 0))
+            FROM memory_fragments mf
+            LEFT JOIN messages msg ON msg.id = mf.source_msg_id
+            WHERE mf.conversation_id = 'group_' || gc.id
+          ), 0)
+        ),
+        'idle',
+        NULL,
+        CURRENT_TIMESTAMP
+      FROM group_chats gc
+      WHERE 1 = 1
+      ON CONFLICT(conversation_id) DO UPDATE SET
+        last_raw_msg_id = MAX(memory_extraction_checkpoints.last_raw_msg_id, excluded.last_raw_msg_id),
+        updated_at = CASE
+          WHEN excluded.last_raw_msg_id > memory_extraction_checkpoints.last_raw_msg_id THEN CURRENT_TIMESTAMP
+          ELSE memory_extraction_checkpoints.updated_at
+        END
+    `);
+  } catch (err) {
+    console.log('[db] migrateGroupChatSchema error:', err.message);
+  }
+}
+
+function migrateEventCrossRef(db) {
+  try {
+    let ceCols = db.prepare(`PRAGMA table_info(character_events)`).all();
+    if (!ceCols.find(c => c.name === 'referenced_character_ids')) {
+      db.exec(`ALTER TABLE character_events ADD COLUMN referenced_character_ids TEXT DEFAULT '[]'`);
+      console.log('[db] Added character_events.referenced_character_ids column');
+    }
+    let ehCols = db.prepare(`PRAGMA table_info(event_history)`).all();
+    if (!ehCols.find(c => c.name === 'referenced_character_ids')) {
+      db.exec(`ALTER TABLE event_history ADD COLUMN referenced_character_ids TEXT DEFAULT '[]'`);
+      console.log('[db] Added event_history.referenced_character_ids column');
+    }
+    if (!ehCols.find(c => c.name === 'conclusion')) {
+      db.exec(`ALTER TABLE event_history ADD COLUMN conclusion TEXT`);
+      console.log('[db] Added event_history.conclusion column');
+    }
+  } catch (err) {
+    console.log('[db] migrateEventCrossRef error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 亲密档案与统计看板（v3.6.0）
+ *
+ * 六张表全部 CREATE IF NOT EXISTS，幂等；导出供回归测试直接调用。
+ *
+ * 刻意不加 CHECK 约束：场景 / 伙伴类型 / 来源都是会继续扩张的枚举，历史教训是
+ * CHECK 一旦写死，加一个取值就要重建表（见 gift_history 的迁移注释）。
+ *
+ * 幂等键设计：(character_id, source_uid) 唯一。
+ *   自动记账 uid = auto:scene:raw<id>:actKey:positionKey:partnerKind:partnerId（确定性）
+ *   人工记账 uid = manual:<uuid>
+ * 所有"可能为空的维度列"一律 NOT NULL DEFAULT ''，因为 SQLite 视 NULL 互不相等，
+ * 用 NULL 会让唯一约束失效 —— 那会导致同一次行为被反复计数。
+ *
+ * 存量库补列走 PRAGMA + ALTER：CREATE TABLE IF NOT EXISTS 对已存在的表不生效，
+ * 老库必须显式补列，否则第一条 SELECT 就会因缺列报错。
+ */
+export function migrateIntimateSchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_body_profile (
+        character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        height TEXT NOT NULL DEFAULT '',
+        bust TEXT NOT NULL DEFAULT '',
+        waist TEXT NOT NULL DEFAULT '',
+        hip TEXT NOT NULL DEFAULT '',
+        cup TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        sensitive_zones TEXT NOT NULL DEFAULT '[]',
+        inject_enabled INTEGER NOT NULL DEFAULT 0,
+        ai_edit_fields TEXT NOT NULL DEFAULT '[]',
+        view_scope TEXT NOT NULL DEFAULT '["user","character"]',
+        backfill_enabled INTEGER NOT NULL DEFAULT 1,
+        ai_judge_enabled INTEGER NOT NULL DEFAULT 0,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS character_intimate_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        source_uid TEXT NOT NULL,
+        act_key TEXT NOT NULL,
+        position_key TEXT NOT NULL DEFAULT '',
+        custom_label TEXT NOT NULL DEFAULT '',
+        partner_kind TEXT NOT NULL DEFAULT 'user',
+        partner_id INTEGER NOT NULL DEFAULT 0,
+        scene TEXT NOT NULL DEFAULT 'chat',
+        act_count INTEGER NOT NULL DEFAULT 1,
+        climax_count INTEGER NOT NULL DEFAULT 0,
+        raw_id INTEGER NOT NULL DEFAULT 0,
+        msg_id INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'auto',
+        confidence REAL NOT NULL DEFAULT 1,
+        occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(character_id, source_uid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_intimate_log_char_time
+        ON character_intimate_log(character_id, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_intimate_log_raw
+        ON character_intimate_log(raw_id);
+
+      CREATE TABLE IF NOT EXISTS character_intimate_firsts (
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        act_key TEXT NOT NULL,
+        first_at DATETIME,
+        source_raw_id INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'derived',
+        note TEXT NOT NULL DEFAULT '',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (character_id, act_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS character_intimate_stats (
+        character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        stats_json TEXT NOT NULL DEFAULT '{}',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- 历史回填进度（每个角色一行）：last_raw_id 之前的 raw_messages 已扫过，
+      -- 回填中断/重跑都从这里续，状态机由回填引擎维护（见 services/intimateBackfill.js）
+      CREATE TABLE IF NOT EXISTS character_intimate_backfill (
+        character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'idle',
+        last_raw_id INTEGER NOT NULL DEFAULT 0,
+        scanned INTEGER NOT NULL DEFAULT 0,
+        inserted INTEGER NOT NULL DEFAULT 0,
+        error TEXT NOT NULL DEFAULT '',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // AI 整理的"待确认提议"：AI 未获授权的字段只落这里，等用户在面板上采纳/忽略
+    // （见 services/intimateAiEdit.js）。纯新增表、没有存量列要补，
+    // 所以只用 CREATE TABLE IF NOT EXISTS，不参与下面的 ALTER 回填逻辑。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_intimate_suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        field TEXT NOT NULL,
+        current_value TEXT NOT NULL DEFAULT '',
+        suggestion TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        source TEXT NOT NULL DEFAULT 'ai',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_intimate_suggestions_char
+        ON character_intimate_suggestions(character_id, status);
+    `);
+
+    // 存量库补列：列已存在就跳过，重复调用不会重复执行
+    const addColumnIfMissing = (table, column, ddl) => {
+      const exists = db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column);
+      if (exists) return false;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      console.log(`[db] Added ${table}.${column} column`);
+      return true;
+    };
+
+    // 补列那一刻的存量行等于「从未设置过 AI 修改权限」，回填成语义默认值（仅统计可自动写）。
+    // 不能把它们留在列默认的空数组上：那样用户只要编辑过一次档案，自动记账就被永久掐断。
+    // 只在补列成功时回填一次，用户之后主动清空权限不会被这里再改回来。
+    if (addColumnIfMissing('character_body_profile', 'ai_edit_fields', `ai_edit_fields TEXT NOT NULL DEFAULT '[]'`)) {
+      db.exec(`UPDATE character_body_profile SET ai_edit_fields = '["stats"]'`);
+    }
+    addColumnIfMissing('character_body_profile', 'view_scope', `view_scope TEXT NOT NULL DEFAULT '["user","character"]'`);
+    addColumnIfMissing('character_body_profile', 'backfill_enabled', `backfill_enabled INTEGER NOT NULL DEFAULT 1`);
+    // task-32：亲密看板「AI 判断行为」默认开关（默认关，开了以后每轮异步多一次 LLM 判定）
+    addColumnIfMissing('character_body_profile', 'ai_judge_enabled', `ai_judge_enabled INTEGER NOT NULL DEFAULT 0`);
+
+    // 口径默认值变更（task-26）：默认由「只看用户↔角色」扩到「用户↔角色 + 角色↔角色」。
+    // 为什么必须迁存量行：口径是**每角色持久化**在 character_body_profile.view_scope 的，
+    // 只改服务层 DEFAULT_VIEW_SCOPE 的话，凡是打开过看板 / 保存过设置的角色，库里存的还是旧默认
+    // ["user"] —— 群聊流水（partner_kind='character'）就永远默认看不见，那正是用户报的
+    // 「群聊的消息没有引入看板」的一层原因。
+    // 存量行里的 ["user"] 分不清"旧默认"还是"用户主动只留这一类"，但口径只是一次点击就能改回的
+    // 视图过滤（不删任何数据），所以按"默认值变更"处理；打 once 标记只跑一次，用户之后主动收窄不会被改回来。
+    // 老库里该列的 SQL 默认值仍是 '["user"]'，但调用方一律写显式值、NULL/空串由服务层回落到新默认，
+    // 所以不必为改默认值重建表。
+    const viewScopeMarker = db.prepare(
+      `SELECT setting_value FROM system_settings WHERE setting_key = 'intimate_view_scope_group_default'`
+    ).get();
+    if (!viewScopeMarker) {
+      try {
+        const migrated = db.prepare(
+          `UPDATE character_body_profile SET view_scope = '["user","character"]' WHERE view_scope = '["user"]'`
+        ).run().changes;
+        db.prepare(
+          `INSERT INTO system_settings (setting_key, setting_value) VALUES ('intimate_view_scope_group_default', '1')`
+        ).run();
+        if (migrated > 0) console.log(`[db] intimate 口径默认值迁移：${migrated} 个角色加入「角色↔角色」`);
+      } catch (err) {
+        // 表结构还没齐（极老库）时不影响其余迁移；标记没落库，下次启动会再试
+        console.log('[db] intimate 口径默认值迁移跳过:', err.message);
+      }
+    }
+  } catch (err) {
+    console.log('[db] migrateIntimateSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 性爱交互「可点击推进」进行中状态（task-1，2026-10-01）
+ *
+ *   character_intimate_scene：**每角色一行**的进行中状态 —— 当前体位 / 是否插入中 / 节奏档 /
+ *   累积度 / 这一场的推进次数与高潮次数。落库的意义是「重启后仍在进行中」：
+ *   进程内存态一重启就丢，而这一场是跨轮次的（她下一轮聊天必须知道自己还在被插着）。
+ *
+ * 口径与既有亲密系统对齐（不另造平行体系）：
+ *   · position_key 存 `image_prompt_knowledge.adult_pose_vocabulary` 的打包 key（与
+ *     character_intimate_log.position_key 同源同形，中文名走 positionLabel）；
+ *   · act_key 存 ACT_DEFINITIONS 的键（归类复用 classifyPromptTags）；
+ *   · 真正发生的行为由调用方走 recordIntimateActs 记进 character_intimate_log，
+ *     本表只存"进行中状态"，不复刻流水。
+ *
+ * 纯新增表（只 CREATE TABLE IF NOT EXISTS，不参与 ALTER 补列），幂等；首次建表打一行启动日志。
+ */
+export function migrateIntimateSceneSchema(db) {
+  try {
+    const existed = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'character_intimate_scene'"
+    ).get();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_intimate_scene (
+        character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        active INTEGER NOT NULL DEFAULT 0,
+        penetrating INTEGER NOT NULL DEFAULT 0,
+        position_key TEXT NOT NULL DEFAULT '',
+        act_key TEXT NOT NULL DEFAULT '',
+        pace INTEGER NOT NULL DEFAULT 2,
+        accumulation INTEGER NOT NULL DEFAULT 0,
+        climax_count INTEGER NOT NULL DEFAULT 0,
+        rounds INTEGER NOT NULL DEFAULT 0,
+        action_seq INTEGER NOT NULL DEFAULT 0,
+        pending_note TEXT NOT NULL DEFAULT '',
+        started_at DATETIME,
+        last_action_at DATETIME,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    // 2026-10-02 四件新玩法（拍打 / 捆绑 / 自动抽插 / 禁止高潮）需要三个开关态列。
+    // 2026-10-03 追加 `auto_pace`：**自动速度**是独立旋钮（用户：「自动的速度新增一个单独的」），
+    // 老行补成默认 2（正常）= 迁移前的旧行为。
+    // 幂等补列：老库直接 ALTER，新库上面 CREATE 里没有这几列 ⇒ 这里补齐（两路都到同一形状）。
+    // ⚠️ 判断条件只能是"这一列在不在"（别再嵌进别的 if —— 上次 sensitive 四列就是这么整条失效的）。
+    for (const [col, ddl] of [
+      ['bondage', 'INTEGER NOT NULL DEFAULT 0'],
+      ['auto_thrust', 'INTEGER NOT NULL DEFAULT 0'],
+      ['denial', 'INTEGER NOT NULL DEFAULT 0'],
+      ['auto_pace', 'INTEGER NOT NULL DEFAULT 2'],
+    ]) {
+      const has = db.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('character_intimate_scene') WHERE name = ?").get(col).n;
+      if (!has) {
+        db.exec(`ALTER TABLE character_intimate_scene ADD COLUMN ${col} ${ddl}`);
+        console.log(`[db] migrateIntimateSceneSchema: +${col}`);
+      }
+    }
+    if (!existed) console.log('[db] migrateIntimateSceneSchema: created character_intimate_scene');
+  } catch (err) {
+    console.log('[db] migrateIntimateSceneSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 催眠手机（v3.7.0）
+ *
+ * 两张全新表，纯新增 —— CREATE TABLE IF NOT EXISTS 即幂等，没有存量列要补。
+ *
+ * 为什么 body_controlled 与 mind_awake 拆成两列：
+ *   「只唤醒意志」= 意志清醒（mind_awake=1）而身体仍受控（body_controlled=1）。
+ *   两者正交才能表达"身体归用户、意志是她的"这层张力；合成一个枚举会丢状态。
+ *
+ * 遗忘窗口单独成表（不塞进 character_hypnosis 一行）：同一角色可以有多段被遗忘的历史，
+ * 且要可撤销审计（status active→restored）。memory_ids 记录**精确**被归档的 memory_id，
+ * 撤销按 id 列表还原，不会误还原同一 raw 区间里被 T3 衰减任务自动归档的无关记忆。
+ *
+ * session_start_raw_id：本次催眠开始时该会话已存在的最大 raw id，遗忘窗口左端 = 它 + 1。
+ *   刻意用 raw id 而不是时间：datetime('now') 只到秒，而"同秒重复催眠"会把 started_at
+ *   推到未来 1 秒，用时间当左端会漏掉催眠后那一秒内发出的消息（e2e 实测抓到过）。
+ */
+/**
+ * SLG 动作系统（触摸互动）两张表（阶段一，2026-09-30）。
+ *
+ *   · character_touch_state：每角色 × 每动作一行——annoyance（腻烦 0~100）+ like_ratio（偏好倍率，默认 1）
+ *   · touch_events：一次动作一行——mode / annoyance / like_ratio / reaction / status
+ *     status 取值：'pending'（隐式，等下一轮 chat.js 注入）/ 'injected'（已注入那一轮）/ 'done'（即时反应已发出）
+ *
+ * 纯新增表（只 CREATE TABLE IF NOT EXISTS，不参与 ALTER 补列），幂等；首次建表打一行启动日志。
+ * 口径见 docs/touch-system.md §3.2 与 目标/规划/专题-SLG动作系统.md §四。
+ */
+export function migrateTouchSchema(db) {
+  try {
+    const existed = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'touch_events'"
+    ).get();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_touch_state (
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        action_key TEXT NOT NULL,
+        annoyance INTEGER NOT NULL DEFAULT 0,
+        like_ratio REAL NOT NULL DEFAULT 1,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (character_id, action_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS touch_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        group_id INTEGER,
+        action_key TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'implicit',
+        annoyance INTEGER NOT NULL DEFAULT 0,
+        like_ratio REAL NOT NULL DEFAULT 1,
+        reaction TEXT NOT NULL DEFAULT '',
+        facial_expression TEXT NOT NULL DEFAULT '',
+        emotion_delta TEXT NOT NULL DEFAULT '',
+        annoyed INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_touch_events_pending ON touch_events(character_id, status, id);
+      CREATE INDEX IF NOT EXISTS idx_touch_events_group ON touch_events(group_id, status, id);
+    `);
+    if (!existed) console.log('[db] migrateTouchSchema: created character_touch_state / touch_events');
+  } catch (err) {
+    console.log('[db] migrateTouchSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 成人玩具系统 — character_worn_toys（专题-玩具系统与真机反馈三期 §2.2）
+ *
+ *   · 一行 = 某角色某玩具的**当前佩戴状态**（UNIQUE(character_id, toy_key)：同种玩具一件；
+ *     不同部位可叠加，靠多行实现）；
+ *   · 摘下 = status='removed'（保留行，equip_count 记「戴过几次」——UNIQUE 约束下没法靠行数统计，
+ *     所以显式加一列，这是对专题 §2.2 表结构的必要补强）；
+ *   · equipped_at 是「已戴多久」的唯一依据（不随程序时间自动变化，专题 §2.10-3）。
+ *
+ * 纯新增表（只 CREATE TABLE IF NOT EXISTS，不参与 ALTER 补列），幂等；首次建表打一行启动日志。
+ */
+export function migrateWornToysSchema(db) {
+  try {
+    const existed = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'character_worn_toys'"
+    ).get();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_worn_toys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        toy_key TEXT NOT NULL,
+        intensity INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'worn',
+        equip_count INTEGER NOT NULL DEFAULT 0,
+        equipped_at TEXT,
+        updated_at TEXT,
+        UNIQUE(character_id, toy_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_worn_toys_char ON character_worn_toys(character_id, status);
+    `);
+    if (!existed) console.log('[db] migrateWornToysSchema: created character_worn_toys');
+  } catch (err) {
+    console.log('[db] migrateWornToysSchema error:', err.message);
+  }
+}
+
+/**
+ * 玩具玩法状态（2026-10-02 玩法扩充 task-2 交付；从 `toyService.ensureToyPlaySchema` 搬进来）：
+ *   · `toy_play_state`      —— 每（角色,玩具）一行：振动模式 / 强度曲线 / 曲线起点 / 上次结算档位
+ *   · `toy_self_play_log`   —— 她自己主动玩的流水（判定码、分数、是否偷偷/当面）
+ * 为什么搬进迁移：原来靠 `toyService` 懒建（WeakSet 记账）—— 那是"没有迁移"的权宜，
+ * 谁先碰库谁建表，真空库 + 别的模块先读就会 `no such table`。真实库走这里建，懒建保留作兜底。
+ */
+export function migrateToyPlaySchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS toy_play_state (
+        character_id INTEGER NOT NULL,
+        toy_key TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'steady',
+        curve_json TEXT NOT NULL DEFAULT '',
+        curve_started_at DATETIME,
+        last_intensity INTEGER NOT NULL DEFAULT 0,
+        last_tick_at DATETIME,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (character_id, toy_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS toy_self_play_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL,
+        toy_key TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT 'equip',
+        intensity INTEGER NOT NULL DEFAULT 0,
+        mode TEXT NOT NULL DEFAULT 'steady',
+        curve_json TEXT NOT NULL DEFAULT '',
+        secret INTEGER NOT NULL DEFAULT 0,
+        bold INTEGER NOT NULL DEFAULT 0,
+        code TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        score REAL NOT NULL DEFAULT 0,
+        at DATETIME NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_toy_self_play_char ON toy_self_play_log (character_id, at DESC);
+    `);
+  } catch (err) {
+    console.log('[db] migrateToyPlaySchema error:', err.message);
+  }
+}
+
+/**
+ * 私密时刻（2026-10-02 用户：「再增加一个事件 叫自慰 和角色敏感度也相关 越高发生概率也就越高
+ * 这个可以算到日程里」「这个时候再去找角色私聊就会触发事件 玩家闯入角色正在自慰的情况」）。
+ *
+ * 一天（一个日程槽）**最多一行** ⇒ `UNIQUE(character_id, slot_date, slot_key)`：
+ * 判定是**确定性**的（种子 + 槽位哈希），所以"这一天她做不做"不会因为刷新而变来变去；
+ * 行本身也是"她做过这件事"的流水（`caught_at` = 第一次被撞见的时间）。
+ *
+ * ⚠️ 时间口径：**程序时间的分钟数**（`start_minute`/`end_minute` = 当天 0 点起的分钟），
+ * 不存绝对时间戳 —— 日程本身就是程序时间（HH:MM），存绝对时间会在"程序时间跳天/加速"后对不上。
+ * 只有 `caught_at` / `created_at` 是真实时间戳（历史排序用，与别的表同口径）。
+ */
+export function migratePrivateMomentSchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_private_moments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'self_play',
+        slot_date TEXT NOT NULL,
+        slot_key TEXT NOT NULL,
+        slot_activity TEXT NOT NULL DEFAULT '',
+        slot_location TEXT NOT NULL DEFAULT '',
+        start_minute INTEGER NOT NULL DEFAULT 0,
+        end_minute INTEGER NOT NULL DEFAULT 0,
+        probability REAL NOT NULL DEFAULT 0,
+        roll REAL NOT NULL DEFAULT 0,
+        sensitivity REAL NOT NULL DEFAULT 0,
+        caught_at DATETIME,
+        caught_times INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(character_id, slot_date, slot_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_private_moments_char ON character_private_moments (character_id, slot_date DESC);
+    `);
+  } catch (err) {
+    console.log('[db] migratePrivateMomentSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 场景服装系统（2026-10-13，上游 v3.9.0 4 态 + PR #24 五态与身体分层）。
+ *
+ * character_outfits 加两列：
+ *   scene TEXT  —— 场景标记。NULL = 普通换装行（老功能，getActiveOutfits 那条通道）；
+ *                  'nude'/'work'/'casual'/'home'/'sleep' = 场景服装那一族（outfitScene.js）。
+ *   body  TEXT  —— 身体描述，**该角色 5 套场景服装共用同一份**（单一真源）；
+ *                  description 从此只存"这一套的衣服"。
+ *
+ * character_standings：场景立绘表（文字描述驱动生图之外，画好的图单独存）。
+ *
+ * ⚠️ 迁移只加列建表，**不动已有行** —— 老换装行的 scene 仍是 NULL，行为与改动前逐字节一致。
+ *    「从 4 态老数据反推 body」由 outfitScene.backfillBodyFromExisting() 显式执行（一次性，
+ *    且只在角色详情页保存时触发），不在启动迁移里跑 —— 那会每次启动都读一遍全部角色。
+ */
+export function migrateCharacterOutfitScene(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(character_outfits)`).all();
+    if (!cols.find(c => c.name === 'scene')) {
+      db.exec(`ALTER TABLE character_outfits ADD COLUMN scene TEXT`);
+      console.log('[db] Added character_outfits.scene column');
+    }
+    if (!cols.find(c => c.name === 'body')) {
+      db.exec(`ALTER TABLE character_outfits ADD COLUMN body TEXT`);
+      console.log('[db] Added character_outfits.body column');
+    }
+  } catch (err) {
+    console.log('[db] migrateCharacterOutfitScene error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 角色文件夹 — 新建 character_folders 表，characters 表新增 folder_id 列
+ * 单层分类：一个角色只属于一个文件夹，folder_id 为 NULL 表示「未分类」。
+ * 删除文件夹只把成员置回未分类（folder_id = NULL），不动角色本体。
+ */
+function migrateCharacterFolderSchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'folder_id')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN folder_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added characters.folder_id column');
+    }
+  } catch (err) {
+    console.log('[db] migrateCharacterFolderSchema error:', err.message);
+  }
+}
+
+export function migrateHypnosisSchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS character_hypnosis (
+        character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        body_controlled INTEGER NOT NULL DEFAULT 0,
+        mind_awake INTEGER NOT NULL DEFAULT 0,
+        active_until DATETIME,
+        started_at DATETIME,
+        session_start_raw_id INTEGER NOT NULL DEFAULT 0,
+        pending_directive TEXT NOT NULL DEFAULT '',
+        pending_at DATETIME,
+        command_count INTEGER NOT NULL DEFAULT 0,
+        last_command TEXT NOT NULL DEFAULT '',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS hypnosis_forgotten_windows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        from_raw_id INTEGER NOT NULL DEFAULT 0,
+        to_raw_id INTEGER NOT NULL DEFAULT 0,
+        from_at DATETIME,
+        to_at DATETIME,
+        memories_archived INTEGER NOT NULL DEFAULT 0,
+        memory_ids TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_hypnosis_forgotten ON hypnosis_forgotten_windows(character_id, status);
+    `);
+
+    // 存量库补列：用户的真实库可能已经建过 character_hypnosis（v3.7.0 首版没有这一列），
+    // 只改上面的 CREATE TABLE 对已存在的表不生效 → 缺列会 500。ALTER + PRAGMA 判存在，幂等。
+    const exists = db.prepare('PRAGMA table_info(character_hypnosis)').all().some(c => c.name === 'session_start_raw_id');
+    if (!exists) {
+      db.exec(`ALTER TABLE character_hypnosis ADD COLUMN session_start_raw_id INTEGER NOT NULL DEFAULT 0`);
+      console.log('[db] Added character_hypnosis.session_start_raw_id column');
+    }
+  } catch (err) {
+    console.log('[db] migrateHypnosisSchema error:', err.message);
+  }
+}
+
+// ── 世界观收藏 CRUD 已下沉到 db/worldRepository.js ──
+// 迁移: PAI 风格聊天记忆 v2。保留旧字段供现有管理界面兼容，新增字段作为权威语义。
+// 导出供迁移回归测试使用（test/memoryIndexRetry.test.js 断言存量库的 attempts 补列行为）。
+export function migrateChatMemoryV2Schema(db) {
+  try {
+    const columns = new Set(db.prepare(`PRAGMA table_info(memory_fragments)`).all().map(c => c.name));
+    const additions = [
+      ['memory_id', 'TEXT'],
+      ['memory_type', "TEXT NOT NULL DEFAULT 'knowledge'"],
+      ['subject', "TEXT NOT NULL DEFAULT 'user'"],
+      ['judgment', "TEXT NOT NULL DEFAULT ''"],
+      ['reasoning', "TEXT NOT NULL DEFAULT ''"],
+      ['tags', "TEXT NOT NULL DEFAULT '[]'"],
+      ['content_hash', 'TEXT'],
+      ['status', "TEXT NOT NULL DEFAULT 'active'"],
+      ['source_raw_start_id', 'INTEGER'],
+      ['source_raw_end_id', 'INTEGER'],
+      ['embedding_profile', 'TEXT'],
+      ['embedding_state', "TEXT NOT NULL DEFAULT 'disabled'"],
+      ['embedding_error', 'TEXT'],
+      ['updated_at', 'DATETIME'],
+    ];
+    for (const [name, definition] of additions) {
+      if (!columns.has(name)) db.exec(`ALTER TABLE memory_fragments ADD COLUMN ${name} ${definition}`);
+    }
+
+    db.exec(`
+      UPDATE memory_fragments
+      SET memory_id = COALESCE(memory_id, 'legacy_' || id),
+          memory_type = CASE fragment_type WHEN 'emotion' THEN 'emotion' ELSE 'knowledge' END,
+          judgment = CASE WHEN judgment = '' THEN content ELSE judgment END,
+          tags = CASE WHEN tags = '[]' THEN COALESCE(entities, '[]') ELSE tags END,
+          status = COALESCE(status, 'active'),
+          updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+      WHERE memory_id IS NULL OR judgment = '' OR updated_at IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_fragments_memory_id ON memory_fragments(memory_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_fragments_active_conv ON memory_fragments(conversation_id, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_fragments_source_raw ON memory_fragments(conversation_id, source_raw_start_id, source_raw_end_id);
+
+      CREATE TABLE IF NOT EXISTS memory_extraction_checkpoints (
+        conversation_id TEXT PRIMARY KEY,
+        last_raw_msg_id INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'idle',
+        last_error TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_relations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_memory_id TEXT NOT NULL,
+        to_memory_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('update','merge','rollback')),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_index_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL,
+        memory_id TEXT,
+        profile TEXT,
+        priority INTEGER NOT NULL DEFAULT 10,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_retrieval_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT,
+        query TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        candidate_sources TEXT NOT NULL DEFAULT '{}',
+        memory_ids TEXT NOT NULL DEFAULT '[]',
+        fallback_reason TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_fragments_fts USING fts5(
+        judgment, reasoning, tags,
+        content='memory_fragments', content_rowid='id'
+      );
+      CREATE TRIGGER IF NOT EXISTS memory_fragments_fts_ai AFTER INSERT ON memory_fragments BEGIN
+        INSERT INTO memory_fragments_fts(rowid, judgment, reasoning, tags)
+        VALUES (new.id, new.judgment, new.reasoning, new.tags);
+      END;
+      CREATE TRIGGER IF NOT EXISTS memory_fragments_fts_ad AFTER DELETE ON memory_fragments BEGIN
+        INSERT INTO memory_fragments_fts(memory_fragments_fts, rowid, judgment, reasoning, tags)
+        VALUES ('delete', old.id, old.judgment, old.reasoning, old.tags);
+      END;
+      CREATE TRIGGER IF NOT EXISTS memory_fragments_fts_au AFTER UPDATE OF judgment, reasoning, tags ON memory_fragments BEGIN
+        INSERT INTO memory_fragments_fts(memory_fragments_fts, rowid, judgment, reasoning, tags)
+        VALUES ('delete', old.id, old.judgment, old.reasoning, old.tags);
+        INSERT INTO memory_fragments_fts(rowid, judgment, reasoning, tags)
+        VALUES (new.id, new.judgment, new.reasoning, new.tags);
+      END;
+    `);
+    const indexJobColumns = new Set(db.prepare(`PRAGMA table_info(memory_index_jobs)`).all().map(c => c.name));
+    if (!indexJobColumns.has('priority')) {
+      db.exec(`ALTER TABLE memory_index_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 10`);
+    }
+    // 失败自动重试的计数列（上限见 memoryRepository.MAX_INDEX_ATTEMPTS）：
+    // 此前索引任务没有 attempts，一次失败就永久停在 failed，只能人工点「重试失败任务」。
+    if (!indexJobColumns.has('attempts')) {
+      db.exec(`ALTER TABLE memory_index_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_queue ON memory_index_jobs(status, priority, id)`);
+    const ftsCount = db.prepare(`SELECT COUNT(*) AS count FROM memory_fragments_fts`).get().count;
+    const memoryCount = db.prepare(`SELECT COUNT(*) AS count FROM memory_fragments`).get().count;
+    if (ftsCount !== memoryCount) {
+      db.prepare(`INSERT INTO memory_fragments_fts(memory_fragments_fts) VALUES ('rebuild')`).run();
+    }
+    db.prepare(`
+      INSERT OR IGNORE INTO system_settings(setting_key, setting_value, updated_at)
+      VALUES ('memory_settings', ?, CURRENT_TIMESTAMP)
+    `).run(JSON.stringify({
+      enabled: true,
+      topK: 7,
+      textCandidates: 24,
+      vectorCandidates: 24,
+      embedding: { enabled: false, provider: 'custom', baseURL: '', apiKey: '', model: '', dimensions: null, headers: {}, timeoutMs: 8000 },
+      reranker: { enabled: false, provider: 'custom', baseURL: '', apiKey: '', model: '', topN: 7, headers: {}, timeoutMs: 8000 },
+    }));
+  } catch (err) {
+    console.error('[db] migrateChatMemoryV2Schema error:', err.message);
+    throw err;
+  }
+}
+
+// 迁移: 记忆 v3 —— MMS 多重表示（keywords/perspectives/episodic_note 为检索单元，semantic_note
+// 为注入单元）、双时态演化列（valid_from/valid_to，替换改为"置失效+保留历史"）、实体与三元组
+// 索引层（平行表，不上图数据库）。设计依据 docs/memory-upgrade-plan.md。
+// 导出供迁移回归测试使用（test/memoryV3Migration.test.js）。
+export function migrateChatMemoryV3Schema(db) {
+  try {
+    const columns = new Set(db.prepare(`PRAGMA table_info(memory_fragments)`).all().map(c => c.name));
+    const additions = [
+      // 检索单元字段（进 FTS / 向量 / LIKE 通道）
+      ['keywords', "TEXT NOT NULL DEFAULT '[]'"],
+      ['perspectives', "TEXT NOT NULL DEFAULT '[]'"],
+      ['episodic_note', "TEXT NOT NULL DEFAULT ''"],
+      // 注入单元字段（只进 <rag_memories>，刻意不进任何检索通道）
+      ['semantic_note', "TEXT NOT NULL DEFAULT ''"],
+      // 双时态演化
+      ['event_time', 'DATETIME'],
+      ['valid_from', 'DATETIME'],
+      ['valid_to', 'DATETIME'],
+      // 强度模型（遗忘曲线，阶段三整理 daemon 消费）
+      ['importance', 'INTEGER NOT NULL DEFAULT 3'],
+      ['strength', 'REAL NOT NULL DEFAULT 1.0'],
+      ['last_reinforced_at', 'DATETIME'],
+      ['retrieval_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ];
+    for (const [name, definition] of additions) {
+      if (!columns.has(name)) db.prepare(`ALTER TABLE memory_fragments ADD COLUMN ${name} ${definition}`).run();
+    }
+
+    const relationColumns = new Set(db.prepare(`PRAGMA table_info(memory_relations)`).all().map(c => c.name));
+    if (!relationColumns.has('relation_meta')) {
+      db.prepare(`ALTER TABLE memory_relations ADD COLUMN relation_meta TEXT`).run();
+    }
+
+    const ddlStatements = [
+      // 存量记忆回填 valid_from（双时态起点）
+      `UPDATE memory_fragments SET valid_from = COALESCE(valid_from, updated_at, created_at, CURRENT_TIMESTAMP) WHERE valid_from IS NULL`,
+
+      // 实体索引层（Mem0 平行实体集合思路：不上图数据库，检索时 boost）
+      `CREATE TABLE IF NOT EXISTS memory_entities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        aliases TEXT NOT NULL DEFAULT '[]',
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        embedding_state TEXT NOT NULL DEFAULT 'disabled',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_entities_name ON memory_entities(name)`,
+
+      `CREATE TABLE IF NOT EXISTS memory_entity_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        role TEXT NOT NULL DEFAULT 'mention',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(memory_id, entity_id, role)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_entity_links_entity ON memory_entity_links(entity_id, memory_id)`,
+
+      // 三元组索引层（阶段二主动回想 query-to-triple 匹配用）
+      `CREATE TABLE IF NOT EXISTS memory_triples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id TEXT NOT NULL,
+        subject_entity_id INTEGER,
+        subject_text TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object_entity_id INTEGER,
+        object_text TEXT NOT NULL,
+        event_time DATETIME,
+        valid_from DATETIME,
+        valid_to DATETIME,
+        embedding_profile TEXT,
+        embedding_state TEXT NOT NULL DEFAULT 'disabled',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_triples_memory ON memory_triples(memory_id)`,
+
+      // 整理任务队列（阶段三 daemon 用；先建表占位，调度器后续接入）
+      `CREATE TABLE IF NOT EXISTS memory_consolidation_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      // 画像升华建议（阶段三 T4 半自动通道）
+      `CREATE TABLE IF NOT EXISTS portrait_suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id INTEGER,
+        field TEXT NOT NULL,
+        current_value TEXT,
+        suggestion TEXT NOT NULL,
+        source_memory_ids TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ];
+    for (const sql of ddlStatements) db.prepare(sql).run();
+
+    // 三元组语料随嵌入 profile 分流（方案 A）的列：存量库补列，旧行 embedding_profile 为空，
+    // 由 memoryRepository 启动时的补嵌任务重新入队（旧向量躺在共享语料 memory_triples_v1 里）。
+    const tripleColumns = new Set(db.prepare(`PRAGMA table_info(memory_triples)`).all().map(c => c.name));
+    if (!tripleColumns.has('embedding_profile')) {
+      db.prepare(`ALTER TABLE memory_triples ADD COLUMN embedding_profile TEXT`).run();
+    }
+
+    upgradeMemoryFtsToV3(db);
+  } catch (err) {
+    console.error('[db] migrateChatMemoryV3Schema error:', err.message);
+    throw err;
+  }
+}
+
+// 迁移: 记忆整理"已处理"记账表 + 维护索引。
+//
+// 背景：T1/T2/T4/T5 的候选发现只按时间窗/状态筛选，模型判定"无关 / 归纳不出结论 / 补不出字段"
+// 时不产生任何内容写入，候选就不会消失——daemon 每轮扫描（默认 5 分钟、空闲时全程为真）
+// 会把同一批候选重复送进 LLM。本表按 (job_type, mark_key) 记账并带 TTL
+// （TTL 常量见 services/memory/memoryConsolidation.js），过期行由 T3 维护清理删除。
+//
+// 键约定：conflict=memory_id、generalize=会话|实体|主体、portrait_suggest=会话、backfill=memory_id。
+// 导出供迁移回归测试使用（test/memoryConsolidationMarks.test.js）。
+export function migrateMemoryConsolidationMarks(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_consolidation_marks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL,
+        mark_key TEXT NOT NULL,
+        marked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(job_type, mark_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_consolidation_jobs_type
+        ON memory_consolidation_jobs(job_type, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_memory_retrieval_audits_created
+        ON memory_retrieval_audits(created_at);
+    `);
+  } catch (err) {
+    console.error('[db] migrateMemoryConsolidationMarks error:', err.message);
+    throw err;
+  }
+}
+
+// 迁移: 把整理 daemon 的显式配置写进既有 memory_settings 行。
+//
+// 背景：memory_settings 只在首次运行时 INSERT OR IGNORE，老库里根本没有 consolidation 块，
+// 一直靠 normalizeMemorySettings 的默认值兜底——库里看不出实际生效的节奏，旧键
+// dailyMaxLlmCalls（语义本就是"每日总量"）也一直残留。这里做一次幂等的显式化：
+//   - 只动 consolidation 一个键，其余配置逐字保留；
+//   - dailyMaxLlmCalls → dailyLlmCalls（语义归位，避免被读成"每轮预算"）；
+//   - 已有值不覆盖（用户手改过就以用户为准），只补缺失键。
+// 全新库由 migrateChatMemoryV2Schema 的种子行覆盖，本函数直接跳过。
+// 注意：这里的数值不在这里做钳制，读取侧 memoryConfig.normalizeMemorySettings 统一钳制。
+// 导出供迁移回归测试使用（test/consolidation.test.js）。
+export function migrateMemoryConsolidationSettings(db) {
+  try {
+    const row = db.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'memory_settings'`).get();
+    if (!row) return { skipped: 'no-settings' };
+
+    let stored = {};
+    try { stored = JSON.parse(row.setting_value) || {}; } catch { stored = {}; }
+    const current = stored.consolidation && typeof stored.consolidation === 'object' && !Array.isArray(stored.consolidation)
+      ? stored.consolidation
+      : {};
+
+    const fields = ['enabled', 'idleDelayMinutes', 'minIntervalMinutes', 'llmCallsPerRun', 'dailyLlmCalls', 'portraitSuggest'];
+    const missing = fields.some(field => current[field] === undefined);
+    const hasLegacyKey = current.dailyMaxLlmCalls !== undefined;
+    if (!missing && !hasLegacyKey) return { skipped: 'up-to-date' };
+
+    const next = {
+      enabled: current.enabled === undefined ? true : Boolean(current.enabled),
+      idleDelayMinutes: current.idleDelayMinutes === undefined ? 30 : current.idleDelayMinutes,
+      minIntervalMinutes: current.minIntervalMinutes === undefined ? 60 : current.minIntervalMinutes,
+      llmCallsPerRun: current.llmCallsPerRun === undefined ? 3 : current.llmCallsPerRun,
+      dailyLlmCalls: current.dailyLlmCalls ?? current.dailyMaxLlmCalls ?? 60,
+      // 用户显式开启过 T4 就必须保留：白名单漏掉这个键会把「开」悄悄改回「关」
+      portraitSuggest: current.portraitSuggest === undefined ? false : Boolean(current.portraitSuggest),
+    };
+    stored.consolidation = next;
+    db.prepare(`
+      UPDATE system_settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP WHERE setting_key = 'memory_settings'
+    `).run(JSON.stringify(stored));
+    console.log(`[db] migrateMemoryConsolidationSettings: consolidation 已显式化 ${JSON.stringify(next)}`);
+    return { updated: true, consolidation: next };
+  } catch (err) {
+    // 配置显式化失败不应阻止启动：读取侧仍有默认值兜底
+    console.warn('[db] migrateMemoryConsolidationSettings skipped:', err.message);
+    return { error: err.message };
+  }
+}
+
+// 迁移: 把 v3 / activeSearch / contextBudget 三个阶段开关块与 useBuiltin / recordUnengagedEvents
+// 显式写进既有 memory_settings 行。
+//
+// 背景：memory_settings 只在首次运行时 INSERT OR IGNORE，老库里这些键根本不存在，一直靠
+// normalizeMemorySettings 的默认值兜底——从库里读不出实际生效值，将来修改代码默认值时老库还会
+// 静默跟随新默认（排障时"为什么行为和文档不一样"往往就出在这里）。这里做一次幂等显式化：
+//   - 只补缺失键，已有值一律不覆盖（用户手改过就以用户为准）；
+//   - 不做范围钳制，钳制统一在读取侧 normalizeMemorySettings（与 migrateMemoryConsolidationSettings 同口径）；
+//   - 数值与 memoryConfig.DEFAULT_MEMORY_SETTINGS 保持同步（本文件不能 import 它，会形成循环依赖）。
+export function migrateMemorySettingsExplicitBlocks(db) {
+  try {
+    const row = db.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'memory_settings'`).get();
+    if (!row) return { skipped: 'no-settings' };
+
+    let stored = {};
+    try { stored = JSON.parse(row.setting_value) || {}; } catch { stored = {}; }
+
+    const blockDefaults = {
+      v3: { enabled: true },
+      activeSearch: { enabled: false, timeoutMs: 4000 },
+      contextBudget: { enabled: false, dynamicTokens: 8000 },
+    };
+    let changed = false;
+    for (const [key, defaults] of Object.entries(blockDefaults)) {
+      const current = stored[key];
+      if (current && typeof current === 'object' && !Array.isArray(current)) {
+        for (const [field, fallback] of Object.entries(defaults)) {
+          if (current[field] === undefined) { current[field] = fallback; changed = true; }
+        }
+      } else {
+        stored[key] = { ...defaults };
+        changed = true;
+      }
+    }
+    if (stored.recordUnengagedEvents === undefined) { stored.recordUnengagedEvents = true; changed = true; }
+    for (const key of ['embedding', 'reranker']) {
+      const provider = stored[key];
+      if (provider && typeof provider === 'object' && !Array.isArray(provider) && provider.useBuiltin === undefined) {
+        provider.useBuiltin = true;
+        changed = true;
+      }
+    }
+    if (!changed) return { skipped: 'up-to-date' };
+
+    db.prepare(`UPDATE system_settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP WHERE setting_key = 'memory_settings'`)
+      .run(JSON.stringify(stored));
+    console.log('[db] migrateMemorySettingsExplicitBlocks: v3/activeSearch/contextBudget 等开关已显式化');
+    return { updated: true, keys: [...Object.keys(blockDefaults), 'recordUnengagedEvents', 'useBuiltin'] };
+  } catch (err) {
+    // 配置显式化失败不应阻止启动：读取侧仍有默认值兜底
+    console.warn('[db] migrateMemorySettingsExplicitBlocks skipped:', err.message);
+    return { error: err.message };
+  }
+}
+
+// FTS 扩列 3 → 6 列：外部内容表无法 ALTER，需删表重建 + 全量 rebuild。
+// semantic_note 刻意不进 FTS（高层语义提炼与提问语言形态脱节，混入降低召回，见方案 §2）。
+function upgradeMemoryFtsToV3(db) {
+  const ftsSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_fragments_fts'`).get();
+  if (!ftsSql || /keywords/i.test(ftsSql.sql || '')) return;
+  const ddlStatements = [
+    `DROP TRIGGER IF EXISTS memory_fragments_fts_ai`,
+    `DROP TRIGGER IF EXISTS memory_fragments_fts_ad`,
+    `DROP TRIGGER IF EXISTS memory_fragments_fts_au`,
+    `DROP TABLE IF EXISTS memory_fragments_fts`,
+    `CREATE VIRTUAL TABLE memory_fragments_fts USING fts5(
+      judgment, reasoning, tags, keywords, perspectives, episodic_note,
+      content='memory_fragments', content_rowid='id'
+    )`,
+    `CREATE TRIGGER memory_fragments_fts_ai AFTER INSERT ON memory_fragments BEGIN
+      INSERT INTO memory_fragments_fts(rowid, judgment, reasoning, tags, keywords, perspectives, episodic_note)
+      VALUES (new.id, new.judgment, new.reasoning, new.tags, new.keywords, new.perspectives, new.episodic_note);
+    END`,
+    `CREATE TRIGGER memory_fragments_fts_ad AFTER DELETE ON memory_fragments BEGIN
+      INSERT INTO memory_fragments_fts(memory_fragments_fts, rowid, judgment, reasoning, tags, keywords, perspectives, episodic_note)
+      VALUES ('delete', old.id, old.judgment, old.reasoning, old.tags, old.keywords, old.perspectives, old.episodic_note);
+    END`,
+    `CREATE TRIGGER memory_fragments_fts_au AFTER UPDATE OF judgment, reasoning, tags, keywords, perspectives, episodic_note ON memory_fragments BEGIN
+      INSERT INTO memory_fragments_fts(memory_fragments_fts, rowid, judgment, reasoning, tags, keywords, perspectives, episodic_note)
+      VALUES ('delete', old.id, old.judgment, old.reasoning, old.tags, old.keywords, old.perspectives, old.episodic_note);
+      INSERT INTO memory_fragments_fts(rowid, judgment, reasoning, tags, keywords, perspectives, episodic_note)
+      VALUES (new.id, new.judgment, new.reasoning, new.tags, new.keywords, new.perspectives, new.episodic_note);
+    END`,
+    `INSERT INTO memory_fragments_fts(memory_fragments_fts) VALUES ('rebuild')`,
+  ];
+  for (const sql of ddlStatements) db.prepare(sql).run();
+  console.log('[db] memory_fragments_fts upgraded to v3 (6-column) and rebuilt');
+}
+
+// 清理历史遗留的 system_settings 键（idempotent）
+function migrateSystemSettings(db) {
+  // 合并 feature_memoryExtract → feature_memory（v2 迁移）
+  const oldExtract = db.prepare(
+    `SELECT setting_value FROM system_settings WHERE setting_key = 'feature_memoryExtract'`
+  ).get();
+  if (oldExtract) {
+    if (oldExtract.setting_value === 'true') {
+      db.prepare(
+        `INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES ('feature_memory', 'true', CURRENT_TIMESTAMP)`
+      ).run();
+      console.log('[db] migration: merged feature_memoryExtract=true → feature_memory=true');
+    }
+    db.prepare(`DELETE FROM system_settings WHERE setting_key = 'feature_memoryExtract'`).run();
+    console.log('[db] migration: removed orphaned feature_memoryExtract row');
+  }
+
+  // 清理旧的 snake_case 键（v1 迁移）
+  const OLD_SNAKE_CASE_KEYS = [
+    'feature_memory_extract', 'feature_auto_image_judge', 'feature_prompt_optimize',
+    'feature_reply_guesses', 'feature_force_image_gen',
+  ];
+  const cleaned = db.prepare(
+    `DELETE FROM system_settings WHERE setting_key IN (${OLD_SNAKE_CASE_KEYS.map(() => '?').join(',')})`
+  ).run(...OLD_SNAKE_CASE_KEYS);
+  if (cleaned.changes > 0) {
+    console.log(`[db] system_settings: cleaned ${cleaned.changes} legacy snake_case key(s)`);
+  }
+}
+
+// loadSystemSettings 已移至 db/settings.js（config 作为参数传入，避免反向依赖 config 之外的耦合）
+

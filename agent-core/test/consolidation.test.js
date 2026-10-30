@@ -1,0 +1,899 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
+import {
+  computeStrength, pickAnchorTime, HALF_LIFE_DAYS, ARCHIVE_THRESHOLD,
+  aggregateRetrievalAudits, decayAndArchiveMemories, scanVectorTombstones,
+  findConflictClusters, findGeneralizationGroups, findPortraitSuggestionConversations,
+  findBackfillCandidates,
+  runConflictResolutionTask, runGeneralizationTask, runPortraitSuggestionTask, runBackfillTask,
+  runDecayTask, runTombstoneTask,
+  markConsolidated, listActiveMarks, RECONSOLIDATE_AFTER_DAYS, pruneConsolidationArtifacts,
+} from '../src/services/memory/memoryConsolidation.js';
+import { insertGeneralizedMemory } from '../src/services/memory/memoryRepository.js';
+import { migrateMemoryConsolidationMarks, migrateMemoryConsolidationSettings } from '../src/db/index.js';
+
+// ── 测试库：阶段三涉及的最小表集合 ──
+
+function daysAgo(days) {
+  return new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function createDb() {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE memory_fragments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id TEXT UNIQUE NOT NULL,
+      conversation_id TEXT,
+      source_msg_id INTEGER,
+      fragment_type TEXT NOT NULL DEFAULT 'fact',
+      content TEXT,
+      entities TEXT,
+      content_hash TEXT,
+      memory_type TEXT NOT NULL DEFAULT 'knowledge',
+      subject TEXT NOT NULL DEFAULT 'user',
+      judgment TEXT NOT NULL,
+      reasoning TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
+      keywords TEXT,
+      perspectives TEXT,
+      episodic_note TEXT,
+      semantic_note TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      event_time DATETIME,
+      valid_from DATETIME,
+      valid_to DATETIME,
+      importance INTEGER NOT NULL DEFAULT 3,
+      strength REAL NOT NULL DEFAULT 1.0,
+      retrieval_count INTEGER NOT NULL DEFAULT 0,
+      last_reinforced_at DATETIME,
+      embedding_state TEXT NOT NULL DEFAULT 'disabled',
+      embedding_profile TEXT,
+      embedding_error TEXT,
+      chroma_id TEXT,
+      source_raw_start_id INTEGER,
+      source_raw_end_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE memory_entities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      mention_count INTEGER NOT NULL DEFAULT 1,
+      aliases TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE memory_entity_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id TEXT NOT NULL,
+      entity_id INTEGER NOT NULL,
+      role TEXT NOT NULL DEFAULT 'mention'
+    );
+    CREATE TABLE memory_triples (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id TEXT NOT NULL,
+      subject_text TEXT NOT NULL,
+      predicate TEXT NOT NULL,
+      object_text TEXT NOT NULL,
+      valid_to DATETIME,
+      embedding_state TEXT NOT NULL DEFAULT 'disabled',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE memory_relations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_memory_id TEXT,
+      to_memory_id TEXT,
+      action TEXT,
+      relation_meta TEXT
+    );
+    CREATE TABLE memory_index_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_type TEXT NOT NULL,
+      memory_id TEXT,
+      profile TEXT,
+      priority INTEGER NOT NULL DEFAULT 10,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE memory_retrieval_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT,
+      query TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      candidate_sources TEXT NOT NULL DEFAULT '{}',
+      memory_ids TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE memory_consolidation_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_type TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE memory_consolidation_marks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_type TEXT NOT NULL,
+      mark_key TEXT NOT NULL,
+      marked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(job_type, mark_key)
+    );
+    CREATE TABLE system_settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE portrait_suggestions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER,
+      field TEXT NOT NULL,
+      current_value TEXT,
+      suggestion TEXT NOT NULL,
+      source_memory_ids TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE user_portraits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER,
+      trait_type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      confidence REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(character_id, trait_type, content)
+    );
+  `);
+  return db;
+}
+
+function insertFragment(db, { memoryId, type = 'knowledge', importance = 3, judgment = '测试记忆', eventTime = null, lastReinforcedAt = null, retrievalCount = 0, chromaId = null, embeddingState = 'disabled', conversationId = 'char_1', createdAt = null, keywords = null }) {
+  db.prepare(`
+    INSERT INTO memory_fragments(memory_id, conversation_id, memory_type, subject, judgment, tags, status, event_time, last_reinforced_at, retrieval_count, chroma_id, embedding_state, keywords, importance, created_at, updated_at)
+    VALUES (?, ?, ?, 'user', ?, '["测试"]', 'active', ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+  `).run(memoryId, conversationId, type, judgment, eventTime, lastReinforcedAt, retrievalCount, chromaId, embeddingState, keywords, importance, createdAt);
+}
+
+function linkEntity(db, memoryId, entityName) {
+  const existing = db.prepare(`SELECT id FROM memory_entities WHERE name = ?`).get(entityName);
+  const entityId = existing?.id ?? db.prepare(`INSERT INTO memory_entities(name) VALUES (?)`).run(entityName).lastInsertRowid;
+  db.prepare(`INSERT INTO memory_entity_links(memory_id, entity_id, role) VALUES (?, ?, 'subject')`).run(memoryId, entityId);
+  return entityId;
+}
+
+// ── 遗忘曲线纯函数 ──
+
+test('computeStrength：时间越久越弱、召回越多越强、半衰期按类型区分', () => {
+  const fresh = computeStrength({ importance: 5, daysSinceAnchor: 0, halfLifeDays: 180 });
+  const old = computeStrength({ importance: 5, daysSinceAnchor: 360, halfLifeDays: 180 });
+  assert.ok(fresh > old);
+  // 召回加成：同参数下有召回的强度更高（对数项）
+  const recalled = computeStrength({ importance: 3, daysSinceAnchor: 30, halfLifeDays: 60, retrievalCount: 9 });
+  const notRecalled = computeStrength({ importance: 3, daysSinceAnchor: 30, halfLifeDays: 60 });
+  assert.ok(recalled > notRecalled);
+  // 半衰期差异：event(14d) 衰减远快于 knowledge(180d)
+  const eventOld = computeStrength({ importance: 5, daysSinceAnchor: 60, halfLifeDays: HALF_LIFE_DAYS.event });
+  const knowledgeOld = computeStrength({ importance: 5, daysSinceAnchor: 60, halfLifeDays: HALF_LIFE_DAYS.knowledge });
+  assert.ok(eventOld < knowledgeOld);
+  assert.equal(HALF_LIFE_DAYS.event, 14);
+  assert.equal(ARCHIVE_THRESHOLD, 0.15);
+});
+
+test('pickAnchorTime：取最新时间戳并兼容空格/T 两种分隔', () => {
+  const anchor = pickAnchorTime({
+    last_reinforced_at: daysAgo(3),
+    event_time: daysAgo(40),
+    created_at: daysAgo(50),
+    updated_at: daysAgo(0.001),  // 刻意排除：非内容写入不应重置衰减锚点
+  });
+  assert.ok(Math.abs((Date.now() - anchor.getTime()) / 86400000 - 3) < 1);
+  assert.equal(pickAnchorTime({}), null);
+});
+
+// ── T3 审计聚合 ──
+
+test('aggregateRetrievalAudits：JSON 数组展开统计命中数与最近召回时间', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_a' });
+  insertFragment(db, { memoryId: 'mem_b' });
+  db.prepare(`INSERT INTO memory_retrieval_audits(query, mode, memory_ids, created_at) VALUES ('q', 'passive', '["mem_a","mem_b"]', ?)`).run(daysAgo(1));
+  db.prepare(`INSERT INTO memory_retrieval_audits(query, mode, memory_ids, created_at) VALUES ('q2', 'passive', '["mem_a"]', ?)`).run(daysAgo(2));
+  const count = aggregateRetrievalAudits(db, { sinceDays: 90 });
+  assert.equal(count, 2);
+  const a = db.prepare(`SELECT retrieval_count, last_reinforced_at FROM memory_fragments WHERE memory_id = 'mem_a'`).get();
+  assert.equal(a.retrieval_count, 2);
+  assert.ok(a.last_reinforced_at);
+  const b = db.prepare(`SELECT retrieval_count FROM memory_fragments WHERE memory_id = 'mem_b'`).get();
+  assert.equal(b.retrieval_count, 1);
+  db.close();
+});
+
+// ── T3 衰减归档 ──
+
+test('decayAndArchiveMemories：新鲜记忆保留、久远低重要度记忆归档且三元组连带失效', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_fresh', importance: 5, lastReinforcedAt: daysAgo(1), createdAt: daysAgo(1) });
+  insertFragment(db, { memoryId: 'mem_old', type: 'event', importance: 2, eventTime: daysAgo(60), chromaId: 'chroma_1', embeddingState: 'indexed', createdAt: daysAgo(60) });
+  db.prepare(`INSERT INTO memory_triples(memory_id, subject_text, predicate, object_text, embedding_state) VALUES ('mem_old', '她', '养', '狗', 'indexed')`).run();
+  const deleted = [];
+  const tripleDeleted = [];
+  const result = decayAndArchiveMemories(db, {
+    enqueueDelete: (id) => deleted.push(id),
+    enqueueTripleDelete: (id) => tripleDeleted.push(id),
+  });
+  assert.equal(result.scanned, 2);
+  assert.deepEqual(result.archived.map(item => item.memoryId), ['mem_old']);
+  // 归档明细可解释：含强度构成
+  assert.ok(result.archived[0].reason.includes('半衰期 14 天'));
+  // 强度写回
+  const freshRow = db.prepare(`SELECT strength, status FROM memory_fragments WHERE memory_id = 'mem_fresh'`).get();
+  assert.equal(freshRow.status, 'active');
+  assert.ok(freshRow.strength > 0.15);
+  // 归档记忆出检索通道 + 向量墓碑 + 三元组失效
+  const oldRow = db.prepare(`SELECT status FROM memory_fragments WHERE memory_id = 'mem_old'`).get();
+  assert.equal(oldRow.status, 'archived');
+  assert.deepEqual(deleted, ['mem_old']);
+  assert.equal(tripleDeleted.length, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM memory_triples WHERE memory_id = 'mem_old' AND valid_to IS NULL`).get().c, 0);
+  db.close();
+});
+
+test('runDecayTask 组合：审计聚合 + 衰减一次完成', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_x', importance: 1, type: 'event', eventTime: daysAgo(90), createdAt: daysAgo(90) });
+  const result = runDecayTask({ db, enqueueDelete: () => {}, enqueueTripleDelete: () => {} });
+  assert.equal(result.scanned, 1);
+  assert.equal(result.archived.length, 1);
+  db.close();
+});
+
+// ── T6 墓碑扫描 ──
+
+test('scanVectorTombstones：残留向量补发 delete，幂等不重复入队', () => {
+  const db = createDb();
+  // 已被 update 替代的记忆：chroma_id 还在，且没有任何 delete 任务 → 应补发
+  db.prepare(`
+    INSERT INTO memory_fragments(memory_id, conversation_id, judgment, tags, status, chroma_id, embedding_state, updated_at)
+    VALUES ('mem_sup', 'c1', '旧记忆', '[]', 'superseded', 'chroma_x', 'indexed', CURRENT_TIMESTAMP)
+  `).run();
+  // 三元组已失效但仍 indexed → 应补发并置 disabled
+  db.prepare(`INSERT INTO memory_triples(memory_id, subject_text, predicate, object_text, valid_to, embedding_state) VALUES ('mem_sup', '她', '在', '城南', CURRENT_TIMESTAMP, 'indexed')`).run();
+  const deleted = [];
+  const tripleDeleted = [];
+  const first = scanVectorTombstones(db, { enqueueDelete: id => deleted.push(id), enqueueTripleDelete: id => tripleDeleted.push(id) });
+  assert.equal(first.fragments, 1);
+  assert.equal(first.triples, 1);
+  assert.deepEqual(deleted, ['mem_sup']);
+  // 幂等：补一个晚于状态变更的 completed delete 任务后不再入队
+  db.prepare(`
+    INSERT INTO memory_index_jobs(job_type, memory_id, status, updated_at)
+    VALUES ('delete', 'mem_sup', 'completed', CURRENT_TIMESTAMP)
+  `).run();
+  const second = scanVectorTombstones(db, { enqueueDelete: id => deleted.push(id), enqueueTripleDelete: id => tripleDeleted.push(id) });
+  assert.equal(second.fragments, 0);
+  assert.equal(deleted.length, 1);
+  // 三元组入队后 embedding_state 变 disabled，第二遍不再命中
+  assert.equal(second.triples, 0);
+  db.close();
+});
+
+test('runTombstoneTask 组合返回统计', () => {
+  const db = createDb();
+  const result = runTombstoneTask({ db, enqueueDelete: () => {}, enqueueTripleDelete: () => {} });
+  assert.equal(result.fragments, 0);
+  assert.equal(result.done, true);
+  db.close();
+});
+
+// ── T1/T2 候选发现 ──
+
+test('findConflictClusters：共享实体且更新的记忆组成候选簇', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_old1', judgment: '她讨厌狗', createdAt: daysAgo(30) });
+  insertFragment(db, { memoryId: 'mem_new1', judgment: '她收养了一只流浪狗', createdAt: daysAgo(1) });
+  insertFragment(db, { memoryId: 'mem_other', judgment: '无关记忆', createdAt: daysAgo(0.5) });
+  linkEntity(db, 'mem_old1', '狗');
+  linkEntity(db, 'mem_new1', '狗');
+  linkEntity(db, 'mem_other', '天气');
+  const clusters = findConflictClusters(db, { sinceDays: 7 });
+  assert.equal(clusters.length, 1);
+  const ids = clusters[0].memories.map(m => m.memory_id);
+  assert.ok(ids.includes('mem_new1'));
+  assert.ok(ids.includes('mem_old1'));
+  assert.ok(!ids.includes('mem_other'));
+  db.close();
+});
+
+test('findGeneralizationGroups：同实体同主体的多条情景记忆跨 14 天成组', () => {
+  const db = createDb();
+  for (const [id, days] of [['mem_ev0', 30], ['mem_ev1', 18], ['mem_ev2', 5]]) {
+    insertFragment(db, { memoryId: id, type: 'event', judgment: `情景记录${id}`, eventTime: daysAgo(days), conversationId: 'char_1' });
+    linkEntity(db, id, '感冒');
+  }
+  const groups = findGeneralizationGroups(db);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].entity_name, '感冒');
+  assert.ok(groups[0].members.length >= 3);
+  db.close();
+});
+
+test('findBackfillCandidates 与 findPortraitSuggestionConversations', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_legacy', judgment: '旧格式记忆', keywords: null, createdAt: daysAgo(10) });
+  // v3 字段全部填齐 + 已有实体链接的记忆不是回填候选
+  db.prepare(`UPDATE memory_fragments SET keywords = '["已补"]', perspectives = '["饮食"]', semantic_note = '已完整' WHERE memory_id = 'mem_legacy'`).run();
+  const entityId = db.prepare(`INSERT INTO memory_entities(name) VALUES ('花生')`).run().lastInsertRowid;
+  db.prepare(`INSERT INTO memory_entity_links(memory_id, entity_id, role) VALUES (?, ?, 'subject')`).run('mem_legacy', entityId);
+  insertFragment(db, { memoryId: 'mem_legacy2', judgment: '另一条旧记忆', keywords: null, createdAt: daysAgo(20) });
+  const backfill = findBackfillCandidates(db);
+  assert.deepEqual(backfill.map(row => row.memory_id), ['mem_legacy2']);
+  // v3 字段齐全但一条实体链接都没有 → 仍是候选：实体只在写入时按 v3 entities 数组建链，
+  // tags 无法可靠还原实体，只能再问一次模型，否则第四路召回永远命中不了这条记忆
+  db.prepare(`UPDATE memory_fragments SET keywords = '["有"]', perspectives = '["x"]', semantic_note = '有' WHERE memory_id = 'mem_legacy2'`).run();
+  assert.deepEqual(findBackfillCandidates(db).map(row => row.memory_id), ['mem_legacy2']);
+  // 高重要度 knowledge（char_ 会话）→ 画像建议候选
+  insertFragment(db, { memoryId: 'mem_core', judgment: '用户对花生过敏', type: 'knowledge', importance: 5, conversationId: 'char_7' });
+  const conversations = findPortraitSuggestionConversations(db, { minImportance: 4 });
+  assert.equal(conversations.length, 1);
+  assert.equal(conversations[0].characterId, 7);
+  assert.equal(conversations[0].memories[0].memory_id, 'mem_core');
+  db.close();
+});
+
+// ── LLM 任务 runner（注入 mock，不触真实 LLM）──
+
+test('runConflictResolutionTask：矛盾决议走 update 双时态失效', async () => {
+  const db = createDb();
+  const cluster = {
+    conversationId: 'char_1',
+    memories: [
+      { memory_id: 'mem_old1', memory_type: 'knowledge', subject: 'user', judgment: '她讨厌狗', semantic_note: null, source_raw_start_id: 1, source_raw_end_id: 2 },
+      { memory_id: 'mem_new1', memory_type: 'event', subject: 'user', judgment: '她收养了一只流浪狗', semantic_note: null, source_raw_start_id: 3, source_raw_end_id: 4 },
+    ],
+  };
+  const calls = [];
+  const result = await runConflictResolutionTask({
+    clusters: [cluster],
+    llmBudgetRemaining: 2,
+    deps: {
+      chatSync: async () => JSON.stringify({
+        resolutions: [{ type: 'conflict', outdatedMemoryId: 'mem_old1', updatedFact: '她现在很爱狗，还收养了流浪狗', memoryType: 'knowledge', subject: 'user', reasoning: '前后矛盾，以新事实为准', tags: ['狗'] }],
+      }),
+      applyMemoryActions: (args) => calls.push(args),
+    },
+  });
+  assert.equal(result.llmCalls, 1);
+  assert.equal(result.applied, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].actions[0].action, 'update');
+  assert.deepEqual(calls[0].actions[0].sourceMemoryIds, ['mem_old1']);
+  db.close();
+});
+
+test('runConflictResolutionTask：预算耗尽提前停并报告未完成', async () => {
+  const clusters = [{ conversationId: 'c', memories: [{ memory_id: 'a', judgment: 'x' }] }, { conversationId: 'c', memories: [{ memory_id: 'b', judgment: 'y' }] }];
+  let calls = 0;
+  const result = await runConflictResolutionTask({
+    clusters,
+    llmBudgetRemaining: 1,
+    deps: { chatSync: async () => { calls++; return '{"resolutions":[]}'; }, applyMemoryActions: () => {} },
+  });
+  assert.equal(result.llmCalls, 1);
+  assert.equal(result.done, false);
+});
+
+test('runGeneralizationTask：归纳结果经 insertGeneralizedMemory 落库，原记忆保留', async () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_ev0', type: 'event', judgment: '换季感冒了', eventTime: daysAgo(30) });
+  insertFragment(db, { memoryId: 'mem_ev1', type: 'event', judgment: '又换季感冒', eventTime: daysAgo(15) });
+  insertFragment(db, { memoryId: 'mem_ev2', type: 'event', judgment: '换季又感冒了', eventTime: daysAgo(3) });
+  linkEntity(db, 'mem_ev0', '感冒');
+  linkEntity(db, 'mem_ev1', '感冒');
+  linkEntity(db, 'mem_ev2', '感冒');
+  const groups = findGeneralizationGroups(db);
+  const result = await runGeneralizationTask({
+    groups,
+    llmBudgetRemaining: 1,
+    deps: {
+      db,
+      chatSync: async () => JSON.stringify({
+        generalization: { judgment: '用户体质偏弱，换季容易感冒', semanticNote: '他一到换季就感冒', reasoning: '三条独立记录', tags: ['健康'], importance: 4 },
+      }),
+      insertGeneralizedMemory: (args) => insertGeneralizedMemory({ ...args, db, profile: null, wake: () => {} }),
+    },
+  });
+  assert.equal(result.applied, 1);
+  // 新 knowledge 记忆存在且原情景记忆保留、importance 降 1
+  const derived = db.prepare(`SELECT memory_id, memory_type, judgment FROM memory_fragments WHERE memory_type = 'knowledge' AND judgment LIKE '%换季%'`).get();
+  assert.ok(derived, '泛化记忆应落库');
+  const source = db.prepare(`SELECT status, importance FROM memory_fragments WHERE memory_id = 'mem_ev0'`).get();
+  assert.equal(source.status, 'active');
+  assert.equal(source.importance, 2); // 3 - 1
+  const relation = db.prepare(`SELECT action, relation_meta FROM memory_relations WHERE to_memory_id = ?`).get(derived.memory_id);
+  assert.equal(relation.action, 'merge');
+  assert.equal(JSON.parse(relation.relation_meta).kind, 'generalize');
+  db.close();
+});
+
+test('runPortraitSuggestionTask：建议入 pending 队列且与已有画像去重', async () => {
+  const db = createDb();
+  db.prepare(`INSERT INTO user_portraits(character_id, trait_type, content, confidence) VALUES (7, 'personality', '用户很细心', 1.0)`).run();
+  const conversations = [{ characterId: 7, conversationId: 'char_7', memories: [{ memory_id: 'mem_c1', judgment: '用户记得所有纪念日', semantic_note: null, importance: 5 }] }];
+  const result = await runPortraitSuggestionTask({
+    conversations,
+    llmBudgetRemaining: 1,
+    deps: {
+      db,
+      chatSync: async () => JSON.stringify({
+        suggestions: [
+          { field: 'personality', suggestion: '用户记得所有纪念日，非常细心', sourceMemoryIds: ['mem_c1'] },
+          { field: 'personality', suggestion: '用户很细心' },  // 与已有画像重复 → 跳过
+        ],
+      }),
+    },
+  });
+  assert.equal(result.suggestions, 1);
+  const pending = db.prepare(`SELECT field, suggestion, source_memory_ids, status FROM portrait_suggestions WHERE character_id = 7`).all();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].status, 'pending');
+  assert.deepEqual(JSON.parse(pending[0].source_memory_ids), ['mem_c1']);
+  db.close();
+});
+
+test('findPortraitSuggestionConversations：pending 积压达上限的会话先跳过', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_sat', judgment: '用户对花生过敏', importance: 5, conversationId: 'char_7' });
+  insertFragment(db, { memoryId: 'mem_free', judgment: '用户喜欢夜跑', importance: 4, conversationId: 'char_8' });
+  const insert = db.prepare(`INSERT INTO portrait_suggestions(character_id, field, suggestion, source_memory_ids, status) VALUES (?, 'personality', ?, '[]', 'pending')`);
+  for (let i = 0; i < 3; i++) insert.run(7, `积压建议${i}`);
+  // 上限 3：char_7 已满 → 本轮只轮到 char_8
+  assert.deepEqual(findPortraitSuggestionConversations(db, { maxPending: 3 }).map(c => c.characterId), [8]);
+  // 人工处理掉积压后 char_7 重新进入候选
+  db.prepare(`UPDATE portrait_suggestions SET status = 'rejected' WHERE character_id = 7`).run();
+  assert.deepEqual(findPortraitSuggestionConversations(db, { maxPending: 3 }).map(c => c.characterId).sort(), [7, 8]);
+  db.close();
+});
+
+test('runPortraitSuggestionTask：归一化去重挡住纯标点差异的重复建议', async () => {
+  const db = createDb();
+  db.prepare(`INSERT INTO portrait_suggestions(character_id, field, suggestion, source_memory_ids, status) VALUES (7, 'personality', '用户很细心。', '[]', 'pending')`).run();
+  const conversations = [{ characterId: 7, conversationId: 'char_7', memories: [{ memory_id: 'mem_c1', judgment: '用户记得所有纪念日', semantic_note: null, importance: 5 }] }];
+  const result = await runPortraitSuggestionTask({
+    conversations,
+    llmBudgetRemaining: 1,
+    deps: {
+      db,
+      chatSync: async () => JSON.stringify({
+        suggestions: [
+          { field: 'personality', suggestion: '用户很细心' },        // 与 pending 仅标点差异 → 跳过
+          { field: 'preference', suggestion: '用户偏好深夜聊天' },
+          { field: 'preference', suggestion: '用户偏好深夜聊天！' }, // 同批内仅标点差异 → 跳过
+        ],
+      }),
+    },
+  });
+  assert.equal(result.suggestions, 1);
+  assert.deepEqual(
+    db.prepare(`SELECT suggestion FROM portrait_suggestions WHERE character_id = 7 AND status = 'pending' ORDER BY id`).all().map(r => r.suggestion),
+    ['用户很细心。', '用户偏好深夜聊天'],
+  );
+  db.close();
+});
+
+test('runPortraitSuggestionTask：待确认建议最多 20 条进 prompt', async () => {
+  const db = createDb();
+  const insert = db.prepare(`INSERT INTO portrait_suggestions(character_id, field, suggestion, source_memory_ids, status) VALUES (7, 'personality', ?, '[]', 'pending')`);
+  for (let i = 1; i <= 25; i++) insert.run(`建议-${String(i).padStart(2, '0')}`);
+  let prompt = '';
+  await runPortraitSuggestionTask({
+    conversations: [{ characterId: 7, conversationId: 'char_7', memories: [{ memory_id: 'mem_c1', judgment: '用户记得所有纪念日', semantic_note: null, importance: 5 }] }],
+    llmBudgetRemaining: 1,
+    deps: { db, chatSync: async messages => { prompt = messages[0].content; return '{"suggestions":[]}'; } },
+  });
+  assert.match(prompt, /建议-25/);
+  assert.doesNotMatch(prompt, /建议-05/);
+  db.close();
+});
+
+test('isLlmJobCoolingDown：portrait_suggest 完成后 24h 内不再入队', async () => {
+  const { isLlmJobCoolingDown } = await import('../src/services/memory/consolidationScheduler.js');
+  const db = createDb();
+  const now = Date.now();
+  const stamp = ms => new Date(now - ms).toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare(`INSERT INTO memory_consolidation_jobs(job_type, status, updated_at) VALUES ('portrait_suggest', 'completed', ?)`).run(stamp(60 * 1000));
+  assert.equal(isLlmJobCoolingDown(db, 'portrait_suggest', now), true);
+  db.prepare(`UPDATE memory_consolidation_jobs SET updated_at = ? WHERE job_type = 'portrait_suggest'`).run(stamp(25 * 3600 * 1000));
+  assert.equal(isLlmJobCoolingDown(db, 'portrait_suggest', now), false);
+  // backfill 无冷却：存量要靠每轮持续消化
+  db.prepare(`INSERT INTO memory_consolidation_jobs(job_type, status, updated_at) VALUES ('backfill', 'completed', ?)`).run(stamp(60 * 1000));
+  assert.equal(isLlmJobCoolingDown(db, 'backfill', now), false);
+  db.close();
+});
+
+test('discoverAndEnqueueJobs：portraitSuggest 关闭时不入队 T4', async () => {
+  const { discoverAndEnqueueJobs } = await import('../src/services/memory/consolidationScheduler.js');
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_core', judgment: '用户对花生过敏', importance: 5, conversationId: 'char_7' });
+  const countT4 = () => db.prepare(`SELECT COUNT(*) c FROM memory_consolidation_jobs WHERE job_type = 'portrait_suggest'`).get().c;
+  discoverAndEnqueueJobs(db, 6, { portraitSuggest: false, v3Enabled: true });
+  assert.equal(countT4(), 0, '默认关闭时不应入队 T4');
+  discoverAndEnqueueJobs(db, 6, { portraitSuggest: true, v3Enabled: true });
+  assert.equal(countT4(), 1, '显式打开后才入队');
+  db.close();
+});
+
+test('runBackfillTask：补齐 v3 字段并置 stale 触发重嵌入', async () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_legacy', judgment: '用户不吃香菜', keywords: null });
+  const candidates = findBackfillCandidates(db);
+  const result = await runBackfillTask({
+    candidates,
+    llmBudgetRemaining: 1,
+    deps: {
+      db,
+      chatSync: async () => JSON.stringify({
+        items: [{ memoryId: 'mem_legacy', keywords: ['香菜', '饮食'], perspectives: ['饮食习惯'], semanticNote: '她对香菜过敏或不喜好', episodicNote: '', importance: 4 }],
+      }),
+    },
+  });
+  assert.equal(result.updated, 1);
+  const row = db.prepare(`SELECT keywords, perspectives, semantic_note, importance, embedding_state FROM memory_fragments WHERE memory_id = 'mem_legacy'`).get();
+  assert.deepEqual(JSON.parse(row.keywords), ['香菜', '饮食']);
+  assert.equal(row.importance, 4);
+  assert.equal(row.embedding_state, 'stale');
+  db.close();
+});
+
+test('runBackfillTask：预算为 0 时直接让位', async () => {
+  const result = await runBackfillTask({ candidates: [{ memory_id: 'x' }], llmBudgetRemaining: 0, deps: {} });
+  assert.equal(result.done, false);
+  assert.equal(result.llmCalls, 0);
+  // 预算让位与模型失败是两件事：前者不是错误，不该被上报成 llmFailures
+  assert.equal(result.llmFailures, 0);
+});
+
+test('runBackfillTask：补出实体时写入 memory_entity_links，且只补实体不置 stale', async () => {
+  const db = createDb();
+  // 该记忆 v3 检索字段齐全、但没有任何实体链接 → 仍在候选里（第四路召回需要它）
+  insertFragment(db, { memoryId: 'mem_noentity', judgment: '用户养了一只叫团子的猫' });
+  db.prepare(`UPDATE memory_fragments SET keywords = '["猫"]', perspectives = '["生活"]', semantic_note = '养了只猫叫团子' WHERE memory_id = 'mem_noentity'`).run();
+  db.prepare(`UPDATE memory_fragments SET embedding_state = 'indexed' WHERE memory_id = 'mem_noentity'`).run();
+  const before = db.prepare(`SELECT updated_at, embedding_state FROM memory_fragments WHERE memory_id = 'mem_noentity'`).get();
+
+  const result = await runBackfillTask({
+    candidates: findBackfillCandidates(db),
+    llmBudgetRemaining: 1,
+    deps: {
+      db,
+      chatSync: async () => JSON.stringify({
+        items: [{ memoryId: 'mem_noentity', keywords: [], perspectives: [], semanticNote: '', episodicNote: '', importance: 3,
+          entities: [{ name: '团子', role: 'object' }, { name: '狸花猫', role: 'mention' }, { name: '猫', role: 'mention' }] }],
+      }),
+    },
+  });
+
+  // 单字名（"猫"）被 upsertMemoryEntity 的「短于 2 字视为代词」守卫拒绝，所以只落 2 条
+  assert.equal(result.linked, 2);
+  assert.equal(result.updated, 1);
+  assert.equal(result.skipped, 0);
+  const links = db.prepare(`
+    SELECT me.name, mel.role FROM memory_entity_links mel
+    JOIN memory_entities me ON me.id = mel.entity_id
+    WHERE mel.memory_id = 'mem_noentity' ORDER BY me.name
+  `).all();
+  assert.deepEqual(links, [{ name: '团子', role: 'object' }, { name: '狸花猫', role: 'mention' }]);
+  // 实体不进 retrievalText，只补实体时不该重置 embedding_state / updated_at（否则白付一次重嵌）
+  const after = db.prepare(`SELECT updated_at, embedding_state FROM memory_fragments WHERE memory_id = 'mem_noentity'`).get();
+  assert.equal(after.embedding_state, before.embedding_state, '只补实体不应置 stale');
+  assert.equal(after.updated_at, before.updated_at, '只补实体不应刷新 updated_at');
+  // 补过链之后不再回环（记账生效）
+  assert.equal(findBackfillCandidates(db).length, 0);
+  db.close();
+});
+
+test('runBackfillTask：模型调用失败时上报 llmFailures 与原因（供调度层落库）', async () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_legacy', judgment: '用户养了一只猫', keywords: null });
+  const result = await runBackfillTask({
+    candidates: findBackfillCandidates(db),
+    llmBudgetRemaining: 1,
+    deps: { db, chatSync: async () => { throw new Error('401 Unauthorized'); } },
+  });
+  assert.equal(result.llmFailures, 1);
+  assert.equal(result.error, '401 Unauthorized');
+  assert.equal(result.done, false);
+  // 调用失败不记账：下一轮自然重试
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM memory_consolidation_marks WHERE job_type = 'backfill'`).get().count, 0);
+  db.close();
+});
+
+test('runConflictResolutionTask：LLM 全部失败时 llmFailures 计数（不再与"成功但无变化"同形）', async () => {
+  const clusters = [
+    { conversationId: 'c', memories: [{ memory_id: 'a', judgment: 'x' }] },
+    { conversationId: 'c', memories: [{ memory_id: 'b', judgment: 'y' }] },
+  ];
+  const result = await runConflictResolutionTask({
+    clusters,
+    llmBudgetRemaining: 2,
+    deps: { chatSync: async () => { throw new Error('no api key'); }, applyMemoryActions: () => {} },
+  });
+  assert.equal(result.llmCalls, 2);
+  assert.equal(result.llmFailures, 2);
+  assert.equal(result.error, 'no api key');
+  assert.equal(result.done, true);
+});
+
+test('findGeneralizationGroups：已有存活泛化后代的组被跳过（防反复升华）', () => {
+  const db = createDb();
+  for (const [id, days] of [['mem_ev0', 30], ['mem_ev1', 18], ['mem_ev2', 5]]) {
+    insertFragment(db, { memoryId: id, type: 'event', judgment: `情景记录${id}`, eventTime: daysAgo(days), conversationId: 'char_1' });
+    linkEntity(db, id, '感冒');
+  }
+  const groups = findGeneralizationGroups(db);
+  assert.equal(groups.length, 1);
+  // 模拟上一轮 daemon 已为该组生成泛化后代（active）——本轮应整体跳过，不再重复升华
+  db.prepare(`INSERT INTO memory_relations(from_memory_id, to_memory_id, action, relation_meta) VALUES ('mem_ev0', 'mem_gen1', 'merge', '{"kind":"generalize"}')`).run();
+  insertFragment(db, { memoryId: 'mem_gen1', type: 'knowledge', judgment: '他体质偏弱，换季容易感冒', conversationId: 'char_1' });
+  assert.equal(findGeneralizationGroups(db).length, 0);
+  // 泛化后代被删除（如 rollback）后，组重新成为候选
+  db.prepare(`UPDATE memory_fragments SET status = 'deleted' WHERE memory_id = 'mem_gen1'`).run();
+  assert.equal(findGeneralizationGroups(db).length, 1);
+  db.close();
+});
+
+test('findConflictClusters：已消费的旧记忆不中断簇发现（continue 而非 break）', () => {
+  const db = createDb();
+  // 时间线：C1(今天,X) → O1(2天前,X) 形成簇1；C2(3天前,Y) → O2(5天前,Y) 形成簇2。
+  // 旧行为在遍历到已消费的 O1 时 break，会丢掉簇2；修复后应找到两个簇。
+  insertFragment(db, { memoryId: 'mem_c1', judgment: '最近的事情C1', conversationId: 'char_1', createdAt: daysAgo(0) });
+  insertFragment(db, { memoryId: 'mem_o1', judgment: '较早的事情O1', conversationId: 'char_1', createdAt: daysAgo(2) });
+  insertFragment(db, { memoryId: 'mem_c2', judgment: '更早的事情C2', conversationId: 'char_1', createdAt: daysAgo(3) });
+  insertFragment(db, { memoryId: 'mem_o2', judgment: '最早的事情O2', conversationId: 'char_1', createdAt: daysAgo(5) });
+  linkEntity(db, 'mem_c1', '话题X');
+  linkEntity(db, 'mem_o1', '话题X');
+  linkEntity(db, 'mem_c2', '话题Y');
+  linkEntity(db, 'mem_o2', '话题Y');
+  const clusters = findConflictClusters(db, { sinceDays: 7, limit: 4 });
+  assert.equal(clusters.length, 2);
+  const clusterIds = clusters.map(cluster => cluster.memories.map(m => m.memory_id).sort().join(',')).sort();
+  assert.deepEqual(clusterIds, ['mem_c1,mem_o1', 'mem_c2,mem_o2']);
+  db.close();
+});
+
+// ── 整理记账：同一批候选不得被反复送进 LLM（历史缺陷：每 5 分钟重问一次，永不停止）──
+
+function insertConflictPair(db) {
+  insertFragment(db, { memoryId: 'mem_new', judgment: '她今天点了香菜牛肉', createdAt: daysAgo(0) });
+  insertFragment(db, { memoryId: 'mem_old', judgment: '她讨厌香菜', createdAt: daysAgo(3) });
+  linkEntity(db, 'mem_new', '香菜');
+  linkEntity(db, 'mem_old', '香菜');
+}
+
+test('T1 记账：模型判定"无关"后同一簇不再重复入选（连续 5 轮扫描只花 1 次 LLM）', async () => {
+  const db = createDb();
+  insertConflictPair(db);
+  let llmCalls = 0;
+  const deps = {
+    db,
+    chatSync: async () => { llmCalls++; return JSON.stringify({ resolutions: [] }); },
+    applyMemoryActions: () => ({}),
+  };
+
+  // 第一轮：发现簇 → 1 次 LLM → 模型说"无关"（无任何内容写入）→ 记账
+  const first = await runConflictResolutionTask({ clusters: findConflictClusters(db), llmBudgetRemaining: 6, deps });
+  assert.equal(first.llmCalls, 1);
+  assert.equal(first.applied, 0);
+  assert.deepEqual(listActiveMarks(db, 'conflict').sort(), ['mem_new', 'mem_old']);
+
+  // 后续 4 轮扫描（daemon 每 5 分钟一轮）：候选为空 → 0 次 LLM
+  for (let round = 0; round < 4; round++) {
+    const next = await runConflictResolutionTask({ clusters: findConflictClusters(db), llmBudgetRemaining: 6, deps });
+    assert.equal(next.llmCalls, 0, `第 ${round + 2} 轮不应再调 LLM`);
+  }
+  assert.equal(llmCalls, 1, '修复前这里是 5 次');
+  db.close();
+});
+
+test('T1 记账带 TTL：到期后同一条记忆可以重新整理', () => {
+  const db = createDb();
+  insertConflictPair(db);
+  markConsolidated(db, 'conflict', ['mem_new', 'mem_old']);
+  assert.equal(findConflictClusters(db).length, 0);
+  // 记账时间推到 TTL 之前 → 重新成为候选
+  const expired = new Date(Date.now() - (RECONSOLIDATE_AFTER_DAYS.conflict + 1) * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare(`UPDATE memory_consolidation_marks SET marked_at = ?`).run(expired);
+  assert.equal(findConflictClusters(db).length, 1);
+  assert.equal(listActiveMarks(db, 'conflict').length, 0);
+  db.close();
+});
+
+test('LLM 调用失败不记账：下一轮仍会重试（不把失败当"已处理"）', async () => {
+  const db = createDb();
+  insertConflictPair(db);
+  const deps = {
+    db,
+    chatSync: async () => { throw new Error('boom'); },
+    applyMemoryActions: () => ({}),
+  };
+  const result = await runConflictResolutionTask({ clusters: findConflictClusters(db), llmBudgetRemaining: 6, deps });
+  assert.equal(result.llmCalls, 1);
+  assert.equal(listActiveMarks(db, 'conflict').length, 0);
+  assert.equal(findConflictClusters(db).length, 1);
+  db.close();
+});
+
+test('T2 记账：模型输出 generalization:null 后该组不再重复入选', async () => {
+  const db = createDb();
+  for (const [id, days] of [['mem_ev0', 30], ['mem_ev1', 18], ['mem_ev2', 5]]) {
+    insertFragment(db, { memoryId: id, type: 'event', judgment: `情景记录${id}`, eventTime: daysAgo(days), conversationId: 'char_1' });
+    linkEntity(db, id, '感冒');
+  }
+  let llmCalls = 0;
+  const deps = {
+    db,
+    chatSync: async () => { llmCalls++; return JSON.stringify({ generalization: null }); },
+    insertGeneralizedMemory: () => 'x',
+  };
+  const first = await runGeneralizationTask({ groups: findGeneralizationGroups(db), llmBudgetRemaining: 6, deps });
+  assert.equal(first.llmCalls, 1);
+  assert.equal(first.applied, 0);
+  assert.equal(first.skipped, 1);
+  // 修复前这里仍是 1（组永不消失，每轮重问）
+  assert.equal(findGeneralizationGroups(db).length, 0);
+  const second = await runGeneralizationTask({ groups: findGeneralizationGroups(db), llmBudgetRemaining: 6, deps });
+  assert.equal(second.llmCalls, 0);
+  assert.equal(llmCalls, 1);
+  db.close();
+});
+
+test('T4 记账：模型提不出新建议时同一会话不再每轮重问', async () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_core', type: 'knowledge', importance: 5, conversationId: 'char_7' });
+  let llmCalls = 0;
+  const deps = { db, chatSync: async () => { llmCalls++; return JSON.stringify({ suggestions: [] }); } };
+  const first = await runPortraitSuggestionTask({ conversations: findPortraitSuggestionConversations(db), llmBudgetRemaining: 6, deps });
+  assert.equal(first.llmCalls, 1);
+  assert.equal(findPortraitSuggestionConversations(db).length, 0);
+  const second = await runPortraitSuggestionTask({ conversations: findPortraitSuggestionConversations(db), llmBudgetRemaining: 6, deps });
+  assert.equal(second.llmCalls, 0);
+  assert.equal(llmCalls, 1);
+  db.close();
+});
+
+test('T5 记账 + 条件写入：模型留空时不写库、不刷 updated_at、不置 stale，且不再回环', async () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_legacy', judgment: '用户养了一只猫', keywords: null, createdAt: daysAgo(30) });
+  const before = db.prepare(`SELECT updated_at, embedding_state FROM memory_fragments WHERE memory_id = 'mem_legacy'`).get();
+  const deps = {
+    db,
+    chatSync: async () => JSON.stringify({
+      items: [{ memoryId: 'mem_legacy', keywords: [], perspectives: [], semanticNote: '', episodicNote: '', importance: 3 }],
+    }),
+  };
+  const result = await runBackfillTask({ candidates: findBackfillCandidates(db), llmBudgetRemaining: 6, deps });
+  assert.equal(result.llmCalls, 1);
+  assert.equal(result.updated, 0);
+  assert.equal(result.skipped, 1);
+  const after = db.prepare(`SELECT updated_at, embedding_state FROM memory_fragments WHERE memory_id = 'mem_legacy'`).get();
+  assert.equal(after.updated_at, before.updated_at, '无变化不应刷新 updated_at（会污染检索排序）');
+  assert.equal(after.embedding_state, before.embedding_state, '无变化不应置 stale（会重复付费重嵌入同一文本）');
+  assert.equal(findBackfillCandidates(db).length, 0, '已问过模型的不再回环');
+  db.close();
+});
+
+// ── 维护清理 ──
+
+test('migrateMemoryConsolidationMarks：建表幂等并补齐维护索引', () => {
+  const db = createDb();
+  migrateMemoryConsolidationMarks(db);
+  migrateMemoryConsolidationMarks(db); // 幂等
+  const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_consolidation_marks'`).get();
+  assert.ok(table, '记账表应存在');
+  const indexes = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_memory_%'`).all().map(row => row.name);
+  assert.ok(indexes.includes('idx_memory_consolidation_jobs_type'));
+  assert.ok(indexes.includes('idx_memory_retrieval_audits_created'));
+  db.close();
+});
+
+test('pruneConsolidationArtifacts：按保留期清理审计/已终结任务/过期记账，不碰 pending', () => {  const db = createDb();
+  db.prepare(`INSERT INTO memory_retrieval_audits(query, mode, created_at) VALUES ('old', 'passive', ?)`).run(daysAgo(120));
+  db.prepare(`INSERT INTO memory_retrieval_audits(query, mode, created_at) VALUES ('new', 'passive', ?)`).run(daysAgo(1));
+  db.prepare(`INSERT INTO memory_consolidation_jobs(job_type, status, updated_at) VALUES ('decay', 'completed', ?)`).run(daysAgo(30));
+  db.prepare(`INSERT INTO memory_consolidation_jobs(job_type, status, updated_at) VALUES ('decay', 'pending', ?)`).run(daysAgo(30));
+  markConsolidated(db, 'backfill', ['mem_gone']);
+  db.prepare(`UPDATE memory_consolidation_marks SET marked_at = ?`).run(daysAgo(400));
+
+  const pruned = pruneConsolidationArtifacts(db, {});
+  assert.equal(pruned.audits, 1);
+  assert.equal(pruned.jobs, 1);
+  assert.equal(pruned.marks, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM memory_consolidation_jobs`).get().c, 1, 'pending 任务永不清理');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM memory_retrieval_audits`).get().c, 1);
+  db.close();
+});
+
+test('decayAndArchiveMemories：强度未变化时不重复写库', () => {
+  const db = createDb();
+  insertFragment(db, { memoryId: 'mem_stable', importance: 5, lastReinforcedAt: daysAgo(1), createdAt: daysAgo(1) });
+  const first = decayAndArchiveMemories(db, {});
+  const second = decayAndArchiveMemories(db, {});
+  assert.equal(first.scanned, 1);
+  assert.equal(first.strengthened, 1, '首次写入强度');
+  assert.equal(second.strengthened, 0, '同一天重跑不应再写（避免全表无谓写放大）');
+  db.close();
+});
+
+// ── 配置显式化迁移 ──
+
+test('migrateMemoryConsolidationSettings：补全 consolidation 且其余配置逐字保留', () => {
+  const db = createDb();
+  assert.equal(migrateMemoryConsolidationSettings(db).skipped, 'no-settings', '全新库由种子行覆盖');
+  db.prepare(`INSERT INTO system_settings(setting_key, setting_value) VALUES ('memory_settings', ?)`)
+    .run(JSON.stringify({ enabled: true, topK: 7, embedding: { enabled: false } }));
+
+  const first = migrateMemoryConsolidationSettings(db);
+  assert.equal(first.updated, true);
+  assert.deepEqual(first.consolidation, { enabled: true, idleDelayMinutes: 30, minIntervalMinutes: 60, llmCallsPerRun: 3, dailyLlmCalls: 60, portraitSuggest: false });
+  const stored = JSON.parse(db.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'memory_settings'`).get().setting_value);
+  assert.equal(stored.topK, 7, '其余配置不得被动到');
+  assert.equal(stored.embedding.enabled, false);
+  assert.equal(migrateMemoryConsolidationSettings(db).skipped, 'up-to-date', '幂等');
+  db.close();
+});
+
+test('migrateMemoryConsolidationSettings：旧键 dailyMaxLlmCalls 归位且不覆盖用户已存值', () => {
+  const db = createDb();
+  db.prepare(`INSERT INTO system_settings(setting_key, setting_value) VALUES ('memory_settings', ?)`)
+    .run(JSON.stringify({ consolidation: { enabled: false, idleDelayMinutes: 120, dailyMaxLlmCalls: 9 } }));
+
+  const result = migrateMemoryConsolidationSettings(db);
+  assert.equal(result.updated, true);
+  assert.deepEqual(result.consolidation, { enabled: false, idleDelayMinutes: 120, minIntervalMinutes: 60, llmCallsPerRun: 3, dailyLlmCalls: 9, portraitSuggest: false });
+  assert.equal(result.consolidation.dailyMaxLlmCalls, undefined, '旧键被归位而非保留');
+  db.close();
+});
+
+test('migrateMemoryConsolidationSettings：用户显式关掉的 T4 不被迁移改回开启', () => {
+  const db = createDb();
+  db.prepare(`INSERT INTO system_settings(setting_key, setting_value) VALUES ('memory_settings', ?)`)
+    .run(JSON.stringify({ consolidation: { portraitSuggest: false } }));
+
+  const result = migrateMemoryConsolidationSettings(db);
+  assert.equal(result.updated, true);
+  assert.equal(result.consolidation.portraitSuggest, false, '显式 false 必须逐字保留（白名单漏键会把它悄悄改回 true）');
+  assert.equal(migrateMemoryConsolidationSettings(db).skipped, 'up-to-date', '幂等');
+  db.close();
+});
+test('runBackfillTask：一次最多补 5 条且不限制输出 token', async () => {
+  const db = createDb();
+  const candidates = Array.from({ length: 7 }, (_, index) => ({ memory_id: `mem_batch_${index + 1}` }));
+  let prompt = '';
+  let options = null;
+  const result = await runBackfillTask({
+    candidates,
+    llmBudgetRemaining: 1,
+    deps: {
+      db,
+      chatSync: async (messages, llmOptions) => {
+        prompt = messages[0].content;
+        options = llmOptions;
+        return JSON.stringify({ items: [] });
+      },
+    },
+  });
+  for (let index = 1; index <= 5; index++) {
+    assert.ok(prompt.includes(`mem_batch_${index}`));
+  }
+  assert.ok(!prompt.includes('mem_batch_6'));
+  assert.ok(!prompt.includes('mem_batch_7'));
+  assert.equal(Object.hasOwn(options, 'max_tokens'), false);
+  assert.equal(result.done, true);
+  db.close();
+});

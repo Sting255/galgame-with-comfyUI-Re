@@ -1,0 +1,1015 @@
+/**
+ * 日程 API 路由
+ *
+ * GET    /api/schedule                         — 所有角色日程概览
+ * GET    /api/schedule/:characterId            — 指定角色完整今日日程
+ * GET    /api/schedule/:characterId/current    — 当前活动（轻量）
+ * POST   /api/schedule/:characterId/peek       — 瞄一眼快照（异步生图）
+ * POST   /api/schedule/:characterId/regenerate — 强制重新生成日程
+ * POST   /api/schedule/regenerate-all          — 重置世界线（SSE 推送进度）
+ * POST   /api/schedule/regenerate-all/cancel   — 取消重置世界线
+ * POST   /api/schedule/:characterId/wake-up-phone — 电话叫醒（40% 概率，最多 3 次）
+ * POST   /api/schedule/:characterId/wake-up-door — 上门摇醒（必定成功）
+ * GET    /api/schedule/queue/status            — 调试：查看队列概览
+ */
+
+import { Router } from 'express';
+import { getDb, getSystemRules, getWorldSetting, getGlobalRule } from '../db/index.js';
+import { getWorldIntegrationRule } from '../builtinRules.js';
+import { appendOathRing } from '../services/oathUtils.js';
+import { buildCharacterPersona } from '../services/characterPersona.js';
+import { config } from '../config.js';
+import {
+  getTodaySchedule, getCurrentActivity,
+  getAllOverview, ensureTodaySchedule, invalidateCache,
+  syncSleepingState, isTempWoken, isSleeping,
+  scheduleTempWakeExpiry, resetGroggyShown,
+} from '../services/scheduleManager.js';
+import { getProgramDateKey, getProgramState, formatHhmm } from '../services/programTime.js';
+import timeRoutes from './time.js';
+import { generateSchedule, assignNextRefreshTime, snapshotTodaySchedule } from '../services/scheduleGenerator.js';
+import { updateScheduleActivity } from '../services/scheduleEditor.js';
+import { generateImage, getLastWorkflowMode } from '../services/imageSkill.js';
+import { charArtistOverride } from '../services/characterImageOpts.js';
+import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
+import { broadcast } from '../services/unifiedStreamBus.js';
+import { chatSync } from '../services/lorebook/runtime.js';
+import { getTimeLightInline } from '../services/timeLight.js';
+import { saveBase64Image } from '../services/imagePaths.js';
+import { processWakeUp } from '../services/wakeService.js';
+import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
+// 2026-10-02 私密时刻（自慰 / 你闯进来了）：判定与文案的唯一来源，日程页只做投影
+import { privateMomentState, privateMomentLine, PRIVATE_MOMENT_LABEL } from '../services/privateMomentService.js';
+import { loadAffinity } from '../services/emotionEngine.js';
+
+const router = Router();
+
+/**
+ * 私密时刻（自慰）的投影 —— 日程页与面板共用的一份形状（**别在两处各拼一遍**）。
+ *
+ * 用户原话：「再增加一个事件 叫自慰 和角色敏感度也相关 越高发生概率也就越高 这个可以算到日程里」。
+ * 判定本身是确定性的（角色 + 日期 + 槽位哈希）⇒ 读多次结论一致；这里只做投影，不写库。
+ * 没有独处时段 / 没掷中 ⇒ `{ has: false }`（前端零渲染）。
+ */
+function privateMomentPayload(characterId) {
+  const empty = { has: false, active: false, caught: false, caughtTimes: 0, label: PRIVATE_MOMENT_LABEL, line: '', startTime: '', endTime: '', minutesLeft: 0 };
+  try {
+    let affinity = 0;
+    try { affinity = Number(loadAffinity(characterId)) || 0; } catch { affinity = 0; }
+    const st = privateMomentState(characterId, { affinity });
+    if (!st.row || !st.window) return { ...empty, probability: st.probability || 0 };
+    return {
+      has: true,
+      active: st.active,
+      caught: st.caught,
+      caughtTimes: Number(st.row.caught_times) || 0,
+      label: st.label,
+      line: privateMomentLine(st),
+      startTime: formatHhmm(Number(st.window.startMinute) % 1440),
+      endTime: formatHhmm(Number(st.window.endMinute) % 1440),
+      minutesLeft: st.minutesLeft,
+      probability: st.probability || 0,
+    };
+  } catch (err) {
+    console.warn('[schedule] private moment 投影失败（按没有处理）:', err?.message || err);
+    return empty;
+  }
+}
+
+// ── 程序时间（世界钟）子路由：/api/schedule/time* ──
+// 见 src/routes/time.js 的文件头（形状、错误码、以及"为什么没有挂在 /api/time"）。
+// 放在 `/`（概览）之前不影响既有路径：`/time` 是唯一前缀，不会吃掉 `/:characterId`。
+router.use('/time', timeRoutes);
+
+// ── GET /api/schedule — 所有角色概览 ──
+
+router.get('/', (req, res) => {
+  try {
+    if (config.features.schedule === false) {
+      return res.json({ characters: [], disabled: true });
+    }
+
+    const overview = getAllOverview();
+    // 附加当前程序时间（前端日程页与时间控制面板都用它；老前端忽略即可）
+    res.json({ characters: overview, program_time: getProgramState() });
+  } catch (err) {
+    console.error('[schedule] GET / error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 重置世界线状态 ──
+let resetTask = null; // { cancelled, processing, current, total, currentName }
+
+// ── POST /api/schedule/regenerate-all — 重置世界线（重新生成所有角色日程）──
+router.post('/regenerate-all', async (req, res) => {
+  try {
+    if (resetTask?.processing) {
+      return res.status(409).json({ error: '重置世界线正在进行中', busy: true });
+    }
+
+    const db = getDb();
+    const characters = db.prepare("SELECT id, display_name, base_prompt FROM characters WHERE name != 'default' ORDER BY id").all();
+
+    if (!characters.length) {
+      return res.status(404).json({ error: '没有角色' });
+    }
+
+    const direction = (req.body && req.body.direction) ? String(req.body.direction).trim() : null;
+
+    resetTask = { cancelled: false, processing: true, current: 0, lastCompleted: 0, total: characters.length, currentName: '' };
+
+    // 立即返回，不阻塞
+    res.json({ started: true, total: characters.length });
+
+    // 异步逐个生成
+    for (let i = 0; i < characters.length; i++) {
+      if (resetTask.cancelled) break;
+
+      const character = characters[i];
+      resetTask.current = i + 1;
+      resetTask.currentName = character.display_name;
+
+      // 广播进度：开始生成
+      broadcast('schedule_reset_progress', {
+        phase: 'running',
+        character_name: character.display_name,
+        current: i + 1,
+        total: characters.length,
+        status: 'generating',
+      });
+
+      console.log(`[schedule] Reset worldline: generating for ${character.display_name} (${i + 1}/${characters.length})`);
+
+      try {
+        const result = await generateSchedule(character, direction);
+
+        // 生成期间已被取消 → 不保存、广播跳过
+        if (resetTask.cancelled) break;
+
+        assignNextRefreshTime(character.id);
+        snapshotTodaySchedule(character.id);
+        syncSleepingState(character.id);
+        invalidateCache(character.id);
+
+        resetTask.lastCompleted = i + 1;
+
+        broadcast('schedule_reset_progress', {
+          phase: 'running',
+          character_name: character.display_name,
+          current: i + 1,
+          total: characters.length,
+          status: 'done',
+          version: result.version,
+        });
+      } catch (genErr) {
+        // 生成失败但已被取消 → 直接跳出
+        if (resetTask.cancelled) break;
+
+        console.error(`[schedule] Reset worldline: failed for ${character.display_name}:`, genErr.message);
+        broadcast('schedule_reset_progress', {
+          phase: 'running',
+          character_name: character.display_name,
+          current: i + 1,
+          total: characters.length,
+          status: 'error',
+          error: genErr.message,
+        });
+      }
+
+      // 角色间短暂间隔，避免 LLM API 限流
+      if (i < characters.length - 1 && !resetTask.cancelled) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    const finalCurrent = resetTask.cancelled ? resetTask.lastCompleted : resetTask.current;
+
+    // 广播完成
+    broadcast('schedule_reset_progress', {
+      phase: resetTask.cancelled ? 'cancelled' : 'complete',
+      current: finalCurrent,
+      total: characters.length,
+      cancelled: resetTask.cancelled,
+    });
+
+    console.log(`[schedule] Reset worldline finished. Processed: ${finalCurrent}/${characters.length}, cancelled: ${resetTask.cancelled}`);
+    resetTask = null;
+  } catch (err) {
+    console.error('[schedule] POST /regenerate-all error:', err.message);
+    resetTask = null;
+    // 响应已发送，仅广播错误
+    broadcast('schedule_reset_progress', {
+      phase: 'error',
+      error: err.message,
+    });
+  }
+});
+
+// ── GET /api/schedule/reset-status — 查询当前重置任务状态（页面刷新恢复用）──
+router.get('/reset-status', (req, res) => {
+  if (!resetTask?.processing) {
+    return res.json({ active: false });
+  }
+  res.json({
+    active: true,
+    phase: 'running',
+    current: resetTask.current,
+    total: resetTask.total,
+    currentName: resetTask.currentName || '',
+  });
+});
+
+// ── POST /api/schedule/regenerate-all/cancel — 取消重置世界线 ──
+router.post('/regenerate-all/cancel', (req, res) => {
+  if (!resetTask?.processing) {
+    return res.json({ cancelled: false, message: '没有正在进行的重置任务' });
+  }
+  resetTask.cancelled = true;
+  console.log('[schedule] Reset worldline cancellation requested');
+  res.json({ cancelled: true, message: '已请求取消' });
+});
+
+// ── GET /api/schedule/:characterId — 完整今日日程 ──
+
+router.get('/:characterId', (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const db = getDb();
+    const character = db.prepare('SELECT id, display_name, avatar_path, base_prompt FROM characters WHERE id = ?').get(characterId);
+    if (!character) {
+      return res.status(404).json({ error: 'character not found' });
+    }
+
+    // 确保今日有日程快照
+    ensureTodaySchedule(characterId);
+
+    const schedule = getTodaySchedule(characterId);
+    const template = db.prepare('SELECT version, generated_at FROM schedule_templates WHERE character_id = ?').get(characterId);
+
+    res.json({
+      character_id: character.id,
+      display_name: character.display_name,
+      avatar_path: character.avatar_path,
+      schedule_date: getProgramDateKey(),
+      activities: schedule || [],
+      // 2026-10-02 私密时刻「自慰 / 你闯进来了」（用户：「这个可以算到日程里」）：
+      // 她今天有没有一段"一个人在屋里"的时间、此刻是不是正在进行 —— 判定确定性，读一次结论稳定。
+      // 没掷中 / 没有独处时段 ⇒ null（前端零渲染），不干扰原有日程展示。
+      private_moment: privateMomentPayload(characterId),
+      template_version: template?.version || 0,
+      template_generated_at: template?.generated_at || null,
+    });
+  } catch (err) {
+    console.error('[schedule] GET /:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/schedule/:characterId/private-moment — 她今天的私密时刻（自慰）──────
+// 单独给一条端点：面板/日程页要轮询"她此刻在不在屋里"，不必每次都拉整份日程。
+// 返回形状：{ characterId, has, active, caught, caughtTimes, label, line, startTime, endTime, minutesLeft }
+router.get('/:characterId/private-moment', (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) return res.status(400).json({ error: 'invalid characterId' });
+    const character = getDb().prepare('SELECT id FROM characters WHERE id = ?').get(characterId);
+    if (!character) return res.status(404).json({ error: 'character not found' });
+    res.json({ characterId, ...privateMomentPayload(characterId) });
+  } catch (err) {
+    console.error('[schedule] GET /:id/private-moment error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PUT /api/schedule/:characterId/activity — 编辑单条日程（标记为特殊日程）──
+// 编辑后的条目带 edited 标记，到点后进入当天特殊朋友圈队列（scheduleSpecialMoment）
+
+router.put('/:characterId/activity', (req, res) => {
+  try {
+    if (config.features.schedule === false) {
+      return res.status(403).json({ error: 'schedule feature disabled' });
+    }
+
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const character = getDb().prepare('SELECT id, display_name FROM characters WHERE id = ?').get(characterId);
+    if (!character) {
+      return res.status(404).json({ error: 'character not found' });
+    }
+
+    const { index, startTime, endTime, activity, location, description } = req.body || {};
+    if (typeof index !== 'number' || index < 0) {
+      return res.status(400).json({ error: 'invalid index' });
+    }
+
+    const result = updateScheduleActivity(characterId, index, { startTime, endTime, activity, location, description });
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    res.json({
+      ok: true,
+      character_id: characterId,
+      activities: result.activities.map(act => ({ ...act, isCurrent: undefined })),
+    });
+  } catch (err) {
+    console.error('[schedule] PUT /:id/activity error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/schedule/:characterId/current — 当前活动（轻量）──
+
+router.get('/:characterId/current', (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const activity = getCurrentActivity(characterId);
+
+    res.json({
+      character_id: characterId,
+      current_activity: activity,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[schedule] GET /:id/current error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** 将 base64 图片落盘，返回对外可访问的 URL 路径 */
+function savePeekImage(base64, filename) {
+  try {
+    const ext = base64.match(/^data:image\/(\w+);base64,/)?.[1] || 'png';
+    const safeName = `peek_${filename}_${Date.now()}.${ext}`;
+    const url = saveBase64Image('peek', safeName, base64);
+    console.log(`[schedule] Peek image saved: ${safeName} → ${url}`);
+    return url;
+  } catch (err) {
+    console.error('[schedule] Failed to save peek image:', err.message);
+    return null;
+  }
+}
+
+// ── POST /api/schedule/:characterId/peek/retake — 再拍一张（必须在 peek 前定义，避免被 :characterId/peek 前缀匹配）──
+
+router.post('/:characterId/peek/retake', async (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const { prompt } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'prompt is required' });
+    }
+
+    const db = getDb();
+    const character = db.prepare('SELECT id, display_name, custom_workflow, loras, artist_override FROM characters WHERE id = ?').get(characterId);
+    if (!character) {
+      return res.status(404).json({ error: 'character not found' });
+    }
+
+    console.log(`[schedule] Peek retake for ${character.display_name}: "${prompt.slice(0, 100)}..."`);
+
+    // 立即返回，异步生图
+    res.json({
+      success: true,
+      character_id: character.id,
+      message: 'Retake started, result will be pushed via SSE schedule_peek_ready',
+    });
+
+    // 异步生图，使用日程事件参数
+    try {
+      const result = await generateImage(prompt, {
+        artist: config.comfyui.eventArtist,
+        width: config.comfyui.eventWidth,
+        height: config.comfyui.eventHeight,
+        scene: 'schedule',
+        priority: 'high',
+        ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
+        ...(() => {
+          const chLoras = _parseLoras(character.loras);
+          const opts = {};
+          if (character.custom_workflow) opts.customWorkflow = character.custom_workflow;
+          if (chLoras.length > 0) opts.loras = chLoras;
+          const charArtist = charArtistOverride(character);
+          if (charArtist !== null) opts.artist = charArtist;
+          return opts;
+        })(),
+        onProgress: (p) => {
+          if (p.progress != null) {
+            broadcast('schedule_peek_progress', {
+              character_id: character.id,
+              progress: Math.round(p.progress * 100),
+            });
+          }
+        },
+      });
+
+      if (result.success && result.images?.length > 0) {
+        const img = result.images[0];
+        const imageUrl = savePeekImage(img.base64, img.filename || 'comfy');
+        if (imageUrl) {
+          db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
+            VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
+            .run(`char_${character.id}_schedule_peek_retake`, prompt, result.promptRefined || prompt, JSON.stringify([imageUrl]), getLastWorkflowMode());
+        }
+        broadcast('schedule_peek_ready', {
+          character_id: character.id,
+          display_name: character.display_name,
+          prompt,
+          images: imageUrl ? [imageUrl] : [img.base64],
+        });
+        console.log(`[schedule] Peek retake ready for ${character.display_name}`);
+      } else {
+        broadcast('schedule_peek_ready', {
+          character_id: character.id,
+          display_name: character.display_name,
+          prompt,
+          error: result.error || 'Image generation failed',
+        });
+      }
+    } catch (genErr) {
+      console.error(`[schedule] Peek retake failed for ${character.display_name}:`, genErr.message);
+      broadcast('schedule_peek_ready', {
+        character_id: character.id,
+        display_name: character.display_name,
+        prompt,
+        error: genErr.message,
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] POST /:id/peek/retake error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/schedule/:characterId/peek — 瞄一眼快照 ──
+
+router.post('/:characterId/peek', async (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const db = getDb();
+    const character = db.prepare('SELECT id, display_name, base_prompt, custom_workflow, loras, artist_override FROM characters WHERE id = ?').get(characterId);
+    if (!character) {
+      return res.status(404).json({ error: 'character not found' });
+    }
+
+    const reqActivity = req.body?.activity;
+    let activity;
+    if (reqActivity && reqActivity.activity && reqActivity.location) {
+      activity = {
+        activity: reqActivity.activity,
+        location: reqActivity.location,
+        replyDelay: reqActivity.replyDelay ?? 0,
+        snapshotPrompt: reqActivity.snapshotPrompt || '',
+        description: reqActivity.description || '',
+        startTime: reqActivity.startTime || '',
+        endTime: reqActivity.endTime || '',
+        tags: reqActivity.tags || [],
+      };
+    } else {
+      activity = getCurrentActivity(characterId);
+    }
+    if (!activity) {
+      return res.status(404).json({ error: 'no schedule found for this character' });
+    }
+
+    const genImage = req.body?.gen_image !== false; // 默认生成图片
+
+    if (!genImage) {
+      return res.json({
+        character_id: character.id,
+        display_name: character.display_name,
+        activity: activity.activity,
+        location: activity.location,
+        snapshot_prompt: activity.snapshotPrompt,
+        image: null,
+      });
+    }
+
+    // ── 构建 LLM 消息生成专用人像 prompt ──
+    const charName = character.display_name;
+
+    // system0: 系统规则(角色扮演=no) + 世界观
+    const systemRules = getSystemRules({ roleplay: false });
+    const worldSetting = getWorldSetting();
+    const system0 = [systemRules, worldSetting].filter(Boolean).join('\n\n');
+
+    // system1: 世界观强化 + 人像摄影师指令
+    let system1 = '';
+    if (worldSetting) {
+      system1 = `${getWorldIntegrationRule('photo')}\n\n`;
+    }
+    // 睡眠中：强制强调闭眼（优先检查临时叫醒，因为日程 replyDelay 即使叫醒后仍为 -1）
+    const tempWoken = isTempWoken(characterId);
+    const isSleeping = !tempWoken && activity.replyDelay === -1;
+    // 当前时间 + 时段 + 光线描述（使用日程活动的 startTime 确定光线，反映活动实际发生时间而非墙钟）
+    let lightTime = new Date();
+    if (activity.startTime) {
+      const [h, m] = activity.startTime.split(':').map(Number);
+      if (!isNaN(h)) {
+        lightTime = new Date();
+        lightTime.setHours(h, m || 0, 0, 0);
+      }
+    }
+    const timeLightInline = getTimeLightInline(lightTime);
+    const sleepNote = isSleeping
+      ? `\n\n【极其重要】角色正在睡觉，双眼必须紧闭，**房间里没有灯光，睡觉时候不开灯**，不能睁眼。表情安详放松，呈现深度睡眠的自然状态，盖被子。睡姿、床、被子、**睡衣（睡觉时候绝对不会穿本来的衣服）**等细节贴合角色性格。`
+      : '';
+
+    // 临时叫醒时覆盖活动描述（日程数据仍是睡觉，与实际不符）
+    let effectiveActivity = activity.activity;
+    let effectiveDescription = activity.description;
+    let wakeNote = '';
+    if (tempWoken) {
+      const wakeMode = db.prepare('SELECT wake_mode FROM characters WHERE id = ?').get(characterId)?.wake_mode;
+      const userName = config.user.nickname || '用户';
+      if (wakeMode === 'phone') {
+        effectiveActivity = '被电话吵醒';
+        effectiveDescription = '半睁着眼看着手机，睡眼惺忪，正在打哈欠';
+        wakeNote = `\n\n【注意】角色刚被${userName}的电话吵醒，处于半睡半醒的迷糊状态。双眼半睁半合，睡眼惺忪，头发凌乱，**穿着睡衣（睡觉时候绝对不会穿本来的衣服）**，正在打哈欠。手机屏幕的亮光照在角色脸上，角色靠在床上或枕头上看着手机屏幕。表情困倦慵懒，展现出被吵醒后的迷蒙感。`;
+      } else if (wakeMode === 'door' || wakeMode === 'shake') {
+        const userAppearance = config.user.appearance ? `（${config.user.appearance}）` : '';
+        effectiveActivity = '被各种方式叫醒/晃醒/摇醒/拖拽等姿势';
+        effectiveDescription = `被${userName}${userAppearance}从床上被各种方式叫醒/晃醒/摇醒/拖拽等姿势弄醒的瞬间`;
+        wakeNote = `\n\n【注意】画面中是${userName}${userAppearance}上门把角色从床上摇醒的场景。角色半坐在床上，睡眼惺忪地睁开眼，表情懵懂迷糊。${userName}${userAppearance}正俯身或弯腰，${userName}的手搭在角色任意部位，把角色晃醒或者摇醒或者拖拉拽弄醒。角色穿着**穿着睡衣（睡觉时候绝对不会穿本来的衣服）**，被子半掀开，展现了刚被强行弄醒的瞬间动态。`;
+      }
+    }
+
+    system1 += `你是一个专业的人像摄影师，你现在需要给角色拍一张人像照，任意角度（俯拍，仰拍，正脸，侧脸，背面，低角度全都不限制），角色也不看着镜头，表现角色当前正在做的事情。角色表情、动作神态根据角色人格和正在做的事来生成，要贴合角色气质。画面输出用英文prompt`;
+
+    // system2: 角色完整人格（统一入口，含生效外观注入），"你"替换为角色姓名
+    let personaText = buildCharacterPersona(character, { variant: 'full', person: charName });
+    if (!personaText) personaText = `角色名：${charName}`;
+
+    // 誓约角色：银白细戒指外观细节
+    const ringUserName = config.user?.nickname || 'user';
+    personaText = appendOathRing(personaText, characterId, ringUserName, { isFirstPerson: false, charName });
+
+    // system3: image_prompt 规则作为 prompt 画质指令
+    const imageRulesText = getGlobalRule('image_prompt')?.rule_content || '';
+    const system3 = `${imageRulesText ? imageRulesText : ''}`;
+
+    // event: 角色当前奇遇注入
+    const activeEvent = db.prepare(`
+      SELECT title, description, choice_history FROM character_events
+      WHERE character_id = ? AND status IN ('pending','open','engaged')
+      ORDER BY created_at DESC LIMIT 1
+    `).get(characterId);
+
+    // user: 拍摄指令
+    const userMsg = `牢记<world_setting>世界观里的环境描述和人物行为和着装，然后给「${charName}」拍一张当前正在${activity.location}进行${effectiveActivity}的照片，具体照片表现是${effectiveDescription}直接输出为英文prompt`;
+
+    const llmMsgs = [
+      { role: 'system', content: system0 },
+      { role: 'system', content: system1 },
+    ];
+    if (activeEvent) {
+      const choiceHistory = JSON.parse(activeEvent.choice_history || '[]');
+      const branchCount = choiceHistory.length - 1;
+      llmMsgs.push({
+        role: 'system',
+        content: `【当前奇遇事件】角色正在经历一场奇遇事件——「${activeEvent.title}」。\n当前场景：${activeEvent.description}\n${branchCount > 0 ? `已推进了 ${branchCount} 步。` : '事件刚刚开始。'}\n人像照中角色的表情和神态应反映出当前奇遇事件带来的情绪。`,
+      });
+    }
+    llmMsgs.push(
+      { role: 'system', content: system3 },
+      { role: 'system', content: personaText },
+      { role: 'user', content: userMsg },
+    );
+
+    // 立即返回，异步执行 LLM + 生图
+    res.json({
+      character_id: character.id,
+      display_name: character.display_name,
+      activity: activity.activity,
+      location: activity.location,
+      generating: true,
+      message: 'Prompt generation + image generation started, result will be pushed via SSE schedule_peek_ready',
+    });
+
+    // 不阻塞响应，异步执行
+    try {
+      console.log(`[schedule] Peek: generating prompt for ${charName}...`);
+
+      // 调用 LLM 生成专用 prompt
+      let generatedPrompt = '';
+      try {
+        const rawResult = await chatSync(llmMsgs, {
+          temperature: 0.7,
+          label: '瞄一眼人像prompt生成',
+        });
+
+        // 提取 prompt：纯文本优先，JSON 格式向后兼容
+        let text = rawResult.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+        if (text.length >= 5) {
+          generatedPrompt = text;
+        }
+        // 兜底：如果 LLM 仍输出了 {"prompt":"..."} JSON 格式
+        if (!generatedPrompt) {
+          const promptMatch = rawResult.match(/"prompt"\s*:\s*"([^"]+)"/);
+          generatedPrompt = promptMatch ? promptMatch[1] : '';
+        }
+
+        if (!generatedPrompt) {
+          console.warn(`[schedule] Peek prompt parse failed, using fallback. Raw: ${rawResult.slice(0, 200)}`);
+          // 兜底：回退到 snapshotPrompt
+          generatedPrompt = activity.snapshotPrompt || `${charName} doing ${activity.activity} at ${activity.location}`;
+        }
+      } catch (llmErr) {
+        console.error(`[schedule] Peek LLM failed for ${charName}:`, llmErr.message);
+        // LLM 失败兜底
+        generatedPrompt = activity.snapshotPrompt || `${charName} doing ${activity.activity} at ${activity.location}`;
+      }
+
+      console.log(`[schedule] Peek prompt for ${charName}: "${generatedPrompt.slice(0, 120)}..."`);
+
+      // 用日程事件参数生图
+      const result = await generateImage(generatedPrompt, {
+        ragQuery: `${charName}在${activity.location}${effectiveActivity}，具体表现是${effectiveDescription}`,
+        artist: config.comfyui.eventArtist,
+        width: config.comfyui.eventWidth,
+        height: config.comfyui.eventHeight,
+        scene: 'schedule',
+        priority: 'high',
+        ...(() => {
+          const chLoras = _parseLoras(character.loras);
+          const opts = {};
+          if (character.custom_workflow) opts.customWorkflow = character.custom_workflow;
+          if (chLoras.length > 0) opts.loras = chLoras;
+          const charArtist = charArtistOverride(character);
+          if (charArtist !== null) opts.artist = charArtist;
+          return opts;
+        })(),
+        onProgress: (p) => {
+          if (p.progress != null) {
+            broadcast('schedule_peek_progress', {
+              character_id: character.id,
+              progress: Math.round(p.progress * 100),
+            });
+          }
+        },
+      });
+
+      if (result.success && result.images?.length > 0) {
+        // 图片落盘，通过 URL 发送（base64 过大可能导致 SSE 写失败）
+        const img = result.images[0];
+        const imageUrl = savePeekImage(img.base64, img.filename || 'comfy');
+        if (imageUrl) {
+          db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
+            VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
+            .run(`char_${character.id}_schedule_peek`, generatedPrompt, result.promptRefined || generatedPrompt, JSON.stringify([imageUrl]), getLastWorkflowMode());
+        }
+        broadcast('schedule_peek_ready', {
+          character_id: character.id,
+          display_name: character.display_name,
+          activity: activity.activity,
+          location: activity.location,
+          prompt: generatedPrompt,
+          images: imageUrl ? [imageUrl] : [img.base64], // 落盘失败则仍然传 base64 兜底
+        });
+        console.log(`[schedule] Peek snapshot ready for ${charName}`);
+      } else {
+        broadcast('schedule_peek_ready', {
+          character_id: character.id,
+          display_name: character.display_name,
+          prompt: generatedPrompt,
+          error: result.error || 'Image generation failed',
+        });
+      }
+    } catch (genErr) {
+      console.error(`[schedule] Peek snapshot failed for ${charName}:`, genErr.message);
+      broadcast('schedule_peek_ready', {
+        character_id: character.id,
+        display_name: character.display_name,
+        error: genErr.message,
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] POST /:id/peek error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/schedule/:characterId/regenerate — 重新生成日程 ──
+
+router.post('/:characterId/regenerate', async (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const db = getDb();
+    const character = db.prepare('SELECT id, display_name, base_prompt FROM characters WHERE id = ?').get(characterId);
+    if (!character) {
+      return res.status(404).json({ error: 'character not found' });
+    }
+
+    const direction = (req.body && req.body.direction) ? String(req.body.direction).trim() : null;
+
+    console.log(`[schedule] Regenerating schedule for ${character.display_name}${direction ? ` (direction: ${direction.slice(0, 50)}...)` : ''}...`);
+
+    // 生成新模板
+    const result = await generateSchedule(character, direction);
+
+    // 分配下次刷新时间
+    assignNextRefreshTime(characterId);
+
+    // 快照到今天
+    snapshotTodaySchedule(characterId);
+
+    // 同步睡眠状态
+    syncSleepingState(characterId);
+
+    // 清除缓存
+    invalidateCache(characterId);
+
+    res.json({
+      success: true,
+      character_id: character.id,
+      display_name: character.display_name,
+      version: result.version,
+      message: 'Schedule regenerated',
+    });
+  } catch (err) {
+    console.error('[schedule] POST /:id/regenerate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/schedule/:characterId/clear — 清空角色所有日程 ──
+
+router.post('/:characterId/clear', (req, res) => {
+  try {
+    const characterId = parseInt(req.params.characterId, 10);
+    if (isNaN(characterId)) {
+      return res.status(400).json({ error: 'invalid characterId' });
+    }
+
+    const db = getDb();
+    const character = db.prepare('SELECT id, display_name FROM characters WHERE id = ?').get(characterId);
+    if (!character) {
+      return res.status(404).json({ error: 'character not found' });
+    }
+
+    // 清空日程数据
+    db.prepare('DELETE FROM daily_schedules WHERE character_id = ?').run(characterId);
+    db.prepare('DELETE FROM schedule_templates WHERE character_id = ?').run(characterId);
+
+    // 标记角色不再自动生成日程
+    db.prepare(`
+      UPDATE characters SET
+        schedule_enabled = 0,
+        next_schedule_refresh_at = NULL,
+        is_sleeping = 0,
+        sleep_until = NULL
+      WHERE id = ?
+    `).run(characterId);
+
+    // 清除内存缓存
+    invalidateCache(characterId);
+
+    console.log(`[schedule] Cleared all schedule data for ${character.display_name}`);
+    res.json({ success: true, character_id: character.id, display_name: character.display_name });
+  } catch (err) {
+    console.error('[schedule] POST /:id/clear error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/schedule/queue/status — 调试：队列概览 ──
+
+router.get('/queue/status', (req, res) => {
+  try {
+    const db = getDb();
+
+    const waiting = db.prepare(
+      "SELECT COUNT(*) as count FROM reply_queue WHERE status = 'waiting'"
+    ).get();
+
+    const processing = db.prepare(
+      "SELECT COUNT(*) as count FROM reply_queue WHERE status = 'processing'"
+    ).get();
+
+    const byChar = db.prepare(`
+      SELECT c.display_name, rq.status, COUNT(*) as count
+      FROM reply_queue rq
+      JOIN characters c ON c.id = rq.character_id
+      GROUP BY rq.character_id, rq.status
+      ORDER BY c.display_name, rq.status
+    `).all();
+
+    const nextDue = db.prepare(`
+      SELECT rq.id, c.display_name, rq.scheduled_reply_at, rq.delay_minutes, rq.status
+      FROM reply_queue rq
+      JOIN characters c ON c.id = rq.character_id
+      WHERE rq.status = 'waiting'
+      ORDER BY rq.scheduled_reply_at ASC
+      LIMIT 5
+    `).all();
+
+    res.json({
+      waiting: waiting.count,
+      processing: processing.count,
+      by_character: byChar,
+      next_due: nextDue,
+    });
+  } catch (err) {
+    console.error('[schedule] GET /queue/status error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/schedule/:characterId/wake-up-phone — 电话叫醒（40% 概率，最多 3 次）──
+
+router.post('/:id/wake-up-phone', async (req, res) => {
+  try {
+    const db = getDb();
+    const characterId = parseInt(req.params.id, 10);
+
+    const char = db.prepare(`SELECT id, display_name, is_sleeping, wake_attempts, temporary_wake_until FROM characters WHERE id = ?`).get(characterId);
+    if (!char) return res.status(404).json({ error: 'Character not found' });
+
+    // 已经在临时唤醒中
+    if (isTempWoken(characterId)) {
+      return res.json({ success: false, message: 'already awake', attempts: char.wake_attempts });
+    }
+
+    // 统一判定（含日程 fallback）：DB 缓存列可能滞后于日程
+    const sleepState = isSleeping(characterId);
+    if (!sleepState.sleeping) {
+      return res.json({ success: false, message: 'not sleeping' });
+    }
+    // DB 缓存列滞后 → 顺手同步，保证后续写库路径状态一致
+    // 同步可能重置叫醒列（新睡眠周期），重读最新值
+    let wakeAttemptsNow = char.wake_attempts || 0;
+    if (char.is_sleeping !== 1) {
+      syncSleepingState(characterId);
+      wakeAttemptsNow = db.prepare('SELECT wake_attempts FROM characters WHERE id = ?').get(characterId)?.wake_attempts || 0;
+    }
+
+    // 已到 3 次电话上限 → 短路，不再自增，只允许上门摇醒
+    if (wakeAttemptsNow >= 3) {
+      console.log(`[schedule] ${char.display_name} phone wake: capped at 3 → suggest door`);
+      return res.json({
+        success: false,
+        attempts: 3,
+        door_wake_available: true,
+      });
+    }
+
+    // 原子增 count（防快速双击竞态）
+    db.prepare('UPDATE characters SET wake_attempts = wake_attempts + 1 WHERE id = ?').run(characterId);
+    const attempts = db.prepare('SELECT wake_attempts FROM characters WHERE id = ?').get(characterId).wake_attempts || 1;
+
+    // 并发窗口内已被别处叫醒 → 幂等返回
+    if (isTempWoken(characterId)) {
+      return res.json({ success: false, message: 'already awake', attempts });
+    }
+
+    // 40% 概率叫醒
+    const rolled = Math.random();
+    if (rolled < 0.4) {
+      console.log(`[schedule] ${char.display_name} phone wake #${attempts}: rolled=${rolled.toFixed(3)} < 0.4 → success`);
+      // 临时唤醒 5~15 分钟
+      const tempMinutes = 5 + Math.floor(Math.random() * 11);
+      const tempWakeUntil = new Date(Date.now() + tempMinutes * 60000)
+        .toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
+
+      // 原子写库：仅当角色不在有效临时唤醒中才生效（防多入口双触发）
+      const claimed = db.prepare(`
+        UPDATE characters SET is_sleeping = 0, sleep_until = NULL, temporary_wake_until = ?, wake_mode = ?, wake_attempts = 0
+        WHERE id = ? AND (temporary_wake_until IS NULL OR temporary_wake_until <= datetime('now'))
+      `).run(tempWakeUntil, 'phone', characterId);
+      if (claimed.changes === 0) {
+        return res.json({ success: false, message: 'already awake', attempts });
+      }
+
+      // 立即注册到期定时器（不依赖 processWakeUp 成功，避免状态卡死）
+      scheduleTempWakeExpiry(characterId, tempWakeUntil);
+      // 重置 groggy 一次性提示标记：本次唤醒周期内首条聊天消息注入一次
+      resetGroggyShown(characterId);
+
+      // 异步处理叫醒（不阻塞响应）
+      processWakeUp(characterId, 'phone', attempts).catch(err => {
+        console.error(`[schedule] Wake-up processing failed for ${char.display_name}:`, err.message);
+      });
+
+      return res.json({
+        success: true,
+        attempts,
+        temporary_wake_until: tempWakeUntil,
+        temp_minutes: tempMinutes,
+      });
+    }
+
+    // 叫醒失败
+    console.log(`[schedule] ${char.display_name} phone wake #${attempts}: rolled=${rolled.toFixed(3)} >= 0.4 → miss`);
+    return res.json({
+      success: false,
+      attempts,
+      door_wake_available: attempts >= 3,
+    });
+  } catch (err) {
+    console.error('[schedule] POST /wake-up-phone error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/schedule/:characterId/wake-up-door — 上门摇醒（必定成功）──
+
+router.post('/:id/wake-up-door', async (req, res) => {
+  try {
+    const db = getDb();
+    const characterId = parseInt(req.params.id, 10);
+
+    const char = db.prepare(`SELECT id, display_name, is_sleeping, was_door_woken, temporary_wake_until FROM characters WHERE id = ?`).get(characterId);
+    if (!char) return res.status(404).json({ error: 'Character not found' });
+
+    // 已经在临时唤醒中
+    if (isTempWoken(characterId)) {
+      return res.json({ success: false, message: 'already awake' });
+    }
+
+    // 统一判定（含日程 fallback）：DB 缓存列可能滞后于日程
+    const sleepState = isSleeping(characterId);
+    if (!sleepState.sleeping) {
+      return res.json({ success: false, message: 'not sleeping' });
+    }
+    // 同步可能重置叫醒列（新睡眠周期），重读最新值
+    let wasDoorWoken = char.was_door_woken;
+    if (char.is_sleeping !== 1) {
+      syncSleepingState(characterId);
+      wasDoorWoken = db.prepare('SELECT was_door_woken FROM characters WHERE id = ?').get(characterId)?.was_door_woken;
+    }
+
+    // 判定模式: 之前上门摇醒过 → 'shake'，否则 'door'
+    const mode = wasDoorWoken === 1 ? 'shake' : 'door';
+
+    console.log(`[schedule] ${char.display_name} door wake → mode=${mode}`);
+
+    // 临时唤醒 5~15 分钟
+    const tempMinutes = 5 + Math.floor(Math.random() * 11);
+    const tempWakeUntil = new Date(Date.now() + tempMinutes * 60000)
+      .toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
+
+    // 原子写库：仅当角色不在有效临时唤醒中才生效（防多入口双触发）
+    const claimed = db.prepare(`
+      UPDATE characters SET is_sleeping = 0, sleep_until = NULL, was_door_woken = 1, temporary_wake_until = ?, wake_mode = ?, wake_attempts = 0
+      WHERE id = ? AND (temporary_wake_until IS NULL OR temporary_wake_until <= datetime('now'))
+    `).run(tempWakeUntil, mode, characterId);
+    if (claimed.changes === 0) {
+      return res.json({ success: false, message: 'already awake' });
+    }
+
+    // 立即注册到期定时器（不依赖 processWakeUp 成功，避免状态卡死）
+    scheduleTempWakeExpiry(characterId, tempWakeUntil);
+    // 重置 groggy 一次性提示标记：本次唤醒周期内首条聊天消息注入一次
+    resetGroggyShown(characterId);
+
+    // 异步处理叫醒
+    processWakeUp(characterId, mode, null).catch(err => {
+      console.error(`[schedule] Door-wake processing failed for ${char.display_name}:`, err.message);
+    });
+
+    return res.json({
+      success: true,
+      mode,
+      temporary_wake_until: tempWakeUntil,
+      temp_minutes: tempMinutes,
+    });
+  } catch (err) {
+    console.error('[schedule] POST /wake-up-door error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function _parseLoras(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) } catch { return [] }
+  }
+  return [];
+}
+
+export default router;

@@ -1,0 +1,184 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { generateKeyPairSync } from 'node:crypto';
+import { defaultMaxTokens, normalizeModelCapabilities, isValidMaxTokens } from '../src/llm/modelCapabilities.js';
+
+test('official, known text models and unknown models get appropriate defaults', () => {
+  assert.equal(defaultMaxTokens('https://api.deepseek.com/v1/', 'deepseek-flash'), 393216);
+  assert.equal(defaultMaxTokens('https://api.deepseek.com.evil.invalid', 'other'), 8192);
+  assert.equal(defaultMaxTokens('https://relay.invalid/v1', 'deepseek-v4.1-flash'), 32768);
+  for (const model of ['gemini-2.5-pro', 'gemini-2.5-flash-lite', 'google/gemini-3.1-pro-preview']) {
+    assert.equal(defaultMaxTokens('', model), 65536);
+  }
+  for (const model of ['gemini-2.0-flash', 'gemini-2.5-flash-image', 'gemini-3-live', 'unknown']) {
+    assert.equal(defaultMaxTokens('', model), 8192);
+  }
+  for (const value of [0, -1, '', '65536', 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) assert.equal(isValidMaxTokens(value), false);
+});
+
+test('model discovery preserves output limits, never mistakes input/context limits for output limits', () => {
+  const caps = normalizeModelCapabilities([
+    { id: 'deepseek-flash', max_output_tokens: 393216, context_window: 1048576 },
+    { name: 'models/gemini-2.5-pro', outputTokenLimit: 65536, inputTokenLimit: 1048576 },
+    { id: 'relay', top_provider: { max_completion_tokens: 32768 } },
+    { id: 'unknown', context_length: 1000000 },
+    { id: 'invalid', max_output_tokens: -1 },
+    'bare-name', null,
+  ]);
+  assert.deepEqual({ ...caps }, {
+    'deepseek-flash': { maxTokens: 393216 }, 'gemini-2.5-pro': { maxTokens: 65536 }, relay: { maxTokens: 32768 },
+  });
+});
+
+const stub = source => `data:text/javascript,${encodeURIComponent(source)}`;
+const settingsUrl = stub('export const values = new Map(); export const getSetting = key => values.get(key); export const setSetting = (key, value) => values.set(key, value);');
+const fsUrl = stub("export let saved = ''; export default { existsSync: () => true, readFileSync: () => saved, writeFileSync: (_path, text) => { saved = text; } };");
+const configUrl = new URL('../src/config.js', import.meta.url);
+const imports = {
+  dotenv: stub('export default { config() {} };'), fs: fsUrl,
+  './db/settings.js': settingsUrl,
+  './services/weatherSource.js': stub('export const notifyWeatherSourceChange = () => {};'),
+  './services/novelaiClient.js': new URL('../src/services/novelaiClient.js', import.meta.url).href,
+  './llm/modelCapabilities.js': new URL('../src/llm/modelCapabilities.js', import.meta.url).href,
+  './llm/vertex-client.js': new URL('../src/llm/vertex-client.js', import.meta.url).href,
+};
+const source = "const fixtureEnv = {};\n" + readFileSync(configUrl, 'utf8')
+  .replaceAll('process.env', 'fixtureEnv')
+  .replace('fileURLToPath(import.meta.url)', JSON.stringify(fileURLToPath(configUrl)))
+  .replace(/from '([^']+)'/g, (match, specifier) => imports[specifier] ? `from ${JSON.stringify(imports[specifier])}` : match);
+
+/**
+ * ⚠️ **不要把这些 import 写成顶层 await**（2026-10-19 实测）。
+ *
+ * 本仓跑全量的命令带 `--test-force-exit`：顶层 await 悬着时，runner 会把
+ * "已经注册的用例跑完"就强杀进程 —— 这个文件原来只注册到前 2 条，后 4 条
+ * **从未执行**，而汇总里 `fail=0 cancelled=0` 看着是绿的（典型的假绿）。
+ * 改成惰性加载：用例同步注册，真正需要模块时再 await。
+ */
+let loadPromise
+function loadRuntime() {
+  return (loadPromise ??= (async () => {
+    const settings = await import(settingsUrl);
+    const memoryFs = await import(fsUrl);
+    const runtime = await import(stub(source));
+    return { settings, memoryFs, runtime };
+  })());
+}
+
+test('NovelAI native protocol, proxy and normalized key persist and reload', async () => {
+  const { runtime, settings } = await loadRuntime();
+  runtime.updateComfyConfig({ novelaiApiFormat: 'native', novelaiProxyUrl: ' http://127.0.0.1:7890 ', novelaiUrl: 'https://relay.example/ai/generate-image/', novelaiApiKey: ' Bearer test-novelai-key ' });
+  assert.equal(settings.values.get('novelai_api_format'), 'native');
+  assert.equal(settings.values.get('novelai_proxy_url'), 'http://127.0.0.1:7890');
+  assert.equal(runtime.getNovelaiApiKey(), 'test-novelai-key');
+  const settingsSource = readFileSync(new URL('../src/db/settings.js', import.meta.url), 'utf8')
+    .replace("'../config.js'", JSON.stringify(stub(source)));
+  const { loadSystemSettings } = await import(stub(settingsSource));
+  runtime.config.comfyui.novelaiApiFormat = 'relay';
+  runtime.config.comfyui.novelaiProxyUrl = '';
+  loadSystemSettings({ prepare: () => ({ all: () => [...settings.values].map(([setting_key, setting_value]) => ({ setting_key, setting_value })) }) });
+  assert.equal(runtime.config.comfyui.novelaiApiFormat, 'native');
+  assert.equal(runtime.config.comfyui.novelaiProxyUrl, 'http://127.0.0.1:7890');
+  runtime.updateComfyConfig({ novelaiProxyUrl: '', clearNovelaiApiKey: true });
+  assert.equal(settings.values.get('novelai_proxy_url'), '');
+  assert.equal(runtime.getNovelaiApiKey(), '');
+});
+
+test('LLM save route forwards Vertex fields, returns only public config and rejects invalid JSON', async () => {
+  const { runtime } = await loadRuntime();
+  const routes = readFileSync(new URL('../src/routes/config.js', import.meta.url), 'utf8');
+  const route = routes.slice(routes.indexOf("router.put('/llm',"), routes.indexOf('// PUT /api/config/llm/free-egg'));
+  let handler, resets = 0, syncs = 0;
+  new Function('router', 'updateLlmConfig', 'resetClient', 'config', 'PRESET_LLM_URLS', 'updateFeatureFlag', 'syncActiveLlmProfile', 'getLlmConfig', route)(
+    { put(_path, fn) { handler = fn; } }, runtime.updateLlmConfig, () => resets++, runtime.config, [], () => {}, () => syncs++, runtime.getLlmConfig,
+  );
+  const response = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  handler({ body: { connectionType: 'vertexai', vertexRegion: 'global' } }, response);
+  assert.equal(response.body.connectionType, 'vertexai');
+  assert.equal(response.body.vertexServiceAccount, undefined);
+  assert.equal(resets, 1);
+  assert.equal(syncs, 1);
+  handler({ body: { connectionType: 'openai', vertexServiceAccount: '{invalid' } }, response);
+  assert.equal(response.statusCode, 400);
+  assert.equal(runtime.config.llm.connectionType, 'vertexai');
+  assert.equal(resets, 1);
+  assert.equal(syncs, 1);
+  runtime.config.llm.connectionType = 'openai';
+});
+
+test('Vertex credentials persist privately, survive free mode and stay isolated across profiles', async () => {
+  const { runtime, settings } = await loadRuntime();
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const account = JSON.stringify({ type: 'service_account', project_id: 'test-project', client_email: 'test@example.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
+  const { config, getLlmConfig, getLlmProfiles, addLlmProfile, activateLlmProfile, updateLlmConfig, syncActiveLlmProfile, updateFreeEggEnabled } = runtime;
+  const profile = addLlmProfile('vertex').profile;
+  assert.equal(profile.vertexServiceAccount, undefined);
+  activateLlmProfile(profile.id);
+  assert.equal(updateLlmConfig({ connectionType: 'vertexai', vertexRegion: 'global', vertexServiceAccount: account, model: 'gemini-2.5-pro' }).ok, true);
+  syncActiveLlmProfile();
+  assert.equal(getLlmConfig().hasApiKey, true);
+  assert.equal(getLlmConfig().hasVertexServiceAccount, true);
+  assert.equal(config.llm.vertexServiceAccount, account);
+  assert.equal(settings.values.get('llm_vertex_service_account'), account);
+  for (const result of [getLlmConfig(), getLlmProfiles()]) assert.equal(JSON.stringify(result).includes('PRIVATE KEY'), false);
+  const before = getLlmConfig();
+  assert.equal(updateLlmConfig({ connectionType: 'openai', vertexServiceAccount: '{invalid' }).ok, false);
+  assert.deepEqual(getLlmConfig(), before);
+  assert.equal(updateLlmConfig({ connectionType: 'openai', headers: '{invalid' }).ok, false);
+  assert.deepEqual(getLlmConfig(), before);
+  updateLlmConfig({ vertexServiceAccount: '' });
+  assert.equal(config.llm.vertexServiceAccount, account);
+  updateFreeEggEnabled(true);
+  assert.equal(config.llm.connectionType, 'openai');
+  updateFreeEggEnabled(false);
+  assert.equal(config.llm.connectionType, 'vertexai');
+  settings.values.set('llm_profiles', JSON.stringify([...JSON.parse(settings.values.get('llm_profiles')), { id: 'legacy', name: 'legacy' }]));
+  activateLlmProfile('legacy');
+  assert.equal(config.llm.connectionType, 'openai');
+  assert.equal(config.llm.vertexServiceAccount, '');
+  activateLlmProfile(profile.id);
+  assert.equal(config.llm.vertexServiceAccount, account);
+  // Restore the initial fixture for the existing tests below.
+  settings.values.clear();
+  Object.assign(config.llm, { connectionType: 'openai', vertexServiceAccount: '', model: 'deepseek-flash', maxTokens: null });
+});
+
+test('MAX_tokens persists, round-trips profiles and survives free mode; invalid updates are rejected before mutation', async () => {
+  const { runtime, memoryFs, settings } = await loadRuntime();
+  const { config, getLlmConfig, updateLlmConfig, addLlmProfile, activateLlmProfile, syncActiveLlmProfile, updateFreeEggEnabled } = runtime;
+  assert.equal(getLlmConfig().maxTokens, 393216);
+  assert.equal(getLlmConfig().thinkingMode, 'disabled');
+  assert.equal(updateLlmConfig({ maxTokens: 65536, thinkingMode: 'enabled' }).ok, true);
+  assert.match(memoryFs.saved, /LLM_MAX_TOKENS=65536/);
+  assert.equal(getLlmConfig().maxTokens, 65536);
+  const profile = addLlmProfile('manual').profile;
+  assert.equal(profile.maxTokens, 65536);
+  activateLlmProfile(profile.id);
+  updateLlmConfig({ maxTokens: 12000 });
+  syncActiveLlmProfile();
+  updateLlmConfig({ maxTokens: 24000 });
+  activateLlmProfile(profile.id);
+  assert.equal(config.llm.maxTokens, 12000);
+  assert.equal(config.llm.thinkingMode, 'enabled');
+  updateFreeEggEnabled(true);
+  assert.equal(config.llm.maxTokens, 8192);
+  // ⚠️ 本地口径（2026-10-19 合并时裁定，与上游测试不同）：
+  // 免费鸡蛋通道的 thinkingMode 必须是 'omit' —— 免费端点对 `thinking:{type:'disabled'}`
+  // 直接返回 400 invalid_request（`freeEggConfig.test.js` 用真机结论钉住了这一点）。
+  // 上游这里写的是 'disabled'，那是它家 llm-client 的写法；本地 llm-client 只按
+  // `thinkingMode === 'omit'` 决定"完全不发 thinking 字段"，所以 getter 必须给 omit。
+  assert.equal(config.llm.thinkingMode, 'omit');
+  updateFreeEggEnabled(false);
+  assert.equal(config.llm.maxTokens, 12000);
+  assert.equal(config.llm.thinkingMode, 'enabled');
+  const before = getLlmConfig();
+  assert.equal(updateLlmConfig({ baseURL: 'https://wrong.invalid', maxTokens: -1 }).ok, false);
+  assert.deepEqual(getLlmConfig(), before);
+  settings.values.set('llm_profiles', JSON.stringify([{ id: 'legacy', name: 'old', baseURL: 'https://relay.invalid/v1', model: 'gemini-2.5-pro' }]));
+  activateLlmProfile('legacy');
+  assert.equal(getLlmConfig().maxTokens, 65536);
+  assert.equal(getLlmConfig().thinkingMode, 'disabled');
+  assert.match(memoryFs.saved, /LLM_MAX_TOKENS=65536/);
+});

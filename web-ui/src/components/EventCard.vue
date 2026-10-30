@@ -1,0 +1,1043 @@
+<template>
+  <!-- ═══ 预览卡片（列表用）。initialOpen 模式不渲染预览，直接进详情 ═══ -->
+  <div v-if="!initialOpen" class="event-preview" :class="{ 'is-expired': isExpired, 'is-compact': compact, 'is-engaged': compact && event.engaged }" @click="openDetail">
+    <!-- 倒计时进度条（最上方，compact 模式隐藏） -->
+    <div v-if="!compact" class="countdown-bar-wrap">
+      <div class="countdown-bar" :style="{ width: progressPercent + '%' }" :class="barColorClass"></div>
+    </div>
+
+    <!-- 头部：角色信息 -->
+    <div class="preview-header">
+      <div class="preview-avatar" :style="avatarStyle" @click.stop="goToChat">
+        <span v-if="!event.avatar_path">{{ event.display_name?.charAt(0) }}</span>
+      </div>
+      <div class="preview-header-info">
+        <span class="preview-name">{{ event.display_name }}</span>
+        <span class="preview-title">{{ event.title }}</span>
+      </div>
+      <span v-if="!compact" class="preview-badge" :class="{ urgent: countdownMinutes < 10 }">
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+        {{ countdownText }}
+      </span>
+      <span v-else class="preview-badge history-time">{{ formatTime(event.ended_at || event.expires_at) }}</span>
+      <!-- 更多菜单 -->
+      <div class="card-more-wrap" @click.stop>
+        <div class="card-more-btn" @click="showMenu = !showMenu">
+          <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
+            <path d="M427.976 206.117c0.728 46.398 38.94 83.429 85.337 82.701 46.406-0.717 83.438-38.928 82.71-85.326-0.726-46.407-38.927-83.438-85.334-82.71-46.41 0.728-83.43 38.928-82.713 85.335z m0 614.402c0.728 46.396 38.94 83.427 85.337 82.7 46.406-0.718 83.438-38.929 82.71-85.327-0.726-46.407-38.927-83.438-85.334-82.71-46.41 0.73-83.43 38.928-82.713 85.337z m0-307.206c0.728 46.407 38.94 83.438 85.337 82.71 46.406-0.73 83.438-38.927 82.71-85.336-0.726-46.396-38.927-83.428-85.334-82.71-46.41 0.73-83.43 38.929-82.713 85.336z" />
+          </svg>
+        </div>
+        <Transition name="menu-pop">
+          <div v-if="showMenu" class="card-dropdown">
+            <div class="card-dropdown-item danger" role="button" tabindex="0" @click.stop="onDelete" @keydown.enter.prevent="onDelete" @keydown.space.prevent="onDelete">🗑️ 删除</div>
+          </div>
+        </Transition>
+      </div>
+    </div>
+
+    <!-- 配图 -->
+    <div v-if="currentImage" class="preview-image-wrap">
+      <img :src="currentImage" class="preview-image" loading="lazy" alt="" />
+      <!-- 补图成功的短提示（3 秒后自己消失，不挡内容） -->
+      <Transition name="regen-fade">
+        <span v-if="regenMsg" class="preview-regen-msg">{{ regenMsg }}</span>
+      </Transition>
+    </div>
+    <!-- 没图：分清「还在生成」和「生成失败」——以前两种情况都只说「生成中」，是句谎 -->
+    <div v-else class="preview-image-placeholder" :class="{ 'is-failed': regenFailed }">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21,15 16,10 5,21" />
+      </svg>
+      <template v-if="regenFailed">
+        <span class="placeholder-fail-title">这张配图没生成出来</span>
+        <span class="placeholder-fail-reason">{{ regenError || event.error_message }}</span>
+        <linshe-button
+          v-if="canRegenImage"
+          variant="secondary"
+          size="sm"
+          class="regen-image-btn"
+          :loading="regenBusy"
+          :disabled="regenBusy"
+          @click.stop="doRegenImage"
+        >{{ regenBusy ? '正在重画…' : '重新配图' }}</linshe-button>
+      </template>
+      <template v-else>
+        <span>{{ regenError || '配图生成中…' }}</span>
+        <linshe-button
+          v-if="canRegenImage"
+          variant="secondary"
+          size="sm"
+          class="regen-image-btn"
+          :loading="regenBusy"
+          :disabled="regenBusy"
+          @click.stop="doRegenImage"
+        >{{ regenBusy ? '正在重画…' : '重新配图' }}</linshe-button>
+      </template>
+    </div>
+
+    <!-- 底部信息 -->
+    <div class="preview-footer">
+      <span class="preview-text">{{ previewText }}</span>
+      <div class="preview-meta-row">
+        <span v-if="choiceHistory.length > 1" class="preview-meta">已推演 {{ choiceHistory.length - 1 }} 步</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 详情遮罩 ═══ -->
+  <Teleport to="body">
+    <Transition name="detail-fade">
+      <div v-if="detailOpen" class="detail-overlay">
+        <!-- 关闭按钮 -->
+        <linshe-button variant="icon" size="lg" class="detail-close" @click="closeDetail">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </linshe-button>
+        <!-- 标题浮层 -->
+        <div class="detail-title-bar">
+          <span class="detail-title-name">{{ event.display_name }}</span>
+          <span class="detail-title-event">{{ event.title }}</span>
+          <span class="detail-title-badge" :class="{ urgent: countdownMinutes < 10 }">{{ isExpired ? '已结束' : countdownText }}</span>
+        </div>
+
+        <!-- 建筑功能模板事件（上游 v3.9.0 合并）：规则执行、内容预生成，由功能内容组件承载 -->
+        <div v-if="isBuildingFeature" class="branch-scroll" ref="scrollEl" @click.self="closeDetail" @wheel.prevent="onWheelScroll">
+          <div class="branch-track">
+            <div class="branch-card is-current">
+              <div class="branch-text">
+                <TownBuildingFeatureContent :event="event" @completed="onBuildingFeatureDone" @refresh="onBuildingFeatureRefresh" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 横向滚动分支卡片 (80vh)，点击空白区域关闭，滚轮左右滑动 -->
+        <div v-else class="branch-scroll" ref="scrollEl" @click.self="closeDetail" @wheel.prevent="onWheelScroll">
+          <div class="branch-track" @click.self="closeDetail">
+            <!-- 所有步骤（choice_history[0]=初始场景, [1..N]=分支步骤） -->
+            <div
+              v-for="(step, i) in choiceHistory" :key="i"
+              class="branch-card"
+              :class="{
+                'is-initial': i === 0,
+                'is-latest': i === choiceHistory.length - 1 && !isExpired
+              }"
+            >
+              <div class="branch-img-wrap">
+                <img v-if="step.image" :src="step.image" class="branch-img" loading="lazy" decoding="async" @click.stop="previewImg = step.image" />
+                <!-- §3.5：这一步没配图时，别再对已结束的奇遇说"生成中" -->
+                <div v-else class="branch-img-empty">{{ compact ? '这一步没有配图' : '配图生成中…' }}</div>
+              </div>
+              <div class="branch-text">
+                <div class="choice-made-box">
+                  <div class="choice-made-label">{{ i === 0 ? event.title : '选择了：' }}</div>
+                  <div v-if="i > 0" class="choice-made-text">「{{ step.choice_label }}」</div>
+                </div>
+                <div class="branch-desc">{{ step.summary }}</div>
+              </div>
+            </div>
+
+            <!-- 结局（已过期，需真实结局/摘要生成后展示） -->
+            <div v-if="isExpired && conclusionText" class="branch-card is-ending">
+              <div class="branch-text ending-text">
+                <div class="branch-label">📖 事件结束</div>
+                <div class="branch-desc">{{ conclusionText }}</div>
+                <div v-if="event.ended_at" class="ending-time">结束于 {{ formatTime(event.ended_at) }}</div>
+              </div>
+            </div>
+
+            <!-- 当前选项（活跃事件末尾）· VN 风格 -->
+            <div v-if="!isExpired" class="branch-card is-current">
+              <div class="branch-text">
+                <div class="branch-label">⚡ 做出选择 或 ✍️ 自由行动</div>
+                <!-- 真实处理中（HTTP 请求已发出，不可取消） -->
+                <div v-if="(choosing || event.processing) && !event._queued" class="choice-loading">
+                  <div class="loading-spinner"></div>
+                  <span>{{ undoing ? '正在撤回…' : '故事推进中…' }}</span>
+                </div>
+                <!-- 排队中（尚未发送 HTTP，可取消重新选择） -->
+                <div v-else-if="event._queued" class="choice-loading is-queued">
+                  <div class="loading-spinner"></div>
+                  <span>故事推进中…</span>
+                  <div class="queued-back-btn" role="button" tabindex="0" @click.stop="onCancelQueue" @keydown.enter.prevent="onCancelQueue" @keydown.space.prevent="onCancelQueue">← 返回重选</div>
+                </div>
+                <div v-else class="vn-choices">
+                  <div class="vn-choice" role="button" tabindex="0" @click="onChoose('A')" @keydown.enter.prevent="onChoose('A')" @keydown.space.prevent="onChoose('A')">
+                    <span class="vn-choice-bar"></span>
+                    <span>{{ event.choice_a }}</span>
+                  </div>
+                  <div class="vn-choice" role="button" tabindex="0" @click="onChoose('B')" @keydown.enter.prevent="onChoose('B')" @keydown.space.prevent="onChoose('B')">
+                    <span class="vn-choice-bar"></span>
+                    <span>{{ event.choice_b }}</span>
+                  </div>
+                  <label class="vn-choice-c">
+                    <span class="vn-input-bar">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                    </span>
+                    <input v-model="customText" class="vn-input" :placeholder="event.choice_c_label || '自定义行动…'" @keyup.enter="onChoose('C')" />
+                    <div class="vn-submit" role="button" tabindex="0" :class="{ 'is-disabled': !customText.trim() }" :aria-disabled="!customText.trim()" @click="onChoose('C')" @keydown.enter.prevent="onChoose('C')" @keydown.space.prevent="onChoose('C')" title="确定">
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19,12 12,19 5,12"/></svg>
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <!-- 撤回按钮：只有选择过至少一次才显示 -->
+              <div
+                v-if="choiceHistory.length > 1"
+                class="undo-btn"
+                :class="{ 'is-disabled': event.processing }"
+                :aria-disabled="event.processing"
+                role="button"
+                tabindex="0"
+                @click.stop="onUndo"
+                @keydown.enter.prevent="onUndo"
+                @keydown.space.prevent="onUndo"
+                title="回到上一次选择"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="15,18 9,12 15,6"/>
+                </svg>
+                <span>回到上一次选择</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 图片预览：Teleport 到 body 并置于遮罩层之上 -->
+  <Teleport to="body">
+    <ImageLightbox :visible="!!previewImg" :imgs="previewImg ? [previewImg] : []" :z-index="400" @hide="previewImg = null" @regenerated="onRegenerated" @upscaled="onRegenerated" @deleted="onDeleted" />
+  </Teleport>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from 'vue'
+import { useRouter } from 'vue-router'
+import { useEventsStore } from '../stores/events.js'
+import * as api from '../api/index.js'
+import ImageLightbox from './ImageLightbox.vue'
+import LinsheButton from './ui/LinsheButton.vue'
+// 建筑功能模板事件（上游 v3.9.0 合并）：event.sourceType === 'building_feature' 时由它承载正文
+import TownBuildingFeatureContent from './town/TownBuildingFeatureContent.vue'
+
+const confirmFn = inject('confirm')
+const router = useRouter()
+
+const props = defineProps({
+  event: { type: Object, required: true },
+  conclusion: { type: String, default: '' },
+  compact: { type: Boolean, default: false },
+  initialOpen: { type: Boolean, default: false },
+})
+const emit = defineEmits(['updated', 'closed'])
+const store = useEventsStore()
+
+// ── 建筑功能模板事件（上游 v3.9.0 合并）──
+const isBuildingFeature = computed(() => props.event?.sourceType === 'building_feature')
+function onBuildingFeatureDone(operation) {
+  emit('updated', { event: { ...props.event, status: 'completed', result: operation.result || null } })
+}
+function onBuildingFeatureRefresh() {
+  store.loadEvents()
+  emit('updated', {})
+}
+
+const detailOpen = ref(false)
+const customText = ref('')
+const choosing = ref(false)
+const undoing = ref(false)
+const previewImg = ref(null)
+const scrollEl = ref(null)
+const showMenu = ref(false)
+
+// ── 倒计时 ──
+const now = ref(Date.now())
+let timer = null
+onMounted(() => {
+  timer = setInterval(() => { now.value = Date.now() }, 1000)
+  if (props.initialOpen) openDetail()
+})
+onUnmounted(() => { if (timer) clearInterval(timer) })
+
+const expiresAt = computed(() => props.event.expires_at ? new Date(props.event.expires_at) : null)
+const isExpired = computed(() => {
+  if (props.compact) return true // 历史事件一律视为已结束
+  return expiresAt.value ? now.value >= expiresAt.value.getTime() : false
+})
+const countdownMinutes = computed(() => {
+  if (!expiresAt.value) return 0
+  return Math.max(0, Math.floor((expiresAt.value.getTime() - now.value) / 60000))
+})
+
+const barColorClass = computed(() => {
+  if (isExpired.value) return 'bar-expired'
+  const p = progressPercent.value
+  if (p > 80) return 'bar-green'
+  if (p > 60) return 'bar-lime'
+  if (p > 40) return 'bar-yellow'
+  if (p > 20) return 'bar-orange'
+  return 'bar-red'
+})
+
+const progressPercent = computed(() => {
+  if (!props.event.created_at || !props.event.expires_at) return 100
+  const created = new Date(props.event.created_at)
+  const expires = new Date(props.event.expires_at)
+  const total = expires.getTime() - created.getTime()
+  if (total <= 0) return 0
+  const elapsed = now.value - created.getTime()
+  const remaining = Math.max(0, 100 - (elapsed / total) * 100)
+  return Math.min(100, Math.max(0, remaining))
+})
+const countdownText = computed(() => {
+  if (!expiresAt.value) return ''
+  if (isExpired.value) return '已结束'
+  const m = countdownMinutes.value
+  if (m > 60) return `${Math.floor(m / 60)}h${m % 60}m`
+  if (m > 0) return `${m}分钟`
+  return `${Math.max(0, Math.floor((expiresAt.value.getTime() - now.value) / 1000))}秒`
+})
+
+const choiceHistory = computed(() => {
+  if (Array.isArray(props.event.choice_history)) return props.event.choice_history
+  return []
+})
+
+const currentImage = computed(() => {
+  if (choiceHistory.value.length > 0) return choiceHistory.value[choiceHistory.value.length - 1].image || props.event.image
+  return props.event.image
+})
+
+function onRegenerated(newUrl) {
+  const base = newUrl.replace(/\?.*$/, '')
+  // 更新主图
+  if (props.event.image && props.event.image.replace(/\?.*$/, '') === base) {
+    props.event.image = newUrl
+  }
+  // 更新分支图
+  if (props.event.choice_history) {
+    for (const step of props.event.choice_history) {
+      if (step.image && step.image.replace(/\?.*$/, '') === base) {
+        step.image = newUrl
+      }
+    }
+  }
+}
+
+function onDeleted(deletedUrl) {
+  previewImg.value = null
+}
+
+/**
+ * §3.5（2026-10-01）：**奇遇没图时的补图入口**。
+ *
+ * 以前这里只有一句「配图生成中…」—— 生成失败时它也是一句这个，用户等一张永远不来的图、
+ * 也没有任何补救办法（只能删掉奇遇重开）。现在：
+ *   · 后端把失败原因写进 `character_events.error_message`（新奇的奇遇也会带上）；
+ *   · 卡片这里按 `error_message` 分出「生成中」和「生成失败」两种状态；
+ *   · 失败时给一个「重新配图」按钮，点了就用行里存的 prompt 重跑一次生图。
+ */
+const regenBusy = ref(false)
+const regenError = ref('')
+const regenMsg = ref('')          // 成功后的短提示（几秒后自动消失）
+const regenFailed = computed(() => !!String(props.event?.error_message || '').trim())
+/** 只在「活跃奇遇 + 没有图」时给补图入口；历史/已结束的奇遇不给，避免被当成"修历史" */
+const canRegenImage = computed(() => !currentImage.value && !props.compact && !!props.event?.id)
+
+async function doRegenImage() {
+  if (regenBusy.value) return
+  regenBusy.value = true
+  regenError.value = ''
+  regenMsg.value = ''
+  try {
+    const res = await api.regenerateEventImage(props.event.id)
+    if (res?.ok && res.image) {
+      props.event.image = res.image
+      props.event.error_message = null
+      regenMsg.value = '配图好了'
+      setTimeout(() => { regenMsg.value = '' }, 3000)
+    } else {
+      regenError.value = res?.error || '还是没出图，过一会儿再试'
+    }
+  } catch (err) {
+    regenError.value = err?.message || '补图请求失败了'
+  } finally {
+    regenBusy.value = false
+  }
+}
+
+const previewText = computed(() => {
+  if (choiceHistory.value.length > 0) {
+    return choiceHistory.value[choiceHistory.value.length - 1].summary || ''
+  }
+  return props.event.description || ''
+})
+
+// 有真实结局显示结局；旧历史数据回退到记忆摘要；两者皆无时保持为空，模板据此隐藏"事件结束"块
+const conclusionText = computed(() => props.conclusion || props.event.summary || '')
+
+const avatarStyle = computed(() => {
+  const a = props.event.avatar_path
+  return a ? { backgroundImage: `url(${a})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}
+})
+
+function goToChat() {
+  if (props.event.character_id) {
+    router.push('/chat/' + props.event.character_id)
+  }
+}
+
+// ── 详情 ──
+function openDetail() {
+  detailOpen.value = true
+  nextTick(() => {
+    if (scrollEl.value) scrollEl.value.scrollTo({ left: scrollEl.value.scrollWidth, behavior: 'smooth' })
+  })
+}
+function closeDetail() {
+  detailOpen.value = false
+  emit('closed')
+  choosing.value = false // 关闭详情时重置选择状态
+}
+
+async function onDelete() {
+  showMenu.value = false
+  const ok = await confirmFn({ title: '删除奇遇', message: '确定要删除这条奇遇吗？', okText: '删除', danger: true })
+  if (!ok) return
+  await store.deleteEvent(props.event.id)
+}
+
+function formatTime(dt) {
+  if (!dt) return ''
+  const d = new Date(dt)
+  const now = Date.now()
+  const diff = now - d.getTime()
+  if (diff < 60000) return '刚刚'
+  if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前'
+  const todayStart = new Date().setHours(0,0,0,0)
+  if (d.getTime() >= todayStart) {
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0')
+  }
+  return (d.getMonth()+1) + '月' + d.getDate() + '日 ' +
+    String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0')
+}
+
+function onWheelScroll(e) {
+  if (!scrollEl.value) return
+  const cardWidth = 640 + 20 // card min-width + gap
+  scrollEl.value.scrollBy({
+    left: e.deltaY > 0 ? cardWidth : -cardWidth,
+    behavior: 'smooth',
+  })
+}
+
+async function onChoose(choice) {
+  if (choosing.value) return
+  // vn-submit 改为 div 后的禁用守卫（原 :disabled="!customText.trim()"，模板中 ref 自动解包，脚本内需 .value）
+  if (choice === 'C' && !customText.value.trim()) return
+  const eventId = props.event.id
+  choosing.value = true
+  const customTextValue = customText.value
+  customText.value = ''
+  console.log(`[EventCard] onChoose START event=${eventId} choice=${choice} customText="${customTextValue}"`)
+
+  try {
+    const result = await store.makeChoice(eventId, choice, choice === 'C' ? customTextValue : '')
+    console.log(`[EventCard] onChoose DONE event=${eventId} concluded=${result?.concluded} queued=${result === null}`)
+    if (!result) {
+      // 已排队：choosing 重置（本地状态），但 event.processing 为 true（store 状态）
+      // 模板 v-if="choosing || event.processing" → 仍然显示 loading
+      // SSE event_update 到达后 event.processing=false → loading 消失 + 新选项出现
+      choosing.value = false
+      return
+    }
+    if (result.concluded) {
+      emit('updated', { concluded: true })
+      closeDetail()
+    } else if (result.event) {
+      emit('updated', { event: result.event })
+      nextTick(() => {
+        if (scrollEl.value) scrollEl.value.scrollTo({ left: scrollEl.value.scrollWidth, behavior: 'smooth' })
+      })
+    }
+  } catch (err) {
+    console.error(`[EventCard] onChoose ERROR event=${eventId}:`, err?.message || err)
+  }
+
+  choosing.value = false
+  console.log(`[EventCard] onChoose END event=${eventId} choosing reset`)
+}
+
+/** 取消排队中的选择：从队列移除 + 恢复可点击状态 */
+function onCancelQueue() {
+  const eventId = props.event.id
+  console.log(`[EventCard] cancelQueue event=${eventId}`)
+  store.cancelQueuedChoice(eventId)
+  choosing.value = false
+}
+
+/** 撤回上一次分支选择，回到上一步 */
+async function onUndo() {
+  if (undoing.value || props.event.processing) return
+  const eventId = props.event.id
+  undoing.value = true
+  console.log(`[EventCard] undo START event=${eventId}`)
+
+  try {
+    const result = await store.undoChoice(eventId)
+    console.log(`[EventCard] undo DONE event=${eventId}`)
+    if (result?.event) {
+      emit('updated', { event: result.event })
+      nextTick(() => {
+        if (scrollEl.value) scrollEl.value.scrollTo({ left: scrollEl.value.scrollWidth, behavior: 'smooth' })
+      })
+    }
+  } catch (err) {
+    console.error(`[EventCard] undo ERROR event=${eventId}:`, err?.message || err)
+  }
+
+  undoing.value = false
+}
+
+// 到期自动触发结局（非 compact 模式，即活跃事件到期时主动调用后端生成结局）
+let _expiredTriggered = false
+watch(isExpired, (val) => {
+  console.log(`[EventCard] isExpired changed to ${val} for "${props.event?.title}" (compact=${props.compact}, alreadyTriggered=${_expiredTriggered})`)
+  if (val && !props.compact && !_expiredTriggered) {
+    _expiredTriggered = true
+    const eventId = props.event.id
+    console.log(`[EventCard] Scheduling auto-conclude for event ${eventId} in 2s...`)
+    setTimeout(async () => {
+      try {
+        console.log(`[EventCard] Calling concludeEvent API for ${eventId}`)
+        const res = await api.concludeEvent(eventId)
+        console.log(`[EventCard] concludeEvent response for ${eventId}:`, res)
+        emit('updated', { concluded: true })
+      } catch (err) {
+        console.error(`[EventCard] auto-conclude failed for ${eventId}:`, err)
+        _expiredTriggered = false
+      }
+    }, 2000)
+  }
+})
+</script>
+
+<style scoped>
+/* ═══════════════ 预览卡片（瀑布流）═══════════════ */
+.event-preview {
+  break-inside: avoid;
+  margin-bottom: 14px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid var(--glass-border);
+  animation: event-enter 0.35s ease both;
+}
+@keyframes event-enter {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.event-preview:hover { background: var(--glass-bg-hover); transform: translateY(-1px); }
+.event-preview.is-expired { opacity: 0.5; }
+
+/* 倒计时进度条 */
+.countdown-bar-wrap {
+  height: 2px; background: var(--tint-subtle);
+}
+.countdown-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+}
+.countdown-bar.bar-green  { background: #4caf50; }
+.countdown-bar.bar-lime   { background: #8bc34a; }
+.countdown-bar.bar-yellow { background: #ffc107; }
+.countdown-bar.bar-orange { background: #ff9800; }
+.countdown-bar.bar-red    { background: #f44336; }
+.countdown-bar.bar-expired { background: var(--tint-subtle); width: 100% !important; }
+
+/* 配图 — 自然高度，驱动瀑布流变化 */
+.preview-image-wrap { line-height: 0; }
+.preview-image {
+  width: 100%; height: auto; display: block;
+  transition: transform 0.2s ease;
+  cursor: pointer;
+}
+.preview-image:hover { transform: scale(1.03); }
+
+.preview-image-placeholder {
+  width: 100%; height: 160px;
+  background: var(--bg-glass);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  color: var(--text-secondary); font-size: 12px; opacity: 0.4;
+}
+
+/* §3.5 补图：失败态不再是"生成中"那行灰字，而是一块能读、能点的区域 */
+.preview-image-placeholder.is-failed { opacity: 1; padding: 0 16px; text-align: center; }
+.placeholder-fail-title { color: var(--text-primary); font-size: 13px; opacity: 0.85; }
+.placeholder-fail-reason {
+  font-size: 11px; line-height: 1.5; opacity: 0.7;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  max-width: 260px;
+}
+.regen-image-btn { margin-top: 4px; }
+/* 补图成功的短提示：贴在图右下角，3 秒后自己消失（不占布局、不挡图） */
+.preview-image-wrap { position: relative; }
+.preview-regen-msg {
+  position: absolute; right: 8px; bottom: 8px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  color: var(--text-secondary); font-size: 11px; line-height: 1.6;
+  backdrop-filter: blur(6px);
+}
+/* 与设计系统一致：0.3 秒渐入渐出，动画跑完再卸载由 Vue Transition 负责 */
+.regen-fade-enter-active, .regen-fade-leave-active { transition: opacity 0.3s ease; }
+.regen-fade-enter-from, .regen-fade-leave-to { opacity: 0; }
+
+/* 底部信息 */
+.preview-footer {
+  padding: 12px 16px 14px;
+}
+.preview-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.preview-avatar {
+  width: 50px; height: 50px; border-radius: 50%;
+  background: var(--bg-glass); background-size: cover; background-position: center;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 16px; color: var(--text-secondary);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.preview-avatar:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.25);
+}
+.preview-header-info { flex: 1 1 56px; min-width: 0; }
+.preview-name { font-size: 14px; font-weight: 600; color: var(--text-bright); display: block; }
+.preview-title {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 3px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.10);
+  /* 文字用深一档：--accent 在浅底上只有 2.5:1（2026-10-30 对比度审计） */
+  font-size: 14px; color: var(--accent-text); font-weight: 600;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.preview-badge {
+  font-size: 11px; color: var(--text-secondary);
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 10px; border-radius: 10px; background: var(--bg-secondary);
+  white-space: nowrap; flex-shrink: 0;
+}
+.preview-badge.urgent { color: #b33030; background: rgba(var(--accent-rgb), 0.08); }   /* --danger(#e25c5c) 在浅底上 3.0:1 */
+/* 徽标允许收缩省略，避免把名字/标题挤成竖排；compact 的 12px 覆盖不作用于历史时间（恢复 10px 小字保证完整显示） */
+.preview-badge.history-time { color: var(--text-secondary); background: transparent; padding: 0; font-size: 10px; flex-shrink: 1; min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; }
+.event-preview.is-compact .preview-badge.history-time { font-size: 10px; padding: 0; }
+
+/* 更多菜单 */
+.card-more-wrap { position: relative; margin-left: auto; flex-shrink: 0; }
+.card-more-btn {
+  width: 28px; height: 28px;
+  border-radius: 8px; border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.card-more-btn:hover { background: var(--tint-subtle); color: var(--text-bright); }
+.card-dropdown {
+  position: absolute; top: 100%; right: 0;
+  margin-top: 4px;
+  min-width: 100px;
+  background: var(--popover-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  padding: 4px;
+  z-index: 50;
+}
+.card-dropdown-item {
+  display: block; width: 100%;
+  padding: 8px 12px; border-radius: 8px; border: none;
+  background: transparent;
+  font-size: 13px; font-weight: 500; color: var(--text-bright);
+  cursor: pointer; text-align: left; user-select: none;
+  transition: background 0.1s;
+}
+.card-dropdown-item:hover { background: var(--tint-subtle); }
+.card-dropdown-item.danger { color: var(--danger); }
+.card-dropdown-item.danger:hover { background: rgba(var(--accent-rgb), 0.08); }
+
+.menu-pop-enter-active, .menu-pop-leave-active { transition: all 0.15s ease; }
+.menu-pop-enter-from, .menu-pop-leave-to { opacity: 0; transform: scale(0.9); }
+
+.preview-footer .preview-text {
+  font-size: 14px; line-height: 1.5; color: var(--text-warm-body);
+  white-space: pre-wrap; word-break: break-word;
+  margin-bottom: 8px;
+}
+.preview-meta-row {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.preview-meta { font-size: 11px; color: var(--text-secondary); opacity: 0.5; }
+.countdown-label { font-size: 11px; color: var(--text-secondary); }
+.countdown-label.urgent { color: var(--danger); font-weight: 700; }
+
+/* compact 往期奇遇 */
+.event-preview.is-compact { border-radius: 10px; }
+.event-preview.is-compact .preview-image-placeholder { height: 100px; }
+.event-preview.is-compact .preview-footer { padding: 8px 12px 12px; }
+.event-preview.is-compact .preview-footer .preview-text { font-size: 12px; }
+.event-preview.is-compact .preview-avatar { width: 40px; height: 40px; font-size: 15px; }
+.event-preview.is-compact .preview-name { font-size: 13px; }
+.event-preview.is-compact .preview-title { font-size: 11px; padding: 1px 6px; border-radius: 6px; margin-top: 2px; }
+.event-preview.is-compact .preview-header { padding: 8px; }
+.event-preview.is-compact .preview-badge { font-size: 12px; padding: 2px 8px; }
+.event-preview.is-compact .countdown-bar-wrap { display: none; }
+
+.event-preview.is-engaged {
+  box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.2), 0 0 13px 5px rgba(var(--accent-rgb), 0.51);
+  border-color: rgba(var(--accent-rgb),0.2);
+}
+
+/* narrow 移动端：compact 模式 header 防挤压 — 隐藏不重要元素 */
+@media (max-width: 550px) {
+  .event-preview.is-compact .preview-header { gap: 8px; padding: 6px 8px; }
+  .event-preview.is-compact .preview-avatar { width: 36px; height: 36px; font-size: 14px; }
+  .event-preview.is-compact .preview-name { font-size: 13px; }
+  .event-preview.is-compact .preview-title { font-size: 11px; padding: 1px 6px; border-radius: 6px; margin-top: 2px; }
+  .event-preview.is-compact .preview-badge.history-time { display: none; }
+  .event-preview.is-compact .card-more-wrap { display: none; }
+  .event-preview.is-compact { margin-bottom: 0; }
+  .event-preview.is-compact .preview-footer .preview-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden;
+    white-space: normal;
+    word-break: break-word;
+  }
+}
+
+/* ═══════════════ 详情遮罩 ═══════════════ */
+.detail-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(20, 20, 30, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.detail-close {
+  position: fixed; top: 16px; right: 16px; z-index: 210;
+}
+
+.detail-title-bar {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 205;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 18px; border-radius: 20px;
+  background: rgba(255,255,255,0.1);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.detail-title-name { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.9); }
+.detail-title-event { font-size: 13px; color: rgba(255,255,255,0.65); }
+
+@media (max-width: 550px) {
+  .detail-close { display: none; }
+  .detail-title-bar {
+    gap: 6px; padding: 6px 12px;
+    max-width: calc(100vw - 24px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .detail-title-name { font-size: 13px; }
+  .detail-title-event { font-size: 11px; }
+  .detail-title-badge { font-size: 10px; padding: 2px 8px; }
+}
+
+.detail-title-badge {
+  font-size: 11px; color: rgba(255,255,255,0.92);   /* 0.6 太淡，压在图上看不清 */
+  padding: 3px 10px; border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+  display: flex; align-items: center; gap: 4px;
+}
+.detail-title-badge.urgent { color: #ff8a80; background: rgba(255,100,100,0.15); }
+
+/* ═══════════════ 横向滚动 80vh 卡片 ═══════════════ */
+.branch-scroll {
+  position: absolute; inset: 0;
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  scroll-padding: 0 40px;
+  padding: 80px 40px 20px;
+}
+.branch-scroll::-webkit-scrollbar { height: 4px; }
+.branch-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.branch-scroll::-webkit-scrollbar-track { background: transparent; }
+
+.branch-track {
+  display: flex; gap: 20px;
+  height: 100%; align-items: center;
+  width: max-content;
+}
+
+.branch-card {
+  width: min(640px, 80vw);
+  height: 80vh; min-height: 500px;
+  flex-shrink: 0;
+  position: relative;
+  background: var(--bg-secondary);
+  border-radius: 20px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.15);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  scroll-snap-align: start;
+  transition: box-shadow 0.3s;
+}
+.branch-card.is-latest {
+  box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 3px rgba(var(--accent-rgb),0.35);
+  animation: highlight-pulse 2.5s ease-in-out infinite;
+}
+@keyframes highlight-pulse {
+  0%, 100% { box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 3px rgba(var(--accent-rgb),0.4); }
+  50% { box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 8px rgba(var(--accent-rgb),0.12); }
+}
+.branch-card.is-current { box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 4px rgba(var(--accent-rgb),0.5); }
+.branch-card.is-ending {
+  justify-content: center;
+  background:
+    radial-gradient(120% 80% at 18% 0%, rgba(224,123,108,0.07) 0%, rgba(224,123,108,0) 55%),
+    var(--grad-card-ending);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 3px rgba(var(--accent-rgb), 0.14);
+}
+.branch-card.is-current .branch-text { justify-content: center; }
+.branch-img-wrap {
+  width: 100%;
+  flex-shrink: 0;
+  max-height: 60%;
+  overflow: hidden;
+}
+.branch-img {
+  width: 100%; height: auto;
+  display: block;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.branch-img:hover { opacity: 0.9; }
+.branch-img-empty {
+  width: 100%; height: 200px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-glass);
+  color: var(--text-secondary); font-size: 14px; opacity: 0.4;
+}
+
+.branch-text {
+  flex: 1; overflow-y: auto;
+  min-height: 0;
+  padding: 18px 22px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.branch-text::-webkit-scrollbar { width: 6px; }
+.branch-text::-webkit-scrollbar-track { background: transparent; }
+.branch-text::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb),0.25); border-radius: 3px; }
+.branch-text::-webkit-scrollbar-thumb:hover { background: rgba(var(--accent-rgb),0.45); }
+.branch-text { scrollbar-width: thin; scrollbar-color: rgba(var(--accent-rgb),0.25) transparent; }
+
+.branch-desc {
+  font-size: 15px; line-height: 1.75; color: var(--text-bright);
+}
+
+/* ── "选择了" 框体 ── */
+.choice-made-box {
+  border: 1.5px solid rgba(var(--accent-rgb),0.25);
+  border-radius: 10px;
+  background: rgba(var(--accent-rgb),0.03);
+  padding: 10px 14px;
+}
+.choice-made-label {
+  font-size: 15px; font-weight: 600; color: var(--accent);
+  margin-bottom: 4px;
+}
+.choice-made-text {
+  font-size: 14px; line-height: 1.6; color: var(--text-bright);
+  font-weight: 500;
+}
+
+/* ── VN 风格选项 ── */
+.vn-choices {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.vn-choice {
+  display: flex; align-items: stretch;
+  padding: 0;
+  border: 1.5px solid var(--border);
+  background: var(--glass-bg);
+  cursor: pointer; text-align: left; user-select: none;
+  transition: all 0.25s ease;
+  font-size: 15px; font-weight: 500; color: var(--text-bright);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.vn-choice:hover { background: rgba(var(--accent-rgb),0.04); border-color: rgba(var(--accent-rgb),0.2); }
+.vn-choice:hover .vn-choice-bar { background: var(--accent); width: 4px; }
+.vn-choice-bar {
+  width: 3px; min-width: 3px;
+  background: var(--border);
+  border-radius: 0 2px 2px 0;
+  transition: all 0.25s ease;
+  margin: 8px 0;
+}
+.vn-choice span:last-child {
+  padding: 14px 16px;
+  line-height: 1.5;
+}
+
+.vn-choice-c {
+  display: flex; align-items: center;
+  border: 1.5px dashed var(--border-strong);
+  background: var(--glass-bg);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: all 0.2s;
+  cursor: text;
+}
+.vn-input-bar {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; align-self: stretch;
+  color: var(--text-secondary);
+  transition: color 0.2s;
+  flex-shrink: 0;
+}
+.vn-input {
+  flex: 1; border: none; background: transparent;
+  font-size: 15px; color: var(--text-bright); outline: none;
+  box-shadow: none; -webkit-appearance: none;
+  padding: 14px 4px;
+}
+.vn-input:focus { outline: none; box-shadow: none; }
+.vn-input::placeholder { color: var(--text-secondary); opacity: 0.6; }
+.vn-submit {
+  width: 48px; align-self: stretch;
+  border: none; background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+  border-left: 1px dashed var(--border-strong);
+  user-select: none;
+}
+.vn-submit:hover:not(.is-disabled) { background: var(--tint-subtle); color: var(--text-primary); }
+.vn-submit.is-disabled { opacity: 0.2; cursor: default; }
+
+.choice-loading {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 32px; color: var(--text-secondary); font-size: 13px;
+}
+/* 排队中的 loading：右下角显示取消按钮 */
+.choice-loading.is-queued {
+  position: relative; flex-direction: column; gap: 14px;
+}
+.queued-back-btn {
+  padding: 4px 14px; border: 1px solid var(--border); border-radius: 14px;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: all 0.2s;
+  text-align: center; user-select: none;
+}
+.queued-back-btn:hover {
+  background: var(--tint-subtle); color: var(--text-primary); border-color: var(--border-strong);
+}
+
+/* ── 撤回按钮 ── */
+.undo-btn {
+  position: absolute;
+  bottom: 12px; right: 12px;
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: var(--text-secondary);
+  font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+  z-index: 5;
+}
+.undo-btn:hover:not(.is-disabled) {
+  background: var(--glass-bg-hover);
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb),0.25);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.undo-btn.is-disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.undo-btn svg {
+  flex-shrink: 0;
+}
+.loading-spinner {
+  width: 18px; height: 18px;
+  border: 2px solid rgba(var(--accent-rgb),0.15); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.branch-label {
+  font-size: 12px; font-weight: 700; color: var(--text-secondary);
+  letter-spacing: 0.5px;
+}
+
+.ending-text {
+  justify-content: center;
+  align-items: flex-start;
+  text-align: left;
+  padding: 44px 36px;
+  gap: 12px;
+}
+.ending-text .branch-label {
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.09);
+  padding: 6px 14px;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.ending-text .branch-desc {
+  font-size: 16px;
+  line-height: 1.9;
+  letter-spacing: 0.2px;
+  text-align: left;
+  color: var(--text-bright);
+  max-width: 480px;
+}
+.ending-time {
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.3px;
+  margin-top: 22px;
+}
+
+/* transition */
+.detail-fade-enter-active, .detail-fade-leave-active { transition: opacity 0.3s ease; }
+.detail-fade-enter-from, .detail-fade-leave-to { opacity: 0; }
+</style>

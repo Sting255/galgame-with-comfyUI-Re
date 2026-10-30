@@ -1,0 +1,130 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+import * as api from '../api/index.js'
+import { getSavedTheme, getSavedThemeMode, applyTheme, applyThemeMode, resolveThemeByTime } from '../theme.js'
+
+export const useSettingsStore = defineStore('settings', () => {
+  const comfyWidth = ref(1600)
+  const comfyHeight = ref(1200)
+  const eventWidth = ref(1600)
+  const eventHeight = ref(1200)
+  const imageProvider = ref('comfyui')
+  const imageGenMode = ref('smart') // 'off' | 'smart' | 'force'
+  const deepThinkMode = ref(false)  // 私聊深度思考：planner 先规划媒介组合（文字/表情包/图片）再回复
+  const realtimeAffinityDisplay = ref(false)
+  const bgmMuted = ref(false) // 小镇 BGM 静音（system_settings 持久化，loadComfyConfig 后修正）
+  const hasApiKey = ref(true) // 默认 true，避免闪红；onMounted 后修正
+  const weatherCity = ref('')
+  const theme = ref(getSavedTheme()) // main.js 已在挂载前应用过，这里只是同步状态
+  const themeMode = ref(getSavedThemeMode()) // 'warm' | 'dark' | 'auto'
+  let loaded = false
+
+  // ── localStorage 迁移：旧版存在 localStorage，新版存 DB ──
+  const legacyForceImageGen = localStorage.getItem('forceImageGen')
+  if (legacyForceImageGen !== null) {
+    imageGenMode.value = legacyForceImageGen === 'true' ? 'force' : 'smart'
+    localStorage.removeItem('forceImageGen')
+    // 异步持久化到后端（fire-and-forget）
+    api.updateFeatureFlag('imageGenMode', imageGenMode.value).catch(() => {})
+  }
+
+  async function loadComfyConfig() {
+    if (loaded) return
+    try {
+      const data = await api.getConfig()
+      comfyWidth.value = data.comfy?.width || 1600
+      comfyHeight.value = data.comfy?.height || 1200
+      eventWidth.value = data.comfy?.eventWidth || 1600
+      eventHeight.value = data.comfy?.eventHeight || 1200
+      imageProvider.value = data.comfy?.imageProvider === 'novelai' ? 'novelai' : 'comfyui'
+      if (data.features?.imageGenMode !== undefined) {
+        imageGenMode.value = data.features.imageGenMode
+      } else if (data.features?.forceImageGen !== undefined) {
+        imageGenMode.value = data.features.forceImageGen ? 'force' : 'smart'
+      }
+      if (data.features?.deepThinkMode !== undefined) {
+        deepThinkMode.value = !!data.features.deepThinkMode
+      }
+      if (data.features?.realtimeAffinityDisplay !== undefined) {
+        realtimeAffinityDisplay.value = data.features.realtimeAffinityDisplay
+      }
+      if (data.features?.bgmMuted !== undefined) {
+        bgmMuted.value = !!data.features.bgmMuted
+      }
+      hasApiKey.value = data.llm?.hasApiKey ?? false
+      weatherCity.value = data.weather?.city || ''
+      loaded = true
+    } catch {
+      // keep defaults
+    }
+  }
+
+  /**
+   * 由外部调用更新（SettingsView 保存后同步）
+   */
+  function setComfySize(width, height) {
+    comfyWidth.value = width
+    comfyHeight.value = height
+  }
+
+  function setEventSize(width, height) {
+    eventWidth.value = width
+    eventHeight.value = height
+  }
+
+  function setImageProvider(provider) {
+    imageProvider.value = provider === 'novelai' ? 'novelai' : 'comfyui'
+  }
+
+  /**
+   * 切换配图模式：'off'（关闭）/ 'smart'（灵性判断）/ 'force'（强制生图）
+   */
+  async function setImageGenMode(mode) {
+    if (!['off', 'smart', 'force'].includes(mode)) return
+    imageGenMode.value = mode
+    await api.updateFeatureFlag('imageGenMode', mode)
+  }
+
+  /**
+   * 切换私聊深度思考模式（planner 预规划）
+   */
+  async function setDeepThinkMode(v) {
+    deepThinkMode.value = !!v
+    await api.updateFeatureFlag('deepThinkMode', !!v)
+  }
+
+  async function setRealtimeAffinityDisplay(v) {
+    realtimeAffinityDisplay.value = v
+    await api.updateFeatureFlag('realtimeAffinityDisplay', v)
+  }
+
+  /** 切换小镇 BGM 静音（只负责状态与持久化，播放/暂停由 TownView 侧响应） */
+  async function setBgmMuted(v) {
+    bgmMuted.value = !!v
+    await api.updateFeatureFlag('bgmMuted', bgmMuted.value)
+  }
+
+  function setHasApiKey(v) { hasApiKey.value = v }
+
+  async function setWeatherCity(city) {
+    weatherCity.value = city
+    await api.updateWeatherCity(city)
+  }
+
+  // 切换主题模式：暖色 / 暗夜 / 按时间，立即应用到 <html data-theme>，持久化在 localStorage
+  function setThemeMode(mode) {
+    if (!['warm', 'dark', 'auto'].includes(mode)) return
+    themeMode.value = mode
+    theme.value = mode === 'auto' ? resolveThemeByTime() : mode
+    applyThemeMode(mode)
+  }
+
+  // 按时间模式下的定时/聚焦刷新
+  function refreshTheme() {
+    if (themeMode.value !== 'auto') return
+    theme.value = resolveThemeByTime()
+    applyTheme(theme.value)
+  }
+
+  return { comfyWidth, comfyHeight, eventWidth, eventHeight, imageProvider, imageGenMode, deepThinkMode, realtimeAffinityDisplay, bgmMuted, hasApiKey, weatherCity, theme, themeMode, loadComfyConfig, setComfySize, setEventSize, setImageProvider, setImageGenMode, setDeepThinkMode, setRealtimeAffinityDisplay, setBgmMuted, setHasApiKey, setWeatherCity, setThemeMode, refreshTheme }
+})

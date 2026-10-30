@@ -1,0 +1,22 @@
+{
+  "name": "generate-image-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Image Generation Agent — monorepo root",
+  "scripts": {
+    "test": "node scripts/test-all.mjs",
+    "test:be": "node scripts/test-all.mjs --backend",
+    "test:fe": "node scripts/test-all.mjs --frontend",
+    "dev": "node scripts/dev.mjs",
+    "stop": "node scripts/stop.mjs",
+    "tag": "node scripts/tag.mjs",
+    "release": "node scripts/build-release.mjs",
+    "apk": "node scripts/build-apk.mjs",
+    "install-apk": "node scripts/install-apk.mjs",
+    "install-apk:n": "node scripts/install-apk.mjs -n",
+    "build": "node scripts/build.mjs",
+    "lasttag": "node scripts/lasttag.mjs",
+    "restart-core": "node scripts/restart-core.mjs",
+    "preview-launcher": "cd launcher && python main.py"
+  }
+}

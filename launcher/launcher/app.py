@@ -1,0 +1,1177 @@
+"""
+主窗口 —— 无边框 + 左侧导航 + QStackedWidget 页面切换 + Toast。
+"""
+import os
+import sys
+import subprocess
+import webbrowser
+from PySide6.QtWidgets import (
+    QMainWindow,
+    QWidget,
+    QStackedWidget,
+    QPushButton,
+    QLabel,
+    QHBoxLayout,
+    QVBoxLayout,
+    QGraphicsOpacityEffect,
+    QGraphicsDropShadowEffect,
+    QSizeGrip,
+    QApplication,
+)
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Signal, QRect, QPoint
+from PySide6.QtGui import QColor, QPixmap, QPainterPath, QRegion
+
+from .config_manager import ConfigManager
+from .git_manager import GitManager
+from .build_manager import BuildManager
+from .service_runner import ServiceRunner, ServiceWorker
+from .network import get_local_ip
+from .maibot_runner import MaiBotRunner
+from .home_page import HomePage
+from .log_page import LogPage
+from .maibot_page import MaiBotPage, MAIBOT_ADMIN_URL, SNOWLUMA_ADMIN_URL
+from .version_page import VersionPage
+from .settings_page import SettingsPage
+from .qa_page import QAPage
+
+
+# 窗口尺寸
+WINDOW_W = 990
+WINDOW_H = 660
+NAV_W = 72  # 左侧导航宽度
+SHADOW_MARGIN = 12  # 窗口投影留白
+RESIZE_MARGIN = 8  # 边缘缩放热区伸入内容区的宽度
+
+
+def _exe_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _assets_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "assets")  # type: ignore
+    return os.path.join(os.path.dirname(__file__), "..", "assets")
+
+
+def _clean_stale_artifacts(project_path: str, log_page=None):
+    """清理旧版本残留的构建产物。
+
+    agent-core/public/ 已纳入 Git 追踪，git checkout --force 会自动替换，
+    无需手动清理。
+    """
+    # 当前无需要清理的产物。保留函数体以便将来扩展。
+    pass
+
+
+class Toast(QWidget):
+    """半透明浮层通知，淡入 → 停留 → 淡出。"""
+
+    def __init__(self, parent, text: str):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setStyleSheet(
+            "background: rgba(46,42,39,0.92); color: #FCFAF8; font-size: 14px; "
+            "padding: 16px 28px; border-radius: 10px;"
+        )
+        label = QLabel(text, self)
+        label.setAlignment(Qt.AlignCenter)
+        layout = QVBoxLayout(self)
+        layout.addWidget(label)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+
+    def show_toast(self, duration_ms: int = 3000):
+        self.show()
+        self.raise_()
+        toast_w = min(self.parent().width() - 100, 600)
+        self.resize(toast_w, 50)
+        self.move(
+            (self.parent().width() - toast_w) // 2,
+            self.parent().height() - 130,
+        )
+
+        self._fade_in = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._fade_in.setDuration(300)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._fade_out = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._fade_out.setDuration(400)
+        self._fade_out.setStartValue(1.0)
+        self._fade_out.setEndValue(0.0)
+        self._fade_out.setEasingCurve(QEasingCurve.InCubic)
+        self._fade_out.finished.connect(self.hide)
+
+        self._fade_in.finished.connect(
+            lambda: QTimer.singleShot(duration_ms, self._fade_out.start)
+        )
+        self._fade_in.start()
+
+
+def _cursor_for_edges(edges: Qt.Edge) -> Qt.CursorShape:
+    """根据边/角组合返回对应的缩放光标。"""
+    has_h = bool(edges & Qt.LeftEdge) or bool(edges & Qt.RightEdge)
+    has_v = bool(edges & Qt.TopEdge) or bool(edges & Qt.BottomEdge)
+    if has_h and has_v:
+        # 左上/右下为 ↘，右上/左下为 ↙
+        return Qt.SizeFDiagCursor if bool(edges & Qt.LeftEdge) == bool(edges & Qt.TopEdge) else Qt.SizeBDiagCursor
+    if has_h:
+        return Qt.SizeHorCursor
+    if has_v:
+        return Qt.SizeVerCursor
+    return Qt.ArrowCursor
+
+
+class _EdgeGrip(QWidget):
+    """覆盖窗口边缘的透明手柄：悬停显示缩放光标，按住左键拖动调整窗口大小。
+
+    无边框窗口没有 WS_THICKFRAME 样式，startSystemResize 会被系统忽略，
+    因此参照 QSizeGrip 的回退做法手动计算几何。
+    """
+
+    def __init__(self, window, edges):
+        super().__init__(window)
+        self.edges = edges
+        self.setCursor(_cursor_for_edges(edges))
+        self._start_pos = None
+        self._start_rect = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.edges:
+            self._start_pos = event.globalPosition().toPoint()
+            self._start_rect = self.window().geometry()
+            event.accept()  # 不上抛，避免顶边按住时误触发标题栏拖动
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._start_pos is not None and event.buttons() & Qt.LeftButton:
+            self._resize_to(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._start_pos = None
+        self._start_rect = None
+        event.accept()
+
+    def _resize_to(self, global_pos):
+        """按手柄时的窗口几何加鼠标位移计算新几何，收缩时不超过 minimumSize。"""
+        win = self.window()
+        delta = global_pos - self._start_pos
+        x, y, w, h = self._start_rect.getRect()
+        min_w, min_h = win.minimumWidth(), win.minimumHeight()
+        if self.edges & Qt.LeftEdge:
+            dx = min(delta.x(), w - min_w)
+            x += dx
+            w -= dx
+        if self.edges & Qt.TopEdge:
+            dy = min(delta.y(), h - min_h)
+            y += dy
+            h -= dy
+        if self.edges & Qt.RightEdge:
+            w = max(min_w, w + delta.x())
+        if self.edges & Qt.BottomEdge:
+            h = max(min_h, h + delta.y())
+        win.setGeometry(x, y, w, h)
+
+
+class MainWindow(QMainWindow):
+    """邻舍.EXE 启动器主窗口。"""
+
+    PAGE_HOME = 0
+    PAGE_LOG = 1
+    PAGE_MAIBOT = 2
+    PAGE_VERSION = 3
+    PAGE_SETTINGS = 4
+    PAGE_QA = 5
+
+    def __init__(self):
+        super().__init__()
+
+        self._exe_dir = _exe_dir()
+        self._assets_dir = _assets_dir()
+
+        self._config = ConfigManager(self._exe_dir)
+        self._project_path = self._exe_dir
+        self._git = GitManager(self._project_path, self._config.get("repo_url"))
+        self._build = BuildManager(self._project_path)
+        self._runner = ServiceRunner(self._project_path)
+        self._maibot_runner = MaiBotRunner(self._project_path)
+
+        self._is_built = False
+        self._switching_version = False
+        self._closing = False
+        self._cached_tags: list[dict] = []
+        self._cached_current_tag: str | None = None
+        self._cached_has_updates: bool | None = None
+        self._git_ready = False
+        self._pending_fetch_is_auto = False  # 自动 fetch 静默模式，失败不报错给用户
+        self._slide_anim: QPropertyAnimation | None = None
+        self._animating = False
+        self._setup_window()
+        self._setup_title_bar()
+        self._setup_pages()
+        self._setup_nav()
+        self._connect_signals()
+
+        self._load_settings_to_form()
+        self._home_page.update_version_info()
+        QTimer.singleShot(1000, self._lazy_git_init)
+
+        self._load_maibot_settings()
+
+    # ==================================================================
+    # 窗口
+    # ==================================================================
+
+    def _setup_window(self):
+        self.setWindowTitle("邻舍.EXE")
+        self.setMinimumSize(700, 500)
+        self.resize(WINDOW_W + SHADOW_MARGIN * 2, WINDOW_H + SHADOW_MARGIN * 2)
+        # FramelessWindowHint 去掉边框；WindowMinimizeButtonHint 告诉
+        # Windows 此窗口支持最小化，恢复任务栏点击切换最小化/还原的行为。
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinimizeButtonHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        # central: 透明背景，承载投影
+        central = QWidget()
+        central.setStyleSheet("background: transparent;")
+        self.setCentralWidget(central)
+        self._central = central
+
+        # 窗口投影（暖色浅色主题用更柔和的阴影）
+        self._window_shadow = QGraphicsDropShadowEffect(central)
+        self._window_shadow.setBlurRadius(28)
+        self._window_shadow.setOffset(0, 8)
+        self._window_shadow.setColor(QColor(0, 0, 0, 50))
+        central.setGraphicsEffect(self._window_shadow)
+
+        # 内容容器：圆角遮罩 + 暖色奶油风背景，偏移 SHADOW_MARGIN 给投影留白
+        self._content = QWidget(central)
+        self._content.setObjectName("content")
+        self._content.setStyleSheet("""
+            #content {
+                background: #F7F3F0;
+                border-radius: 12px;
+            }
+        """)
+        self._update_content_geometry()
+
+        # 右下角拖拽调整大小
+        self._grip = QSizeGrip(self._content)
+        self._grip.setFixedSize(16, 16)
+        self._grip.setStyleSheet("background: transparent;")
+
+        # 四边 + 四角透明手柄：鼠标移到任意边缘即可拖拽调整大小
+        self._edge_grips: list[_EdgeGrip] = []
+        for edges in (
+            Qt.LeftEdge,
+            Qt.RightEdge,
+            Qt.TopEdge,
+            Qt.BottomEdge,
+            Qt.LeftEdge | Qt.TopEdge,
+            Qt.RightEdge | Qt.TopEdge,
+            Qt.LeftEdge | Qt.BottomEdge,
+            Qt.RightEdge | Qt.BottomEdge,
+        ):
+            self._edge_grips.append(_EdgeGrip(self, edges))
+        self._update_edge_grips_geometry()
+
+    # ==================================================================
+    # 标题栏按钮（右上角）
+    # ==================================================================
+
+    def _setup_title_bar(self):
+        content = self._content
+
+        # 给文字加阴影的按钮
+        self._min_btn = QPushButton("—", content)
+        self._min_btn.setStyleSheet(_title_btn_style())
+        self._min_btn.clicked.connect(self.showMinimized)
+        self._min_btn.setFixedSize(36, 28)
+        _add_text_shadow(self._min_btn)
+
+        self._close_btn = QPushButton("✕", content)
+        self._close_btn.setStyleSheet(_title_btn_style())
+        self._close_btn.clicked.connect(self.close)
+        self._close_btn.setFixedSize(36, 28)
+        _add_text_shadow(self._close_btn)
+
+        self._update_title_buttons_position()
+
+    def _update_title_buttons_position(self):
+        w = self._content.width()
+        self._min_btn.move(w - 76, 10)
+        self._close_btn.move(w - 46, 10)
+
+    # ==================================================================
+    # 页面栈
+    # ==================================================================
+
+    def _setup_pages(self):
+        content = self._content
+        self._stack = QStackedWidget(content)
+        self._stack.setStyleSheet("""
+            QStackedWidget {
+                background: transparent;
+                border-top-right-radius: 12px;
+                border-bottom-right-radius: 12px;
+            }
+        """)
+        self._update_stack_geometry()
+
+        self._home_page = HomePage(self._assets_dir, self._exe_dir)
+        self._stack.addWidget(self._home_page)
+
+        self._log_page = LogPage()
+        self._stack.addWidget(self._log_page)
+
+        self._maibot_page = MaiBotPage(self._exe_dir)
+        self._stack.addWidget(self._maibot_page)
+
+        self._version_page = VersionPage()
+        self._stack.addWidget(self._version_page)
+
+        self._settings_page = SettingsPage()
+        self._settings_page.set_project_path(self._exe_dir)
+        self._stack.addWidget(self._settings_page)
+
+        self._qa_page = QAPage()
+        self._stack.addWidget(self._qa_page)
+
+        self._stack.setCurrentIndex(self.PAGE_HOME)
+
+        # 标题栏按钮浮在页面之上
+        self._min_btn.raise_()
+        self._close_btn.raise_()
+
+    # ==================================================================
+    # 左侧导航
+    # ==================================================================
+
+    def _setup_nav(self):
+        content = self._content
+        self._nav = QWidget(content)
+        self._nav.setObjectName("nav")
+        self._nav.setStyleSheet("""
+            #nav {
+                background: #E07B6C;
+                border-top-left-radius: 12px;
+                border-bottom-left-radius: 12px;
+            }
+        """)
+        self._update_nav_geometry()
+
+        layout = QVBoxLayout(self._nav)
+        layout.setContentsMargins(10, 10, 10, 24)
+        layout.setSpacing(4)
+
+        # --- Navbar 顶部标题图片 ---
+        nav_title_path = os.path.join(self._assets_dir, "navbar-title.png")
+        nav_title_pixmap = QPixmap(nav_title_path)
+        img_max_w = NAV_W - 20  # 左右各 10px 留空
+        if nav_title_pixmap.width() > img_max_w:
+            nav_title_pixmap = nav_title_pixmap.scaledToWidth(img_max_w, Qt.SmoothTransformation)
+        self._nav_title_img = QLabel(self._nav)
+        self._nav_title_img.setPixmap(nav_title_pixmap)
+        self._nav_title_img.setAlignment(Qt.AlignCenter)
+        self._nav_title_img.setStyleSheet("background: transparent;")
+        layout.addWidget(self._nav_title_img)
+        layout.addSpacing(8)
+
+        layout.addStretch()  # 把按钮推到底部
+
+        self._nav_btns: list[QPushButton] = []
+        labels = ["首页", "日志", "MaiBot", "版本", "设置", "Q&A"]
+
+        for i, label in enumerate(labels):
+            btn = QPushButton(label, self._nav)
+            btn.setStyleSheet(_nav_btn_style(active=False))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedSize(NAV_W - 16, 40)
+            idx = i
+            btn.clicked.connect(lambda checked=False, p=idx: self._switch_page(p))
+            layout.addWidget(btn)
+            self._nav_btns.append(btn)
+
+        self._update_nav_highlight(self.PAGE_HOME)
+
+    # ==================================================================
+    # 信号连接
+    # ==================================================================
+
+    def _connect_signals(self):
+        self._home_page.launch_clicked.connect(self._on_launch)
+        self._home_page.open_comfyui_clicked.connect(self._on_open_comfyui_from_home)
+        self._home_page.open_directory.connect(self._on_open_directory)
+
+        self._log_page.stop_all_clicked.connect(self._on_stop_all)
+        self._log_page.start_clicked.connect(self._start_services)
+
+        self._version_page.check_update_clicked.connect(self._on_check_update)
+        self._version_page.switch_tag_clicked.connect(self._on_switch_tag)
+        self._version_page.force_rebuild_clicked.connect(self._on_force_rebuild)
+        self._version_page.cancel_build_clicked.connect(self._on_cancel_build)
+        self._version_page.tag_list.itemClicked.connect(
+            lambda: self._version_page.on_tag_selection_changed()
+        )
+
+        self._settings_page.setting_changed.connect(
+            lambda key, value: self._config.set(key, value)
+        )
+        self._settings_page.open_comfyui_clicked.connect(self._on_open_comfyui)
+        self._settings_page.lora_panel_toggled.connect(self._on_lora_panel_toggled)
+        self._settings_page.migrate_panel_toggled.connect(self._on_migrate_panel_toggled)
+
+        self._git.output.connect(self._on_git_output)
+        self._git.operation_done.connect(self._on_git_operation_done)
+
+        self._build.step_changed.connect(self._on_build_step)
+        self._build.output.connect(self._on_build_output)
+        self._build.build_done.connect(self._on_build_done)
+
+        self._runner.output.connect(self._on_service_output)
+        self._runner.status_summary.connect(self._on_service_status)
+
+        self._maibot_page.start_clicked.connect(self._on_maibot_start)
+        self._maibot_page.stop_clicked.connect(self._on_maibot_stop)
+        self._maibot_page.open_admin_requested.connect(self._on_maibot_open_admin)
+        self._maibot_page.setting_changed.connect(
+            lambda key, value: self._config.set(key, value)
+        )
+
+        self._maibot_runner.output.connect(self._on_maibot_output)
+        self._maibot_runner.status_changed.connect(self._on_maibot_status)
+        self._maibot_runner.health_changed.connect(self._on_maibot_health)
+
+    # ==================================================================
+    # 页面切换
+    # ==================================================================
+
+    def _switch_page(self, index: int):
+        if index == self._stack.currentIndex():
+            return
+
+        # 打断正在进行的动画，恢复位置
+        if self._slide_anim is not None:
+            self._slide_anim.stop()
+            self._slide_anim = None
+        self._animating = False
+        self._stack.move(NAV_W, 0)
+
+        self._update_nav_highlight(index)
+
+        # 页面区域下移 20px → 切换 → 从下往上滑入 (20px → 0px, 200ms)
+        self._stack.move(NAV_W, 20)
+        self._stack.setCurrentIndex(index)
+        self._min_btn.raise_()
+        self._close_btn.raise_()
+
+        self._animating = True
+        self._slide_anim = QPropertyAnimation(self._stack, b"pos")
+        self._slide_anim.setDuration(200)
+        self._slide_anim.setStartValue(QPoint(NAV_W, 20))
+        self._slide_anim.setEndValue(QPoint(NAV_W, 0))
+        self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._slide_anim.finished.connect(self._on_slide_done)
+        self._slide_anim.start()
+
+        if index == self.PAGE_VERSION:
+            # 切到版本页时若缓存为空，主动加载本地 tag（不等 fetch）
+            if not self._cached_tags and self._git_ready:
+                self._init_git_cache()
+            self._version_page.set_current_tag(self._cached_current_tag)
+            self._version_page.set_tags(self._cached_tags)
+            self._version_page.set_remote_status(self._cached_has_updates)
+
+    def _on_slide_done(self):
+        """动画结束，确保位置精确归位。"""
+        self._stack.move(NAV_W, 0)
+        self._animating = False
+        self._slide_anim = None
+
+    def _update_nav_highlight(self, active: int):
+        for i, btn in enumerate(self._nav_btns):
+            btn.setStyleSheet(_nav_btn_style(active=(i == active)))
+
+    # ==================================================================
+    # 一键启动
+    # ==================================================================
+
+    def _on_launch(self):
+        # 检查是否配置了 ComfyUI 启动器路径
+        comfyui_path = self._config.get("comfyui_exe")
+        if not comfyui_path:
+            toast = Toast(self._content, "请先配置 ComfyUI 启动器路径")
+            toast.show_toast(3000)
+            self._switch_page(self.PAGE_SETTINGS)
+            return
+
+        self._switch_page(self.PAGE_LOG)
+
+        if not self._build.is_built():
+            self._log_page.append_log("[系统] 检测到未构建，开始自动构建...")
+            self._home_page.set_launch_state("building")
+            self._log_page.set_busy_state(True, "⏳ 构建中...")
+            self._build.use_mirror = self._config.get("use_mirror")
+            self._build.start_build(force=True)
+        else:
+            self._home_page.set_launch_state("starting")
+            self._log_page.set_busy_state(True, "⏳ 启动中...")
+            self._start_services()
+
+    def _on_stop_all(self):
+        self._log_page.append_log("[系统] 正在停止邻舍服务...")
+        self._runner.stop_all()
+
+    def _start_services(self):
+        if self._config.get("check_comfyui_before_start"):
+            toast = Toast(self._content, "⚠ 请确认已经启动 ComfyUI")
+            toast.show_toast(3000)
+        self._log_page.append_log("[系统] 正在启动服务...")
+        self._home_page.set_launch_state("starting")
+        self._log_page.set_busy_state(True, "⏳ 启动中...")
+        self._runner.start_all()
+        # 先启动邻舍主服务，3 秒后再拉起 MaiBot/SnowLuma
+        QTimer.singleShot(3000, self._maybe_start_maibot_with_core)
+
+    # ==================================================================
+    # 版本管理
+    # ==================================================================
+
+    def _on_check_update(self):
+        self._version_page.set_checking(True)
+
+        if not self._git.is_git_repo():
+            # 无 .git → 先尝试初始化仓库
+            self._version_page.append_log("未检测到版本管理数据，正在初始化...")
+            self._version_page.append_log("（首次初始化需要联网下载版本信息，约需 10-30 秒）")
+            self._pending_fetch_is_auto = False
+            err = self._git.init_repo()
+            if err:
+                self._version_page.append_log(f"[ERROR] {err}")
+                self._version_page.set_checking(False)
+            return
+        if self._git.is_remote_local_path():
+            self._version_page.append_log("[WARN] Git remote 指向本地路径，正在自动修复...")
+            if self._git.repair_remote():
+                self._version_page.append_log("✓ 已修复 remote URL")
+            else:
+                self._version_page.append_log("[ERROR] 无法修复 remote URL，请检查网络连接")
+                self._version_page.set_checking(False)
+                return
+        self._version_page.append_log("正在检查更新...")
+        self._pending_fetch_is_auto = False  # 用户手动触发，正常报错
+        err = self._git.fetch_remote()
+        if err:
+            self._version_page.append_log(f"[ERROR] {err}")
+            self._version_page.set_checking(False)
+
+    def _on_switch_tag(self, tag: str):
+        self._switching_version = True
+        self._pending_checkout_tag = tag  # 兜底：若 get_current_tag() 失败，直接用此值
+        self._version_page.set_building(True)
+
+        if self._runner.is_any_running():
+            # Windows 下运行中的进程持有文件锁，git checkout 会失败
+            self._version_page.append_log("正在停止服务（切换版本需要独占文件访问）...")
+            self._runner.stop_all()
+            # 等待 5 秒让服务优雅退出，然后继续 checkout
+            QTimer.singleShot(5000, lambda: self._do_version_checkout(tag))
+            return
+
+        self._do_version_checkout(tag)
+
+    def _do_version_checkout(self, tag: str):
+        """停止服务后执行实际的 git checkout（由 _on_switch_tag 调度）。"""
+        self._version_page.append_log(f"正在切换到 {tag}...")
+        err = self._git.checkout_tag(tag)
+        if err:
+            self._version_page.append_log(f"[ERROR] {err}")
+            self._version_page.set_building(False)
+            self._switching_version = False
+
+    def _on_force_rebuild(self):
+        self._switch_page(self.PAGE_VERSION)
+        self._version_page.set_building(True)
+        self._version_page.append_log("开始强制重新构建...")
+        self._home_page.set_launch_state("building")
+        self._build.use_mirror = self._config.get("use_mirror")
+        self._build.start_build(force=True)
+
+    def _on_cancel_build(self):
+        self._build.cancel()
+
+    # ==================================================================
+    # Git 信号
+    # ==================================================================
+
+    def _on_git_output(self, text: str):
+        self._version_page.append_log(text)
+
+    def _on_git_operation_done(self, operation: str, success: bool, message: str):
+        if operation == "init_repo":
+            if success:
+                self._init_git_cache()
+                try:
+                    self._cached_has_updates = self._git.has_updates()
+                except Exception:
+                    pass
+                self._home_page.update_version_info()
+                self._version_page.set_current_tag(self._cached_current_tag)
+                self._version_page.set_tags(self._cached_tags)
+                self._version_page.set_remote_status(self._cached_has_updates)
+                self._git_ready = True
+                # 检测到新版本 → 在日志页显示更新提示
+                if self._cached_has_updates is True:
+                    self._log_page.show_update_hint(True)
+            else:
+                self._home_page.update_version_info()
+                self._git_ready = True
+                if not self._pending_fetch_is_auto:
+                    self._version_page.append_log(f"[ERROR] 初始化失败: {message}")
+            self._pending_fetch_is_auto = False
+            self._version_page.set_checking(False)
+
+        elif operation == "fetch":
+            if success:
+                import datetime
+                self._config.set("last_fetch_date", datetime.date.today().isoformat())
+                self._init_git_cache()
+                try:
+                    self._cached_has_updates = self._git.has_updates()
+                except Exception:
+                    pass
+                self._version_page.set_current_tag(self._cached_current_tag)
+                self._version_page.set_tags(self._cached_tags)
+                self._version_page.set_remote_status(self._cached_has_updates)
+                self._version_page.append_log("检查完成")
+                self._home_page.update_version_info()
+                # 检测到新版本 → 在日志页显示更新提示
+                if self._cached_has_updates is True:
+                    self._log_page.show_update_hint(True)
+            else:
+                if self._pending_fetch_is_auto:
+                    # 后台自动 fetch 失败：静默，不向用户显示错误
+                    pass
+                else:
+                    self._version_page.append_log(f"[ERROR] fetch 失败: {message}")
+                self._pending_fetch_is_auto = False
+            self._version_page.set_checking(False)
+
+        elif operation == "checkout":
+            if success:
+                self._version_page.append_log("✓ 已切换到目标版本")
+                # 清理旧版本构建产物，避免残留和 skip_if 误判
+                _clean_stale_artifacts(self._project_path, self._version_page)
+                # 清除 git 缓存，确保 get_current_tag/get_tags 读到最新值
+                self._git.clear_cache()
+                self._init_git_cache()
+                # 切换版本后重新判断是否有更新
+                try:
+                    self._cached_has_updates = self._git.has_updates()
+                except Exception:
+                    pass
+                # 兜底：若 shallow clone 导致 get_current_tag() 失败，用请求的 tag
+                if not self._cached_current_tag and hasattr(self, "_pending_checkout_tag"):
+                    self._cached_current_tag = self._pending_checkout_tag
+                    self._home_page.update_version_info()
+                self._config.set("current_tag", self._cached_current_tag or "")
+                self._version_page.set_current_tag(self._cached_current_tag)
+                self._version_page.set_tags(self._cached_tags)
+                self._version_page.set_remote_status(self._cached_has_updates)
+                # 更新日志页的版本提示：若已切换到最新版则隐藏提示
+                self._log_page.show_update_hint(self._cached_has_updates is True)
+                self._version_page.append_log("开始构建新版本...")
+                self._build.start_build(force=True)
+            else:
+                self._version_page.append_log(f"[ERROR] checkout 失败: {message}")
+                self._version_page.set_building(False)
+                self._switching_version = False
+
+    # ==================================================================
+    # Build 信号
+    # ==================================================================
+
+    def _on_build_step(self, step_name: str):
+        self._log_page.append_log(f"[构建] --- {step_name} ---")
+        self._version_page.append_log(f"--- {step_name} ---")
+
+    def _on_build_output(self, text: str):
+        self._log_page.append_log(f"[构建] {text}")
+        self._version_page.append_log(text)
+
+    def _on_build_done(self, success: bool, message: str):
+        self._version_page.set_building(False)
+        self._is_built = success
+        if success:
+            self._log_page.append_log(f"[构建] ✓ {message}")
+            self._version_page.append_log(f"✓ {message}")
+            if self._switching_version:
+                self._switching_version = False
+                self._version_page.append_log("版本切换完成，可以启动项目")
+            if self._stack.currentIndex() == self.PAGE_LOG:
+                self._start_services()
+        else:
+            self._log_page.append_log(f"[ERROR] 构建失败: {message}")
+            self._version_page.append_log(f"[ERROR] {message}")
+            self._switching_version = False
+            self._home_page.set_launch_state(False)
+            self._log_page.set_busy_state(False)
+
+    # ==================================================================
+    # 服务信号
+    # ==================================================================
+
+    def _on_service_output(self, service_name: str, text: str):
+        self._log_page.append_log(text)
+
+    def _on_service_status(self, v_status: str, a_status: str, overall: str):
+        self._log_page.update_service_status(
+            "vector", v_status,
+            self._runner.vector_worker.pid if v_status == "running" else None,
+        )
+        self._log_page.update_service_status(
+            "agent_core", a_status,
+            self._runner.agent_worker.pid if a_status == "running" else None,
+        )
+
+        # 同步首页启动按钮状态
+        is_running = v_status == "running" or a_status == "running"
+        if is_running:
+            self._home_page.set_launch_state(True)
+            self._log_page.set_busy_state(False)
+        elif overall == "all_stopped":
+            self._home_page.set_launch_state(False)
+            self._log_page.set_busy_state(False)
+
+        # 手机端访问条幅：agent_core 运行即常驻显示（仅日志页）
+        if a_status == "running":
+            self._log_page.show_mobile_banner()
+        else:
+            self._log_page.hide_mobile_banner()
+
+        if overall == "all_running" and self._config.get("auto_open_browser"):
+            ip = get_local_ip()
+            url = f"http://localhost:3099?mobile_ip={ip}" if ip else "http://localhost:3099"
+            webbrowser.open(url)
+            self._log_page.append_log(f"[系统] 🌐 浏览器已打开 {url}")
+
+    # ==================================================================
+    # MaiBot 服务
+    # ==================================================================
+
+    def _load_maibot_settings(self):
+        self._maibot_page.set_values(
+            autostart=self._config.get("maibot_autostart"),
+            browser_maibot=self._config.get("maibot_browser_maibot"),
+            browser_snowluma=self._config.get("maibot_browser_snowluma"),
+        )
+
+    def _maybe_start_maibot_with_core(self):
+        """主服务启动 3 秒后，按勾选状态拉起 MaiBot/SnowLuma。"""
+        if self._closing:
+            return
+        if not self._config.get("maibot_autostart"):
+            return
+        if not self._maibot_page.is_installed():
+            self._log_page.append_log(
+                "[系统] 已勾选随邻舍自动启动 MaiBot，但未检测到 MaiBot-Container 文件夹，已跳过"
+            )
+            return
+        self._maibot_page.append_log(
+            "system", "[系统] 检测到「随邻舍自动启动 MaiBot」已开启，正在自动启动..."
+        )
+        self._start_maibot()
+
+    def _start_maibot(self):
+        if not self._maibot_page.is_installed():
+            self._switch_page(self.PAGE_MAIBOT)
+            return
+        ok, errors = self._maibot_runner.start_all()
+        if not ok:
+            self._maibot_page.mark_launch_failed(errors)
+            if self._stack.currentIndex() != self.PAGE_MAIBOT:
+                toast = Toast(self._content, "MaiBot 启动失败，请到 MaiBot 页面查看原因")
+                toast.show_toast(3000)
+
+    def _on_maibot_start(self):
+        self._start_maibot()
+
+    def _on_maibot_stop(self):
+        self._maibot_page.append_log("system", "[系统] 正在停止 MaiBot 与 SnowLuma ...")
+        self._maibot_runner.stop_all()
+
+    def _on_maibot_open_admin(self, service_key: str):
+        url = SNOWLUMA_ADMIN_URL if service_key == "snowluma" else MAIBOT_ADMIN_URL
+        webbrowser.open(url)
+        self._maibot_page.append_log(service_key, f"[系统] 🌐 浏览器已打开 {url}")
+
+    def _on_maibot_output(self, service_key: str, text: str):
+        self._maibot_page.append_log(service_key, text)
+
+    def _on_maibot_status(self, service_key: str, status: str, pid):
+        self._maibot_page.update_status(service_key, status, pid)
+
+    def _on_maibot_health(self, service_key: str, healthy: bool):
+        """服务就绪后按勾选情况打开后台页面。
+
+        替代 start.bat 中的 curl 轮询监听：在启动器内用健康检查静默完成，
+        不产生任何命令行窗口。
+        """
+        if not healthy:
+            return
+        if service_key == "snowluma":
+            if self._config.get("maibot_browser_snowluma"):
+                webbrowser.open(SNOWLUMA_ADMIN_URL)
+                self._maibot_page.append_log(
+                    "snowluma", f"[系统] 🌐 SnowLuma 已就绪，浏览器已打开 {SNOWLUMA_ADMIN_URL}"
+                )
+        else:
+            if self._config.get("maibot_browser_maibot"):
+                webbrowser.open(MAIBOT_ADMIN_URL)
+                self._maibot_page.append_log(
+                    "maibot", f"[系统] 🌐 MaiBot 已就绪，浏览器已打开 {MAIBOT_ADMIN_URL}"
+                )
+
+    # ==================================================================
+    # 设置
+    # ==================================================================
+
+    def _on_save_settings(self, data: dict):
+        for key, value in data.items():
+            self._config.set(key, value)
+        self._log_page.append_log("[系统] 设置已保存")
+
+    def _on_lora_panel_toggled(self, expanded: bool):
+        """LoRA文件夹面板展开/折叠时，调整窗口高度。"""
+        delta = 80 if expanded else -80
+        new_h = self.height() + delta
+        new_h = max(500, min(new_h, 900))
+        self.resize(self.width(), new_h)
+
+    def _on_migrate_panel_toggled(self, expanded: bool):
+        """数据迁移面板展开/折叠时，调整窗口高度。"""
+        delta = 40 if expanded else -40
+        new_h = self.height() + delta
+        new_h = max(500, min(new_h, 900))
+        self.resize(self.width(), new_h)
+
+    def _on_open_directory(self, dir_path: str):
+        """打开目录：不存在则自动创建，失败时 Toast 提示。"""
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+            os.startfile(dir_path)
+        except Exception as e:
+            toast = Toast(self._content, f"无法打开目录: {e}")
+            toast.show_toast(3000)
+
+    def _on_open_comfyui_from_home(self):
+        path = self._config.get("comfyui_exe")
+        if path and os.path.exists(path):
+            self._open_in_own_dir(path)
+        else:
+            self._switch_page(self.PAGE_SETTINGS)
+
+    def _on_open_comfyui(self):
+        path = self._config.get("comfyui_exe")
+        if path and os.path.exists(path):
+            self._open_in_own_dir(path)
+        else:
+            toast = Toast(self._content, "ComfyUI 启动器路径无效，请先配置")
+            toast.show_toast(3000)
+
+    @staticmethod
+    def _open_in_own_dir(path: str):
+        """用 subprocess 打开文件，工作目录设为文件所在目录。"""
+        subprocess.Popen([path], cwd=os.path.dirname(path), shell=False)
+
+    def _load_settings_to_form(self):
+        self._settings_page.set_values(
+            comfyui_exe=self._config.get("comfyui_exe"),
+            auto_browser=self._config.get("auto_open_browser"),
+            check_comfyui=self._config.get("check_comfyui_before_start"),
+            use_mirror=self._config.get("use_mirror"),
+            extra_lora_folders=self._config.get("extra_lora_folders"),
+        )
+
+    # ==================================================================
+    # 状态
+    # ==================================================================
+
+    def _lazy_git_init(self):
+        # 检查 Git 是否可用: 捆绑 Git > 系统安装路径
+        from .service_runner import find_bundled_git
+        bundled_git = find_bundled_git(self._project_path)
+        if bundled_git:
+            has_git = True
+        else:
+            git_exe = os.path.join(os.path.expandvars(r"%ProgramFiles%\Git\bin"), "git.exe")
+            git_cmd = os.path.join(os.path.expandvars(r"%ProgramFiles%\Git\cmd"), "git.exe")
+            has_git = os.path.isfile(git_exe) or os.path.isfile(git_cmd)
+
+        if not has_git:
+            self._home_page.update_version_info()
+            self._git_ready = True
+            return
+
+        if not self._git.is_git_repo():
+            # 无 .git 目录 → 自动初始化仓库（git init + remote add + fetch）
+            self._home_page.update_version_info()
+            self._pending_fetch_is_auto = True  # 静默模式
+            err = self._git.init_repo()
+            if err:
+                self._home_page.update_version_info()
+                self._git_ready = True
+            # 成功则等待 operation_done 信号，在 _on_git_operation_done 中继续
+            return
+
+        # 修复可能残留的构建机本地路径 remote（指向 GitHub）
+        if self._git.repair_remote():
+            self._git.clear_cache()
+        else:
+            self._home_page.update_version_info()
+            self._git_ready = True
+            return
+
+        self._init_git_cache()  # 先加载本地 tag，不等网络 fetch
+        self._maybe_daily_fetch()
+
+    def _init_git_cache(self):
+        if not self._git.is_git_repo():
+            return
+        try:
+            self._cached_current_tag = self._git.get_current_tag()
+            self._cached_tags = self._git.get_tags()
+        except Exception:
+            pass
+        branch = self._git.get_current_branch()
+        version_display = self._cached_current_tag or branch
+        self._home_page.update_version_info()
+        self._config.set("current_tag", self._cached_current_tag or "")
+        self._config.set("version_display", version_display)
+        self._git_ready = True
+
+    def _maybe_daily_fetch(self):
+        import datetime
+
+        today = datetime.date.today().isoformat()
+        last_fetch = self._config.get("last_fetch_date")
+        if last_fetch != today:
+            self._pending_fetch_is_auto = True  # 后台静默，失败不打扰用户
+            self._git.fetch_remote()
+
+    # ==================================================================
+    # 窗口事件
+    # ==================================================================
+
+    def _update_content_geometry(self):
+        """内容容器偏移 SHADOW_MARGIN，跟随窗口大小动态缩放。"""
+        cw = self.width() - SHADOW_MARGIN * 2
+        ch = self.height() - SHADOW_MARGIN * 2
+        self._content.setGeometry(SHADOW_MARGIN, SHADOW_MARGIN, cw, ch)
+
+    def _update_stack_geometry(self):
+        w = self._content.width()
+        h = self._content.height()
+        if self._animating:
+            self._stack.setGeometry(NAV_W, self._stack.y(), w - NAV_W, h)
+        else:
+            self._stack.setGeometry(NAV_W, 0, w - NAV_W, h)
+
+    def _update_edge_grips_geometry(self):
+        """边缘手柄铺在窗口四边/四角：覆盖投影留白并向内容区延伸 RESIZE_MARGIN。"""
+        t = SHADOW_MARGIN + RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        zones = {
+            Qt.LeftEdge: (0, t, t, h - 2 * t),
+            Qt.RightEdge: (w - t, t, t, h - 2 * t),
+            Qt.TopEdge: (t, 0, w - 2 * t, t),
+            Qt.BottomEdge: (t, h - t, w - 2 * t, t),
+            Qt.LeftEdge | Qt.TopEdge: (0, 0, t, t),
+            Qt.RightEdge | Qt.TopEdge: (w - t, 0, t, t),
+            Qt.LeftEdge | Qt.BottomEdge: (0, h - t, t, t),
+            Qt.RightEdge | Qt.BottomEdge: (w - t, h - t, t, t),
+        }
+        for grip in self._edge_grips:
+            grip.setGeometry(*zones[grip.edges])
+            grip.raise_()
+
+    def _update_nav_geometry(self):
+        h = self._content.height()
+        self._nav.setGeometry(0, 0, NAV_W, h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_content_geometry()
+        self._update_title_buttons_position()
+        self._update_stack_geometry()
+        self._update_nav_geometry()
+        self._min_btn.raise_()
+        self._close_btn.raise_()
+        # 右下角拖拽手柄
+        cw, ch = self._content.width(), self._content.height()
+        self._grip.move(cw - 20, ch - 20)
+        self._grip.raise_()
+        # 四边/四角缩放手柄
+        self._update_edge_grips_geometry()
+        self._apply_rounded_mask()
+
+    def _apply_rounded_mask(self):
+        """用 QPainterPath 生成 12px 圆角区域，裁剪内容容器。"""
+        r = 12
+        w, h = self._content.width(), self._content.height()
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, r, r)
+        self._content.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            pos = event.position().toPoint()
+            if pos.y() < 40:
+                self._drag_pos = event.globalPosition().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if hasattr(self, "_drag_pos") and self._drag_pos is not None:
+            if event.buttons() == Qt.LeftButton:
+                delta = event.globalPosition().toPoint() - self._drag_pos
+                self.move(self.pos() + delta)
+                self._drag_pos = event.globalPosition().toPoint()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
+    def closeEvent(self, event):
+        """窗口关闭时后台静默停止所有服务（含 MaiBot），不阻塞用户。"""
+        if (
+            not self._runner.any_active()
+            and not self._maibot_runner.any_active()
+        ):
+            event.accept()
+            return
+
+        if self._closing:
+            event.accept()
+            return
+
+        self._closing = True
+        event.accept()
+
+        # 窗口关闭后保持应用运行，后台静默完成清理
+        QApplication.setQuitOnLastWindowClosed(False)
+
+        self._runner.stop_all()
+        self._maibot_runner.stop_all()
+
+        def on_maybe_all_stopped(*_args):
+            if self._runner.any_active() or self._maibot_runner.any_active():
+                return
+            try:
+                self._runner.status_summary.disconnect(on_maybe_all_stopped)
+            except RuntimeError:
+                pass
+            try:
+                self._maibot_runner.all_stopped.disconnect(on_maybe_all_stopped)
+            except RuntimeError:
+                pass
+            self._final_quit()
+
+        self._runner.status_summary.connect(on_maybe_all_stopped)
+        self._maibot_runner.all_stopped.connect(on_maybe_all_stopped)
+        # 立即检查一次（stop_all 时可能部分服务本就已停止）
+        on_maybe_all_stopped()
+
+        # 硬超时兜底：15 秒后强制退出
+        QTimer.singleShot(15000, self._final_quit)
+
+    def _final_quit(self):
+        """强制清理并退出应用。"""
+        try:
+            self._runner.status_summary.disconnect()
+        except RuntimeError:
+            pass
+        try:
+            self._maibot_runner.all_stopped.disconnect()
+        except RuntimeError:
+            pass
+        self._runner._force_kill_all()
+        self._maibot_runner.force_kill_all()
+        QApplication.quit()
+
+
+# ==================================================================
+# 样式
+# ==================================================================
+
+
+def _add_text_shadow(btn: QPushButton):
+    """给按钮文字添加阴影（浅色主题下极淡）。"""
+    shadow = QGraphicsDropShadowEffect(btn)
+    shadow.setBlurRadius(4)
+    shadow.setOffset(0, 1)
+    shadow.setColor(QColor(0, 0, 0, 30))
+    btn.setGraphicsEffect(shadow)
+
+
+def _title_btn_style() -> str:
+    return """
+        QPushButton {
+            background: transparent;
+            color: #756B65;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+        }
+        QPushButton:hover {
+            background: rgba(224,123,108,0.12);
+            color: #E07B6C;
+        }
+    """
+
+
+def _nav_btn_style(active: bool = False) -> str:
+    if active:
+        return """
+            QPushButton {
+                background: rgba(255,255,255,0.22);
+                color: #FCFAF8;
+                font-size: 13px;
+                font-weight: bold;
+                border: none;
+                border-radius: 6px;
+                text-align: center;
+                padding: 0 2px;
+            }
+        """
+    return """
+        QPushButton {
+            background: transparent;
+            color: rgba(255,255,255,0.72);
+            font-size: 13px;
+            border: none;
+            border-radius: 6px;
+            text-align: center;
+            padding: 0 2px;
+        }
+        QPushButton:hover {
+            background: rgba(255,255,255,0.12);
+            color: #FCFAF8;
+        }
+    """

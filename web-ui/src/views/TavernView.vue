@@ -1,0 +1,3242 @@
+<template>
+  <div class="tavern-view" @scroll="onScroll">
+    <div class="page-header" :class="{ 'header-hidden': isMobile && !headerVisible }">
+      <h2 @click="isMobile && toggleMobileSidebar?.()" :class="{ 'is-clickable': isMobile }">酒馆</h2>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         用户信息卡片
+         ═══════════════════════════════════════════ -->
+    <div class="user-row-wrapper">
+      <div class="user-row card">
+        <div
+          class="user-avatar clickable"
+          :style="userAvatarStyle"
+          @click="showUserAvatarPicker = true"
+        >{{ userAvatar ? '' : '我' }}</div>
+        <div class="user-info">
+        <!-- 姓名 -->
+        <div class="user-field-row">
+          <span class="field-label">称呼</span>
+          <div class="field-value-wrap">
+            <input
+              v-if="editingNickname"
+              ref="nicknameInput"
+              v-model="userNicknameInput"
+              class="inline-input nickname-input"
+              @blur="saveNickname"
+              @keydown.enter="saveNickname"
+              placeholder="给自己起个名字"
+            />
+            <span v-else class="field-value" @click="startEditNickname">{{ userNickname || '给自己起个名字' }}</span>
+            <div v-if="!editingNickname" class="edit-pen" role="button" tabindex="0" @click="startEditNickname" @keydown.enter.prevent="startEditNickname" @keydown.space.prevent="startEditNickname" title="编辑称呼">✎</div>
+          </div>
+        </div>
+        <!-- 性别 -->
+        <div class="user-field-row">
+          <span class="field-label">性别</span>
+          <div class="field-value-wrap">
+            <input
+              v-if="editingGender"
+              ref="genderInput"
+              v-model="userGenderInput"
+              class="inline-input field-input"
+              @blur="saveGender"
+              @keydown.enter="saveGender"
+              placeholder="男 / 女 / ..."
+            />
+            <span v-else class="field-value" @click="startEditGender">{{ userGender || '点击设置性别...' }}</span>
+            <div v-if="!editingGender" class="edit-pen" role="button" tabindex="0" @click="startEditGender" @keydown.enter.prevent="startEditGender" @keydown.space.prevent="startEditGender" title="编辑性别">✎</div>
+          </div>
+        </div>
+        <!-- 外观特征 -->
+        <div class="user-field-row">
+          <span class="field-label">外观描述</span>
+          <div class="field-value-wrap">
+            <textarea
+              v-if="editingAppearance"
+              ref="appearanceInput"
+              v-model="userAppearanceInput"
+              class="inline-input field-textarea"
+              rows="2"
+              @blur="saveAppearance"
+              @keydown.enter.exact="saveAppearance"
+              @keydown.escape="cancelEditAppearance"
+              placeholder="外观描述越紧密越不容易和其他角色串，示例：小明（←改成你的名字）来自原创角色，小明（←改成你的名字）是长着金色头发的贫乳大小姐，穿着白色蕾丝洛丽塔"
+            ></textarea>
+            <span v-else class="field-value" @click="startEditAppearance">{{ userAppearance || '点击描述你的外貌特征...' }}</span>
+            <div v-if="!editingAppearance" class="edit-pen" role="button" tabindex="0" @click="startEditAppearance" @keydown.enter.prevent="startEditAppearance" @keydown.space.prevent="startEditAppearance" title="编辑外观">✎</div>
+          </div>
+        </div>
+        <!-- 其他说明 -->
+        <div class="user-field-row">
+          <span class="field-label">其他</span>
+          <div class="field-value-wrap">
+            <textarea
+              v-if="editingPersona"
+              ref="personaInput"
+              v-model="userPersonaInput"
+              class="inline-input field-textarea"
+              rows="2"
+              @blur="savePersona"
+              @keydown.enter.exact="savePersona"
+              @keydown.escape="cancelEditPersona"
+              placeholder="性格、身份、经历等补充信息"
+            ></textarea>
+            <span v-else class="field-value" @click="startEditPersona">{{ userPersona || '点击补充其他信息...' }}</span>
+            <div v-if="!editingPersona" class="edit-pen" role="button" tabindex="0" @click="startEditPersona" @keydown.enter.prevent="startEditPersona" @keydown.space.prevent="startEditPersona" title="编辑其他说明">✎</div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <div v-if="!isMobile" class="mailbox-card card" @click="showMailbox = true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="2"/>
+          <path d="M2 4L12 13L22 4"/>
+        </svg>
+        <span class="mailbox-label">信箱</span>
+        <span v-if="mailboxUnread > 0" class="mailbox-badge">{{ mailboxUnread > 99 ? '99+' : mailboxUnread }}</span>
+      </div>
+      <div v-if="!isMobile" class="backpack-card card" @click="showBackpack = true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z"/>
+          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z"/>
+          <path d="M10 13h4"/>
+        </svg>
+        <span class="mailbox-label">背包</span>
+        <span v-if="backpackChestReady" class="mailbox-badge backpack-dot" title="宝箱已就绪"></span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         今日报纸 / 用户关系图入口卡片（同一行，各占一半）
+         ═══════════════════════════════════════════ -->
+    <div class="relation-entry-row">
+      <div class="relation-entry card" @click="openNewspaper">
+        <div class="relation-entry-icon newspaper-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 22h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/>
+            <path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>
+          </svg>
+        </div>
+        <div class="relation-entry-text">
+          <span class="relation-entry-title">邻舍日报<span v-if="newspaperUnread" class="newspaper-dot cel-jelly" title="今天的报纸还没读"></span></span>
+          <span class="relation-entry-hint">{{ newspaperHint }}</span>
+        </div>
+        <span class="relation-entry-arrow">›</span>
+      </div>
+
+      <div class="relation-entry card" @click="showUserRelationGraph = true">
+        <div class="relation-entry-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+            <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+          </svg>
+        </div>
+        <div class="relation-entry-text">
+          <span class="relation-entry-title">我的关系图</span>
+          <span class="relation-entry-hint">查看和管理你与所有角色的关系</span>
+        </div>
+        <span class="relation-entry-arrow">›</span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         角色卡片网格
+         ═══════════════════════════════════════════ -->
+    <div class="char-toolbar">
+      <div class="section-title">角色 ({{ charCountLabel }})</div>
+      <div class="char-search" role="search" aria-label="查找酒馆角色">
+        <svg class="char-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" />
+        </svg>
+        <linshe-input
+          v-model="charSearch"
+          size="sm"
+          class="char-search-input"
+          placeholder="搜索角色名"
+          aria-label="搜索角色名"
+        />
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         文件夹筛选栏（单层分类：全部 / 未分类 / 各文件夹）
+         ═══════════════════════════════════════════ -->
+    <div v-if="folderFeatureReady" class="folder-bar">
+      <div
+        class="chip folder-chip"
+        :class="{ active: folderFilter === 'all' }"
+        role="button"
+        tabindex="0"
+        @click="folderFilter = 'all'"
+        @keydown.enter.prevent="folderFilter = 'all'"
+        @keydown.space.prevent="folderFilter = 'all'"
+      >
+        全部<span class="folder-chip-count">{{ chat.characters.length }}</span>
+      </div>
+      <div
+        class="chip folder-chip"
+        :class="{ active: folderFilter === 'uncategorized' }"
+        role="button"
+        tabindex="0"
+        @click="folderFilter = 'uncategorized'"
+        @keydown.enter.prevent="folderFilter = 'uncategorized'"
+        @keydown.space.prevent="folderFilter = 'uncategorized'"
+      >
+        未分类<span class="folder-chip-count">{{ uncategorizedCount }}</span>
+      </div>
+      <div
+        v-for="f in folders"
+        :key="f.id"
+        class="chip folder-chip"
+        :class="{
+          active: folderFilter === f.id,
+          'is-dragging': dragFolderId === f.id,
+          'is-drop-target': dragOverFolderId === f.id,
+        }"
+        draggable="true"
+        role="button"
+        tabindex="0"
+        title="点击筛选，按住拖动可调整顺序"
+        @click="folderFilter = f.id"
+        @keydown.enter.prevent="folderFilter = f.id"
+        @keydown.space.prevent="folderFilter = f.id"
+        @dragstart="onFolderDragStart($event, f)"
+        @dragover="onFolderDragOver($event, f)"
+        @dragleave="onFolderDragLeave(f)"
+        @drop.prevent="onFolderDrop($event, f)"
+        @dragend="onFolderDragEnd"
+      >
+        <span class="folder-chip-name">{{ f.name }}</span>
+        <span class="folder-chip-count">{{ folderCountOf(f.id) }}</span>
+      </div>
+      <div
+        class="chip folder-chip folder-manage-entry"
+        role="button"
+        tabindex="0"
+        @click="showFolderManager = true"
+        @keydown.enter.prevent="showFolderManager = true"
+        @keydown.space.prevent="showFolderManager = true"
+      >
+        分类管理
+      </div>
+    </div>
+    
+    <!-- ═══════════════════════════════════════════
+         世界观设置入口卡片
+         ═══════════════════════════════════════════ -->
+    <div class="relation-entry card" @click="openWorldSetting">
+      <div class="relation-entry-icon world-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <ellipse cx="12" cy="12" rx="4" ry="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <line x1="12" y1="2" x2="12" y2="22"/>
+        </svg>
+      </div>
+      <div class="relation-entry-text">
+        <span class="relation-entry-title">世界观设置</span>
+        <span class="relation-entry-hint">{{ activeWorldName || '定义所有角色共处的世界背景' }}</span>
+      </div>
+      <span class="relation-entry-arrow">›</span>
+    </div>
+
+    <!-- SillyTavern 预设（上游 v3.10.0 合并，2026-10-19）：全局提示词预设与世界观无关 -->
+    <div class="relation-entry card" role="button" tabindex="0" @click="showPromptPresets = true" @keydown.enter.prevent="showPromptPresets = true" @keydown.space.prevent="showPromptPresets = true">
+      <div class="relation-entry-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 4h16M4 12h16M4 20h16" /><circle cx="8" cy="4" r="2" /><circle cx="16" cy="12" r="2" /><circle cx="10" cy="20" r="2" />
+        </svg>
+      </div>
+      <div class="relation-entry-text">
+        <span class="relation-entry-title">SillyTavern 预设</span>
+        <span class="relation-entry-hint">导入、编辑与管理全局提示词预设</span>
+      </div>
+      <span class="relation-entry-arrow">›</span>
+    </div>
+    <TransitionGroup name="char-pin" tag="div" class="char-grid" :class="{ stagger: gridStagger }">
+        <!-- 表情包管理入口：永远在招募前 -->
+        <div key="emoji-manage" class="char-card emoji-manage-card" @click="showEmojiManager = true">
+          <div class="emoji-manage-icon">
+            <svg viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+              <path d="M334.711467 160.290133a413.013333 413.013333 0 0 1 239.547733-48.674133 37.614933 37.614933 0 0 1-7.509333 74.683733A338.056533 338.056533 0 0 0 197.973333 567.022933a337.92 337.92 0 0 0 672.9728-42.5984v-37.546666a37.546667 37.546667 0 1 1 75.093334 0v37.751466a413.013333 413.013333 0 1 1-611.328-364.3392z"/>
+              <path d="M653.312 576.853333a37.546667 37.546667 0 0 1 59.938133 45.192534l-0.2048 0.273066-0.273066 0.341334-0.8192 1.024a141.585067 141.585067 0 0 1-11.946667 13.5168 261.12 261.12 0 0 1-34.679467 30.242133c-29.9008 21.777067-75.093333 44.714667-132.3008 44.714667-57.344 0-102.4-22.9376-132.437333-44.714667a261.256533 261.256533 0 0 1-43.895467-40.5504l-2.730666-3.208533-0.682667-1.024a19.0464 19.0464 0 0 0-0.341333-0.341334v-0.136533l-0.2048-0.136533a37.546667 37.546667 0 0 1 60.074666-45.056h0.068267l1.297067 1.6384a186.1632 186.1632 0 0 0 30.72 28.0576c21.572267 15.7696 51.541333 30.446933 88.064 30.446933 36.6592 0 66.628267-14.677333 88.2688-30.446933a186.026667 186.026667 0 0 0 30.583466-27.989334l1.297067-1.6384 0.2048-0.2048zM420.727467 374.237867a37.546667 37.546667 0 0 1 0 75.093333h-0.341334a37.546667 37.546667 0 0 1 0-75.093333h0.341334z m225.28 0a37.546667 37.546667 0 0 1 0 75.093333h-0.4096a37.546667 37.546667 0 0 1 0-75.093333h0.4096z m112.298666 0v-75.093334h-75.093333a37.546667 37.546667 0 0 1 0-75.093333h75.093333v-75.093333a37.546667 37.546667 0 0 1 75.093334 0v75.093333h75.093333a37.546667 37.546667 0 0 1 0 75.093333h-75.093333v75.093334a37.546667 37.546667 0 1 1-75.093334 0z"/>
+            </svg>
+          </div>
+          <span>表情包管理</span>
+        </div>
+
+        <!-- 一键后台生成全部角色资产（2026-10-01 用户：「弄个按钮一键后台生成得了」）：
+             与表情包管理同款卡片、同一区域，点开是后台串行任务（关窗继续跑）。 -->
+        <div key="asset-gen" class="char-card emoji-manage-card" @click="showAssetGen = true">
+          <div class="emoji-manage-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+              <circle cx="12" cy="12" r="3.2" />
+            </svg>
+          </div>
+          <span>一键生成素材</span>
+        </div>
+
+      <!-- 立绘管理（上游 v3.10.0 合并，2026-10-19）：表情立绘批量生成 / 补缺 / 触摸台词 -->
+      <div key="standing-manage" class="char-card emoji-manage-card standing-manage-card" role="button" tabindex="0" @click="showStandingManager = true" @keydown.enter.prevent="showStandingManager = true" @keydown.space.prevent="showStandingManager = true">
+        <div class="emoji-manage-icon">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="10" r="6" />
+            <circle cx="10" cy="9" r=".9" fill="currentColor" stroke="none" />
+            <path d="m14 8.5 1.5 1M10 12.5q2 2 4 0" stroke-width="1.7" />
+            <path d="M4 25v-2a7 7 0 0 1 7-7h2c4 0 5 4 8 4s5-3 5-6M8 24v4h10v-5M24 5h6M27 2v6" />
+          </svg>
+        </div>
+        <span>立绘管理</span>
+      </div>
+
+      <!-- 招募卡片：永远在第一格 -->
+      <div key="recruit" class="char-card recruit-card" @click="openRecruit">
+        <div class="recruit-plus">+</div>
+        <span>招募</span>
+      </div>
+
+      <!-- 角色卡片 -->
+      <div
+        v-for="c in visibleCharacters"
+        :key="c.id"
+        class="char-card"
+        @click="openCharDetail(c)"
+      >
+        <!-- 左上角置顶按钮 -->
+        <div
+          class="char-pin-btn"
+          :class="{ pinned: c.pinned, 'like-burst': burstKey === c.id }"
+          role="button"
+          tabindex="0"
+          :title="c.pinned ? '取消置顶' : '置顶'"
+          @click.stop="onPinClick(c)"
+          @keydown.enter.prevent="onPinClick(c)"
+          @keydown.space.prevent="onPinClick(c)"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" :fill="c.pinned ? 'currentColor' : 'none'" :stroke="c.pinned ? 'none' : 'currentColor'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+          </svg>
+        </div>
+        <div v-if="c.moments_disabled || c.proactive_disabled || c.events_disabled" class="char-card-badges">
+          <span v-if="c.moments_disabled" class="char-status-dot dot-moments" title="不看ta的朋友圈"></span>
+          <span v-if="c.proactive_disabled" class="char-status-dot dot-proactive" title="不主动聊天"></span>
+          <span v-if="c.events_disabled" class="char-status-dot dot-events" title="不发生奇遇"></span>
+        </div>
+        <div
+          class="char-card-avatar"
+          :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }"
+        >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
+        <div class="char-card-name">{{ c.display_name }}</div>
+        <div class="char-card-foot">
+          <span class="char-card-status" :class="c.message_count > 0 ? 'active' : 'idle'">
+            {{ c.message_count > 0 ? `${c.message_count} 条消息` : '待唤醒' }}
+          </span>
+          <span v-if="c.relationship_count > 0" class="char-rel-badge" title="已设置角色关系">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+              <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+            </svg>
+            {{ c.relationship_count }}
+          </span>
+        </div>
+        <div v-if="!(c.relationship_count > 0)" class="char-card-edit-row">
+          <span class="char-card-edit" title="设置角色关系网">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+              <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+            </svg>
+            设置角色关系网
+          </span>
+        </div>
+      </div>
+    </TransitionGroup>
+
+    <!-- 空状态：文件夹内无角色 / 搜索无匹配（上游 v3.10.0 合并，2026-10-19） -->
+    <div v-if="!visibleCharacters.length" class="char-empty empty">
+      <div class="empty-title">{{ emptyTitle }}</div>
+      <div class="empty-hint">{{ emptyDesc }}</div>
+      <linshe-button
+        v-if="canSearchEverywhere"
+        variant="secondary"
+        size="sm"
+        @click="folderFilter = 'all'"
+      >
+在全部角色中搜索
+</linshe-button>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         招募弹窗
+         ═══════════════════════════════════════════ -->
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div v-if="recruit.show" class="modal-overlay">
+          <div class="modal-panel modal-wide">
+            <div class="modal-header">
+              <h3>招募新角色</h3>
+              <linshe-button class="modal-close" variant="icon" @click="closeRecruit">✕</linshe-button>
+            </div>
+
+            <!-- 步骤 0：输入描述 -->
+            <div v-if="recruit.step === 'input'" class="modal-body" style="position:relative;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:18px;margin:0 20px 20px">
+              <p class="modal-hint">描述你想招募的角色——可以是知名 IP 角色（尽可能输入全名+IP），也可以是原创设定。</p>
+              <linshe-input
+                type="textarea"
+                v-model="recruit.desc"
+                class="recruit-textarea"
+                rows="4"
+                placeholder="例：安比·德玛拉（绝区零）/ 流萤，星穹铁道/ 御坂美琴《某科学的超电磁炮》/ 傲娇的猫娘女仆 / 金发双马尾大小姐，品学兼优，爱好摇滚，穿着涩谷辣妹风"
+                :disabled="recruit.loading"
+                @keydown.enter.exact="doGenerate"
+              />
+              <div class="modal-actions">
+                <label class="import-card-btn" :class="{ disabled: recruit.loading }" title="导入酒馆ai角色卡">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <span>导入酒馆ai角色卡</span>
+                  <input ref="cardInputRef" type="file" accept=".png,.json,image/png,application/json" :disabled="recruit.loading" @change="onCardSelected" hidden />
+                </label>
+                <linshe-button variant="secondary" @click="closeRecruit">取消</linshe-button>
+                <linshe-button
+                  variant="primary"
+                  :disabled="!recruit.desc.trim() || recruit.loading"
+                  @click="doGenerate"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.1 6.4L20.5 12l-6.4 2.6L12 21l-2.1-6.4L3.5 12l6.4-2.6z" /></svg>
+                  {{ recruit.loading ? '正在酒馆招募...' : '招募角色' }}
+                </linshe-button>
+              </div>
+<div v-if="recruit.error" class="gen-error">{{ recruit.error }}</div>
+              <!-- 招募加载遮罩 -->
+              <div v-if="recruit.loading" class="scan-overlay">
+                <div class="scan-line"></div>
+                <div class="scan-text">{{ loadingTip }}</div>
+              </div>
+            </div>
+
+            <!-- 步骤 1：预览确认 -->
+            <div v-if="recruit.step === 'preview'" class="modal-body" style="position:relative">
+              <div class="preview-card">
+                <div class="preview-name-row">
+                  <input
+                    v-model="recruit.result.display_name"
+                    class="preview-name-input"
+                    placeholder="角色名"
+                  />
+                  <input
+                    v-model="recruit.result.name"
+                    class="preview-name-input"
+                    placeholder="英文名（英文/拼音，唯一）"
+                  />
+                </div>
+                <div class="preview-prompt-label">-</div>
+                <linshe-input type="textarea" v-model="recruit.result.base_prompt" class="prompt-textarea" rows="12" />
+
+                <!-- 朋友圈开关 -->
+              </div>
+              <div class="modal-actions modal-actions-between">
+                <div class="modal-actions-left">
+                  <linshe-button
+                    variant="secondary"
+                    :disabled="recruit.loading"
+                    @click="doGenerate"
+                  >{{ recruit.loading && recruit.task === 'search' ? '正在重新搜索...' : '重新搜索' }}</linshe-button>
+                  <linshe-button
+                    variant="secondary"
+                    title="不重新联网，使用上次搜索资料重新归纳角色卡"
+                    :disabled="!recruit.searchContext || recruit.loading"
+                    @click="regenerateFromSearchResult"
+                  >{{ recruit.loading && recruit.task === 'regenerate' ? '正在重新归纳...' : '再次生成' }}</linshe-button>
+                  <linshe-button
+                    variant="secondary"
+                    title="提供参考图，邻舍分析后重写角色卡里的「## 你的外观」"
+                    :disabled="recruit.loading"
+                    @click="showRecruitRefine = true"
+                  >修正外观</linshe-button>
+                </div>
+                <div class="modal-actions-right">
+                  <linshe-button variant="secondary" @click="recruit.step = 'input'; recruit.error = ''">返回修改</linshe-button>
+                  <linshe-button variant="primary" :disabled="recruit.saving" @click="confirmRecruit">
+                    {{ recruit.saving ? '招募中...' : '确认招募' }}
+                  </linshe-button>
+                </div>
+              </div>
+              <div v-if="recruit.error" class="gen-error">{{ recruit.error }}</div>
+              <!-- 扫描动画覆盖层 -->
+              <div v-if="recruit.loading" class="scan-overlay">
+                <div class="scan-line"></div>
+                <div class="scan-text">{{ loadingTip }}</div>
+              </div>
+              <div v-if="recruit.result" class="recruit-appearance-hint">
+                检查外观描述，可以写的少但是更需要准确，可通过「修正外观」按钮用参考图修复，
+                <a :href="`https://animadex.net/?mode=characters&q=${encodeURIComponent(recruit.result.name).replaceAll('_', '+')}`" target="_blank">animadex</a>直接补充tag
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 招募预览的修正外观：结果回填到待确认的角色卡草稿（尚未创建角色，无最近图片入口） -->
+    <AppearanceRefineModal
+      v-model="showRecruitRefine"
+      :display-name="recruit.result?.display_name || ''"
+      :base-prompt="recruit.result?.base_prompt || ''"
+      apply-text="应用到角色卡"
+      apply-hint="应用后会回填到上方的待确认角色卡"
+      @applied="onRecruitAppearanceRefined"
+    />
+
+    <!-- ═══════════════════════════════════════════
+         世界观设置弹窗
+         ═══════════════════════════════════════════ -->
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div v-if="showWorldModal" class="modal-overlay" @mousedown.self="closeWorldSetting">
+          <div class="modal-panel world-modal-panel">
+            <div class="modal-header world-modal-header">
+              <div class="world-modal-title">
+                <h3>世界观设置</h3>
+                <span class="world-modal-subtitle">定义所有角色共处的世界背景</span>
+              </div>
+              <div class="world-header-right">
+                <span v-if="activeWorldName" class="world-active-badge" :title="`当前激活：${activeWorldName}`">● {{ activeWorldName }}</span>
+                <linshe-button class="modal-close" variant="icon" @click="closeWorldSetting">✕</linshe-button>
+              </div>
+            </div>
+            <div class="modal-body">
+              <!-- 新建名称输入 -->
+              <div v-if="showNewInput" class="world-new-row">
+                <linshe-input
+                  ref="newNameInput"
+                  v-model="worldNewName"
+                  class="world-name-input"
+                  placeholder="输入新世界观名称"
+                  @keyup.enter="confirmNew"
+                />
+                <linshe-button variant="primary" size="sm" :disabled="!worldNewName.trim()" @click="confirmNew">创建</linshe-button>
+                <linshe-button variant="secondary" size="sm" @click="showNewInput = false">取消</linshe-button>
+              </div>
+
+              <!-- 标签行 -->
+              <div class="world-tags">
+                <span
+                  v-for="item in worldItems"
+                  :key="item.id"
+                  class="world-tag"
+                  :class="{ 'world-tag-selected': selectedWorldId === item.id }"
+                  @click="selectWorld(item)"
+                >
+                  <input
+                    v-if="editingNameId === item.id"
+                    ref="editNameInput"
+                    v-model="editNameValue"
+                    class="world-tag-rename-input"
+                    @click.stop
+                    @keyup.enter="renameWorld(item)"
+                    @keyup.escape="editingNameId = null"
+                    @blur="renameWorld(item)"
+                  />
+                  <span v-else>{{ item.name }}</span>
+                  <div
+                    class="world-tag-act world-tag-edit"
+                    title="重命名"
+                    @click.stop="startRename(item)"
+                  >✎</div>
+                  <div
+                    class="world-tag-act world-tag-del"
+                    title="删除"
+                    @click.stop="handleDelete(item)"
+                  >×</div>
+                </span>
+                <div class="world-tag world-tag-add" @click="startNew">+</div>
+              </div>
+
+              <!-- 内容编辑区 -->
+              <div class="world-editor">
+                <div class="world-editor-bar">
+                  <span class="world-editor-label">世界观内容</span>
+                  <div class="world-editor-tools">
+                    <linshe-button
+                      class="btn-polish"
+                      variant="secondary"
+                      :disabled="polishLoading || !worldContent.trim()"
+                      title="AI 按酒馆世界书风格润色扩写当前世界观"
+                      @click="openPolish"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.3z"/>
+                        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>
+                      </svg>
+                      一键润色
+                    </linshe-button>
+                  </div>
+                </div>
+                <div class="world-editor-body">
+                  <linshe-input
+                    ref="worldTextareaRef"
+                    v-model="worldContent"
+                    type="textarea"
+                    class="world-textarea"
+                    rows="10"
+                    placeholder="例如：这是一个低魔世界，魔法师必须养一只不会魔法的宠物当充电宝。/每天凌晨三点，全人类会共享同一个梦，醒后都能记住。"
+                    @input="worldDirty = true"
+                  />
+                </div>
+                <div class="world-editor-meta">
+                  <span class="world-char-count"></span>
+                  <span v-if="worldSaved" class="world-saved-hint">✓ 已保存</span>
+                </div>
+              </div>
+
+              <div class="modal-actions">
+                <!-- SillyTavern 世界书（上游 v3.10.0 合并，2026-10-19）：按当前选中的世界观挂载 -->
+                <linshe-button class="world-lorebook-button" variant="secondary" :disabled="!selectedWorldId" @click="showLorebook = true">管理SillyTavern世界书</linshe-button>
+                <linshe-button variant="secondary" @click="closeWorldSetting">取消</linshe-button>
+                <linshe-button
+                  variant="primary"
+                  :disabled="!worldDirty || worldSaving"
+                  @click="saveWorld"
+                >
+                  {{ worldSaving ? '保存中...' : '保存' }}
+                </linshe-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ═══════════════════════════════════════════
+         AI 润色扩写弹窗（世界观）
+         ═══════════════════════════════════════════ -->
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div v-if="showPolishModal" class="modal-overlay" @mousedown.self="closePolishModal">
+          <div class="modal-panel polish-modal-panel">
+            <div class="modal-header">
+              <h3>撰写世界观</h3>
+              <linshe-button class="modal-close" variant="icon" @click="closePolishModal">✕</linshe-button>
+            </div>
+            <div class="modal-body">
+              <p v-if="!polishLoading && !polishContent && !polishError" class="polish-tip">
+                将按酒馆世界书风格润色扩写当前世界观，重点补充「这个世界里的人们会怎么做」。
+              </p>
+
+              <!-- 加载中 -->
+              <div v-if="polishLoading" class="polish-loading">
+                <div class="polish-spinner"></div>
+                <p>正在为这个世界起草招募帖…</p>
+              </div>
+
+              <!-- 失败重试 -->
+              <div v-else-if="polishError" class="polish-error">
+                <p class="polish-error-text">{{ polishError }}</p>
+                <div class="modal-actions polish-error-actions">
+                  <linshe-button variant="primary" size="sm" @click="runPolish">重新生成</linshe-button>
+                  <linshe-button variant="secondary" size="sm" @click="closePolishModal">关闭</linshe-button>
+                </div>
+              </div>
+
+              <!-- 结果预览 -->
+              <template v-else-if="polishContent">
+                <div class="polish-preview-head">
+                  <span class="polish-preview-label">润色结果预览</span>
+                </div>
+                <div class="polish-preview">
+                  <pre v-html="polishHighlightHtml"></pre>
+                </div>
+                <div class="modal-actions">
+                  <linshe-button variant="secondary" @click="runPolish">↻ 再次生成</linshe-button>
+                  <div class="modal-actions-right">
+                    <linshe-button variant="secondary" @click="closePolishModal">取消</linshe-button>
+                    <linshe-button variant="primary" @click="confirmPolish">确认并覆写</linshe-button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ═══════════════════════════════════════════
+          角色详情弹窗
+          ═══════════════════════════════════════════ -->
+    <CharacterDetailModal
+      ref="detailModalRef"
+      :visible="detailVisible"
+      :character="detailChar"
+      @close="closeCharDetail"
+      @saved="onCharSaved"
+      @deleted="onCharDeleted"
+      @open-avatar-editor="openCharAvatarEditor"
+      @remove-avatar="removeCharAvatar"
+      @open-relation-graph="openRelationGraph"
+      @open-deduction="openDeduction"
+      @lora-saved="onCharSaved"
+    />
+
+    <!-- 角色头像裁剪器 -->
+    <Teleport to="body">
+      <AvatarCropper
+        v-if="showCharAvatarPicker"
+        :title="`设置 ${detailChar?.display_name || ''} 头像`"
+        :show-recent-tab="true"
+        :show-generate-tab="true"
+        :character-id="detailChar?.id"
+        :character-base-prompt="detailChar?.base_prompt || ''"
+        :recent-images="recentImages"
+        :recent-loading="recentLoading"
+        @close="showCharAvatarPicker = false"
+        @save="onCharAvatarSave"
+        @switch-to-recent="switchToRecent"
+      />
+    </Teleport>
+
+    <!-- 用户头像裁剪器 -->
+    <Teleport to="body">
+      <AvatarCropper
+        v-if="showUserAvatarPicker"
+        title="设置我的头像"
+        :show-recent-tab="false"
+        :show-generate-tab="false"
+        @close="showUserAvatarPicker = false"
+        @save="onUserAvatarSave"
+      />
+    </Teleport>
+
+    <!-- ═══════════════════════════════════════════
+          角色关系图（独立全屏弹窗）
+          ═══════════════════════════════════════════ -->
+    <RelationshipGraph
+      v-if="detailChar"
+      :visible="showRelationGraph"
+      :center-character="detailChar"
+      :all-characters="chat.characters"
+      @close="showRelationGraph = false"
+    />
+
+    <!-- ═══════════════════════════════════════════
+         用户关系图（独立全屏弹窗）
+         ═══════════════════════════════════════════ -->
+    <UserRelationshipGraph
+      :visible="showUserRelationGraph"
+      :all-characters="chat.characters"
+      @close="showUserRelationGraph = false"
+      @auto-deduce="onGraphAutoDeduce"
+    />
+
+    <!-- ═══════════════════════════════════════════
+          推演角色关系（AI 自动推理）
+          ═══════════════════════════════════════════ -->
+    <RelationshipDeductionModal
+      :visible="showDeductionModal"
+      :character="detailChar"
+      :mode="deductionMode"
+      :user-name="deductionUserName"
+      @close="showDeductionModal = false; deductionMode = 'character'"
+      @saved="onDeductionSaved"
+    />
+
+    <!-- ═══════════════════════════════════════════
+         信箱弹窗
+         ═══════════════════════════════════════════ -->
+    <MailboxModal :visible="showMailbox" :characters="sortedCharacters" @close="showMailbox = false" />
+
+    <!-- ═══════════════════════════════════════════
+         背包弹窗
+         ═══════════════════════════════════════════ -->
+    <BackpackModal :visible="showBackpack" :characters="sortedCharacters" @close="showBackpack = false" />
+
+    <!-- ═══════════════════════════════════════════
+         《邻舍日报》报纸阅读窗
+         ═══════════════════════════════════════════ -->
+    <NewspaperModal v-model="showNewspaper" @read="onNewspaperRead" />
+
+      <EmojiManagerModal v-if="showEmojiManager" :characters="sortedCharacters" @close="showEmojiManager = false" />
+      <AssetGenerationModal v-if="showAssetGen" :characters="sortedCharacters" @close="showAssetGen = false" />
+
+    <CharacterFolderManager
+      v-model="showFolderManager"
+      :initial-folder-id="folderFilter"
+      @deleted="id => { if (folderFilter === id) folderFilter = 'all' }"
+    />
+
+    <!-- 立绘管理 / SillyTavern 世界书 / 预设（上游 v3.10.0 合并，2026-10-19） -->
+    <StandingManagerModal :open="showStandingManager" :characters="sortedCharacters" @close="showStandingManager = false" />
+    <WorldLorebookModal v-model="showLorebook" :world-id="selectedWorldId" :world-name="worldItems.find(item => item.id === selectedWorldId)?.name || ''" />
+    <PromptPresetModal v-model="showPromptPresets" />
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, computed, onMounted, onUnmounted, watch, inject, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
+import { useChatStore } from '../stores/chat.js'
+import { userAvatar, loadUserAvatar, uploadUserAvatar, userNickname, userGender, userAppearance, userPersona, loadUserConfig, saveUserConfig } from '../userConfig.js'
+import * as api from '../api/index.js'
+import AvatarCropper from '../components/AvatarCropper.vue'
+import RelationshipGraph from '../components/RelationshipGraph.vue'
+import UserRelationshipGraph from '../components/UserRelationshipGraph.vue'
+import RelationshipDeductionModal from '../components/RelationshipDeductionModal.vue'
+import CharacterDetailModal from '../components/CharacterDetailModal.vue'
+import MailboxModal from '../components/MailboxModal.vue'
+import BackpackModal from '../components/BackpackModal.vue'
+import NewspaperModal from '../components/NewspaperModal.vue'
+import EmojiManagerModal from '../components/EmojiManagerModal.vue'
+import AssetGenerationModal from '../components/AssetGenerationModal.vue'
+import AppearanceRefineModal from '../components/AppearanceRefineModal.vue'
+// 上游 v3.10.0 合并（2026-10-19）：立绘管理 / SillyTavern 世界书 / SillyTavern 预设
+import StandingManagerModal from '../components/StandingManagerModal.vue'
+import WorldLorebookModal from '../components/WorldLorebookModal.vue'
+import PromptPresetModal from '../components/PromptPresetModal.vue'
+import LinsheButton from '../components/ui/LinsheButton.vue'
+import LinsheInput from '../components/ui/LinsheInput.vue'
+import { useBurst } from '../composables/useBurst.js'
+import { useMailboxStore } from '../stores/mailbox.js'
+import { useBackpackStore } from '../stores/backpack.js'
+import { useNewspaperStore } from '../stores/newspaper.js'
+import { useCharacterFoldersStore } from '../stores/characterFolders.js'
+import CharacterFolderManager from '../components/CharacterFolderManager.vue'
+
+const router = useRouter()
+const chat = useChatStore()
+const mailboxStore = useMailboxStore()
+const backpackStore = useBackpackStore()
+const newspaperStore = useNewspaperStore()
+
+const showMailbox = ref(false)
+const showBackpack = ref(false)
+const showEmojiManager = ref(false)
+/** 立绘管理（上游 v3.10.0 合并，2026-10-19）：表情立绘批量生成/补缺/触摸台词 */
+const showStandingManager = ref(false)
+/** SillyTavern 世界书（挂在世界观编辑弹窗里，按当前选中的世界观：worldId 为空时按钮禁用） */
+const showLorebook = ref(false)
+/** SillyTavern 预设（全局提示词预设，与具体世界观无关） */
+const showPromptPresets = ref(false)
+/** 一键后台生成全部角色资产（立绘/表情包/表情立绘） */
+const showAssetGen = ref(false)
+const mailboxUnread = computed(() => mailboxStore.unreadCount)
+const backpackChestReady = computed(() => backpackStore.chestReady)
+
+// 《邻舍日报》：未读状态由 newspaper store 统一持有（NavBar 酒馆项红点同源）
+const showNewspaper = ref(false)
+const todayPaper = computed(() => newspaperStore.todayPaper)
+const newspaperUnread = computed(() => newspaperStore.unread)
+const newspaperHint = computed(() => todayPaper.value
+  ? `第${todayPaper.value.edition}期已印好 · 今日事，早知道`
+  : '清晨 5 点后印出 · 今日事，早知道')
+
+function openNewspaper() {
+  showNewspaper.value = true
+}
+
+// 打开看过即消红点（今天之内不再提醒）
+function onNewspaperRead(paper) {
+  newspaperStore.markRead(paper)
+}
+
+function loadTodayPaper() {
+  newspaperStore.fetchToday()
+}
+
+// 置顶优先，组内按 display_name 首字母排序（中文按拼音）
+const sortedCharacters = computed(() =>
+  [...chat.characters].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1
+    if (!a.pinned && b.pinned) return 1
+    return (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')
+  })
+)
+
+// ═══════════════════════════════════════════
+// 角色文件夹（单层分类，上游 v3.9.0 合并）
+// ═══════════════════════════════════════════
+const folderStore = useCharacterFoldersStore()
+const folders = computed(() => folderStore.folders)
+
+const uncategorizedCount = computed(() => chat.characters.filter(c => !c.folder_id).length)
+/** 各文件夹的角色数 */
+function folderCountOf(id) {
+  return chat.characters.filter(c => c.folder_id === id).length
+}
+// 文件夹接口就绪后才显示分类 UI，接口不可用时保持原样（不出现半坏的筛选栏）
+const folderFeatureReady = computed(() => folderStore.ready)
+// 'all' | 'uncategorized' | 文件夹 id
+const folderFilter = ref('all')
+
+// 当前文件夹范围内的角色（未叠加搜索词）
+const folderScopedCharacters = computed(() => {
+  const list = chat.characters
+  if (folderFilter.value === 'uncategorized') return list.filter(c => !c.folder_id)
+  if (folderFilter.value === 'all') return list
+  return list.filter(c => c.folder_id === folderFilter.value)
+})
+
+// 实际渲染：文件夹筛选 + 名称搜索，再按「置顶优先、组内拼音」排序。
+// 弹窗（信箱/背包/表情包/素材）继续用全量 sortedCharacters，不受筛选影响。
+// 搜索框是上游 v3.10.0 合并补回的（2026-10-19，「本地优先」那次把它整块丢了）
+const charSearch = ref('')
+const visibleCharacters = computed(() => {
+  const kw = charSearch.value.trim().toLowerCase()
+  const list = kw
+    ? folderScopedCharacters.value.filter(c => (c.display_name || '').toLowerCase().includes(kw))
+    : folderScopedCharacters.value
+  return [...list].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1
+    if (!a.pinned && b.pinned) return 1
+    return (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')
+  })
+})
+
+// 标题计数：以当前筛选范围为分母（搜索命中一部分时显示「2 / 7」）
+const charCountLabel = computed(() => {
+  const scoped = folderScopedCharacters.value.length
+  const shown = visibleCharacters.value.length
+  return shown === scoped ? `${scoped}` : `${shown} / ${scoped}`
+})
+
+// 搜索词在全部角色里有命中、但当前文件夹内没有 —— 提示可以放宽到「全部」
+const canSearchEverywhere = computed(() => {
+  const kw = charSearch.value.trim().toLowerCase()
+  if (!kw || folderFilter.value === 'all') return false
+  return chat.characters.some(c => (c.display_name || '').toLowerCase().includes(kw))
+})
+
+const emptyTitle = computed(() => {
+  if (charSearch.value.trim()) return `没有找到「${charSearch.value.trim()}」`
+  if (!chat.characters.length) return '还没有角色'
+  if (folderFilter.value === 'uncategorized') return '「未分类」里没有角色'
+  return '这个文件夹还是空的'
+})
+const emptyDesc = computed(() => {
+  if (charSearch.value.trim()) {
+    return folderFilter.value === 'all' ? '换个关键词试试。' : '换个关键词，或者切到「全部」看看。'
+  }
+  if (!chat.characters.length) return '点上面的「招募」认识第一位邻居。'
+  if (folderFilter.value === 'uncategorized') return '所有角色都已经归好类了。'
+  return '打开「分类管理」，勾选角色加入这个分类。'
+})
+
+// ── 文件夹拖拽排序 ──
+// 用原生 HTML5 拖放：这一排就是个扁平的 chip 列表，没必要为此引入拖拽库。
+// 「全部 / 未分类」是固定项，不参与排序，所以只有 v-for 里的文件夹 chip 是 draggable。
+const dragFolderId = ref(null)
+const dragOverFolderId = ref(null)
+
+function onFolderDragStart(ev, f) {
+  dragFolderId.value = f.id
+  dragOverFolderId.value = null
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    // Firefox 必须 setData 才会真正开始拖拽
+    ev.dataTransfer.setData('text/plain', String(f.id))
+  }
+}
+
+function onFolderDragOver(ev, f) {
+  if (dragFolderId.value == null || dragFolderId.value === f.id) return
+  ev.preventDefault()   // 不 preventDefault 就不会触发 drop
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+  dragOverFolderId.value = f.id
+}
+
+function onFolderDragLeave(f) {
+  if (dragOverFolderId.value === f.id) dragOverFolderId.value = null
+}
+
+async function onFolderDrop(ev, target) {
+  const fromId = dragFolderId.value
+  dragFolderId.value = null
+  dragOverFolderId.value = null
+  if (fromId == null || fromId === target.id) return
+
+  const list = [...folders.value]
+  const fromIdx = list.findIndex(x => x.id === fromId)
+  const toIdx = list.findIndex(x => x.id === target.id)
+  if (fromIdx < 0 || toIdx < 0) return
+
+  // 语义是「插到目标之前」：向后拖时目标索引会因先移除而前移一位，所以要减 1，
+  // 否则会落到目标后面（拖 A 到 C 会变成 B,C,A,D 而不是 B,A,C,D）。
+  const [moved] = list.splice(fromIdx, 1)
+  const insertAt = fromIdx < toIdx ? toIdx - 1 : toIdx
+  list.splice(insertAt, 0, moved)
+
+  try {
+    await folderStore.reorderFolders(list.map(x => x.id))
+  } catch (err) {
+    const msg = err?.message || '未知错误'
+    // 后端还是旧代码时，'/folders/reorder' 会被 '/folders/:id' 吃掉并回 'invalid folder id'。
+    // 这个报错本身看不出原因，补一句指向性提示，省得再去猜。
+    const stale = /invalid folder id|请求失败 \(40[0-9]\)/.test(msg)
+    toastFn?.(
+      '保存文件夹顺序失败: ' + msg + (stale ? '（后端可能仍是旧代码，请在启动器里重启服务）' : ''),
+      'error',
+    )
+  }
+}
+
+function onFolderDragEnd() {
+  dragFolderId.value = null
+  dragOverFolderId.value = null
+}
+
+const showFolderManager = ref(false)
+
+// 角色增删后各文件夹的成员数会变，跟着刷新一次（首屏由 onMounted 负责）
+watch(() => chat.characters.length, () => folderStore.load())
+const isMobile = inject('isMobile')
+const toggleMobileSidebar = inject('toggleMobileSidebar')
+const confirmFn = inject('confirm')
+const toastFn = inject('toast')
+
+// ── 移动端滚动标题隐藏 ──
+const headerVisible = ref(true)
+let lastScroll = 0
+function onScroll(e) {
+  if (!isMobile) return
+  const top = e.target.scrollTop
+  if (top > 40 && top - lastScroll > 8) headerVisible.value = false
+  else if (top - lastScroll < -4) headerVisible.value = true
+  lastScroll = top
+}
+
+// ═══════════════════════════════════════
+// 用户信息
+// ═══════════════════════════════════════
+const showUserAvatarPicker = ref(false)
+const nicknameInput = ref(null)
+const appearanceInput = ref(null)
+const personaInput = ref(null)
+
+const userAvatarStyle = computed(() => {
+  if (userAvatar.value) return { backgroundImage: `url(${userAvatar.value})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+  return { background: 'var(--accent)' }
+})
+
+async function onUserAvatarSave(base64) {
+  await uploadUserAvatar(base64)
+  showUserAvatarPicker.value = false
+}
+
+// ── 姓名 ──
+const editingNickname = ref(false)
+const userNicknameInput = ref('')
+
+function startEditNickname() {
+  userNicknameInput.value = userNickname.value
+  editingNickname.value = true
+  nextTick(() => nicknameInput.value?.focus())
+}
+
+async function saveNickname() {
+  editingNickname.value = false
+  const val = userNicknameInput.value.trim()
+  if (val !== (userNickname.value || '')) {
+    await saveUserConfig({ nickname: val })
+  }
+}
+
+// ── 性别 ──
+const editingGender = ref(false)
+const userGenderInput = ref('')
+const genderInput = ref(null)
+
+function startEditGender() {
+  userGenderInput.value = userGender.value
+  editingGender.value = true
+  nextTick(() => genderInput.value?.focus())
+}
+
+async function saveGender() {
+  editingGender.value = false
+  const val = userGenderInput.value.trim()
+  if (val !== (userGender.value || '')) {
+    await saveUserConfig({ gender: val })
+  }
+}
+
+// ── 外观 ──
+const editingAppearance = ref(false)
+const userAppearanceInput = ref('')
+
+function startEditAppearance() {
+  userAppearanceInput.value = userAppearance.value
+  editingAppearance.value = true
+  nextTick(() => appearanceInput.value?.focus())
+}
+
+async function saveAppearance() {
+  editingAppearance.value = false
+  const val = userAppearanceInput.value.trim()
+  if (val !== (userAppearance.value || '')) {
+    await saveUserConfig({ appearance: val })
+  }
+}
+
+function cancelEditAppearance() {
+  editingAppearance.value = false
+  userAppearanceInput.value = userAppearance.value
+}
+
+// ── 其他说明 ──
+const editingPersona = ref(false)
+const userPersonaInput = ref('')
+
+function startEditPersona() {
+  userPersonaInput.value = userPersona.value
+  editingPersona.value = true
+  nextTick(() => personaInput.value?.focus())
+}
+
+async function savePersona() {
+  editingPersona.value = false
+  const val = userPersonaInput.value.trim()
+  if (val !== (userPersona.value || '')) {
+    await saveUserConfig({ persona: val })
+  }
+}
+
+function cancelEditPersona() {
+  editingPersona.value = false
+  userPersonaInput.value = userPersona.value
+}
+
+// ═══════════════════════════════════════
+// 招募弹窗
+// ═══════════════════════════════════════
+const recruit = reactive({
+  show: false,
+  step: 'input',   // 'input' | 'preview'
+  desc: '',
+  loading: false,
+  saving: false,
+  error: '',
+  result: null,    // 生成结果
+  task: null,      // 'search' | 'regenerate'
+  searchContext: '', // 首次联网搜索得到的原始资料，用于重新归纳
+})
+
+// 招募加载提示语轮播
+const LOADING_TIPS = [
+  '正在酒馆发布公告…',
+  '正在审核冒险者资格…',
+  '正在翻阅冒险者公会档案…',
+  '正在筛查简历…',
+  '正在办理冒险者资格证…',
+  '正在调取异世界档案…',
+  '正在向公会会长请示…',
+  '正在检查悬赏令真伪…',
+  '正在鉴定勇者血统…',
+  '正在占卜命运之线…',
+  '正在校验冒险者等级徽章…',
+  '正在清点药水库存…',
+  '正在整理任务委托板…',
+  '正在给壁炉添柴…',
+]
+const loadingTip = ref(LOADING_TIPS[0])
+let _tipTimer = null
+
+function startLoadingTips() {
+  loadingTip.value = LOADING_TIPS[0]
+  let idx = 0
+  _tipTimer = setInterval(() => {
+    idx = (idx + 1) % LOADING_TIPS.length
+    loadingTip.value = LOADING_TIPS[idx]
+  }, 2200)
+}
+
+function stopLoadingTips() {
+  if (_tipTimer) { clearInterval(_tipTimer); _tipTimer = null }
+}
+
+// Toast 冒泡提示 —— 统一走全局 Live Toast,长文案停留 5s
+function showToast(message, type = 'info') {
+  toastFn?.(message, type, 5000)
+}
+
+function openRecruit() {
+  recruit.show = true
+  recruit.step = 'input'
+  recruit.desc = ''
+  recruit.error = ''
+  recruit.result = null
+  recruit.loading = false
+  recruit.saving = false
+  recruit.task = null
+  recruit.searchContext = ''
+}
+
+function closeRecruit() {
+  recruit.show = false
+  showRecruitRefine.value = false
+  stopLoadingTips()
+}
+
+// ── 招募预览的修正外观（草稿卡模式：结果回填 recruit.result.base_prompt，确认招募时才落库）──
+const showRecruitRefine = ref(false)
+
+function onRecruitAppearanceRefined({ basePrompt }) {
+  if (!recruit.result) return
+  recruit.result.base_prompt = basePrompt
+  showToast('外观已应用到待确认的角色卡', 'success')
+}
+
+async function doGenerate() {
+  const desc = recruit.desc.trim()
+  if (!desc || recruit.loading) return
+
+  recruit.loading = true
+  recruit.error = ''
+  recruit.task = 'search'
+  startLoadingTips()
+
+  try {
+    const result = await api.generateCharacterPreview(desc)
+    if (result.error) {
+      recruit.error = result.error
+      return
+    }
+    recruit.searchContext = result.search_context || ''
+    recruit.result = { ...result }
+    recruit.step = 'preview'
+    // 冒泡提示搜索结果
+    if (result.search_found) {
+      showToast('已在网络上找到详细角色资料', 'success')
+    } else {
+      showToast('未找到相关资料，请检查IP角色名字输入是否正确或者重新尝试，如果是原创设定则无视本条提示', 'info')
+    }
+  } catch (err) {
+    recruit.error = '生成失败: ' + (err.message || '网络错误')
+  } finally {
+    recruit.loading = false
+    recruit.task = null
+    stopLoadingTips()
+  }
+}
+
+async function regenerateFromSearchResult() {
+  const desc = recruit.desc.trim()
+  if (!desc || !recruit.searchContext || recruit.loading) return
+
+  recruit.loading = true
+  recruit.error = ''
+  recruit.task = 'regenerate'
+  startLoadingTips()
+
+  try {
+    const result = await api.generateCharacterPreview(desc, { searchContext: recruit.searchContext })
+    if (result.error) {
+      recruit.error = result.error
+      return
+    }
+    if (result.search_context) recruit.searchContext = result.search_context
+    recruit.result = { ...result }
+    showToast('已根据原搜索资料重新整理角色卡', 'success')
+  } catch (err) {
+    recruit.error = '重新生成失败: ' + (err.message || '网络错误')
+  } finally {
+    recruit.loading = false
+    recruit.task = null
+    stopLoadingTips()
+  }
+}
+
+async function confirmRecruit() {
+  if (!recruit.result || recruit.saving) return
+  recruit.saving = true
+  recruit.error = ''
+
+  try {
+    const r = await api.createCharacter({
+      name: recruit.result.name,
+      display_name: recruit.result.display_name,
+      base_prompt: recruit.result.base_prompt,
+      emotion_baseline: recruit.result.emotion_baseline,
+    })
+    if (r.error) {
+      recruit.error = r.error
+      return
+    }
+    // 成功：关闭弹窗，刷新角色列表
+    recruit.show = false
+    await chat.loadCharacters()
+  } catch (err) {
+    recruit.error = '入库失败: ' + (err.message || '网络错误')
+  } finally {
+    recruit.saving = false
+  }
+}
+
+const cardInputRef = ref(null)
+
+async function onCardSelected(e) {
+  const file = e.target.files && e.target.files[0]
+  if (!file) return
+  if (file.size > 7 * 1024 * 1024) {
+    recruit.error = '角色卡文件过大（>7MB），请使用更小的文件'
+    e.target.value = ''
+    return
+  }
+  recruit.loading = true
+  recruit.error = ''
+  startLoadingTips()
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const fr = new FileReader()
+      fr.onload = () => resolve(fr.result)
+      fr.onerror = () => reject(new Error('读取文件失败'))
+      fr.readAsDataURL(file)
+    })
+    const result = await api.importCharacterCard({
+      data: dataUrl,
+      mimetype: file.type,
+      filename: file.name,
+    })
+    if (result.error) {
+      recruit.error = result.error
+      return
+    }
+    recruit.result = { ...result }
+    // 保留角色名作为描述，便于"重新搜索"用联网资料重写
+    recruit.desc = result.display_name || ''
+    recruit.step = 'preview'
+    recruit.task = null
+    recruit.searchContext = ''
+    showToast('角色卡已整理完成，请检查后确认招募', 'success')
+  } catch (err) {
+    recruit.error = '导入失败: ' + (err.message || '网络错误')
+  } finally {
+    recruit.loading = false
+    stopLoadingTips()
+    if (cardInputRef.value) cardInputRef.value.value = ''
+  }
+}
+
+// ═══════════════════════════════════════
+// 角色详情弹窗
+// ═══════════════════════════════════════
+const detailVisible = ref(false)
+const detailChar = ref(null)
+
+const showRelationGraph = ref(false)
+const showUserRelationGraph = ref(false)
+const showDeductionModal = ref(false)
+const deductionMode = ref('character')
+const deductionUserName = ref('')
+const detailModalRef = ref(null)
+
+// 关闭关系图后刷新关系数据
+watch(showRelationGraph, async (val) => {
+  if (!val && detailChar.value) {
+    await chat.loadCharacters()
+    const updated = chat.characters.find(x => x.id === detailChar.value.id)
+    if (updated) detailChar.value = updated
+    detailModalRef.value?.refreshRelationships()
+  }
+})
+
+// ═══════════════════════════════════════
+// 世界观收藏（标签行 + textarea）
+// ═══════════════════════════════════════
+const showWorldModal = ref(false)
+const worldItems = ref([])
+const activeWorldName = ref('')
+const selectedWorldId = ref(null)
+const worldContent = ref('')
+const worldDirty = ref(false)
+const worldSaving = ref(false)
+const worldSaved = ref(false)
+const showNewInput = ref(false)
+const worldNewName = ref('')
+const newNameInput = ref(null)
+const editingNameId = ref(null)
+const editNameValue = ref('')
+const editNameInput = ref(null)
+const worldTextareaRef = ref(null)
+
+// 纯文本世界观 → 带层级标记的展示 HTML（不改变原始文本内容）
+function toWorldHighlightHtml(text) {
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  return String(text ?? '')
+    .split('\n')
+    .map((line) => {
+      const safe = esc(line)
+      if (/^\s*【[^】]*】\s*$/.test(safe)) {
+        return `<span class="world-sec-title">${safe}</span>`
+      }
+      if (/^\s*[-•·*]\s+/.test(safe) || /^\s*\d+[.、．]/.test(safe)) {
+        return `<span class="world-sec-item">${safe}</span>`
+      }
+      return safe.replace(/^(\s*)(【[^】]*】)/, (m, indent, tag) => `${indent}<span class="world-sec-tag">${tag}</span>`)
+    })
+    .join('\n')
+}
+const polishHighlightHtml = computed(() => toWorldHighlightHtml(polishContent.value))
+
+async function loadWorldSettings() {
+  try {
+    const data = await api.getWorldSettings()
+    worldItems.value = data.list || []
+    const active = worldItems.value.find(w => w.is_active)
+    activeWorldName.value = active?.name || ''
+    if (active) {
+      selectedWorldId.value = active.id
+      worldContent.value = active.content || ''
+    }
+  } catch {}
+}
+
+function openWorldSetting() {
+  worldSaved.value = false
+  worldDirty.value = false
+  showNewInput.value = false
+  worldNewName.value = ''
+  showWorldModal.value = true
+  loadWorldSettings()
+}
+
+function closeWorldSetting() {
+  showWorldModal.value = false
+}
+
+function selectWorld(item) {
+  if (selectedWorldId.value === item.id) return
+  selectedWorldId.value = item.id
+  worldContent.value = item.content || ''
+  worldDirty.value = false
+  activateWorld(item.id)
+}
+
+function startNew() {
+  showNewInput.value = true
+  worldNewName.value = ''
+  nextTick(() => newNameInput.value?.focus())
+}
+
+async function confirmNew() {
+  const name = worldNewName.value.trim()
+  if (!name) return
+  worldSaving.value = true
+  try {
+    const result = await api.createWorldSetting({ name, content: '' })
+    if (!result?.ok) throw new Error(result?.error || '创建失败')
+    showNewInput.value = false
+    worldNewName.value = ''
+    await loadWorldSettings()
+    selectedWorldId.value = result.item.id
+    worldContent.value = ''
+    worldDirty.value = false
+    activateWorld(result.item.id, { silent: true })
+    showToast(`已创建世界观「${name}」`, 'success')
+  } catch (err) {
+    console.error('[world] create failed:', err)
+    showToast(`创建世界观失败: ${err?.message || '未知错误'}`, 'error')
+  } finally {
+    worldSaving.value = false
+  }
+}
+
+async function saveWorld() {
+  if (worldSaving.value) return
+  worldSaving.value = true
+  try {
+    let targetId = selectedWorldId.value
+    if (!targetId) {
+      // 兜底：没有任何世界观（如旧库空表）时，把当前内容存为新的一套并激活
+      const created = await api.createWorldSetting({ name: '默认世界观', content: worldContent.value.trim() })
+      if (!created?.ok) throw new Error(created?.error || '创建失败')
+      targetId = created.item.id
+      await api.activateWorldSetting(targetId)
+    } else {
+      const result = await api.updateWorldSetting(targetId, { content: worldContent.value.trim() })
+      if (!result?.ok) throw new Error(result?.error || '保存失败')
+    }
+    selectedWorldId.value = targetId
+    worldDirty.value = false
+    worldSaved.value = true
+    setTimeout(() => worldSaved.value = false, 2000)
+    await loadWorldSettings()
+    showToast('世界观已保存', 'success')
+  } catch (err) {
+    console.error('[world] save failed:', err)
+    showToast(`世界观保存失败: ${err?.message || '未知错误'}`, 'error')
+  } finally {
+    worldSaving.value = false
+  }
+}
+
+async function activateWorld(id, { silent = false } = {}) {
+  try {
+    const result = await api.activateWorldSetting(id)
+    if (!result?.ok) throw new Error(result?.error || '切换失败')
+    await loadWorldSettings()
+    if (!silent) showToast(`已激活世界观「${result.item?.name || ''}」`, 'success')
+  } catch (err) {
+    console.error('[world] activate failed:', err)
+    showToast(`切换世界观失败: ${err?.message || '未知错误'}`, 'error')
+  }
+}
+
+async function handleDelete(item) {
+  if (worldItems.value.length <= 1) {
+    showToast('至少保留一套世界观')
+    return
+  }
+  const ok = await confirmFn({
+    title: '删除世界观',
+    message: `确定要删除「${item.name}」吗？`,
+    okText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    const result = await api.deleteWorldSetting(item.id)
+    if (!result?.ok) throw new Error(result?.error || '删除失败')
+    if (selectedWorldId.value === item.id) {
+      selectedWorldId.value = null
+      worldContent.value = ''
+      worldDirty.value = false
+    }
+    await loadWorldSettings()
+    if (!selectedWorldId.value) {
+      const first = worldItems.value.find(w => w.id !== item.id)
+      if (first) {
+        selectedWorldId.value = first.id
+        worldContent.value = first.content || ''
+      }
+    }
+    showToast(`已删除世界观「${item.name}」`, 'success')
+  } catch (err) {
+    console.error('[world] delete failed:', err)
+    showToast(`删除世界观失败: ${err?.message || '未知错误'}`, 'error')
+  }
+}
+
+function startRename(item) {
+  editingNameId.value = item.id
+  editNameValue.value = item.name
+  nextTick(() => {
+    const el = editNameInput.value
+    if (el) {
+      if (Array.isArray(el)) el[0]?.focus?.()
+      else el.focus?.()
+    }
+  })
+}
+
+async function renameWorld(item) {
+  if (editingNameId.value !== item.id) return
+  const name = editNameValue.value.trim()
+  editingNameId.value = null
+  if (!name || name === item.name) return
+  try {
+    const result = await api.updateWorldSetting(item.id, { name })
+    if (!result?.ok) throw new Error(result?.error || '重命名失败')
+    await loadWorldSettings()
+    showToast(`已重命名为「${name}」`, 'success')
+  } catch (err) {
+    console.error('[world] rename failed:', err)
+    showToast(`重命名失败: ${err?.message || '未知错误'}`, 'error')
+  }
+}
+
+// ═══════════════════════════════════════
+// 世界观 AI 一键润色（酒馆世界书风格扩写）
+// ═══════════════════════════════════════
+const showPolishModal = ref(false)
+const polishLoading = ref(false)
+const polishError = ref('')
+const polishContent = ref('')
+
+function openPolish() {
+  const source = worldContent.value.trim()
+  if (!source || polishLoading.value) return
+  polishError.value = ''
+  polishContent.value = ''
+  showPolishModal.value = true
+  runPolish()
+}
+
+function closePolishModal() {
+  showPolishModal.value = false
+  polishLoading.value = false
+  polishError.value = ''
+  polishContent.value = ''
+}
+
+async function runPolish() {
+  if (polishLoading.value) return
+  const source = worldContent.value.trim()
+  if (!source) {
+    polishError.value = '当前世界观内容为空，请先填写内容再润色'
+    return
+  }
+  polishLoading.value = true
+  polishError.value = ''
+  polishContent.value = ''
+  try {
+    const item = worldItems.value.find(w => w.id === selectedWorldId.value)
+    // 请求体带上系统破限词，保证扩写创作自由
+    let jailbreak = ''
+    try {
+      const rules = await api.getSystemRules()
+      jailbreak = rules?.content || ''
+    } catch {}
+    const result = await api.polishWorldSetting({
+      name: item?.name || '',
+      content: source,
+      jailbreak,
+    })
+    if (!result?.ok || !result.content) {
+      throw new Error(result?.error || '润色失败，请稍后重试')
+    }
+    polishContent.value = result.content
+  } catch (err) {
+    polishError.value = err?.message || '润色失败，请稍后重试'
+  } finally {
+    polishLoading.value = false
+  }
+}
+
+async function confirmPolish() {
+  if (!polishContent.value) return
+  worldContent.value = polishContent.value
+  worldDirty.value = true
+  worldSaved.value = false
+  closePolishModal()
+  await saveWorld()
+}
+
+async function openCharDetail(c) {
+  detailChar.value = c
+  detailVisible.value = true
+}
+
+// ── 角色置顶 ──
+const { burstKey, burst: burstPin } = useBurst()
+
+// 首屏错峰入场：.stagger 的动画跑完就摘掉，不能常驻。
+// 常驻有两个副作用：① 位移过渡前的自检会读到时长更长的入场动画，判定成 animation
+// 后整段 FLIP 被跳过，卡片直接跳位；② DOM 位移会让入场动画重播，重排的卡片先「消失」
+// 再淡回来。摘掉后两个问题都没有，入场动画仍照常播一次。
+const gridStagger = ref(true)
+let staggerTimer = null
+onMounted(() => {
+  // 最长一档错峰是 440ms 延迟 + 450ms 动画
+  staggerTimer = setTimeout(() => { gridStagger.value = false }, 1000)
+})
+onUnmounted(() => clearTimeout(staggerTimer))
+
+// 置顶按钮：先播一次爆心特效，再切状态（重排由 TransitionGroup 的 FLIP 兜住）
+function onPinClick(c) {
+  burstPin(c.id)
+  toggleCharPin(c)
+}
+
+async function toggleCharPin(c) {
+  // sortedCharacters 是浅拷贝，元素与 store 同引用，改这里即改 store
+  c.pinned = c.pinned ? 0 : 1
+  try { await api.togglePin(c.id, c.pinned) } catch {}
+}
+
+function closeCharDetail() {
+  detailVisible.value = false
+  detailChar.value = null
+}
+
+async function onCharSaved(c) {
+  await chat.loadCharacters()
+  const updated = chat.characters.find(x => x.id === c.id)
+  if (updated) detailChar.value = updated
+}
+
+async function onCharDeleted(c) {
+  detailVisible.value = false
+  detailChar.value = null
+  await chat.loadCharacters()
+}
+
+function openRelationGraph(c) {
+  showRelationGraph.value = true
+}
+
+function openDeduction(c) {
+  detailChar.value = c
+  deductionMode.value = 'character'
+  deductionUserName.value = ''
+  showDeductionModal.value = true
+}
+
+function onGraphAutoDeduce() {
+  showUserRelationGraph.value = false
+  deductionMode.value = 'user'
+  deductionUserName.value = userNickname.value || 'User'
+  showDeductionModal.value = true
+}
+
+async function onDeductionSaved() {
+  await chat.loadCharacters()
+  if (detailChar.value) {
+    const updated = chat.characters.find(x => x.id === detailChar.value.id)
+    if (updated) detailChar.value = updated
+  }
+}
+
+// ── 角色头像 ──
+const showCharAvatarPicker = ref(false)
+const recentImages = ref([])
+const recentLoading = ref(false)
+
+function openCharAvatarEditor() {
+  recentImages.value = []
+  showCharAvatarPicker.value = true
+}
+
+async function switchToRecent() {
+  if (recentImages.value.length > 0) return
+  if (!detailChar.value?.id) return
+  recentLoading.value = true
+  try {
+    const d = await api.getRecentImages(detailChar.value.id)
+    recentImages.value = d.images || []
+  } catch {} finally { recentLoading.value = false }
+}
+
+async function onCharAvatarSave(base64) {
+  if (!detailChar.value) return
+  await api.uploadAvatar(detailChar.value.id, base64 || '')
+  await chat.loadCharacters()
+  const updated = chat.characters.find(x => x.id === detailChar.value.id)
+  if (updated) detailChar.value = updated
+  showCharAvatarPicker.value = false
+}
+
+async function removeCharAvatar() {
+  if (!detailChar.value) return
+  const ok = await confirmFn({
+    title: '移除头像',
+    message: `确定要移除「${detailChar.value.display_name}」的头像吗？`,
+    okText: '移除',
+    danger: true,
+  })
+  if (!ok) return
+  await api.uploadAvatar(detailChar.value.id, '')
+  await chat.loadCharacters()
+  const updated = chat.characters.find(x => x.id === detailChar.value.id)
+  if (updated) detailChar.value = updated
+}
+
+// ── 初始化 ──
+onMounted(async () => {
+  await loadUserAvatar()
+  await loadUserConfig()
+  loadWorldSettings()
+  userNicknameInput.value = userNickname.value
+  userGenderInput.value = userGender.value
+  userAppearanceInput.value = userAppearance.value
+  userPersonaInput.value = userPersona.value
+  if (chat.characters.length === 0) await chat.loadCharacters()
+  // 拉一次宝箱状态，驱动入口卡上的「可开启」小圆点
+  backpackStore.fetchItems()
+  // 拉今天的《邻舍日报》，驱动报纸入口卡的未读红点
+  loadTodayPaper()
+  // 拉一次角色文件夹（接口就绪后才显示筛选栏；后端未更新时静默退化为平铺）
+  folderStore.load()
+})
+</script>
+
+<style scoped>
+.tavern-view {
+  padding: 32px;
+  overflow-y: auto;
+  height: 100vh; height: 100dvh;
+  flex: 1;
+}
+
+.page-header {
+  margin-bottom: 24px;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, opacity;
+}
+.page-header.header-hidden { transform: translateY(-100%); margin-bottom: 0; opacity: 0; pointer-events: none; }
+.page-header h2 { font-size: 24px; color: var(--text-bright); font-weight: 700; }
+.is-clickable { cursor: pointer; }
+
+/* ── 卡片共用：视觉样式走全局 .card，这里只保留布局 ── */
+.card {
+  padding: 20px 24px;
+}
+
+/* ── 用户行 ── */
+.user-row-wrapper {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+.user-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  flex: 1;
+}
+.mailbox-card,
+.backpack-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 18px;
+  cursor: pointer;
+  position: relative;
+  width: 150px;
+  flex-shrink: 0;
+}
+.mailbox-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.backpack-dot {
+  min-width: 10px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border-radius: 50%;
+}
+.mailbox-badge {
+  position: absolute;
+  top: -6px; right: -6px;
+  min-width: 18px; height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  line-height: 1;
+}
+
+.user-avatar {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 22px; font-weight: 700;
+  flex-shrink: 0;
+}
+.user-avatar.clickable { cursor: pointer; transition: opacity 0.15s; }
+.user-avatar.clickable:hover { opacity: 0.85; }
+
+.user-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.user-field-row {
+  display: flex; align-items: baseline; gap: 10px;
+}
+.field-label {
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  min-width: 32px; padding-top: 4px; flex-shrink: 0;
+  user-select: none;
+}
+.field-value-wrap {
+  flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.field-value {
+  font-size: 13px; color: var(--text-secondary);
+  cursor: pointer; padding: 2px 0; line-height: 1.5;
+  flex: 1; min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.user-field-row:first-child .field-value {
+  font-size: 15px; font-weight: 600; color: var(--text-bright);
+}
+.field-value:hover { color: var(--accent); }
+
+.edit-pen {
+  background: none; border: none; color: var(--text-secondary);
+  cursor: pointer; font-size: 14px; padding: 2px 4px;
+  opacity: 0; transition: opacity 0.15s;
+  flex-shrink: 0;
+  user-select: none;
+}
+.user-field-row:hover .edit-pen { opacity: 1; }
+.edit-pen:hover { color: var(--accent); }
+
+/* ── 文本输入框 ── */
+.field-textarea {
+  width: 100%; resize: none;
+  font-size: 13px; line-height: 1.5;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px; padding: 6px 10px;
+  color: var(--text-bright);
+}
+.field-textarea:focus { outline: none; border-color: var(--accent); }
+.field-input {
+  font-size: 13px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px; padding: 4px 10px;
+  color: var(--text-bright); width: 120px;
+}
+.field-input:focus { outline: none; border-color: var(--accent); }
+.nickname-input {
+  font-size: 15px; font-weight: 600;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px; padding: 4px 10px;
+  color: var(--text-bright); width: 160px;
+}
+.nickname-input:focus { outline: none; border-color: var(--accent); }
+
+/* ── 关系图入口卡片 ── */
+/* 报纸 + 关系图同行两列；列间距沿用卡片纵向 20px 节奏 */
+.relation-entry-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.relation-entry-row .relation-entry {
+  margin-bottom: 0;
+}
+.relation-entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.relation-entry:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(var(--accent-rgb), 0.2);
+  box-shadow: 0 2px 16px rgba(var(--accent-rgb), 0.08);
+}
+
+.relation-entry-icon {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  background: rgba(var(--accent-rgb), 0.1);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.relation-entry-text {
+  flex: 1;
+  display: flex; flex-direction: column;
+  gap: 2px;
+}
+.relation-entry-title {
+  font-size: 15px; font-weight: 600; color: var(--text-bright);
+}
+.relation-entry-hint {
+  font-size: 12px; color: var(--text-secondary);
+}
+
+.relation-entry-arrow {
+  font-size: 22px; color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* ── 世界观入口卡片 ── */
+.world-icon {
+  background: rgba(var(--accent-rgb), 0.08);
+  color: #c06a52;
+}
+
+/* ── 今日报纸入口卡片 ── */
+.newspaper-icon {
+  background: rgba(var(--accent-rgb), 0.08);
+  color: #a8763e;
+}
+.newspaper-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 2px;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15);
+}
+
+/* ── 世界观标签行（档案页签导航） ── */
+.world-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: flex-end;
+  padding: 2px 8px 0;
+  border-bottom: 1px solid rgba(120, 90, 60, 0.14);
+}
+
+.world-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 15px 9px;
+  border-radius: 11px 11px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: rgba(90, 70, 55, 0.62);
+  border: 1px solid transparent;
+  border-bottom: none;
+  margin-bottom: -1px;
+  opacity: 0.62;
+  transition: all 0.18s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.world-tag:hover:not(.world-tag-selected) {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.5);
+  color: #5a4638;
+}
+.world-tag-selected {
+  background: linear-gradient(180deg, #fffdf8 0%, #fdfaf3 100%);
+  color: var(--accent-text);
+  font-weight: 700;
+  border-color: rgba(120, 90, 60, 0.16);
+  border-bottom-color: #fdfaf3;
+  border-radius: 12px 12px 0 0;
+  opacity: 1;
+  box-shadow: 0 -3px 10px rgba(90, 60, 40, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.world-tag-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.world-tag:hover .world-tag-act {
+  opacity: 0.6;
+}
+.world-tag-act:hover {
+  opacity: 1 !important;
+}
+
+.world-tag-edit:hover {
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text);
+}
+
+.world-tag-del:hover {
+  color: #dc3c3c !important;
+  background: rgba(220, 60, 60, 0.16);
+}
+
+.world-tag-rename-input {
+  width: 90px;
+  padding: 3px 6px;
+  font-size: 13px;
+  color: var(--text-bright);
+  background: #fffdf8;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  border-radius: 6px;
+  outline: none;
+  font-family: inherit;
+}
+
+.world-tag-add {
+  padding: 0;
+  width: 26px; height: 26px;
+  justify-content: center;
+  align-self: flex-end;
+  margin: 0 3px 9px;
+  opacity: 0.4;
+  font-weight: 300;
+  font-size: 19px;
+  line-height: 1;
+  color: #8a6f5c;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  transition: all 0.18s ease;
+}
+.world-tag-add:hover {
+  opacity: 1;
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--accent-text);
+}
+
+/* ── 新建名称行 ── */
+.world-new-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: rgba(var(--accent-rgb), 0.05);
+  border: 1px solid rgba(var(--accent-rgb), 0.12);
+  border-radius: 12px;
+  animation: world-new-pop 0.2s ease;
+}
+@keyframes world-new-pop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.world-name-input {
+  flex: 1;
+}
+
+/* ── 世界观编辑弹窗（档案面板） ── */
+.world-modal-panel {
+  position: relative;
+  width: min(760px, 96vw);
+  background: #f5f0e8;
+  border-radius: 24px;
+  box-shadow: 0 24px 70px rgba(58, 42, 30, 0.22), 0 3px 12px rgba(58, 42, 30, 0.06);
+}
+.world-modal-panel::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 150px;
+  background: radial-gradient(120% 100% at 22% 0%, rgba(var(--accent-rgb), 0.11) 0%, rgba(var(--accent-rgb), 0.04) 55%, transparent 100%);
+  pointer-events: none;
+}
+.world-modal-panel .world-modal-header {
+  padding: 26px 30px 14px;
+  border-bottom: none;
+}
+.world-modal-panel .world-modal-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.world-modal-panel .world-modal-title h3 {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #3b2f26;
+}
+.world-modal-subtitle {
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: rgba(90, 70, 55, 0.55);
+}
+.world-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.world-active-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: #c06a52;
+  background: rgba(var(--accent-rgb), 0.08);
+  border: 1px solid rgba(var(--accent-rgb), 0.18);
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.world-modal-panel .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 30px 24px;
+}
+.world-modal-panel .modal-body > * {
+  flex-shrink: 0;
+}
+
+/* 文档编辑面板 */
+.world-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  background: #fdfaf3;
+  border: 1px solid rgba(120, 90, 60, 0.1);
+  border-top: none;
+  border-radius: 0 0 16px 16px;
+  box-shadow: 0 12px 28px rgba(90, 60, 40, 0.06);
+  margin-bottom: 28px;
+}
+.world-editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px 0;
+  background: transparent;
+}
+.world-editor-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 3px;
+  color: rgba(120, 90, 60, 0.4);
+}
+.world-editor-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-polish {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+}
+
+.world-editor-body {
+  position: relative;
+}
+.world-editor .world-textarea {
+  position: relative;
+  z-index: 1;
+  min-height: 520px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 2.1;
+  letter-spacing: 0.2px;
+  color: #4a4038;
+  padding: 32px 42px 26px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(176, 130, 90, 0.3) transparent;
+}
+.world-editor .world-textarea::-webkit-scrollbar {
+  width: 6px; height: 6px;
+}
+.world-editor .world-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+.world-editor .world-textarea::-webkit-scrollbar-thumb {
+  background: rgba(176, 130, 90, 0.16);
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+.world-editor-body:hover .world-textarea::-webkit-scrollbar-thumb {
+  background: rgba(176, 130, 90, 0.34);
+}
+.world-editor-body:hover .world-textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(176, 130, 90, 0.52);
+}
+.world-editor .world-textarea::placeholder {
+  color: rgba(90, 70, 55, 0.35);
+}
+.world-editor .world-textarea::selection {
+  background: rgba(var(--accent-rgb), 0.2);
+}
+.world-editor .world-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+.world-editor-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 42px 12px;
+  background: transparent;
+}
+.world-char-count {
+  font-size: 12px;
+  color: rgba(90, 70, 55, 0.55);
+}
+.world-saved-hint {
+  font-size: 12.5px;
+  color: #4caf84;
+  font-weight: 500;
+}
+
+/* Footer 操作区 */
+.world-modal-panel .modal-actions {
+  position: sticky;
+  bottom: 0;
+  margin: 10px -30px -24px;
+  padding: 8px 30px 12px;
+  border-top: 1px solid rgba(120, 90, 60, 0.08);
+}
+
+/* ── 世界观 AI 润色弹窗 ── */
+.polish-modal-panel {
+  width: min(720px, 96vw);
+}
+.polish-tip {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(var(--accent-rgb), 0.05);
+  border: 1px dashed rgba(var(--accent-rgb), 0.28);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.polish-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 60px 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.polish-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(var(--accent-rgb), 0.18);
+  border-top-color: var(--accent);
+  animation: polish-spin 0.8s linear infinite;
+}
+@keyframes polish-spin {
+  to { transform: rotate(360deg); }
+}
+.polish-error {
+  padding: 18px;
+  border-radius: 12px;
+  background: rgba(255, 77, 79, 0.07);
+  border: 1px solid rgba(255, 77, 79, 0.18);
+}
+.polish-error-text {
+  margin: 0 0 14px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.polish-error-actions {
+  margin-top: 0 !important;
+}
+.polish-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.polish-preview-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.polish-preview {
+  max-height: 48vh;
+  overflow-y: auto;
+  background: #fdfaf3;
+  border: 1px solid rgba(120, 90, 60, 0.1);
+  border-radius: 12px;
+  padding: 24px 30px;
+  scrollbar-width: none;
+}
+.polish-preview::-webkit-scrollbar { width: 6px; height: 6px; }
+.polish-preview:hover { scrollbar-width: thin; }
+.polish-preview::-webkit-scrollbar-track { background: transparent; }
+.polish-preview::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; }
+.polish-preview:hover::-webkit-scrollbar-thumb { background: rgba(176, 130, 90, 0.22); }
+.polish-preview pre {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.95;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.polish-preview :deep(.world-sec-title) {
+  display: block;
+  margin: 22px 0 9px;
+  font-size: 14.5px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: #8f4a33;
+  border-left: 3px solid rgba(var(--accent-rgb), 0.4);
+  padding: 1px 0 1px 9px;
+}
+.polish-preview :deep(.world-sec-title:first-child) {
+  margin-top: 0;
+}
+.polish-preview :deep(.world-sec-tag) {
+  font-weight: 700;
+  color: #a05740;
+  background: rgba(var(--accent-rgb), 0.1);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.polish-preview :deep(.world-sec-item) {
+  display: block;
+  margin: 4px 0;
+  color: #4a4038;
+}
+
+.inline-input {
+  background: rgba(255,255,255,0.9);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--text-bright);
+  outline: none;
+  font-family: inherit;
+}
+/* ── 角色网格 ── */
+.section-title {
+  font-size: 15px; font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 14px;
+}
+
+/* 角色工具栏：标题 + 搜索框（上游 v3.10.0 合并，2026-10-19） */
+.char-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.char-toolbar .section-title { margin-bottom: 0; }
+
+.char-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(300px, 100%);
+}
+.char-search-input { flex: 1; min-width: 0; width: 100%; padding-left: 34px; }
+.char-search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.char-search:focus-within .char-search-icon { color: var(--accent); }
+@media (max-width: 480px) {
+  .char-search { width: 100%; }
+}
+
+/* 空状态：文件夹内无角色 / 搜索无匹配 */
+.char-empty {
+  margin-top: 8px;
+}
+
+/* ── 文件夹筛选栏 ── */
+.folder-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.folder-chip {
+  user-select: none;
+  max-width: 220px;
+  /* 提示可拖动；实际拖拽用 HTML5 draggable，不依赖光标样式 */
+  cursor: grab;
+}
+.folder-chip:active { cursor: grabbing; }
+/* 正在被拖走的那一枚：淡出让位 */
+.folder-chip.is-dragging {
+  opacity: 0.35;
+  cursor: grabbing;
+}
+/* 拖到谁头上，谁高亮成"将插到这里" */
+.folder-chip.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+.folder-chip-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-chip-count {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-secondary);
+}
+.folder-chip.active .folder-chip-count {
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+}
+.folder-manage-entry,
+.folder-manage-entry:active { cursor: pointer; text-align: center; }
+
+.char-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 14px;
+}
+
+.char-card {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 20px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+/* ── 状态标记 ── */
+.char-card-badges {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 3px;
+  z-index: 1;
+}
+
+.char-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-moments { background: #b0a0d0; }
+.dot-proactive { background: #e8a87c; }
+.dot-events { background: #c0a0a0; }
+
+/* ── 左上角置顶按钮（常驻半透明，悬停加深） ── */
+.char-pin-btn {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+  opacity: 0.5;
+}
+
+.char-pin-btn:hover {
+  opacity: 1;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent);
+}
+
+.char-pin-btn.pinned {
+  opacity: 1;
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.char-card:hover {
+  background: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  transform: translateY(-2px);
+}
+
+/* ── 置顶 / 取消置顶后卡片重排：TransitionGroup 的 FLIP 位移过渡 ── */
+.char-card.char-pin-move {
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+.char-card-avatar {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 24px; font-weight: 700;
+  flex-shrink: 0;
+}
+
+.char-card-name {
+  font-size: 14px; font-weight: 600; color: var(--text-bright);
+  text-align: center;
+  line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.char-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+
+.char-card-status {
+  font-size: 11px; color: var(--text-secondary);
+}
+.char-card-status.active { color: var(--accent); }
+.char-card-status.idle { color: var(--text-secondary); }
+
+.char-rel-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.char-card-edit-row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.char-card-edit {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.char-card-edit:hover {
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+}
+
+/* ── 招募卡片 ── */
+.recruit-card {
+  border-style: dashed;
+  border-color: rgba(var(--accent-rgb), 0.35);
+  justify-content: center;
+  min-height: 160px;
+}
+.recruit-card:hover {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.recruit-plus {
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; font-weight: 300;
+}
+.recruit-card span {
+  font-size: 13px; color: var(--accent); font-weight: 500;
+}
+
+/* ── 表情包管理入口卡片 ── */
+.emoji-manage-card {
+  border-style: dashed;
+  border-color: rgba(255, 184, 0, 0.35);
+  justify-content: center;
+  min-height: 160px;
+}
+.emoji-manage-card:hover {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+.emoji-manage-icon {
+  width: 34px; height: 34px;
+  color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.emoji-manage-icon svg {
+  width: 100%; height: 100%;
+  display: block;
+}
+.emoji-manage-card span {
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* 立绘管理卡片（上游 v3.10.0 合并）：与表情包/一键生成同款卡片，只强化描边 */
+.standing-manage-card { border-color: var(--border-strong); text-align: center; cursor: pointer; }
+
+/* 世界观弹窗里的「管理SillyTavern世界书」：靠左，与取消/保存分开 */
+.world-lorebook-button { margin-right: auto; }
+
+/* ── 弹窗骨架已迁移至全局 .modal-*（styles/components.css）── */
+.modal-wide { width: min(1100px, 97vw); }
+
+
+.modal-body {
+  padding: 0px 22px 22px;
+}
+
+.modal-body-detail {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-body-detail .preview-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.modal-body-detail .prompt-textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: auto;
+  scrollbar-color: var(--text-secondary) transparent;
+}
+.modal-body-detail .prompt-textarea::-webkit-scrollbar {
+  width: 10px;
+}
+.modal-body-detail .prompt-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+.modal-body-detail .prompt-textarea::-webkit-scrollbar-thumb {
+  background: var(--text-secondary);
+  border-radius: 5px;
+}
+.modal-body-detail .prompt-textarea::-webkit-scrollbar-thumb:hover {
+  background: var(--text-primary);
+}
+
+.modal-hint { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.5; }
+
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;
+}
+.modal-actions-between {
+  justify-content: space-between;
+}
+.modal-actions-left {
+  display: flex;
+  gap: 10px;
+}
+.modal-actions-right {
+  display: flex;
+  gap: 10px;
+}
+
+.recruit-textarea { width: 100%; min-height: 80px; }
+.import-card-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  padding: 7px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+.import-card-btn:hover {
+  background: rgba(var(--accent-rgb), 0.1);
+  border-color: var(--accent);
+}
+.import-card-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.gen-error { margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(255,77,79,0.06); color: var(--danger); font-size: 13px; white-space: pre-wrap; line-height: 1.5; }
+
+/* ── 扫描动画覆盖层 ── */
+.scan-overlay {
+  position: absolute; inset: 0;
+  background: transparent;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-radius: 0 0 18px 18px;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10; overflow: hidden;
+}
+.scan-line {
+  position: absolute; left: 10%; right: 10%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: scan-sweep 2s ease-in-out infinite;
+  box-shadow: 0 0 24px rgba(var(--accent-rgb),0.6), 0 0 8px rgba(var(--accent-rgb),0.3);
+}
+@keyframes scan-sweep {
+  0%   { top: 10%; opacity: 0.2; }
+  25%  { top: 90%; opacity: 1; }
+  50%  { top: 90%; opacity: 0.2; }
+  75%  { top: 10%; opacity: 1; }
+  100% { top: 10%; opacity: 0.2; }
+}
+.scan-text {
+  font-size: 14px; color: var(--accent); font-weight: 600;
+  animation: scan-pulse 1.2s ease-in-out infinite;
+  text-shadow: 0 0 12px rgba(var(--accent-rgb),0.3);
+}
+@keyframes scan-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.97); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+
+/* ── 预览姓名可编辑 ── */
+.preview-name-row {
+  display: flex; gap: 10px;
+}
+.preview-name-input {
+  font-size: 20px; font-weight: 700; color: var(--text-bright);
+  background: #f0ece8;
+  border: 1px dashed rgba(var(--accent-rgb), 0.25);
+  border-radius: 8px; padding: 4px 10px;
+  flex: 1; min-width: 0; outline: none; font-family: inherit;
+  transition: border-color 0.2s, background 0.2s;
+  cursor: text;
+}
+.preview-name-input:hover  { border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.07); }
+.preview-name-input:focus  { border-color: var(--accent); background: rgba(255,255,255,0.5); }
+
+/* ── 预览卡片 ── */
+.preview-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-border);
+  border-radius: 14px; padding: 18px;
+}
+
+.preview-name {
+  font-size: 20px; font-weight: 700; color: var(--text-bright);
+  margin-bottom: 8px;
+}
+
+.preview-prompt-label { font-size: 12px; color: var(--text-secondary); margin: 6px 0; }
+.preview-prompt {
+  padding: 12px; border-radius: 10px;
+  background: var(--bg-primary); border: 1px solid var(--glass-border);
+  font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+  max-height: 500px; overflow-y: auto; color: var(--text-primary); font-family: inherit;
+}
+
+.recruit-appearance-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  line-height: 1.5;
+  text-align: center;
+}
+.recruit-appearance-hint a {
+  color: var(--text-muted, #999);
+  text-decoration: underline;
+}
+
+/* ── 角色详情弹窗 ── */
+.fl { font-size: 13px; font-weight: 600; color: var(--text-bright); display: block; margin-bottom: 4px; }
+
+.detail-avatar-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.detail-avatar {
+  width: 64px; height: 64px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 26px; font-weight: 700; flex-shrink: 0;
+}
+.detail-avatar.clickable { cursor: pointer; transition: opacity 0.15s; }
+.detail-avatar.clickable:hover { opacity: 0.85; }
+
+/* ── 角色关系区块（详情内嵌） ── */
+.detail-rel-section {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(var(--accent-rgb), 0.04);
+  border: 1px solid rgba(var(--accent-rgb), 0.1);
+}
+.detail-rel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.detail-rel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-bright);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* detail-rel-btn 家族样式已收编至全局 components.css */
+.detail-rel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.detail-rel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+.rel-from, .rel-to {
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.rel-text {
+  color: var(--accent);
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.detail-rel-more {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  padding: 4px 0;
+  transition: opacity 0.15s;
+}
+.detail-rel-more:hover {
+  opacity: 0.7;
+}
+
+/* 空状态——CTA 区域 */
+.detail-rel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 8px 8px;
+  text-align: center;
+}
+.rel-empty-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  max-width: 360px;
+}
+.rel-empty-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid rgba(var(--accent-rgb), 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rel-spin 0.6s linear infinite;
+}
+@keyframes rel-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 悬浮侧边栏 ── */
+.detail-float {
+  position: absolute;
+  left: calc(50% + min(450px, 48.5vw) + 16px);
+  top: 70px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 20px;
+}
+.float-card {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(0,0,0,0.06);
+  box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+  transition: all 0.15s;
+  width: 220px;
+}
+.float-card-toggle {
+  justify-content: space-between;
+  gap: 0;
+}
+.float-label {
+  font-size: 11px; font-weight: 600; color: var(--text-secondary);
+  white-space: nowrap;
+}
+.float-card-btn {
+  cursor: pointer;
+  justify-content: space-between;
+  gap: 0;
+}
+.float-card-btn:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 20px rgba(var(--accent-rgb), 0.12);
+}
+.float-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-muted, #f0f0f0);
+  color: var(--text-secondary);
+}
+.float-badge.active {
+  background: rgba(var(--accent-rgb), 0.15);
+  color: var(--accent);
+}
+
+/* override old layout styles */
+.detail-layout { display: block; }
+.detail-sidebar { display: none; }
+
+.prompt-textarea { min-height: 500px; }
+
+/* 角色详情 input/textarea — 与招募预览卡片统一 */
+.modal-wide .prompt-textarea {
+  padding: 12px;
+  font-size: 12px;
+  scrollbar-width: auto;
+  scrollbar-color: var(--text-secondary) transparent;
+}
+.modal-wide .prompt-textarea::-webkit-scrollbar { width: 10px; }
+.modal-wide .prompt-textarea::-webkit-scrollbar-track { background: transparent; }
+.modal-wide .prompt-textarea::-webkit-scrollbar-thumb { background: var(--text-secondary); border-radius: 5px; }
+.modal-wide .prompt-textarea::-webkit-scrollbar-thumb:hover { background: var(--text-primary); }
+
+/* ── 操作栏 sticky footer ── */
+.modal-footer {
+  flex-shrink: 0;
+  padding: 10px 22px 18px;
+  border-top: 1px solid var(--glass-border);
+  background: inherit;
+}
+
+.detail-actions {
+  display: flex; align-items: center; margin-top: 0; gap: 10px;
+}
+.detail-actions-right { margin-left: auto; display: flex; gap: 10px; }
+
+/* 弹窗动画已迁移至全局 animations.css */
+
+/* ── 移动端 ── */
+@media (max-width: 767px) {
+  .tavern-view { padding: 16px; }
+  .page-header {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    padding: 8px 0; margin-bottom: 18px;
+  }
+  .char-grid {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 10px;
+  }
+  /* 窄屏放不下两列入口：回退单行堆叠 */
+  .relation-entry-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .relation-entry-row .relation-entry {
+    margin-bottom: 12px;
+  }
+  .char-card { padding: 14px 8px 12px; }
+  .char-card-avatar { width: 52px; height: 52px; font-size: 20px; }
+  .char-card-name { font-size: 13px; }
+  .char-card-edit { padding: 2px 8px; font-size: 10px; }
+  .recruit-plus { width: 40px; height: 40px; font-size: 24px; }
+  .recruit-card { min-height: 132px; }
+
+  /* ── 弹窗移动端适配 ── */
+  .modal-panel {
+    width: 100vw;
+    max-height: 100vh; max-height: 100dvh;
+    border-radius: 0;
+  }
+  .modal-header {
+    padding: 10px 16px;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  }
+  .modal-header h3 {
+    font-size: 15px;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 8px;
+  }
+  .modal-close {
+    flex-shrink: 0;
+  }
+  .modal-body {
+    padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .modal-actions {
+    flex-wrap: wrap; gap: 8px;
+  }
+  .modal-actions-between {
+    flex-direction: column; gap: 10px;
+  }
+  .modal-actions-left {
+    flex-wrap: wrap; gap: 8px;
+  }
+  .modal-actions-right {
+    flex-wrap: wrap; gap: 8px; justify-content: flex-end;
+  }
+
+  /* 世界观 / 润色弹窗移动端 */
+  .world-modal-panel .world-modal-header { padding: 14px 16px 12px; padding-top: calc(14px + env(safe-area-inset-top, 0px)); }
+  .world-modal-subtitle { display: none; }
+  .world-active-badge { max-width: 110px; padding: 3px 9px; }
+  .world-modal-panel .modal-body { padding: 0 14px 20px; }
+  .world-tags { padding: 2px 4px 0; gap: 2px; }
+  .world-editor { border-radius: 0 0 12px 12px; }
+  .world-editor .world-textarea { min-height: 320px; padding: 20px 20px 16px; }
+  .world-modal-panel .modal-actions { margin: 10px -14px -20px; padding: 8px 14px 12px; }
+  .polish-preview { max-height: 55vh; }
+
+  /* 招募预览卡片 */
+  .preview-card {
+    padding: 14px;
+  }
+  .preview-name-row {
+    flex-direction: column; gap: 6px;
+  }
+  .preview-name-input {
+    font-size: 18px;
+    padding: 4px 8px;
+  }
+  .preview-prompt {
+    font-size: 14px;
+    max-height: 350px;
+  }
+
+  /* 角色详情 */
+  .detail-avatar-row {
+    gap: 10px; margin-bottom: 12px;
+  }
+  .detail-rel-section {
+    padding: 12px;
+    margin-bottom: 14px;
+  }
+  /* .detail-rel-btn 移动端覆写已在全局 components.css */
+  .detail-layout { flex-direction: column; }
+
+  /* 移动端详情工具栏 */
+  .mobile-detail-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    border-bottom: 1px solid var(--glass-border);
+    background: rgba(0, 0, 0, 0.02);
+    flex-shrink: 0;
+  }
+  .toolbar-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: rgba(var(--accent-rgb), 0.08);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    justify-content: center;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .toolbar-item:active {
+    background: rgba(var(--accent-rgb), 0.16);
+  }
+  .toolbar-item-toggle {
+    cursor: default;
+    justify-content: space-between;
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+  .toolbar-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-muted, #f0f0f0);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  .toolbar-badge.active {
+    background: rgba(var(--accent-rgb), 0.15);
+    color: var(--accent);
+  }
+
+  .detail-avatar {
+    width: 52px; height: 52px; font-size: 22px;
+  }
+  .detail-actions {
+    flex-wrap: wrap; gap: 8px;
+  }
+  .detail-actions-right {
+    margin-left: 0; flex-wrap: wrap; gap: 8px;
+  }
+  .modal-footer {
+    padding: 8px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  .prompt-textarea {
+    min-height: 350px; font-size: 16px;
+  }
+  .modal-wide .prompt-textarea {
+    font-size: 16px;
+  }
+  .modal-wide .recruit-textarea {
+    font-size: 16px;
+  }
+}
+
+</style>

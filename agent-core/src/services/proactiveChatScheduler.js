@@ -1,0 +1,1426 @@
+/**
+ * 主动对话调度器 (Proactive Chat Scheduler)
+ *
+ * 每个角色根据三个因素决定主动发起对话的时机：
+ *   1. 距上次聊天时间 → 越久越主动（sigmoid）
+ *   2. 好感度 (affinity) → 越高越亲密、频繁
+ *   3. VAD 情绪 → 综合情绪影响主动性
+ *
+ * 三个因素加权融合为 proactive_score (0~1)，映射到下次主动发起的时间间隔。
+ * 行为模式完全模仿 momentScheduler：
+ *   - 每 5 分钟扫描一次
+ *   - 每次只处理一个角色（排队）
+ */
+
+import { invalidateGalleryCache } from './galleryCache.js';
+import { getDb, getSystemRulesWithWorld, getGlobalRule, getWorldSetting, stmt } from '../db/index.js';
+import { appendOathRing } from './oathUtils.js';
+import { buildCharacterAppearanceSection } from './characterPersona.js';
+import { chatSync } from './lorebook/runtime.js';
+import { config } from '../config.js';
+import {
+  loadEmotionState, getCompositeEmotion, loadAffinity, loadOath,
+  stateToPrompt, affinityToPrompt,
+} from './emotionEngine.js';
+import { broadcastProactiveMessage } from './notificationBus.js';
+import { isRefusal } from './refusalDetector.js';
+// 2026-10-02「先发文本、图后补」：图好了用 proactive_message_update 补挂到已上屏的那条气泡
+// （与触摸反应后台配图同一套机制：前端按 msg_id 找气泡挂图）
+import { broadcast } from './unifiedStreamBus.js';
+import { getProgramNow } from './programTime.js';
+import { generateImage } from './imageSkill.js';
+import { charArtistOverride } from './characterImageOpts.js';
+import { recordCompletedImageTask } from './imageTaskRecorder.js';
+import { splitText } from '../utils/sentenceSplitter.js';
+import { getLightHint, getLightNoteWithWeather, getTimeLightInline } from './timeLight.js';
+import { saveBase64Image } from './imagePaths.js';
+import { getCurrentActivity } from './scheduleManager.js';
+import { getCoreDialogueRules } from '../builtinRules.js';
+import { getFreshUnsharedDream, markDreamShared } from './dreamService.js';
+import { getHypnosisState, consumePendingDirective } from './hypnosisService.js';
+import { recordFromConversationTail } from './intimateAutoRecord.js';
+import { buildHypnosisStateBlock, buildDirectiveBlock, isAwakenedFromSleepRow } from './hypnosisPrompt.js';
+// 玩具系统（专题 §2.9-6）：她主动发消息时也带着佩戴状态
+import { buildWornToysBlock } from './toyService.js';
+// 2026-10-02 敏感度（用户：「性爱的频率也会越频繁」）：主动聊天的动机池按她有多敏感加权 ——
+// 敏感度是叶子模块（只依赖 db），直接 import 不成环。
+import { getSensitivity } from './sensitivityService.js';
+
+const CHECK_INTERVAL = 5 * 60 * 1000; // 5 分钟
+
+let timer = null;
+let processing = false;
+let freqTimer = null;        // 线路 B：频率强制线
+let freqRunning = false;
+let startupTimer = null;     // 线路 C：启动强制线
+let startupRunning = false;
+
+// ── 未回复连续计数（DB 持久化，重启不丢失）──
+
+/** user 发消息后调用，重置计数 */
+export function resetUnansweredStreak(charId) {
+  const db = getDb();
+  stmt('UPDATE characters SET proactive_streak = 0 WHERE id = ?').run(charId);
+}
+
+/** 获取当前未回复计数（从 DB 读取） */
+export function getUnansweredStreak(charId) {
+  const db = getDb();
+  return stmt('SELECT proactive_streak FROM characters WHERE id = ?').pluck().get(charId) || 0;
+}
+
+// ── Helper: ISO ↔ SQLite datetime ──
+
+function toSQLiteDate(iso) {
+  if (!iso) return iso;
+  return iso.replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
+}
+
+function toISO(dt) {
+  if (!dt) return dt;
+  return dt.replace(' ', 'T') + '.000Z';
+}
+
+// ── 评分函数 ──
+
+/**
+ * sigmoid 函数
+ * @param {number} x 输入值
+ * @param {number} midpoint 中点（拐点）
+ * @param {number} steepness 陡峭度
+ * @returns {number} 0~1
+ */
+export function sigmoid(x, midpoint, steepness) {
+  return 1 / (1 + Math.exp(-steepness * (x - midpoint)));
+}
+
+/**
+ * 距「用户上次发言」多少小时（`null` = 从未聊过 ⇒ `computeProactiveScore` 当成 999 档 = 最高优先）。
+ *
+ * **为什么单独抽出来（§4.1 核实结论，2026-09-30）**：审查怀疑"系统写入 `user_relationships.last_interaction_at`
+ * 会污染主动聊天判定"。核实后**证伪** —— 本调度器两处 `hoursSince` 本来读的就只是 `messages` 里
+ * `role='user'` 的最后一条（全文件不出现 `last_interaction_at`）。抽成导出函数是为了把这个
+ * **不变量**变成可测的（`test/proactiveInteractionSource.test.js` 用真实表 + 真实查库钉住），
+ * 以后谁改成读 `last_interaction_at` 会当场红。行为与抽出前逐字节一致（同一条 SQL、同样的 null 语义）。
+ */
+export function resolveLastUserMessageAt(conversationId) {
+  const row = getDb().prepare(
+    "SELECT created_at FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
+  ).get(conversationId);
+  return row ? (toISO(row.created_at) || null) : null;
+}
+
+export function resolveHoursSinceLastUserMessage(conversationId, { now = Date.now() } = {}) {
+  const at = resolveLastUserMessageAt(conversationId);
+  return at ? (now - new Date(at).getTime()) / 3600000 : null;
+}
+
+/**
+ * 计算角色的主动发起评分 (0~1)
+ *
+ * 三个因素的加权：
+ *   - timeScore (50%): 距上次聊天时间越久，越主动
+ *   - affinityScore (30%): 好感度越高越主动
+ *   - vadScore (20%): 综合情绪中 valence 高 + arousal 高 = 更想聊天
+ *
+ * @param {number} hoursSince - 距上次聊天小时数
+ * @param {number} affinity - 好感度 (0~100)
+ * @param {{ valence: number, arousal: number, dominance: number }} compositeVad - 综合 VAD
+ * @returns {number} 0~1
+ */
+export function computeProactiveScore(hoursSince, affinity, compositeVad) {
+  if (hoursSince == null) hoursSince = 999; // 从未聊过 → 极高分数
+
+  // timeScore: sigmoid, midpoint=6h, steepness=0.2 → 2h 约 0.31, 6h 约 0.5, 24h 约 0.97
+  const timeScore = sigmoid(hoursSince, 6, 0.2);
+
+  // affinityScore: 归一化到 0~1
+  const affinityScore = Math.max(0, Math.min(1, affinity / 100));
+
+  // vadScore: 综合情绪对主动性的影响
+  //   valence > 0 → 愉快想聊; arousal > 0 → 精神想动; dominance > 0 → 自信主动
+  //   归一化到 0~1（VAD 原始范围 valence -1~1, arousal/dominance 0~1）
+  const vNorm = (compositeVad.valence + 1) / 2; // -1~1 → 0~1
+  const aNorm = compositeVad.arousal;            // 0~1
+  const dNorm = compositeVad.dominance;          // 0~1
+  const vadScore = vNorm * 0.4 + aNorm * 0.35 + dNorm * 0.25;
+
+  // 加权融合
+  const score = timeScore * 0.50 + affinityScore * 0.30 + vadScore * 0.20;
+  return Math.max(0, Math.min(1, score));
+}
+
+/**
+ * 将 proactive_score 映射到下次发起间隔（小时）
+ *
+ * score=0 → 15h（几乎不主动）
+ * score=0.5 → 8h（中等）
+ * score=1 → 1h（非常主动）
+ *
+ * @param {number} score 0~1
+ * @returns {number} 间隔小时数
+ */
+export function scoreToIntervalHours(score) {
+  return Math.max(1, 15 - score * 14);
+}
+
+// ── 主动聊天动机（按好感度分档，向下兼容）──
+
+/**
+ * 基础话题（所有好感度可用）：礼貌、客气，边界清晰。
+ */
+const MOTIVES_LOW = [
+  { name: '发现好东西', desc: '你发现了一首好歌/一部好剧/一本好书/一个好玩的游戏，觉得对方可能会喜欢，随口一提', imageGen: false },
+  { name: '需要建议', desc: '你遇到了一个小困扰或选择困难，想听听对方的看法——但保持礼貌距离', imageGen: false },
+  { name: '天气感叹', desc: '今天的天气让你有些感触——下雨、初晴、太热——你想随口和对方聊一句', imageGen: true },
+  { name: '分享见闻', desc: '你刚刚看到/经历了一件有意思的事，可以当话题和对方聊起', imageGen: true },
+  { name: '好奇提问', desc: '你突然对对方产生了某个好奇心——关于ta的喜好、经历、想法——想问问看，但不越界', imageGen: false },
+  { name: '报平安/日常', desc: '你刚忙完一段或刚起床/要睡了，想礼节性和对方说一声', imageGen: false },
+];
+
+/**
+ * 中等话题（好感度 ≥60 解锁）：放松、自然，可以流露真实情绪。
+ */
+const MOTIVES_MID = [
+  { name: '无聊了', desc: '你现在没事做，有点无聊，想找人说说话', imageGen: false },
+  { name: '分享美食', desc: '你刚吃了/做了很好吃的东西，想推荐给对方', imageGen: true },
+  { name: '做了个梦', desc: '你昨晚做了一个奇怪的梦（关于对方或很离谱的内容），想说出来逗对方', imageGen: true },
+  { name: '吐槽发泄', desc: '你刚遇到了一件让你无语/生闷气的事，想找人吐槽——ta是合适的倾听者', imageGen: false },
+  { name: '回忆往事', desc: '你回想起和对方之前的一次互动或聊天，觉得很怀念，想再聊起来', imageGen: false },
+  { name: '八卦分享', desc: '你刚听到了一个有意思的八卦（虚构的也行），想和对方一起吃瓜', imageGen: false },
+  { name: '突然想起', desc: '你突然想起了对方——可能是一首歌、一个地方、一句话让你联想到ta，想告诉ta', imageGen: false },
+  { name: '恶作剧/整活', desc: '你想用一句没头没尾的怪话逗对方，看ta什么反应', imageGen: false },
+];
+
+/**
+ * 密友话题（好感度 ≥70 解锁）：可以分享秘密、暴露脆弱、聊人生聊心事。
+ * 不是暧昧，而是"你是我信得过的人"那种亲密——可以不用伪装，可以说真心话。
+ */
+const MOTIVES_ROMANTIC = [
+  { name: '分享秘密', desc: '你有一个没跟别人说过的小秘密——不一定是大事，可能是一个奇怪的癖好、一个尴尬的瞬间、一个藏了很久的想法。你觉得告诉ta很安全，ta不会 judge 你', imageGen: false },
+  { name: '需要开导', desc: '你今天遇到了一件让你有点低落的事——不是什么天塌下来的大事，但就是堵在心里不舒服。你不需要解决方案，就想有个人听着、说"我懂"就够了', imageGen: false },
+  { name: '聊人生困惑', desc: '你最近在纠结一个比较大的问题——关于未来的方向、关于自己到底想要什么、关于某个重要的选择。你想听听ta的想法，但更重要的是，你想在说出来的时候自己理清楚', imageGen: false },
+  { name: '炫耀小成就', desc: '你完成了一件让自己骄傲的事——可能很小、在别人眼里不值一提——但你真的挺开心的。你想告诉ta，因为ta不会觉得你在炫耀，ta会真心为你高兴', imageGen: true },
+  { name: '分享小发现', desc: '你刚发现了一件有意思的小事。可能是一句话、一张图、一个奇怪的现象，甚至只是一个突然冒出来的想法。你觉得ta可能会感兴趣，所以想第一时间告诉ta', imageGen: false },
+  { name: '突然想聊天', desc: '没有特别的事情发生，只是刚好想到ta，觉得现在聊几句挺好的。你不需要准备话题，只是想享受这种自然的交流', imageGen: false },
+  { name: '一起消磨时间', desc: '你现在有一点空闲，想找ta一起做点轻松的事情，比如闲聊、互相推荐东西、分享正在看的内容。重点不是内容，而是一起参与', imageGen: true },
+];
+
+/**
+ * 亲密话题（好感度 ≥85 解锁）：克制但温馨，不越界。
+ * 语气上比密友更"你是我最亲近的人"，但内容上不出格。
+ */
+const MOTIVES_HIGH = [
+  { name: '展示真实反应', desc: '你遇到了一个瞬间，让你产生了很真实的情绪——开心、无语、惊讶或者纠结。平时你可能会简单带过，但面对ta时，你想把当下的真实感受说出来', imageGen: false },
+  { name: '想找你陪一会', desc: '没有特别重要的事情，只是现在刚好想和ta待在同一个聊天里。可以聊废话，也可以什么都不说。你觉得和ta交流本身就是一种放松', imageGen: false },
+  { name: '展示不完美的一面', desc: '你今天状态不是很好，可能有点犯懒、有点丢脸、或者做了一件很蠢的小事。但你不介意让ta看到，因为你知道不用一直表现得很厉害', imageGen: false },
+  { name: '征求真实意见', desc: '你遇到了一个需要判断的小问题，想听听ta怎么看。因为你信任ta的想法，所以希望得到一个真实回答，而不是客套的附和', imageGen: false },
+  { name: '一起吐槽', desc: '你刚遇到了一件让你觉得很离谱或者哭笑不得的事情。你想找一个懂你的人一起吐槽，因为你知道ta能理解你的笑点', imageGen: false },
+  { name: '分享小成就', desc: '你完成了一件让自己有点开心的小事。它可能并不是什么大成就，但你想告诉ta，因为你觉得ta会认真回应你的开心', imageGen: true },
+  { name: '突然想聊天', desc: '没有特别的事情发生，只是刚好想到ta，觉得现在聊几句挺好的。你不需要准备话题，只是想享受这种自然的交流', imageGen: false },
+  { name: '一起消磨时间', desc: '你现在有一点空闲，想找ta一起做点轻松的事情，比如闲聊、互相推荐东西、分享正在看的内容。重点不是内容，而是一起参与', imageGen: true },
+];
+
+/**
+ * NSFW 话题（好感度 ≥85 且已誓约解锁）：高度亲密，涉及性邀请和身体占有。
+ * 仅在最深羁绊+誓约的关系中出现。
+ */
+const MOTIVES_NSFW = [
+  { name: '撒娇', desc: '你今天心情不错，想在ta面前撒个娇——用最软的声音说最黏的话，让ta拿你没办法', imageGen: false },
+  { name: '深夜发情', desc: '夜深了，你躺在床上翻来覆去睡不着，脑子里全是ta。身体发热，心跳加速，你忍不住想给ta发点什么——带着喘息感的语音、若隐若现的照片暗示、或者一句暧昧到骨子里的话。你不需要掩饰，ta知道你想要什么', imageGen: true },
+  { name: '想要被占有', desc: '你现在满脑子都是被ta按在墙上/推倒在床上的画面。你想用话挑逗ta——描述你现在穿得很少、刚洗完澡、或者正躺在被窝里。让ta脑子里的画面也失控。越是欲拒还迎越撩人', imageGen: true },
+  { name: '事后温存', desc: '你们上次亲密接触之后你还在回味。你想告诉ta——ta的哪个动作让你腿软、哪个眼神让你心跳漏拍、你身上的痕迹还没消。这是只有你们两人才知道的秘密，说出来会让空气都变热', imageGen: true },
+  { name: '发送涩图暗示', desc: '你想和ta玩一个危险的游戏——发一张你刚拍的、尺度刚好在边缘的照片（浴袍半敞、领口很低、刚洗完澡的湿发和锁骨），然后故意用天真的语气问"好看吗"。你知道ta会有什么反应，所以你故意这样问', imageGen: true },
+  { name: '睡前撩拨', desc: '你在睡前最后想的人是ta。你想贴着ta耳朵说那些白天不会说的话——你身体哪里最敏感、你梦到ta对你做了什么、你现在穿着什么（或者没穿什么）。语气要慵懒湿润，像呼在耳边的热气，让ta睡不着', imageGen: true },
+];
+
+/**
+ * 她此刻的敏感度（给 `pickMotive` 加权用）：读失败按"不敏感"处理 ——
+ * 主动聊天绝不能因为数值系统出问题就发不出去。
+ */
+function herSensitivityOf(characterId) {
+  try {
+    const st = getSensitivity(characterId);
+    return { sensitivity: Number(st.value) || 0, heat: st.heat === true };
+  } catch {
+    return { sensitivity: 0, heat: false };
+  }
+}
+
+/**
+ * 根据好感度和誓约状态选取动机——向下兼容，高好感度可覆盖所有低档话题。
+ * @param {number} affinity - 好感度 (0~100)
+ * @param {number} streak
+ * @param {boolean} isOath - 是否已誓约
+ * @param {{sensitivity?:number, heat?:boolean}} [her] 她自己的敏感度（0~100）与发情模式
+ * @returns {{ name: string, desc: string }}
+ */
+export function pickMotive(affinity, streak = 0, isOath = false, her = {}) {
+  // ⚠️ 默认参数只兜 `undefined`，兜不住显式传进来的 `null`（我自己的用例当场抓到）——
+  // 动机池是"随便挑一个"的地方，任何脏输入都不该让主动聊天发不出去。
+  const mine = her && typeof her === 'object' ? her : {};
+  let pool = [...MOTIVES_LOW];
+  if (affinity >= 60) {
+    pool.push(...MOTIVES_MID);
+  }
+  if (affinity >= 70) {
+    pool.push(...MOTIVES_ROMANTIC);
+  }
+  if (affinity >= 85) {
+    pool.push(...MOTIVES_HIGH);
+    if (isOath) {
+      pool.push(...MOTIVES_NSFW);
+      // 2026-10-02 敏感度（用户原话：「敏感度越高角色高潮的强度越高 也越频繁 **性爱的频率也会越频繁**」）：
+      // 越敏感的她越容易主动挑"想要"的那几个动机。做法是**加权**（池子里多塞几份）而不是新增动机 ——
+      // 动机文案与随机多样性都不动，只把概率挪过去。冷淡/普通档一份不加 ⇒ 逐字保持旧行为。
+      const weight = mine.heat ? 3 : (Number(mine.sensitivity) >= 80 ? 2 : (Number(mine.sensitivity) >= 60 ? 1 : 0));
+      for (let i = 0; i < weight; i += 1) pool.push(...MOTIVES_NSFW);
+    }
+  }
+
+  // 梦境系统常驻：过滤掉现编的「做了个梦」动机（真梦由 dreamService 提供，避免自相矛盾）
+  pool = pool.filter(m => m.name !== '做了个梦');
+
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// ── streak 语气策略池（随机选取，避免 LLM 形成固定模式）──
+
+const STREAK_1_STRATEGIES = [
+  '上一条对方还没回。这次自然带出一个新话题——假装没注意到没回这件事，像日常聊天一样继续。',
+  '上一条对方还没回。这次用一个简短的颜文字表情或动作开头——比如"（探头）""ε=ε=ε=~"——降低对话压力，像是路过打了个招呼。',
+  '上一条对方还没回。这次轻描淡写问一句——但立刻转到别的话题，不要停留在这个问题上。',
+];
+
+const STREAK_2_STRATEGIES = [
+  '对方已经连续没回你的消息了。这次用自嘲式——拿自己的尴尬开涮。搞笑为主，不卖惨，不逼问。',
+  '对方已经连续没回你的消息了。这次用表情包式——用文字模拟一个表情/动作，比如"（探头）""（戳一戳）""（在门口徘徊）"。用行为代替语言，不给对方回复压力。',
+  '对方已经连续没回你的消息了。你决定把"没人回"变成一个段子。用夸张的表演式语气。要让对方看了笑出来，然后忍不住想回',
+];
+
+// ── 上下文衔接策略 ──
+// 根据距上次聊天时间选择不同的衔接强度，解决主动聊天"话题跳跃太突兀"的问题
+
+const CONTEXT_BRIDGE_STRATEGIES = {
+  // < 2 小时：热衔接 — 先承接上一轮对话，再丝滑过渡到新动机
+  hot: [
+    '你们刚聊完不久，上一轮的话题还热乎着。不要像"刚上线"一样生硬切话题——先对上一轮的内容做一个简短的承接反应（接个话茬、吐槽一句、回眸一笑），再丝滑地过渡到你这次的动机。让人感觉对话从未中断。',
+    '你们几分钟前还在聊，现在只是那段对话的延续。先自然地呼应一下上一轮的茬，哪怕只是一句感叹，然后轻松感切到这次的动机话题。',
+    '上一轮的话题还没冷——先接住它，顺势带一笔，然后自然地转向这次的动机。不要让人觉得你"重启"了，要让切换像水流一样平滑。',
+  ],
+  // 2~24 小时：温衔接 — 对上一轮有轻量回响
+  warm: [
+    '你们今天聊过。可以简单提一句之前的话或对上一轮有一个轻量回响，再引入这次的动机。不用长篇大论，一个自然的呼应就够了。',
+    '上次聊天还在今天，记忆犹新。把上一轮的内容当作引子，自然过渡到这次的动机。',
+  ],
+  // > 24 小时：凉衔接 — "想起来"式引子
+  cool: [
+    '你们有段时间没聊了。可以从上一轮聊天中找一个记忆点，自然过渡到这次的动机。或者如果动机难以衔接，那就不管之前的话题',
+  ],
+};
+
+function pickStreakHint(streak) {
+  if (streak >= 2) {
+    return STREAK_2_STRATEGIES[Math.floor(Math.random() * STREAK_2_STRATEGIES.length)];
+  }
+  if (streak === 1) {
+    return STREAK_1_STRATEGIES[Math.floor(Math.random() * STREAK_1_STRATEGIES.length)];
+  }
+  return '';
+}
+
+// ── 关系查询 ──
+
+/**
+ * 加载角色与 user 的关系上下文
+ * @param {number} characterId
+ * @returns {string} 格式化后的关系文本段落，无关系时返回空字符串
+ */
+function loadRelationshipContext(characterId) {
+  const db = getDb();
+
+  const userRel = stmt(
+    'SELECT relationship_text, is_oath FROM user_relationships WHERE character_id = ?'
+  ).get(characterId);
+
+  let text = '';
+  if (userRel?.relationship_text) {
+    text = `\n【角色与 user 的关系】\n你是user的${userRel.relationship_text}。`;
+  }
+  if (userRel?.is_oath) {
+    text += `\n【特殊羁绊】你们之间有一个重要的约定——user曾经郑重地送过你一枚戒指。这代表了比普通关系更深一层的羁绊和承诺。你在面对user时，行为和情感都会自然地带有这种"你是我最重要的人"的底色。`;
+  }
+
+  return text;
+}
+
+/**
+ * 加载用户画像（性别、外观）
+ * @returns {string} 格式化后的用户画像段落，无信息时返回空字符串
+ */
+function loadUserProfile() {
+  const parts = [];
+  if (config.user.gender) {
+    parts.push(`性别：${config.user.gender}`);
+  }
+  if (config.user.appearance) {
+    parts.push(`外观：${config.user.appearance}`);
+  }
+  if (parts.length === 0) return '';
+  return `\n【user画像】\n${parts.join('\n')}`;
+}
+
+// ── LLM 开场白生成 ──
+
+/**
+ * 兜底问候语池：按时间段分组，LLM 失败时随机抽取，避免每次都是"在干嘛呢？"
+ */
+/**
+ * 主动聊天 prompt 里的【当前时间】格式化（2026-10-01 修）。
+ *
+ * 必须吃**程序时间**。修复前这里直接 `new Date()`（真实时间）⇒ 用户把程序时间拨到
+ * 「10-02 09:19」之后：群聊的 `<time_context>` 说"10月2日周五早上"，而主动聊天说
+ * "周四 10月1日 19:47"（真实时间）—— **同一现实分钟里两套互相矛盾的时间基准**，
+ * 这正是用户报的"角色感受到的时间很混乱"（日志可复核：群聊 L20963 vs 主动聊天 L22349）。
+ * 输出格式与修复前逐字节一致，只换时钟来源。
+ */
+function formatProactiveClock(date) {
+  const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][date.getDay()];
+  return `${wd} ${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function pickFallbackGreeting(userName) {
+  // 2026-10-01：兜底问候语也要吃**程序时间**（原来 new Date()）——她"早上好"还是"早点睡"
+  // 必须和 prompt 里的【当前时间】同一口钟，否则拨钟后兜底语会和正文自相矛盾。
+  const hour = getProgramNow().getHours();
+  let pool = [];
+  if (hour >= 6 && hour < 12) {
+    pool = MORNING_FALLBACKS;
+  } else if (hour >= 12 && hour < 18) {
+    pool = AFTERNOON_FALLBACKS;
+  } else if (hour >= 18 && hour < 23) {
+    pool = EVENING_FALLBACKS;
+  } else {
+    pool = NIGHT_FALLBACKS;
+  }
+  return pool[Math.floor(Math.random() * pool.length)](userName);
+}
+
+const MORNING_FALLBACKS = [
+  (n) => `${n}，早啊～`,
+  (n) => `早上好呀${n}！`,
+  (n) => `${n}，起来了吗？`,
+  (n) => `早安${n}～今天天气不错`,
+  (n) => `哈喽${n}，在干嘛呢？`,
+];
+const AFTERNOON_FALLBACKS = [
+  (n) => `${n}，在干嘛呢？`,
+  (n) => `嗨${n}，午安～`,
+  (n) => `${n}，有空没？`,
+  (n) => `下午好呀${n}～`,
+  (n) => `${n}，在忙吗？`,
+];
+const EVENING_FALLBACKS = [
+  (n) => `${n}，晚上好～`,
+  (n) => `晚安前想和${n}说句话`,
+  (n) => `${n}，今天过得怎么样？`,
+  (n) => `嗨${n}，忙完了吗？`,
+  (n) => `晚上好呀${n}～`,
+];
+const NIGHT_FALLBACKS = [
+  (n) => `${n}，这么晚了还没睡？`,
+  (n) => `${n}，睡了吗？`,
+  (n) => `夜深了，${n}还在？`,
+  (n) => `${n}，晚安安～`,
+  (n) => `还不睡？${n}也是夜猫子啊`,
+];
+
+/**
+ * 以角色口吻生成一句自然的主动开场白
+ *
+ * @param {object} character - characters 表行
+ * @param {number} affinity - 好感度
+ * @param {object} compositeVad - 综合 VAD { valence, arousal, dominance }
+ * @param {string|null} lastMessageAt - 上次聊天时间 (ISO)
+ * @param {string|null} recentSummary - 最近对话摘要（可选）
+ * @param {{ name: string, desc: string }} motive - 随机选取的聊天动机
+ * @param {string} relationshipContext - 人际关系描述文本（可选）
+ * @param {string} userProfile - 用户画像描述文本（可选）
+ * @returns {Promise<string>} 生成的文本
+ */
+async function generateGreeting(character, affinity, compositeVad, lastMessageAt, recentSummary, motive, relationshipContext, userProfile, streak = 0, extra = {}) {
+  const conversationId = `char_${character.id}`;
+
+  // 1. 获取情绪状态的自然语言描述
+  const emotionState = loadEmotionState(conversationId, JSON.parse(character.emotion_baseline || '{"valence":0.5,"arousal":0.5,"dominance":0.5}'));
+  const emotionText = stateToPrompt(emotionState);
+
+  // 2. 好感度文本片段
+  const affinityText = affinityToPrompt(affinity);
+
+  // 3. 距上次聊天时间描述
+  let timeDesc = '你们还没有聊过天';
+  let hoursAgo = Infinity;
+  if (lastMessageAt) {
+    hoursAgo = (Date.now() - new Date(lastMessageAt).getTime()) / 3600000;
+    if (hoursAgo < 1) timeDesc = '不到一小时前刚聊过';
+    else if (hoursAgo < 24) timeDesc = `大约 ${Math.round(hoursAgo)} 小时前聊过`;
+    else timeDesc = `大约 ${Math.round(hoursAgo / 24)} 天前聊过`;
+  }
+
+  const userName = config.user.nickname || '你';
+  const motiveLabel = motive?.name || '日常';
+  const motiveDesc = motive?.desc || '你突然想和对方说说话';
+
+  const systemRules = getSystemRulesWithWorld();
+
+  // msgs[0] — 舞台：破限词 + 世界观
+
+  // 日程上下文：角色当前在做什么（参照瞄一眼格式）
+  const scheduleCtx = (() => {
+    try {
+      const activity = getCurrentActivity(character.id);
+      if (!activity || !activity.activity || activity.activity === '自由时间') return '';
+      if (activity.replyDelay > 0) {
+        return `\n【当前日程】你刚刚正在【${activity.location}】${activity.activity}${activity.description ? '，' + activity.description : ''}，现在才腾出手来看消息。`;
+      }
+      let ctx = `\n【当前日程】你正在【${activity.location}】${activity.activity}。`;
+      if (activity.description) ctx += ` ${activity.description}`;
+      return ctx;
+    } catch (_) { return ''; }
+  })();
+
+  // msgs[1] — 身份：角色人格 + 摘要 + 当前状态 + 日程 + 关系 + 用户画像
+  const msgIdentity = `接下来，你将扮演以下角色，主动向 "${userName}" 发起一段对话。
+
+【角色人格】
+${character.base_prompt}
+${recentSummary ? `\n【最近对话摘要】\n${recentSummary}\n` : ''}${emotionText ? `\n【角色当前状态】\n${emotionText}` : ''}${affinityText ? `\n${affinityText}` : ''}${scheduleCtx}${relationshipContext ? `\n${relationshipContext}` : ''}${userProfile ? `\n${userProfile}` : ''}`;
+
+  // 上一轮对话（最近 1 轮 user+assistant），过滤掉生图 prompt JSON（可能在开头/中间/末尾）
+  const PROMPT_JSON_RE = /\s*\{["']prompt["']:\s*"(?:[^"\\]|\\.)*"\s*\}/gs;
+  const prevRound = (() => {
+    const db = getDb();
+    const rows = stmt(
+      `SELECT role, content FROM raw_messages
+       WHERE conversation_id = ?
+       ORDER BY id DESC LIMIT 2`
+    ).all(conversationId).reverse();
+    if (rows.length === 0) return '';
+    const cleaned = rows.map(r => ({
+      ...r,
+      content: r.role === 'assistant' ? r.content.replace(PROMPT_JSON_RE, '') : r.content,
+    }));
+    return '\n【上一轮对话】\n' + cleaned.map(r => `${r.role === 'user' ? userName : character.display_name}：${r.content}`).join('\n');
+  })();
+
+  // 上下文衔接：根据时间距离自动选择衔接策略
+  let bridgingHint = '';
+  if (prevRound) {
+    const strategies = hoursAgo < 2 ? CONTEXT_BRIDGE_STRATEGIES.hot
+      : hoursAgo < 24 ? CONTEXT_BRIDGE_STRATEGIES.warm
+      : CONTEXT_BRIDGE_STRATEGIES.cool;
+    bridgingHint = `\n【上下文衔接】${strategies[Math.floor(Math.random() * strategies.length)]}`;
+  }
+
+  // msgs[2] — 任务：时间 + 上一轮对话 + 衔接指令 + 动机 + 要求
+  const proactiveRules = getCoreDialogueRules({ userName });  const msgTask = `【上次聊天时间】
+${timeDesc}
+
+【当前时间】
+${formatProactiveClock(getProgramNow())}${prevRound}
+
+请以角色的口吻，生成一条自然的口语化开场白（15~50 字）。
+${streak >= 1 ? `【⚠️ 未回复提示】${pickStreakHint(streak)}\n` : ''}${bridgingHint}
+你这次主动发消息的动机是「${motiveLabel}」：${motiveDesc}。请在承接上文之后，把动机自然地融入开场白中——不要生硬地说"我因为xxx来找你"，让动机成为你说话的潜台词。
+要求：
+${proactiveRules}
+- 自然口语化，像是突然想到就随手发了一条消息，不是写小作文；不要客套式收尾或总结陈词
+- 以口语短句为主，可以省略主语、用半句话或语气词（如"就……""算了""在吗""突然想起来"），不要写成工整的书面句，也不要"首先/其次"这类条理分明的结构
+- 可以拆成两三条连着发（用换行分隔，系统会自动切成多条消息），例如一条起头加一条补充；拆条后总量仍要落在这 15~50 字内
+- 符合角色性格、当前情绪、好感度状态，以及本次聊天的动机
+- 绝对不要以\"你说\"、\"你说……如果\"、\"你知道吗\"这类句式开场——直接说你自己的话，不需要用提问/假设来起头`;
+
+  try {
+    const msgs = [];
+    msgs.push({ role: 'system', content: systemRules || '你是一个角色扮演 AI。' });
+    msgs.push({ role: 'system', content: msgIdentity });
+    // 玩具状态块（专题 §2.9-6）：她主动发消息也带状态；零佩戴/开关关 ⇒ 零注入
+    if (config.features.toys === true) {
+      try {
+        // 2026-10-01 真机 bug：这里原来写的是 `candidate.id`，而本函数的作用域里根本没有
+        // `candidate` 这个变量（参数名是 `character`）—— 每轮都抛 ReferenceError 被下面的
+        // catch 吞掉，日志只留一行 `[toys] proactive inject failed: candidate is not defined`，
+        // 结果是**主动聊天的玩具状态块从来没注入过**。参数名以函数签名为准。
+        const wornToysBlock = buildWornToysBlock(character.id, { scene: 'chat' });
+        if (wornToysBlock) msgs.push({ role: 'system', content: wornToysBlock });
+      } catch (err) {
+        console.warn('[toys] proactive inject failed:', err.message);
+      }
+    }
+    const worldRulePrefix = getWorldSetting()
+      ? '请遵循当前世界观来主动发起聊天，角色人设如果和世界观有冲突，则以世界观最高优先级，人设会因为世界观改变。\n\n'
+      : '';
+    // 催眠「强制高潮」那一轮（task-41）：把状态块 + 一次性指令块**接在本轮 user 消息末尾**，
+    // 与私聊 chat.js 同口径（位置越靠后越显眼、越硬）。不传时拼出来与改动前逐字节一致。
+    const hypnoBlocks = Array.isArray(extra.hypnosisBlocks) ? extra.hypnosisBlocks.filter(Boolean) : [];
+    const hypnoSuffix = hypnoBlocks.length > 0
+      ? '\n\n' + hypnoBlocks.join('\n\n') + '\n\n' + FORCED_CLIMAX_FRAME_OVERRIDE
+      : '';
+    msgs.push({ role: 'user', content: worldRulePrefix + msgTask + hypnoSuffix });
+
+    const result = await chatSync(
+      msgs,
+      { temperature: 0.7, max_tokens: 128, label: '主动聊天' }
+    );
+
+    let greeting = (result || '').trim();
+    // 清理可能的引号包裹
+    greeting = greeting.replace(/^["'「」『』]|["'「」『』]$/g, '').trim();
+    // 如果太长，截取到第一个句号/感叹号/问号处
+    const maxLen = 80;
+    if (greeting.length > maxLen) {
+      const cutMatch = greeting.match(/^.{1,80}[。！？!?～~]/);
+      if (cutMatch) greeting = cutMatch[0];
+      else greeting = greeting.slice(0, maxLen) + '…';
+    }
+    // 拒答不能当"主动消息"发出去（2026-10-22）：拒答通常 13 字左右，能通过下面的长度检查，
+    // 所以必须单独判一次，走与"太短"相同的兜底问候语。
+    if (isRefusal(greeting) || greeting.length < 5) {
+      return pickFallbackGreeting(userName);
+    }
+    return greeting;
+  } catch (err) {
+    console.error(`⚡ generateGreeting failed for ${character.display_name}:`, err.message);
+    return pickFallbackGreeting(userName);
+  }
+}
+
+// ── 写入主动消息 ──
+
+/**
+ * 将角色的主动发起消息写入 DB（分句写入 messages 表）
+ *
+ * @param {object} character
+ * @param {string} content - 消息文本
+ * @returns {{ rawId: number, firstMsgId: number, lastMsgId: number, msgIds: number[] }}
+ *
+ * 2026-09-30 加 export：SLG 动作系统（routes/touch.js）的「即时反应」要把她的一句话当成
+ * 一条 assistant 消息落库，复用这里的分句 + seq + is_proactive 写入，避免在路由里重抄一份。
+ */
+export function writeProactiveMessage(character, content) {
+  const db = getDb();
+  const conversationId = `char_${character.id}`;
+
+  // 写入 raw_messages（完整消息）
+  const rawResult = stmt(
+    `INSERT INTO raw_messages (conversation_id, role, content) VALUES (?, 'assistant', ?)`
+  ).run(conversationId, content);
+  const rawId = rawResult.lastInsertRowid;
+
+  // 分句后逐条写入 messages，标记 is_proactive=1 以区分正常聊天
+  const segments = splitText(content);
+  // 兜底：如果分句结果为空（极其罕见），整段写入
+  if (segments.length === 0) {
+    const msgResult = stmt(
+      `INSERT INTO messages (conversation_id, raw_id, role, content, seq, is_proactive) VALUES (?, ?, 'assistant', ?, 0, 1)`
+    ).run(conversationId, rawId, content);
+    console.log(`⚡ Written proactive message for ${character.display_name}: raw=${rawId}, msg=${msgResult.lastInsertRowid} (fallback, no segments)`);
+    return { rawId, firstMsgId: msgResult.lastInsertRowid, lastMsgId: msgResult.lastInsertRowid, msgIds: [msgResult.lastInsertRowid] };
+  }
+
+  const insertMsg = stmt(
+    `INSERT INTO messages (conversation_id, raw_id, role, content, seq, is_proactive) VALUES (?, ?, 'assistant', ?, ?, 1)`
+  );
+  const msgIds = [];
+  for (let i = 0; i < segments.length; i++) {
+    const r = insertMsg.run(conversationId, rawId, segments[i], i);
+    msgIds.push(r.lastInsertRowid);
+  }
+
+  console.log(`⚡ Written proactive message for ${character.display_name}: raw=${rawId}, msgs=${msgIds.length} segment(s)`);
+
+  return { rawId, firstMsgId: msgIds[0], lastMsgId: msgIds[msgIds.length - 1], msgIds, segments };
+}
+
+// ── 主动聊天的配图生成 ──
+
+/**
+ * 为主动聊天消息生成配图（仅在 motive.imageGen === true 时调用）
+ *
+ * 1. 用 LLM 生成画面描述 prompt（基于角色人格 + 开场白内容 + 动机）
+ * 2. 提交 ComfyUI 生图
+ * 3. 更新 messages 表挂上图片 URL
+ *
+ * @param {object} character - characters 表行
+ * @param {string} greeting - 已生成的开场白文本
+ * @param {string} motiveName - 动机名称（用于 prompt 引导）
+ * @param {number} msgId - messages 表的 id
+ * @returns {Promise<string[]|null>} 图片 URL 数组，失败返回 null
+ */
+async function generateImageForGreeting(character, greeting, motiveName, msgId, rawId) {
+  try {
+    console.log(`⚡ Generating image for ${character.display_name} (motive: ${motiveName})...`);
+
+    // 1. LLM 生成画面描述 prompt
+    const systemRules = getSystemRulesWithWorld({ roleplay: false });
+    const imagePromptRule = getGlobalRule('image_prompt');
+    let imagePromptInst = imagePromptRule?.rule_content || '';
+    // 追加 Environment reference，去重：天气仅由此处提供，不单独出现 lightHint
+    const weatherHint = (() => {
+      try {
+        const note = getLightNoteWithWeather();
+        return note ? `Environment reference：${note}。` : '';
+      } catch { return ''; }
+    })();
+    if (weatherHint) {
+      imagePromptInst = imagePromptInst ? imagePromptInst + '\n\n' + weatherHint : weatherHint;
+    }
+
+    // 提取角色名：从开头截取到"## 你的身份"之前
+    const nameMatch = character.base_prompt.match(/^([\s\S]*?)## 你的身份/);
+    const charName = nameMatch ? nameMatch[1].trim() : character.display_name;
+    // 提取外观：统一入口「## 你的外观」段（含生效外观注入），无外观段时兜底整卡
+    const appearanceSection = buildCharacterAppearanceSection(character);
+    // 将"你"替换为"角色"（生图 prompt 需要第三人称描述）
+    const nameBlock = charName.replace(/你/g, '角色');
+    let appearanceBlock = (appearanceSection || character.base_prompt || '').replace(/你/g, '角色');
+
+    // 誓约角色：银白细戒指外观细节
+    appearanceBlock = appendOathRing(appearanceBlock, character.id, 'user', { isFirstPerson: false, charName: '角色' });
+
+    // 日程上下文（参照瞄一眼格式：activity + location + time + light + sleep note）
+    const scheduleImgCtx = (() => {
+      try {
+        const activity = getCurrentActivity(character.id);
+        if (!activity || !activity.activity || activity.activity === "自由时间") return "";
+        const timeLightInline = getTimeLightInline();
+        const isSleeping = activity.replyDelay === -1;
+        const sleepNote = isSleeping
+          ? "\n\n【极其重要】角色正在睡觉，双眼必须紧闭，**房间里没有灯光，睡觉时候不开灯**，不能睁眼。表情安详放松，呈现深度睡眠的自然状态，盖被子。睡姿、床、被子、**睡衣（睡觉时候绝对不会穿本来的衣服）**等细节贴合角色性格。"
+          : "";
+        return "【当前日程】角色正在【" + activity.location + "】" + activity.activity + "。" + (activity.description ? activity.description + "。" : "") + timeLightInline + "。照片里的角色要体现正在做的日程。" + sleepNote;
+      } catch (_) { return ""; }
+    })();
+    const imagePromptText = await chatSync(
+      [
+        { role: 'system', content: systemRules || '你是一个角色扮演 AI。' },
+        { role: 'user', content: `接下来你将收到一个角色的外观描述和ta主动发起的一段对话，请为这段对话配一张图。
+
+${imagePromptInst ? `【图像生成指令】\n${imagePromptInst}\n` : ''}【角色名字】
+${nameBlock}
+
+【角色外观】
+${appearanceBlock}
+${scheduleImgCtx ? `
+${scheduleImgCtx}
+` : ''}【本次聊天的动机】
+${motiveName}
+
+【角色的开场白】
+"${greeting}"
+
+直接输出英文画面描述，不要任何格式包装或额外文字` },
+      ],
+      { temperature: 0.7, max_tokens: 1024, label: '主动聊天配图prompt' }
+    );
+
+    let prompt;
+    // 纯文本优先，JSON 格式向后兼容
+    let text = imagePromptText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    if (text.length >= 5) {
+      prompt = text;
+    }
+    // 兜底：如果 LLM 仍输出了 {"prompt":"..."} JSON 格式
+    if (!prompt) {
+      try {
+        const parsed = JSON.parse(text);
+        prompt = parsed.prompt || parsed.imagePrompt || null;
+      } catch {
+        prompt = null;
+      }
+    }
+
+    if (!prompt || prompt.length < 5) {
+      console.warn('⚡ Image prompt too short, skipping image generation');
+      return null;
+    }
+
+    // 将 prompt 合并到 raw_messages 中，模仿正常消息流的处理方式
+    if (rawId) {
+      const db = getDb();
+      const promptJson = JSON.stringify({ prompt });
+      stmt('UPDATE raw_messages SET prompt = ?, content = content || ? WHERE id = ?')
+        .run(prompt, promptJson, rawId);
+      console.log(`⚡ Updated raw_message ${rawId} with prompt`);
+    }
+
+    console.log(`⚡ Image prompt: "${prompt.slice(0, 100)}..."`);
+
+    // 2. 提交 ComfyUI 生图
+    const charLoras = _parseCharLoras(character.loras);
+    const loraOpts = {};
+    if (charLoras.length > 0) loraOpts.loras = charLoras;
+    if (character.custom_workflow) loraOpts.customWorkflow = character.custom_workflow;
+    const charArtist = charArtistOverride(character);
+    if (charArtist !== null) loraOpts.artist = charArtist;
+
+    // 后台主动私聊的配图属于角色自发生活记录，与朋友圈保持同一观感，因为后台运行，所以无所谓时间，
+    // 因此这里借用朋友圈分辨率，而不是普通聊天配图分辨率。
+    const result = await generateImage(prompt, {
+      ragQuery: greeting,
+      promptScene: 'proactive',
+      priority: 'low',
+      ...loraOpts,
+      width: config.comfyui.momentsWidth,
+      height: config.comfyui.momentsHeight,
+    });
+    if (!result.success || !result.images?.length) {
+      console.warn(`⚡ Image generation failed: ${result.error || 'no images'}`);
+      return null;
+    }
+    getDb().prepare('UPDATE raw_messages SET prompt = ? WHERE id = ?')
+      .run(result.promptRefined || prompt, rawId);
+
+    // 3. 落盘 base64 图片到 data/images/chat/ + 更新 messages 表
+    const urls = [];
+    for (const img of result.images) {
+      const filename = `${Date.now()}_${img.filename || 'comfy.png'}`;
+      const url = saveBase64Image('chat', filename, img.base64);
+      urls.push(url);
+    }
+
+    const db = getDb();
+    stmt(`UPDATE messages SET images = ? WHERE id = ?`)
+      .run(JSON.stringify(urls), msgId);
+    recordCompletedImageTask({
+      conversationId: `char_${character.id}`,
+      promptOriginal: prompt,
+      promptRefined: result.promptRefined || prompt,
+      outputPaths: urls,
+      style: loraOpts.artist !== undefined ? loraOpts.artist : config.comfyui.artist,
+      resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
+      workflowTemplate: result.wfMode,
+      db,
+    });
+
+    // 使相册缓存失效
+    invalidateGalleryCache();
+
+    console.log(`⚡ Image saved to msg ${msgId}: ${urls.length} file(s)`);
+    return urls;
+  } catch (err) {
+    console.error(`⚡ generateImageForGreeting failed:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * 更新角色的 next_proactive_at 时间
+ *
+ * @param {number} characterId
+ * @param {number} score - proactive_score (0~1)
+ */
+export function updateNextProactiveAt(characterId, score) {
+  const db = getDb();
+  const intervalHours = scoreToIntervalHours(score);
+  // 加入随机抖动 ±30%，避免所有角色扎堆
+  const jitter = 0.7 + Math.random() * 0.6;
+  const delayMs = intervalHours * 3600_000 * jitter;
+  const nextAt = new Date(Date.now() + delayMs).toISOString();
+
+  stmt('UPDATE characters SET next_proactive_at = ? WHERE id = ?')
+    .run(toSQLiteDate(nextAt), characterId);
+
+  console.log(`⚡ ${characterId}: score=${score.toFixed(3)}, interval=${intervalHours.toFixed(1)}h (jitter=${jitter.toFixed(2)}), next=${nextAt}`);
+}
+
+/**
+ * 初始化首次 next_proactive_at：给所有 proactive_disabled=0 且 next_proactive_at 为 NULL 的角色设置首次时间
+ */
+function initializeFirstTimes() {
+  const db = getDb();
+  const chars = stmt(
+    'SELECT id FROM characters WHERE proactive_disabled = 0 AND next_proactive_at IS NULL'
+  ).all();
+
+  if (chars.length === 0) return;
+
+  let count = 0;
+  for (const c of chars) {
+    // 首次主动聊天在 30min ~ 4h 内随机
+    const delay = 0.5 * 3600_000 + Math.random() * 3.5 * 3600_000;
+    const nextAt = new Date(Date.now() + delay).toISOString();
+    stmt('UPDATE characters SET next_proactive_at = ? WHERE id = ?')
+      .run(toSQLiteDate(nextAt), c.id);
+    count++;
+  }
+  console.log(`⚡ Initialized ${count} character(s) with first proactive times`);
+}
+
+// ── 核心 tick ──
+
+async function tick() {
+  if (processing) {
+    console.log('⚡ [Line A·VAD]  previous tick still processing, skip');
+    return;
+  }
+
+  // 功能未开启时跳过
+  if (!config.features.proactiveChat) return;
+
+  const db = getDb();
+  try {
+    // 找下一个需要主动聊天的角色
+    // 跳过有活跃奇遇事件的角色
+    const candidate = stmt(`
+      SELECT c.* FROM characters c
+      WHERE c.proactive_disabled = 0
+        AND (c.is_sleeping IS NULL OR c.is_sleeping = 0)
+        AND (c.temporary_wake_until IS NULL OR c.temporary_wake_until <= datetime('now'))
+        AND (c.next_proactive_at IS NULL OR c.next_proactive_at <= datetime('now'))
+        AND c.id NOT IN (
+          SELECT character_id FROM character_events WHERE status IN ('pending','open','engaged')
+        )
+      ORDER BY c.next_proactive_at ASC NULLS FIRST
+      LIMIT 1
+    `).get();
+
+    if (!candidate) {
+      // 没有待定角色，但可能有首次初始化需要
+      initializeFirstTimes();
+      return;
+    }
+
+    // 未回复连续 ≥3：跳过，不再主动发（直到 user 回复后重置）
+    const streak = candidate.proactive_streak || 0;
+    if (streak >= 3) {
+      console.log(`⚡ Skipping ${candidate.display_name}: unanswered streak=${streak}`);
+      updateNextProactiveAt(candidate.id, 0);
+      return;
+    }
+
+    processing = true;
+    const conversationId = `char_${candidate.id}`;
+    console.log(`⚡ Processing ${candidate.display_name}... (streak=${streak})`);
+
+    // 1. 获取上次 user 发言时间（不是 assistant 的主动消息时间；也不是关系表里那个"上次互动时间"，见 helper 注释）
+    const lastMessageAt = resolveLastUserMessageAt(conversationId);
+    const hoursSince = resolveHoursSinceLastUserMessage(conversationId);
+
+    // 2. 获取当前好感度
+    const affinity = loadAffinity(candidate.id);
+
+    // 3. 获取当前 VAD 情绪
+    const emotionBaseline = JSON.parse(candidate.emotion_baseline || '{"valence":0.5,"arousal":0.5,"dominance":0.5}');
+    const emotionState = loadEmotionState(conversationId, emotionBaseline);
+    const compositeVad = getCompositeEmotion(emotionState);
+
+    // 4. 计算 proactive_score
+    const score = computeProactiveScore(hoursSince, affinity, compositeVad);
+    console.log(`⚡ ${candidate.display_name}: hoursSince=${hoursSince}, affinity=${affinity}, vad=(${compositeVad.valence.toFixed(2)},${compositeVad.arousal.toFixed(2)},${compositeVad.dominance.toFixed(2)}), score=${score.toFixed(3)}`);
+
+    // 5. 获取最近对话摘要（取最近1条，提供话题引导）
+    let recentSummary = null;
+    try {
+      const summary = stmt(`
+        SELECT summary FROM rolling_summaries
+        WHERE conversation_id = ?
+        ORDER BY id DESC LIMIT 1
+      `).get(conversationId);
+      if (summary) recentSummary = summary.summary;
+    } catch (_) { /* ignore */ }
+
+    // 5.5 随机选取聊天动机（按好感度分档）+ 加载角色人际关系 + 用户画像
+    const isOath = !!loadOath(candidate.id);
+    let motive = pickMotive(affinity, streak, isOath, herSensitivityOf(candidate.id));
+    const relationshipContext = loadRelationshipContext(candidate.id);
+    const userProfile = loadUserProfile();
+
+    // 5.6 梦境系统：存在未分享的真梦且好感度足够 → 概率覆盖为真实梦境分享动机（出口④）
+    let sharedDream = null;
+    {
+      const freshDream = getFreshUnsharedDream(candidate.id);
+      if (freshDream && affinity >= 60 && Math.random() < 0.6) {
+        motive = {
+          name: '做了个梦',
+          desc: `你昨晚真的做了这样一个梦：「${freshDream.content}」，你想讲给对方听`,
+          imageGen: true,
+        };
+        sharedDream = freshDream;
+        console.log(`⚡ ${candidate.display_name}: motive overridden by real dream #${freshDream.id}`);
+      }
+    }
+
+    // 6. 生成开场白
+    const greeting = await generateGreeting(candidate, affinity, compositeVad, lastMessageAt, recentSummary, motive, relationshipContext, userProfile, streak);
+    console.log(`⚡ ${candidate.display_name} greeting (motive: ${motive.name}): "${greeting}"`);
+
+    // 7. 写入消息到 DB
+    const { rawId, firstMsgId, lastMsgId, msgIds, segments } = writeProactiveMessage(candidate, greeting);
+
+    // 7.4 **先发文本**（2026-10-02 结构性改造）：原来这一步在出图**之后**，
+    //     ComfyUI 慢/关着时她已经写好的这句话在 UI 上要等几十秒，甚至这一轮什么都收不到。
+    //     现在文本立刻上屏；配图生成完再用 proactive_message_update 补挂（见 7.6）。
+    broadcastProactiveMessage({
+      character_id: candidate.id,
+      display_name: candidate.display_name,
+      avatar_path: candidate.avatar_path,
+      content: greeting,
+      segments,
+      msg_ids: msgIds,
+      msg_id: firstMsgId,
+      raw_id: rawId,
+      images: [],
+      created_at: new Date().toISOString(),
+    });
+
+    // 7.5 该动机要配图就生成（仍在 tick 内 await：紧随其后的亲密看板记账依赖"prompt 已写回 raw"这个锚点；
+    //     用户侧延迟已经在 7.4 解决，调度器自己多等一会不影响任何人）
+    let imageUrls = null;
+    if (motive.imageGen) {
+      imageUrls = await generateImageForGreeting(candidate, greeting, motive.name, lastMsgId, rawId);
+    }
+
+    // 7.6 图后补：把刚生成的图挂到 7.4 那条已上屏的气泡上（前端按 msg_id 找气泡；失败只 warn，文本不受影响）
+    if (imageUrls?.length) {
+      try {
+        broadcast('proactive_message_update', { msg_id: firstMsgId, raw_id: rawId, images: imageUrls });
+      } catch (err) {
+        console.warn('⚡ 配图补挂广播失败（文字已上屏，不影响）:', err?.message || err);
+      }
+    }
+
+    // 梦境系统：梦已正式分享（出口④）
+    if (sharedDream?.id) {
+      try { markDreamShared(sharedDream.id, 'proactive'); } catch { /* 非关键路径 */ }
+    }
+
+    // 7.7 递增未回复连续计数（DB 持久化）
+    stmt('UPDATE characters SET proactive_streak = ? WHERE id = ?')
+      .run(streak + 1, candidate.id);
+
+    // 8. 更新下次时间
+    updateNextProactiveAt(candidate.id, score);
+
+    console.log(`⚡ [Line A·VAD]  done: ${candidate.display_name} (streak=${streak + 1}) — next in ${fmtIn(CHECK_INTERVAL / 60000)}`);
+  } catch (err) {
+    console.error('⚡ [Line A·VAD]  tick error:', err.message);
+  } finally {
+    processing = false;
+  }
+}
+
+// ── 启动/停止 ──
+
+// ── 频率定时器（与 VAD/好感度算法双线并行）──
+
+function freqToMinutes(freq) {
+  // freq 0.1 → 120min (2h), freq 1.0 → 8min
+  return Math.round(8 + (1 - freq) / 0.9 * 112);
+}
+
+function startupToMinutes(freq) {
+  // freq 0.1 → 10min, freq 1.0 → 5min（启动线更密集）
+  return Math.round(5 + (1 - freq) / 0.9 * 5);
+}
+
+function fmtIn(minutes) {
+  if (minutes >= 60) {
+    const h = Math.floor(minutes / 60);
+    const m = Math.round(minutes % 60);
+    return m > 0 ? `${h}时${m}分后` : `${h}时后`;
+  }
+  return `${Math.round(minutes)}分后`;
+}
+
+// ── 线路 B：频率强制线 ──
+
+function stopFreqLine() {
+  if (freqTimer) { clearTimeout(freqTimer); freqTimer = null; }
+  freqRunning = false;
+}
+
+function startFreqLine() {
+  stopFreqLine();
+  const freq = config.features.proactiveChatFreq;
+  if (freq <= 0) return;
+
+  freqRunning = true;
+  const intervalMin = freqToMinutes(freq);
+  const maxJitter = Math.min(10, intervalMin * 0.3);
+  const delayMin = Math.max(1, intervalMin + (-maxJitter + Math.random() * maxJitter * 2));
+
+  console.log(`⚡ [Line B·Freq]  timer set, first fire in ${delayMin.toFixed(1)}min (base ${intervalMin}min ±${maxJitter.toFixed(0)}min)`);
+
+  const scheduleNext = () => {
+    if (!freqRunning) return;
+    const maxJitter = Math.min(10, intervalMin * 0.3);
+    const nextMin = Math.max(1, intervalMin + (-maxJitter + Math.random() * maxJitter * 2));
+    freqTimer = setTimeout(() => {
+      if (!freqRunning) return;
+      console.log(`⚡ [Line B·Freq]  firing...`);
+      forceProactiveNow().then((r) => {
+        if (r) {
+          console.log(`⚡ [Line B·Freq]  force done: ${r.character} (${r.motive})`);
+        } else {
+          console.log('⚡ [Line B·Freq]  no eligible character (all disabled or streak≥3)');
+        }
+        if (freqRunning) scheduleNext();
+      }).catch((err) => {
+        console.error('⚡ [Line B·Freq]  unexpected error:', err.message);
+        if (freqRunning) scheduleNext();
+      });
+    }, nextMin * 60_000);
+  };
+
+  console.log(`⚡ [Line B·Freq]  timer set, first fire in ${delayMin.toFixed(1)}min`);
+  freqTimer = setTimeout(scheduleNext, delayMin * 60_000);
+  return delayMin;
+}
+
+// ── 线路 C：启动强制线 ──
+
+function stopStartupLine() {
+  if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+  startupRunning = false;
+}
+
+function startStartupLine() {
+  stopStartupLine();
+  const freq = config.features.proactiveChatFreq;
+  if (freq <= 0) return;
+
+  // 开发环境不执行启动暖场（开发期重启频繁，避免每次启动都强制触发一次主动消息）
+  if (config.isDev) {
+    console.log('⚡ [Line C·Startup] skipped (dev mode: startup warmup disabled)');
+    return null;
+  }
+
+  startupRunning = true;
+
+  // 单次首发：1~3min 后触发一次即结束（只做启动暖场）
+  const firstMin = 1 + Math.random() * 2;
+  startupTimer = setTimeout(async () => {
+    if (!startupRunning) return;
+    console.log('⚡ [Line C·Startup] firing (one-shot)...');
+    const r = await forceProactiveNow();
+    if (r) {
+      console.log(`⚡ [Line C·Startup] force done: ${r.character} (${r.motive}) — line finished`);
+    } else {
+      console.log('⚡ [Line C·Startup] no eligible character — line finished');
+    }
+    startupRunning = false;
+  }, firstMin * 60_000);
+  return firstMin;
+}
+
+/**
+ * 当频率配置变更时调用（由 config 路由触发）
+ */
+export function restartProactiveFreq() {
+  startFreqLine();
+  startStartupLine();
+}
+
+// ── 启动：三条线并行 ──
+
+export function startProactiveChatScheduler() {
+  console.log('⚡ [Proactive] Starting (interval:', CHECK_INTERVAL / 60000, 'min)');
+
+  const freq = config.features.proactiveChatFreq;
+  if (freq <= 0) {
+    console.log('⚡ [Proactive] freq=0, all lines disabled');
+    return;
+  }
+
+  // 线路 A：VAD/好感度调度（60s 后首次检查，之后每 5min）
+  setTimeout(() => {
+    tick();
+    timer = setInterval(tick, CHECK_INTERVAL);
+    const nextAt = new Date(Date.now() + CHECK_INTERVAL);
+    console.log(`⚡ [Line A·VAD]     next trigger at ${nextAt.toLocaleString('zh-CN', { hour12: false })} (in ${fmtIn(CHECK_INTERVAL / 60000)})`);
+  }, 60_000);
+  console.log(`⚡ [Line A·VAD]     first trigger in ${fmtIn(1)} (after DB init)`);
+
+  // 线路 B：频率强制线（60s 后启动，先打印预估）
+  if (freq > 0) {
+    console.log(`⚡ [Line B·Freq]    first trigger in ${fmtIn(1 + freqToMinutes(freq))} (after DB init, interval ${fmtIn(freqToMinutes(freq))}±5min)`);
+  } else {
+    console.log('⚡ [Line B·Freq]    disabled (freq=0)');
+  }
+  setTimeout(() => startFreqLine(), 60_000);
+
+  // 线路 C：启动强制线（和 B 线一样 60s 后启动；开发环境跳过，只做生产启动暖场）
+  setTimeout(() => {
+    const firstMin = startStartupLine();
+    if (firstMin != null) {
+      console.log(`⚡ [Line C·Startup] next trigger in ${fmtIn(firstMin)} (interval ${fmtIn(startupToMinutes(freq))}±3min)`);
+    } else {
+      console.log('⚡ [Line C·Startup] not scheduled (freq=0 or dev mode)');
+    }
+  }, 60_000);
+  if (freq > 0) {
+    if (config.isDev) {
+      console.log('⚡ [Line C·Startup] disabled (dev mode: startup warmup off)');
+    } else {
+      console.log(`⚡ [Line C·Startup] first trigger in ${fmtIn(1 + startupToMinutes(freq))} (after DB init, interval ${fmtIn(startupToMinutes(freq))}±3min)`);
+    }
+  } else {
+    console.log('⚡ [Line C·Startup] disabled (freq=0)');
+  }
+}
+
+/**
+ * 调试用：随机选一个未禁用的角色，立即触发一次主动聊天。
+ * 无视 processing 锁和 next_proactive_at 时间，直接走完整流程。
+ * @returns {Promise<{ character: string, motive: string, greeting: string } | null>}
+ */
+/**
+ * 立刻替某个角色（或全体）触发一轮。
+ *
+ * @param {number} [targetCharacterId] 指定角色；不传＝按原有规则挑一个
+ * @param {{bypassGuards?: boolean}} [options] `bypassGuards`：**用户主动触发**（催眠手机下发指令等）
+ *   时跳过"睡觉中 / 连发已达上限 / 有进行中的事件 / 主动聊天被关"这些闸门 —— 这些闸门是给
+ *   **自动**主动聊天用的，不该拦住用户手点。真机踩到过：点了强制高潮却因为 `is_sleeping=1` 被拒，
+ *   表现成"点了没反应"。
+ */
+/**
+ * 「强制高潮」那一轮要注入的催眠块（task-41）。
+ *
+ * 口径（与私聊 chat.js 完全一致）：
+ *   · 状态块只在 active && bodyControlled 时有内容（buildHypnosisStateBlock 自己判）；
+ *   · 一次性指令 consumePendingDirective() **消费即清空**，只影响紧随的这一轮；
+ *   · awakenedFromSleep 走 isAwakenedFromSleepRow()：is_sleeping=1 **或** 处于临时唤醒窗口内。
+ *     强制高潮在触发这一轮之前会先 wakeForForcedTrigger() 临时唤醒她，此刻 is_sleeping 已经是 0
+ *     —— 只看 is_sleeping 就永远漏掉「睡梦唤醒」版（这条最容易整条失效）。
+ *
+ * @param {number} characterId
+ * @returns {{blocks: string[], directive: string, awakenedFromSleep: boolean}}
+ */
+/**
+ * 强制高潮轮对「主动聊天写作要求」的覆盖段（task-41）。
+ *
+ * 主动聊天模板把任务框成「开场白 / 15~50 字 / 动机当潜台词」，那是给普通主动消息的；
+ * 强制高潮轮要做的是**把这一轮演完** —— 框架不改，只在末尾叠加这段覆盖，
+ * 保证「不传注入块时输出逐字节不变」。
+ */
+const FORCED_CLIMAX_FRAME_OVERRIDE = [
+  '【本轮覆盖上面的写作要求】',
+  '- 本轮**不是**主动聊天的开场白：不要问候、不要寒暄、不要解释你为什么来找对方；直接进入此刻正在发生的事。',
+  '- 取消「15~50 字」与「拆成两三条」的限制：把这一轮完整演完，该多长就多长，可以分多条（用换行分隔）。',
+  '- 以本消息末尾的催眠指令块为准；上面的时间、动机、衔接要求只在不与它冲突时才参考。',
+].join('\n');
+export function buildForcedClimaxProactiveBlocks(characterId) {
+  const db = getDb();
+  const state = getHypnosisState(characterId);
+  const row = stmt('SELECT is_sleeping, temporary_wake_until FROM characters WHERE id = ?').get(characterId) || null;
+  const awakenedFromSleep = isAwakenedFromSleepRow(row);
+  const blocks = [];
+  const stateBlock = buildHypnosisStateBlock(state, { chatUserName: config.user.nickname || '用户' });
+  if (stateBlock) blocks.push(stateBlock);
+  const directive = consumePendingDirective(characterId);
+  const directiveBlock = buildDirectiveBlock(directive, { mindAwake: state?.mindAwake, awakenedFromSleep });
+  if (directiveBlock) blocks.push(directiveBlock);
+  return { blocks, directive, awakenedFromSleep };
+}
+
+export async function forceProactiveNow(targetCharacterId, { bypassGuards = false, forcedClimax = false } = {}) {
+  try {
+    const db = getDb();
+
+    let candidate;
+    if (targetCharacterId) {
+      // 指定角色：直接按 id 查找，仍需满足基本条件；bypassGuards 时只要求角色存在
+      candidate = bypassGuards
+        ? stmt('SELECT * FROM characters WHERE id = ?').get(targetCharacterId)
+        : stmt(
+          'SELECT * FROM characters WHERE id = ? AND proactive_disabled = 0 AND (is_sleeping IS NULL OR is_sleeping = 0) AND COALESCE(proactive_streak, 0) < 3 AND id NOT IN (SELECT character_id FROM character_events WHERE status IN (\'pending\',\'open\',\'engaged\'))'
+        ).get(targetCharacterId);
+      if (!candidate) {
+        // 诊断具体原因
+        const char = stmt('SELECT id, display_name, proactive_disabled, is_sleeping, proactive_streak FROM characters WHERE id = ?').get(targetCharacterId);
+        if (!char) {
+          console.log(`⚡ force: character ${targetCharacterId} not found`);
+        } else if (char.proactive_disabled) {
+          console.log(`⚡ force: ${char.display_name} not eligible (proactive_disabled=1)`);
+        } else if (char.is_sleeping) {
+          console.log(`⚡ force: ${char.display_name} not eligible (is_sleeping=1)`);
+        } else if ((char.proactive_streak || 0) >= 3) {
+          console.log(`⚡ force: ${char.display_name} not eligible (streak=${char.proactive_streak} ≥ 3)`);
+        } else {
+          console.log(`⚡ force: ${char.display_name} not eligible (has active event)`);
+        }
+        return null;
+      }
+      console.log(`⚡ force: targeted ${candidate.display_name} (id=${targetCharacterId})`);
+    } else {
+      const candidates = stmt(
+        'SELECT * FROM characters WHERE proactive_disabled = 0 AND (is_sleeping IS NULL OR is_sleeping = 0) AND COALESCE(proactive_streak, 0) < 3 AND id NOT IN (SELECT character_id FROM character_events WHERE status IN (\'pending\',\'open\',\'engaged\'))'
+      ).all();
+      if (candidates.length === 0) {
+        console.log('⚡ force: no eligible characters (all sleeping, disabled, streak≥3, or have active events)');
+        return null;
+      }
+      candidate = candidates[Math.floor(Math.random() * candidates.length)];
+      console.log(`⚡ force: picked ${candidate.display_name}`);
+    }
+  const conversationId = `char_${candidate.id}`;
+
+  const lastMessageAt = resolveLastUserMessageAt(conversationId);
+  const hoursSince = resolveHoursSinceLastUserMessage(conversationId);
+
+  // 若用户 2 分钟内刚发过消息，跳过（避免正在聊天时插入主动消息）。
+  // 例外：用户**手点**的强制高潮（forcedClimax）不能跳 —— 那是明确指令，跳掉就等于「点了没反应」。
+  if (!forcedClimax && hoursSince !== null && hoursSince * 60 < 2) {
+    console.log(`⚡ force: ${candidate.display_name} skipped — user messaged ${(hoursSince * 60).toFixed(1)}min ago (<2min)`);
+    return null;
+  }
+
+  const affinity = loadAffinity(candidate.id);
+  const emotionBaseline = JSON.parse(candidate.emotion_baseline || '{"valence":0.5,"arousal":0.5,"dominance":0.5}');
+  const emotionState = loadEmotionState(conversationId, emotionBaseline);
+  const compositeVad = getCompositeEmotion(emotionState);
+  const score = computeProactiveScore(hoursSince, affinity, compositeVad);
+
+  let recentSummary = null;
+  try {
+    const s = stmt('SELECT summary FROM rolling_summaries WHERE conversation_id = ? ORDER BY id DESC LIMIT 1').get(conversationId);
+    if (s) recentSummary = s.summary;
+  } catch { /* ignore */ }
+
+  const streak = candidate.proactive_streak || 0;
+  const isOath = !!loadOath(candidate.id);
+  let motive = pickMotive(affinity, streak, isOath, herSensitivityOf(candidate.id));
+  const relationshipContext = loadRelationshipContext(candidate.id);
+  const userProfile = loadUserProfile();
+
+  // 梦境系统：存在未分享的真梦且好感度足够 → 概率覆盖为真实梦境分享动机（出口④）
+  let sharedDream = null;
+  {
+    const freshDream = getFreshUnsharedDream(candidate.id);
+    if (freshDream && affinity >= 60 && Math.random() < 0.6) {
+      motive = {
+        name: '做了个梦',
+        desc: `你昨晚真的做了这样一个梦：「${freshDream.content}」，你想讲给对方听`,
+        imageGen: true,
+      };
+      sharedDream = freshDream;
+    }
+  }
+
+  // 催眠「强制高潮」：**这一轮本身就是高潮轮**（task-41）。
+  // 旧行为：点完只触发一轮**普通**主动聊天（不带任何催眠块、也不配图），真正的高潮演出要等
+  // 用户再回一条才出现在 chat.js 里 —— 用户看到的就是一句闲聊，于是反复反馈「睡着时强制高潮
+  // 没特殊反应」（真机日志：完整/backend-2026-09-29.log 那一轮 prompt 里连指令块都没有）。
+  let hypnosisBlocks = [];
+  if (forcedClimax) {
+    try {
+      const boost = buildForcedClimaxProactiveBlocks(candidate.id);
+      hypnosisBlocks = boost.blocks;
+      if (boost.directive === 'forced_climax') {
+        // 动机一并换掉：配图提示词会带动机名，且 imageGen=true 决定这一轮必须出图
+        motive = { name: '强制高潮', desc: '你刚被强制带上高潮，这一轮就是这件事本身', imageGen: true };
+      }
+      console.log(`[hypnosis] 强制高潮轮：注入 ${hypnosisBlocks.length} 块、awakenedFromSleep=${boost.awakenedFromSleep}、directive=${boost.directive || '(空)'}`);
+    } catch (err) {
+      console.warn('[hypnosis] 强制高潮轮注入失败（退回普通主动聊天）:', err.message);
+    }
+  }
+
+  const greeting = await generateGreeting(candidate, affinity, compositeVad, lastMessageAt, recentSummary, motive, relationshipContext, userProfile, streak, { hypnosisBlocks });
+
+  const { rawId, firstMsgId, lastMsgId, msgIds, segments } = writeProactiveMessage(candidate, greeting);
+
+  stmt('UPDATE characters SET proactive_streak = ? WHERE id = ?')
+    .run(streak + 1, candidate.id);
+
+  // **先发文本**（2026-10-02 结构性改造，与 1350 行那条链同一口径）：
+  //   文本立刻上屏，配图后台生成完再补挂。原来要 await 出图才广播 ⇒ ComfyUI 慢/关着时她的话一直不出现。
+  broadcastProactiveMessage({
+    character_id: candidate.id,
+    display_name: candidate.display_name,
+    avatar_path: candidate.avatar_path,
+    content: greeting,
+    segments,
+    msg_ids: msgIds,
+    msg_id: firstMsgId,
+    raw_id: rawId,
+    images: [],
+    created_at: new Date().toISOString(),
+  });
+
+  // 如果需要配图就生成（仍在 tick 内 await —— 紧随其后的亲密看板记账依赖"prompt 已写回 raw"这个锚点；
+  // 梦境动机同样走标准配图管线——现场生成全新配图，绝不复用睡中应答时用户已看过的图（防重复配图））
+  let imageUrls = null;
+  if (motive.imageGen) {
+    imageUrls = await generateImageForGreeting(candidate, greeting, motive.name, lastMsgId, rawId);
+  }
+
+  // 图后补：挂到已上屏的那条气泡（前端按 msg_id 找气泡；失败只 warn）
+  if (imageUrls?.length) {
+    try {
+      broadcast('proactive_message_update', { msg_id: firstMsgId, raw_id: rawId, images: imageUrls });
+    } catch (err) {
+      console.warn('⚡ 配图补挂广播失败（文字已上屏，不影响）:', err?.message || err);
+    }
+  }
+
+  // ── 亲密看板记账（task-42）──
+  // 这条链**完全绕开 chat.js**（writeProactiveMessage 直接落 raw），所以 chat.js 里那两处记账挂点
+  // 一个都不会跑到：强制高潮点下去立刻触发的这一轮，过去在看板上永远没有流水。
+  // 位置必须在 generateImageForGreeting 之后 —— 它才是把 prompt 写回 raw 的那一步，
+  // 而 recordFromConversationTail 是按「最后一条带 prompt 的 assistant raw」找锚点的。
+  // 失败只 warn：记账是旁路，不能影响主动消息本身。
+  try {
+    const rec = recordFromConversationTail({
+      characterId: candidate.id,
+      conversationId,
+      scene: 'chat',
+      partnerKind: 'user',
+      // 强制高潮轮：即使不在催眠中（task-42「随时都能触发」），也允许正文兜底记一笔
+      forceTextFallback: forcedClimax,
+    });
+    if (rec && rec.inserted > 0) console.log(`⚡ [intimate] proactive round recorded ${rec.inserted} act(s) for ${candidate.display_name}`);
+  } catch (err) {
+    console.warn('[intimate] proactive round record failed:', err.message);
+  }
+
+  // ⚠️ 这里原来还有一次 broadcastProactiveMessage（把文本+图一起推）——
+  // 2026-10-02「先发文本、图后补」改造后，文本已在 writeProactiveMessage 之后立刻推过、
+  // 图也在生成完后用 proactive_message_update 补挂，**这一处必须删掉**，否则前端会重复上屏一次。
+
+  // 梦境系统：梦已正式分享（出口④）
+  if (sharedDream?.id) {
+    try { markDreamShared(sharedDream.id, 'proactive'); } catch { /* 非关键路径 */ }
+  }
+
+  updateNextProactiveAt(candidate.id, score);
+
+    console.log(`⚡ force: done ${candidate.display_name} (motive: ${motive.name})`);
+    return { character: candidate.display_name, motive: motive.name, greeting };
+  } catch (err) {
+    console.error('⚡ forceProactiveNow error:', err.message);
+    return null;
+  }
+}
+
+function _parseCharLoras(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) } catch { return [] }
+  }
+  return [];
+}
+
+/** ⚠️ 死导出（2026-10-15 标注，只标注不删）：无调用点；与另外六个 `stop*Scheduler` 同批处理。 */
+export function stopProactiveChatScheduler() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  stopFreqLine();
+  stopStartupLine();
+  console.log('⚡ All lines stopped');
+}

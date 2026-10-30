@@ -1,0 +1,34 @@
+{
+  "name": "generate-image-agent-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "node --test \"test/*.test.js\"",
+    "build": "node build.mjs",
+    "preview": "vite preview",
+    "lint": "eslint src",
+    "split-fonts": "node split-fonts.mjs"
+  },
+  "dependencies": {
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/core": "^1.48.2",
+    "pinia": "^2.3.0",
+    "three": "0.185.1",
+    "vue": "^3.5.13",
+    "vue-easy-lightbox": "^1.19.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@typescript-eslint/parser": "^8.68.0",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "cn-font-split": "^7.4.3",
+    "eslint": "^10.9.1",
+    "eslint-plugin-vue": "^10.10.0",
+    "globals": "^17.11.0",
+    "typescript": "^6.0.3",
+    "vite": "^6.1.0"
+  }
+}

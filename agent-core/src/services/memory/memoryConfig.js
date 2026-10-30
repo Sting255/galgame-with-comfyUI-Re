@@ -1,0 +1,284 @@
+/**
+ * Memory v3 配置中心（memory_settings 单键 JSON 持久化于 system_settings 表）
+ *
+ * 四组阶段开关（docs/memory-upgrade-plan.md §8），彼此独立、可单独回退：
+ *   v3             阶段一  多重表示/实体通道/语义注入
+ *   activeSearch   阶段二  @memory 主动回想（默认关，灰度）
+ *   consolidation  阶段三  整理 daemon（默认开，空闲触发）
+ *   contextBudget  阶段四  dynamicBlocks token 预算（默认关）
+ * 另含 embedding/reranker provider 配置（getEmbeddingProfile 生成 corpus 指纹）。
+ * 所有 getter 在 DB 未就绪时按默认值降级，绝不阻塞聊天主流程。
+ */
+
+import crypto from 'crypto';
+import { getDb } from '../../db/index.js';
+
+export const DEFAULT_MEMORY_SETTINGS = Object.freeze({
+  enabled: true,
+  // 与 db/index.js 建库种子行保持一致（种子写的是 7）。此前默认值 5、种子 7，
+  // 全新库实际生效 7 而代码默认读作 5，两边对不上时很难判断"到底搜几条"。
+  topK: 7,
+  textCandidates: 24,
+  vectorCandidates: 24,
+  // 未参与的奇遇不写长期记忆（上游 v3.9.0 口径，2026-10-15 收口）：
+  // 「参与」= 用户至少推进过一个分支（choice_history 长度 > 1 / engaged=1）。
+  // 这个开关**已废弃**：旧配置或旧客户端都不能把它重新打开（见 normalizeMemorySettings 的强制钳位），
+  // 否则没被看过的奇遇会污染 RAG 检索。
+  recordUnengagedEvents: false,
+  // v3：记忆多重表示 + 实体检索通道 + 语义注入（docs/memory-upgrade-plan.md 阶段一开关）
+  v3: { enabled: true },
+  // 阶段二：@memory 主动回想（默认关，灰度放量；docs/memory-upgrade-plan.md §5）
+  activeSearch: { enabled: false, timeoutMs: 4000 },
+  // 阶段三：整理 daemon（记忆的"睡眠期"；docs/memory-upgrade-plan.md §6）。
+  //   minIntervalMinutes 两次“真正干过活”的整理之间的最小间隔（防用户离开后每 5 分钟一整轮）
+  //   llmCallsPerRun    单轮整理的 LLM 调用上限
+  //   dailyLlmCalls     每日 LLM 调用总量（跨轮累计、按上海日期归零）
+  // 旧配置键 dailyMaxLlmCalls 的语义本就是“每日总量”，统一归位到 dailyLlmCalls。
+  // T4 画像升华（portrait_suggest）默认关闭：候选消费记账（memory_consolidation_marks，14 天 TTL）
+  // 已消除"同一批候选每轮重复送 LLM"，但为与上游「暂时关闭 T4」的默认行为保持一致，开关默认 false；
+  // 需要时把 consolidation 配置里的 portraitSuggest 置为 true 即可开启。
+  consolidation: { enabled: true, idleDelayMinutes: 30, minIntervalMinutes: 60, llmCallsPerRun: 3, dailyLlmCalls: 60, portraitSuggest: false },
+  // 阶段四：dynamicBlocks token 预算（默认关；docs/memory-upgrade-plan.md §7）
+  contextBudget: { enabled: false, dynamicTokens: 8000 },
+  embedding: {
+    enabled: false,
+    provider: 'custom',
+    baseURL: '',
+    apiKey: '',
+    model: '',
+    dimensions: null,
+    headers: {},
+    timeoutMs: 8000,
+  },
+  reranker: {
+    enabled: false,
+    provider: 'custom',
+    baseURL: '',
+    apiKey: '',
+    model: '',
+    topN: 7,
+    headers: {},
+    timeoutMs: 8000,
+  },
+});
+
+export const EMBEDDING_PROVIDERS = new Set(['openai', 'siliconflow', 'jina', 'custom']);
+export const RERANKER_PROVIDERS = new Set(['jina', 'cohere', 'siliconflow', 'voyage', 'custom']);
+
+function cloneDefaults() {
+  return JSON.parse(JSON.stringify(DEFAULT_MEMORY_SETTINGS));
+}
+
+function objectOrEmpty(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+export function normalizeMemorySettings(input = {}, previous = null) {
+  const base = previous || cloneDefaults();
+  const embedding = objectOrEmpty(input.embedding);
+  const reranker = objectOrEmpty(input.reranker);
+  const v3 = objectOrEmpty(input.v3);
+  const activeSearch = objectOrEmpty(input.activeSearch);
+  const consolidation = objectOrEmpty(input.consolidation);
+  const contextBudget = objectOrEmpty(input.contextBudget);
+  const merged = {
+    enabled: input.enabled === undefined ? base.enabled : Boolean(input.enabled),
+    topK: clampInt(input.topK, base.topK, 1, 20),
+    textCandidates: clampInt(input.textCandidates, base.textCandidates, 5, 100),
+    vectorCandidates: clampInt(input.vectorCandidates, base.vectorCandidates, 5, 100),
+    // 强制 false：不信任入参、也不信任 previous（旧库里可能存过 true）。
+    // 上游 v3.9.0 的口径是「参与过的奇遇才进记忆」，这个键只保留形状、不再有开的能力。
+    recordUnengagedEvents: false,
+    v3: {
+      enabled: v3.enabled === undefined ? (base.v3?.enabled ?? true) : Boolean(v3.enabled),
+    },
+    activeSearch: {
+      enabled: activeSearch.enabled === undefined ? (base.activeSearch?.enabled ?? false) : Boolean(activeSearch.enabled),
+      timeoutMs: clampInt(activeSearch.timeoutMs, base.activeSearch?.timeoutMs ?? 4000, 1000, 30000),
+    },
+    consolidation: {
+      enabled: consolidation.enabled === undefined ? (base.consolidation?.enabled ?? true) : Boolean(consolidation.enabled),
+      idleDelayMinutes: clampInt(consolidation.idleDelayMinutes, base.consolidation?.idleDelayMinutes ?? 30, 5, 720),
+      minIntervalMinutes: clampInt(
+        consolidation.minIntervalMinutes,
+        base.consolidation?.minIntervalMinutes ?? 60,
+        0, 1440,
+      ),
+      llmCallsPerRun: clampInt(consolidation.llmCallsPerRun, base.consolidation?.llmCallsPerRun ?? 3, 0, 30),
+      // 旧键 dailyMaxLlmCalls → dailyLlmCalls：旧键语义就是"每日总量"，
+      // 此前被误接到"每轮预算"导致默认值被放大 288 倍（每 5 分钟一轮 × 6 次）
+      dailyLlmCalls: clampInt(
+        consolidation.dailyLlmCalls ?? consolidation.dailyMaxLlmCalls,
+        base.consolidation?.dailyLlmCalls ?? base.consolidation?.dailyMaxLlmCalls ?? 60,
+        0, 2000,
+      ),
+      portraitSuggest: consolidation.portraitSuggest === undefined
+        ? (base.consolidation?.portraitSuggest ?? false)
+        : Boolean(consolidation.portraitSuggest),
+    },
+    contextBudget: {
+      enabled: contextBudget.enabled === undefined ? (base.contextBudget?.enabled ?? false) : Boolean(contextBudget.enabled),
+      dynamicTokens: clampInt(contextBudget.dynamicTokens, base.contextBudget?.dynamicTokens ?? 8000, 2000, 100000),
+    },
+    embedding: {
+      ...base.embedding,
+      ...embedding,
+      enabled: embedding.enabled === undefined ? base.embedding.enabled : Boolean(embedding.enabled),
+      headers: objectOrEmpty(embedding.headers ?? base.embedding.headers),
+      dimensions: embedding.dimensions === undefined
+        ? base.embedding.dimensions
+        : (embedding.dimensions ? clampInt(embedding.dimensions, null, 1, 65536) : null),
+      timeoutMs: clampInt(embedding.timeoutMs, base.embedding.timeoutMs, 1000, 60000),
+    },
+    reranker: {
+      ...base.reranker,
+      ...reranker,
+      enabled: reranker.enabled === undefined ? base.reranker.enabled : Boolean(reranker.enabled),
+      headers: objectOrEmpty(reranker.headers ?? base.reranker.headers),
+      topN: clampInt(reranker.topN, base.reranker.topN, 1, 50),
+      timeoutMs: clampInt(reranker.timeoutMs, base.reranker.timeoutMs, 1000, 60000),
+    },
+  };
+  merged.embedding.provider = normalizeProvider(merged.embedding.provider, EMBEDDING_PROVIDERS);
+  merged.embedding.baseURL = String(merged.embedding.baseURL || '').trim().replace(/\/$/, '');
+  merged.embedding.model = String(merged.embedding.model || '').trim();
+  merged.embedding.apiKey = String(merged.embedding.apiKey || '');
+  merged.reranker.provider = normalizeProvider(merged.reranker.provider, RERANKER_PROVIDERS);
+  merged.reranker.baseURL = String(merged.reranker.baseURL || '').trim().replace(/\/$/, '');
+  merged.reranker.model = String(merged.reranker.model || '').trim();
+  merged.reranker.apiKey = String(merged.reranker.apiKey || '');
+  return merged;
+}
+
+export function getMemorySettings({ includeSecrets = false } = {}) {
+  const row = getDb().prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'memory_settings'`).get();
+  let stored = {};
+  try { stored = row ? JSON.parse(row.setting_value) : {}; } catch { stored = {}; }
+  const settings = normalizeMemorySettings(stored);
+  if (includeSecrets) return settings;
+  return maskSecrets(settings);
+}
+
+// 记忆 v3 总开关（多重表示/实体通道/语义注入）。DB 未就绪时按默认开启处理。
+export function isMemoryV3Enabled() {
+  try {
+    return getMemorySettings().v3.enabled !== false;
+  } catch {
+    return true;
+  }
+}
+
+// 阶段二 @memory 主动回想配置（enabled 默认关）。DB 未就绪时按默认关闭处理，零影响。
+export function getActiveSearchConfig() {
+  try {
+    const { enabled, timeoutMs } = getMemorySettings().activeSearch || {};
+    return { enabled: enabled === true, timeoutMs: clampInt(timeoutMs, 4000, 1000, 30000) };
+  } catch {
+    return { enabled: false, timeoutMs: 4000 };
+  }
+}
+
+export function isMemoryActiveSearchEnabled() {
+  return getActiveSearchConfig().enabled;
+}
+
+// 阶段三整理 daemon 配置。DB 未就绪时按默认开启处理（daemon 内部还有空闲判定双重保险）。
+export function getConsolidationConfig() {
+  try {
+    const { enabled, idleDelayMinutes, minIntervalMinutes, llmCallsPerRun, dailyLlmCalls, portraitSuggest } = getMemorySettings().consolidation || {};
+    return {
+      enabled: enabled !== false,
+      idleDelayMinutes: clampInt(idleDelayMinutes, 30, 5, 720),
+      minIntervalMinutes: clampInt(minIntervalMinutes, 60, 0, 1440),
+      llmCallsPerRun: clampInt(llmCallsPerRun, 3, 0, 30),
+      dailyLlmCalls: clampInt(dailyLlmCalls, 60, 0, 2000),
+      portraitSuggest: portraitSuggest === true,
+    };
+  } catch {
+    return { enabled: true, idleDelayMinutes: 30, minIntervalMinutes: 60, llmCallsPerRun: 3, dailyLlmCalls: 60, portraitSuggest: false };
+  }
+}
+
+// T4 画像升华开关（默认关）。DB 未就绪时按关闭处理。
+export function isPortraitSuggestionEnabled() {
+  return getConsolidationConfig().portraitSuggest === true;
+}
+
+// 阶段四 dynamicBlocks token 预算配置。DB 未就绪时按默认关闭处理，零影响。
+export function getContextBudgetConfig() {
+  try {
+    const { enabled, dynamicTokens } = getMemorySettings().contextBudget || {};
+    return { enabled: enabled === true, dynamicTokens: clampInt(dynamicTokens, 8000, 2000, 100000) };
+  } catch {
+    return { enabled: false, dynamicTokens: 8000 };
+  }
+}
+
+export function saveMemorySettings(input) {
+  const previous = getMemorySettings({ includeSecrets: true });
+  const nextInput = JSON.parse(JSON.stringify(input || {}));
+  for (const key of ['embedding', 'reranker']) {
+    nextInput[key] ||= {};
+    if (!Object.prototype.hasOwnProperty.call(nextInput[key], 'apiKey') || nextInput[key].apiKey === '') {
+      nextInput[key].apiKey = previous[key].apiKey;
+    }
+  }
+  const settings = normalizeMemorySettings(nextInput, previous);
+  validateProvider(settings.embedding, '嵌入模型');
+  validateProvider(settings.reranker, '重排序模型');
+  getDb().prepare(`
+    INSERT INTO system_settings(setting_key, setting_value, updated_at)
+    VALUES ('memory_settings', ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP
+  `).run(JSON.stringify(settings));
+  return settings;
+}
+
+export function getEmbeddingProfile(settings = getMemorySettings({ includeSecrets: true })) {
+  if (!settings.embedding.enabled || !settings.embedding.baseURL || !settings.embedding.model) return null;
+  // 指纹载荷必须与 memoryProviders.profileFor(provider, 'user') 逐字段一致：这里少一个字段，设置页
+  // 报告的语料就会是另一个名字（此前少了 source，算出来的指纹跟真正写入的 collection 对不上）。
+  const raw = JSON.stringify({
+    source: 'user',
+    provider: settings.embedding.provider,
+    baseURL: settings.embedding.baseURL,
+    model: settings.embedding.model,
+    dimensions: settings.embedding.dimensions || null,
+  });
+  const fingerprint = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
+  return { fingerprint, corpus: `memory_v2_${fingerprint}` };
+}
+
+// 检索模式对外统一报告为 hybrid：文本通道永远可用，向量/实体通道按配置与可用性自行降级
+// （此前是一个恒返回 'hybrid' 的导出函数，收口为常量，避免"看起来可切换"的误导）
+export const MEMORY_MODE = 'hybrid';
+
+function maskSecrets(settings) {
+  const copy = JSON.parse(JSON.stringify(settings));
+  for (const key of ['embedding', 'reranker']) {
+    const secret = copy[key].apiKey || '';
+    copy[key].hasApiKey = Boolean(secret);
+    copy[key].apiKeyPreview = secret ? `${secret.slice(0, 3)}***${secret.slice(-2)}` : '';
+    copy[key].apiKey = '';
+  }
+  copy.mode = MEMORY_MODE;
+  copy.profile = getEmbeddingProfile(settings)?.fingerprint || null;
+  return copy;
+}
+
+function validateProvider(provider, label) {
+  if (!provider.enabled) return;
+  if (!provider.baseURL || !provider.model) throw new Error(`${label}启用后必须填写地址和模型`);
+  try { new URL(provider.baseURL); } catch { throw new Error(`${label}地址无效`); }
+}
+
+function normalizeProvider(value, allowed) {
+  const provider = String(value || 'custom').trim().toLowerCase();
+  return allowed.has(provider) ? provider : 'custom';
+}
+
+function clampInt(value, fallback, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}

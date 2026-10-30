@@ -1,0 +1,456 @@
+<template>
+  <nav class="nav-bar">
+    <div class="nav-top" ref="navTopEl">
+      <!-- 游戏菜单式滑动指示器：跟随 active 项滑动，高亮统一用主题色 -->
+      <div class="nav-indicator" :style="indicatorStyle" aria-hidden="true"></div>
+      <router-link to="/chat" data-nav="chat" class="nav-item" :class="{ active: $route.path.startsWith('/chat') }" title="聊天">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <span v-if="proactive.unreadCount > 0" class="nav-dot">{{ proactive.unreadCount > 99 ? '99+' : proactive.unreadCount }}</span>
+        </div>
+        <span class="nav-label">聊天</span>
+      </router-link>
+
+      <div class="nav-item" data-nav="moments" :class="{ active: $route.path.startsWith('/moments') }" title="朋友圈" @click="handleMomentsClick">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
+            <path d="M679.17 398.982V126.497s-133.338-71.481-288.989-16.366l288.99 288.851z m25.245 160.303V137.748s157.63 71.434 202.052 244.963L704.415 559.285z m-84.8 122.527l290.99-273.649s51.488 83.709-25.293 273.649H619.614z m-148.586 34.695h393.014S816.6 845.102 646.788 898.195L471.03 716.507z m-128.293-86.811v256.18s102.072 65.365 276.878 21.477L342.736 629.696z m-227.366 13.25l199.075-178.62v406.207c0-0.001-120.272-41.75-199.075-227.587z m-5.045-28.57S64.787 467.442 128.48 339.824h273.81L110.326 614.377z m35.357-303.193s57.603-130.594 214.21-191.87l186.894 191.87H145.682z" />
+          </svg>
+          <span v-if="moments.newPostCount > 0" class="nav-dot">{{ moments.newPostCount > 99 ? '99+' : moments.newPostCount }}</span>
+        </div>
+        <span class="nav-label">朋友圈</span>
+      </div>
+
+      <div class="nav-item" data-nav="events" :class="{ active: $route.path.startsWith('/events') }" title="奇遇" @click="handleEventsClick">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
+          </svg>
+          <span v-if="events.newEventCount > 0" class="nav-dot">{{ events.newEventCount > 99 ? '99+' : events.newEventCount }}</span>
+        </div>
+        <span class="nav-label">奇遇</span>
+      </div>
+
+      <!-- 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体） -->
+      <router-link to="/media" data-nav="media" class="nav-item" :class="{ active: $route.path.startsWith('/media') }" title="传媒">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 22V4a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1v18" />
+            <path d="M4 22h16" />
+            <path d="M9 6h6M9 10h6M9 14h4" />
+          </svg>
+          <span v-if="mediaUnreadCount > 0" class="nav-dot" :title="`传媒有 ${mediaUnreadCount} 条未读更新`">{{ mediaUnreadCount > 99 ? '99+' : mediaUnreadCount }}</span>
+        </div>
+        <span class="nav-label">传媒</span>
+      </router-link>
+
+      <div class="nav-item" data-nav="schedule" :class="{ active: $route.path.startsWith('/schedule') }" title="日程" @click="handleScheduleClick">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+            <line x1="16" y1="2" x2="16" y2="6" />
+            <line x1="8" y1="2" x2="8" y2="6" />
+            <line x1="3" y1="10" x2="21" y2="10" />
+          </svg>
+          <span v-if="scheduleStore.resetTask?.backgrounded" class="nav-reset-dot" title="日程重置中">
+            <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="nav-reset-spin"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </span>
+        </div>
+        <span class="nav-label">日程</span>
+      </div>
+
+      <router-link to="/gallery" data-nav="gallery" class="nav-item" :class="{ active: $route.path.startsWith('/gallery') }" title="相册">
+        <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
+          <path stroke="currentColor" stroke-width="35" d="M898.8 748.4c-11.9 0-21.5-9.6-21.5-21.5V254.1c0-23.7-19.3-43-43-43H189.7c-23.7 0-43 19.3-43 43v515.7c0 23.7 19.3 43 43 43h537.2c11.9 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5H189.7c-47.4 0-86-38.5-86-86V254.1c0-47.4 38.5-86 86-86h644.7c47.4 0 86 38.6 86 86v472.8c0 11.8-9.6 21.4-21.5 21.4z"/>
+          <path stroke="currentColor" stroke-width="35" d="M742.1 849.5a21.3 21.3 0 0 1-15.2-6.3L311.5 427.8 139.5 571c-8.9 7.9-22.5 7.1-30.3-1.8-7.9-8.9-7.1-22.4 1.8-30.3l172-150.4c8.5-7.5 21.4-7.2 29.5 0.9l429.8 429.8c8.4 8.4 8.4 22 0 30.4zM914.2 741.9c-4.2 4.3-9.8 6.5-15.4 6.5-5.4 0-10.8-2-15-6.1L657.1 520.8l-121.9 121.9c-8.4 8.4-22 8.4-30.4 0s-8.4-22 0-30.4l137-137c8.3-8.3 21.8-8.4 30.2-0.2l221.8 213.5c8.5 8.3 8.7 21.9 0.4 30.3z"/>
+        </svg>
+        <span class="nav-label">相册</span>
+      </router-link>
+
+      <!-- 地图：世界地理骨架（与游戏化小镇刻意分开的叙事地理） -->
+      <router-link to="/worldmap" data-nav="worldmap" class="nav-item" :class="{ active: $route.path.startsWith('/worldmap') }" title="地图">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z" />
+            <path d="M9 4v14M15 6v14" />
+          </svg>
+        </div>
+        <span class="nav-label">地图</span>
+      </router-link>
+
+      <router-link to="/tavern" data-nav="tavern" class="nav-item" :class="{ active: $route.path.startsWith('/tavern') }" title="酒馆">
+        <div class="nav-icon-wrap">
+          <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
+            <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z"/>
+            <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
+          </svg>
+          <span v-if="mailbox.unreadCount > 0" class="nav-dot">{{ mailbox.unreadCount > 99 ? '99+' : mailbox.unreadCount }}</span>
+          <!-- 《邻舍日报》未读：复用信箱同一套 nav-dot 红点语言，落在左上位避免与右上数字徽标叠在一起 -->
+          <span v-if="newspaper.unread" class="nav-dot nav-dot-daily" title="今天的《邻舍日报》还没读"></span>
+        </div>
+        <span class="nav-label">酒馆</span>
+      </router-link>
+
+    </div>
+
+    <div class="nav-bottom">
+      <router-link to="/settings" data-nav="settings" class="nav-item" :class="{ active: $route.path === '/settings' }" :title="updateInfo.hasUpdate ? '设置 · 有新版本' : '设置'">
+        <div class="nav-icon-wrap">
+          <gear-icon :size="24" />
+          <!-- 远端有更新的 tag 时亮红点，与聊天 / 朋友圈未读红点同一套语言 -->
+          <span v-if="updateInfo.hasUpdate" class="nav-dot" aria-hidden="true"></span>
+        </div>
+        <span class="nav-label">设置</span>
+      </router-link>
+
+      <!-- 出图服务状态（2026-10-01，规划 §一-4）：
+           ComfyUI 没开时**每个要图的功能都会失败**（聊天配图、朋友圈、奇遇、一键生成…），
+           用户此前只能靠"图怎么又没出来"发现。这里给一眼可见的状态 + 一句怎么处理，
+           把这类反馈消在源头。数据复用既有 `GET /api/images/comfyui-health`（3s 超时，轻）。
+           非交互元素（不点击），所以按 AGENTS.md 用自包含样式而不是按钮组件。 -->
+      <div
+        class="nav-comfy"
+        :class="comfy.online ? 'is-online' : 'is-offline'"
+        :title="comfy.title"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="nav-comfy-dot" aria-hidden="true"></span>
+        <span class="nav-label">{{ comfy.online ? '出图在线' : '出图离线' }}</span>
+      </div>
+    </div>
+  </nav>
+</template>
+
+<script setup>
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { useMomentsStore } from '../stores/moments.js'
+import { useEventsStore } from '../stores/events.js'
+import { useProactiveStore } from '../stores/notifications.js'
+import { useScheduleStore } from '../stores/schedule.js'
+import { useMailboxStore } from '../stores/mailbox.js'
+import { useNewspaperStore } from '../stores/newspaper.js'
+import { useMediaStore } from '../stores/media.js'   // 上游 v3.9.0 合并：媒体内容页未读数
+import { useUpdateStore } from '../stores/updateInfo.js'
+import { startUnifiedStream, stopUnifiedStream } from '../stores/unifiedStream.js'
+import { comfyuiHealth } from '../api/index.js'
+import GearIcon from './GearIcon.vue'
+
+const router = useRouter()
+const route = useRoute()
+const moments = useMomentsStore()
+const events = useEventsStore()
+const proactive = useProactiveStore()
+const scheduleStore = useScheduleStore()
+const mailbox = useMailboxStore()
+const newspaper = useNewspaperStore()
+// 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体）未读数
+const media = useMediaStore()
+const mediaUnreadCount = computed(() => media.newPostCount)
+const updateInfo = useUpdateStore()
+
+function handleMomentsClick() {
+  if (route.path === '/moments') {
+    moments.resetFilters()
+    router.replace({ path: '/moments', query: {} })
+    moments.requestScrollToTop()
+  } else {
+    router.push('/moments')
+  }
+}
+
+function handleEventsClick() {
+  if (route.path === '/events') {
+    events.requestScrollToTop()
+  } else {
+    router.push('/events')
+  }
+}
+
+function handleScheduleClick() {
+  // 如果已在日程页且后台有重置任务，重新打开进度弹窗
+  if (route.path.startsWith('/schedule') && scheduleStore.resetTask?.backgrounded) {
+    scheduleStore.showResetTask()
+  } else {
+    router.push('/schedule')
+  }
+}
+
+// ── 出图服务状态（规划 §一-4，2026-10-01）──────────────────────────────
+// ComfyUI 没开时，所有要图的功能都会失败（聊天配图 / 朋友圈 / 奇遇 / 一键生成），
+// 而用户此前只能从"图又没出来"反推。这里轮询既有健康端点，给一眼可见的状态。
+// · 30 秒一次：够快能反映"刚启动好"，又不至于一直敲它（该端点自己 3s 超时）。
+// · 失败一律当离线（`comfyuiHealth()` 已经把异常吞成 `{connected:false}`）。
+// · 文案要说"怎么办"，不只是"不在线"。
+const comfy = ref({ online: false, title: '正在检查出图服务（ComfyUI）…' })
+let comfyTimer = null
+
+async function refreshComfyStatus() {
+  const res = await comfyuiHealth()
+  const online = res?.connected === true
+  const url = res?.url || ''
+  comfy.value = online
+    ? { online: true, title: `出图服务在线${res?.device ? '（' + res.device + '）' : ''}${url ? ' · ' + url : ''}` }
+    : {
+      online: false,
+      title: '出图服务（ComfyUI）没在跑：聊天配图、朋友圈配图、奇遇配图、一键生成都会失败。\n'
+        + '先把 ComfyUI 启动起来（启动后约 30~45 秒加载完），这个灯会自己变绿。'
+        + (url ? `\n地址：${url}` : ''),
+    }
+}
+
+function startComfyPolling() {
+  refreshComfyStatus()
+  if (!comfyTimer) comfyTimer = setInterval(refreshComfyStatus, 30000)
+}
+
+// ── 游戏菜单式滑动指示器 ──
+const navTopEl = ref(null)
+const indicatorStyle = ref({ opacity: 0 })
+
+const activeNavKey = computed(() => {
+  const p = route.path
+  if (p.startsWith('/chat') || p.startsWith('/group')) return 'chat'
+  if (p.startsWith('/moments')) return 'moments'
+  if (p.startsWith('/events')) return 'events'
+  if (p.startsWith('/town')) return 'town'
+  if (p.startsWith('/schedule')) return 'schedule'
+  if (p.startsWith('/gallery')) return 'gallery'
+  if (p.startsWith('/tavern')) return 'tavern'
+  if (p.startsWith('/settings')) return 'settings'
+  return 'chat'
+})
+
+function updateIndicator() {
+  const wrap = navTopEl.value
+  if (!wrap) return
+  const key = activeNavKey.value
+  const item = wrap.querySelector(`[data-nav="${key}"]`)
+  if (!item) { indicatorStyle.value = { opacity: 0 }; return }
+  indicatorStyle.value = {
+    opacity: 1,
+    transform: `translateY(${item.offsetTop}px)`,
+    height: `${item.offsetHeight}px`,
+  }
+}
+
+watch(activeNavKey, () => nextTick(updateIndicator))
+
+onMounted(() => {
+  nextTick(updateIndicator)
+  // 字体加载后尺寸可能变化，延迟校准一次
+  setTimeout(updateIndicator, 400)
+  window.addEventListener('resize', updateIndicator)
+  window.addEventListener('linshe:route-reselected', handleRouteReselected)
+  startUnifiedStream()
+  moments.connectSSE()
+  events.connectSSE()
+  media.connectSSE()   // 上游 v3.9.0 合并：媒体内容页未读数
+  mailbox.startPolling()
+  newspaper.startPolling()
+  startComfyPolling()
+})
+
+function handleRouteReselected(event) {
+  if (event.detail?.route === '/moments') handleMomentsClick()
+}
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateIndicator)
+  window.removeEventListener('linshe:route-reselected', handleRouteReselected)
+  stopUnifiedStream()
+  moments.disconnectSSE()
+  events.disconnectSSE()
+  media.disconnectSSE()   // 上游 v3.9.0 合并：媒体内容页未读数
+  mailbox.stopPolling()
+  newspaper.stopPolling()
+  if (comfyTimer) { clearInterval(comfyTimer); comfyTimer = null }
+})
+</script>
+
+<style scoped>
+.nav-bar {
+  width: 75px;
+  min-width: 75px;
+  height: 100vh;
+  height: 100dvh;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-right: 1px solid var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 0;
+  z-index: 10;
+  user-select: none;
+}
+
+.nav-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+/* ── 游戏菜单式滑动指示器 ── */
+.nav-indicator {
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  top: 0;
+  border-radius: 14px;
+  border: 1.5px solid transparent;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  pointer-events: none;
+  transition:
+    transform 0.38s var(--ease-spring),
+    height 0.38s var(--ease-spring),
+    background-color var(--dur-base) ease,
+    border-color var(--dur-base) ease,
+    opacity var(--dur-base) ease;
+}
+
+.nav-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 出图服务状态（规划 §一-4）：小圆点 + 一个字，沿用 nav-label 的字号与 --text-secondary 色阶 */
+.nav-comfy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px 10px;
+  width: 65px;
+  cursor: default;
+}
+.nav-comfy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  opacity: 0.5;
+  transition: background 0.3s var(--ease-standard), opacity 0.3s var(--ease-standard), box-shadow 0.3s var(--ease-standard);
+}
+.nav-comfy.is-online .nav-comfy-dot {
+  background: var(--accent);
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18);
+}
+.nav-comfy.is-offline .nav-comfy-dot {
+  background: var(--text-secondary);
+  opacity: 0.45;
+}
+.nav-comfy.is-offline .nav-label { opacity: 0.6; }
+.nav-comfy .nav-label { font-size: 10px; white-space: nowrap; }
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  border-radius: 12px;
+  width: 65px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--text-bright);
+}
+
+.nav-item.active {
+  /* 文字用 --accent-text（深一档）而不是 --accent：品牌色在白底上只有 2.5:1，
+     选中的导航文字会糊（2026-10-30 对比度扫描 + 用户实报「反色、看不清」） */
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.nav-item.active .nav-label {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.nav-label {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.nav-icon-wrap {
+  position: relative;
+  display: flex;
+}
+
+.nav-dot {
+  position: absolute;
+  top: -5px;
+  right: -8px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: var(--danger);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  white-space: nowrap;
+  animation: cel-jelly 0.45s var(--ease-spring) both;
+}
+
+/* 《邻舍日报》未读点：与信箱数字徽标同皮肤同动效，只是收成小圆点、落到图标左上位 */
+.nav-dot-daily {
+  top: -5px;
+  right: auto;
+  left: -8px;
+  width: 12px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+
+/* 日程重置后台指示器 */
+.nav-reset-dot {
+  position: absolute;
+  top: -4px;
+  right: -7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(var(--accent-rgb), 0.15);
+  border: 1.5px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  animation: cel-jelly 0.45s var(--ease-spring) both;
+}
+.nav-reset-spin {
+  animation: nav-reset-rotate 1.2s linear infinite;
+}
+@keyframes nav-reset-rotate { to { transform: rotate(360deg); } }
+
+/* 移动端隐藏 NavBar */
+@media (max-width: 767px) {
+  .nav-bar {
+    display: none;
+  }
+}
+</style>

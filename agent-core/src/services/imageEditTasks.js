@@ -1,0 +1,263 @@
+/**
+ * 图片编辑任务（重新生成 / HiresFix 细化）后台任务管理器
+ *
+ * 流程:
+ *   1. 提交任务 → 立刻返回 task_id
+ *   2. 后台运行 regenerate / refine，结果写入 data/images/.pending/ 暂存
+ *   3. SSE 推送 start / progress / done / error
+ *   4. 前端确认后 apply（原子覆盖原图）或 discard / rerun
+ */
+
+import fs from 'fs';
+import path from 'path';
+import { randomBytes, randomUUID } from 'crypto';
+import { getPendingDir } from './imagePaths.js';
+import { broadcast } from './unifiedStreamBus.js';
+import { invalidateGalleryCache } from './galleryCache.js';
+
+const tasks = new Map();
+
+const STALE_MS = 24 * 60 * 60 * 1000;
+
+function httpError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function normalizeProgress(p) {
+  if (!p || typeof p !== 'object') return null;
+  return {
+    progress: typeof p.progress === 'number' ? p.progress : (p.phase === 'done' ? 1 : null),
+    totalSteps: p.totalSteps ?? null,
+    stage: p.stage ?? null,
+    phase: p.phase ?? null,
+  };
+}
+
+function serializeTask(task) {
+  return {
+    id: task.id,
+    action: task.action,
+    url: task.url,
+    status: task.status,
+    previewUrl: task.previewUrl || null,
+    token: task.token,
+    progress: task.progress,
+    error: task.error || null,
+    createdAt: task.createdAt,
+    // 2026-10-13 上游 v3.9.0 合并：被动型后台任务（日记生成）要把 meta / result 透给前端，
+    // 右下角生成提示靠 task.meta.characterId / characterName / date 才能定位到角色与日期。
+    meta: task.meta || null,
+    result: task.result || null,
+  };
+}
+
+function cleanupStageFiles(stageBase) {
+  // 被动型后台任务没有暂存文件（stageBase 为 null），直接跳过
+  if (!stageBase) return;
+  const dir = getPendingDir();
+  if (!fs.existsSync(dir)) return;
+  const prefix = path.basename(stageBase) + '.';
+  for (const name of fs.readdirSync(dir)) {
+    if (name.startsWith(prefix)) {
+      try { fs.unlinkSync(path.join(dir, name)); } catch {}
+    }
+  }
+}
+
+/**
+ * 提交一个「被动型」后台任务：只有开始 / 进度 / 成功 / 失败，没有暂存图与「确认覆盖」这一步。
+ * 日记生成这类不需要用户挑图的后台任务用它——走同一套 image_edit_task_* 事件与 listEditTasks()，
+ * 右下角的生成提示（ImageEditTaskFloater）自动复用，无需新增事件类型与白名单。
+ *
+ * 【上游合并口径】本函数从上游 v3.9.0 合并进来（本地原本没有），供 services/diaryGenerator.js 使用。
+ * 只增不改：startEditTask 及其余导出保持原样。
+ *
+ * @param {object} spec
+ * @param {string} spec.action - 任务标识（前端按它决定文案与操作，如 'diary'）
+ * @param {object} [spec.meta] - 透传给前端的上下文（角色 id / 日期等，保持轻量）
+ * @returns {{ id: string, onProgress: Function, succeed: Function, fail: Function }}
+ */
+export function startBackgroundTask({ action, meta }) {
+  const id = randomUUID();
+  const token = randomBytes(12).toString('hex');
+  const task = {
+    id, action, url: '', targetPath: null, finalize: null, restart: null, meta, token, stageBase: null,
+    status: 'running', progress: null, previewUrl: null, error: null, createdAt: Date.now(),
+  };
+  tasks.set(id, task);
+  broadcast('image_edit_task_start', serializeTask(task));
+
+  return {
+    id,
+    onProgress(p) {
+      if (task.status !== 'running') return;
+      task.progress = normalizeProgress(p);
+      broadcast('image_edit_task_progress', serializeTask(task));
+    },
+    succeed(result = {}) {
+      if (task.status !== 'running') return;
+      task.status = 'ready';
+      task.progress = null;
+      task.result = result || null;
+      broadcast('image_edit_task_done', serializeTask(task));
+    },
+    fail(err) {
+      if (task.status !== 'running') return;
+      task.status = 'failed';
+      task.error = err?.message || String(err || '任务失败');
+      broadcast('image_edit_task_error', serializeTask(task));
+    },
+  };
+}
+
+/**
+ * 提交一个后台图片编辑任务。
+ *
+ * @param {object} spec
+ * @param {string} spec.action       - 'regenerate' | 'upscale' | 自定义标识（如 'standing'）
+ * @param {string} spec.url          - 原图 URL（不带 query）
+ * @param {string} [spec.targetPath] - 原图绝对路径（确认覆盖时原地写入）
+ * @param {Function} spec.run        - async ({ stageBase, onProgress }) => { filename }
+ *                                     必须把生成结果写到 `${stageBase}.${ext}` 并返回文件名
+ * @param {Function} [spec.finalize] - async (task) => string；自定义落库钩子，返回新图 URL（自带存储语义的场景用，
+ *                                     提供后不再做原地 rename，上面的 targetPath 可省略）
+ * @param {Function} [spec.restart]  - () => object：重新生成时自定义重启钩子
+ * @param {object}   [spec.meta]     - 透传给 finalize / restart 的上下文数据
+ * @returns {object} 任务记录
+ */
+export function startEditTask({ action, url, targetPath, run, finalize, restart, meta }) {
+  const id = randomUUID();
+  const token = randomBytes(12).toString('hex');
+  const stageBase = path.join(getPendingDir(), `${id}-${token}`);
+  fs.mkdirSync(path.dirname(stageBase), { recursive: true });
+
+  const task = {
+    id, action, url, targetPath, finalize, restart, meta, token, stageBase,
+    status: 'running', progress: null, previewUrl: null, error: null, createdAt: Date.now(),
+  };
+  tasks.set(id, task);
+  broadcast('image_edit_task_start', serializeTask(task));
+
+  Promise.resolve()
+    .then(() => run({
+      stageBase,
+      onProgress: (p) => {
+        task.progress = normalizeProgress(p);
+        broadcast('image_edit_task_progress', serializeTask(task));
+      },
+    }))
+    .then(({ filename }) => {
+      if (!filename) throw new Error('task produced no staged file');
+      task.pendingPath = path.join(getPendingDir(), filename);
+      task.previewUrl = `/images/.pending/${filename}`;
+      task.status = 'pending_confirm';
+      task.progress = null;
+      broadcast('image_edit_task_done', serializeTask(task));
+    })
+    .catch((err) => {
+      cleanupStageFiles(task.stageBase);
+      task.status = 'failed';
+      task.error = err?.message || String(err);
+      broadcast('image_edit_task_error', serializeTask(task));
+    });
+
+  return task;
+}
+
+export function listEditTasks() {
+  return [...tasks.values()]
+    .filter(t => t.status === 'running' || t.status === 'pending_confirm' || t.status === 'ready' || t.status === 'failed')
+    .map(serializeTask);
+}
+
+export function getEditTask(id) {
+  return tasks.get(id) || null;
+}
+
+export async function applyEditTask(id, token) {
+  const task = tasks.get(id);
+  if (!task) throw httpError('图片编辑任务不存在', 404);
+  if (task.status !== 'pending_confirm') throw httpError('任务尚未完成，无法确认覆盖', 409);
+  if (task.token !== token) throw httpError('任务凭证无效', 403);
+  if (!task.pendingPath || !fs.existsSync(task.pendingPath)) throw httpError('暂存文件不存在', 404);
+
+  if (typeof task.finalize === 'function') {
+    task.appliedUrl = await task.finalize(task);
+  } else {
+    fs.mkdirSync(path.dirname(task.targetPath), { recursive: true });
+    fs.renameSync(task.pendingPath, task.targetPath);
+  }
+  task.status = 'applied';
+  tasks.delete(id);
+
+  try {
+    invalidateGalleryCache();
+  } catch {}
+
+  return task;
+}
+
+export function discardEditTask(id, token) {
+  const task = tasks.get(id);
+  if (!task) throw httpError('图片编辑任务不存在', 404);
+  if (task.status === 'running') throw httpError('任务运行中，暂不能取消', 409);
+  if (task.token !== token) throw httpError('任务凭证无效', 403);
+
+  cleanupStageFiles(task.stageBase);
+  if (task.pendingPath && fs.existsSync(task.pendingPath)) {
+    try { fs.unlinkSync(task.pendingPath); } catch {}
+  }
+  task.status = 'discarded';
+  tasks.delete(id);
+}
+
+/**
+ * 重新按原动作跑一遍：先丢弃当前暂存，再用同一张原图创建新任务。
+ */
+export function rerunEditTask(id, token, startAgain) {
+  const task = tasks.get(id);
+  if (!task) throw httpError('图片编辑任务不存在', 404);
+  if (task.status === 'running') throw httpError('任务仍在运行，请等待完成', 409);
+  if (task.token !== token) throw httpError('任务凭证无效', 403);
+
+  const { action, url, meta, restart } = task;
+  discardEditTask(id, token);
+  if (typeof restart === 'function') return restart();
+  return startAgain({ action, url, meta });
+}
+
+/** 清理超时未确认的暂存任务与孤儿文件 */
+export function pruneEditTasks(maxAgeMs = STALE_MS) {
+  const now = Date.now();
+  const dir = getPendingDir();
+
+  for (const [id, task] of tasks) {
+    const inactive = task.status === 'pending_confirm' || task.status === 'ready' || task.status === 'failed';
+    if (inactive && now - task.createdAt > maxAgeMs) {
+      cleanupStageFiles(task.stageBase);
+      tasks.delete(id);
+    }
+  }
+
+  if (!fs.existsSync(dir)) return;
+  const referenced = new Set();
+  for (const task of tasks.values()) {
+    if (task.pendingPath) referenced.add(path.basename(task.pendingPath));
+    else referenced.add(path.basename(task.stageBase) + '.');
+  }
+
+  for (const name of fs.readdirSync(dir)) {
+    if ([...referenced].some(ref => name.startsWith(ref))) continue;
+    const filePath = path.join(dir, name);
+    try {
+      const s = fs.statSync(filePath);
+      if (now - s.mtimeMs > maxAgeMs) fs.unlinkSync(filePath);
+    } catch {}
+  }
+}
+
+// 启动后周期性清理，不阻塞进程退出
+const pruneTimer = setInterval(() => pruneEditTasks(), 6 * 60 * 60 * 1000);
+pruneTimer.unref();

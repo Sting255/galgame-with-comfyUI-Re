@@ -1,0 +1,323 @@
+import { createTownActionRunner } from './townActionRunner.js';
+import { assertUtcMs, planCatchUp } from './townClock.js';
+import { createFactSnapshot } from './townFacts.js';
+import { createTownRuleEngine, selectTownCandidate } from './townRuleEngine.js';
+import { SHELTER_WAIT_MS, shelterRuleKey } from './townWeatherShelter.js';
+
+export const TOWN_SIMULATION_RULE_VERSION = 1;
+const terminal = new Set(['completed', 'failed', 'cancelled']);
+const text = v => typeof v === 'string' && v.length > 0 && v.length <= 256;
+const error = code => Object.assign(new Error(code), { code });
+function sync(value) {
+  if (value?.then) throw error('ASYNC_ADAPTER_NOT_SUPPORTED');
+  return value;
+}
+
+/** Own table only. Actor/action migrations must already be applied by the host. */
+export function migrateTownSimulationSchema(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS town_simulation_state (
+    world_id TEXT NOT NULL, world_epoch INTEGER NOT NULL, actor_id TEXT NOT NULL,
+    state_json TEXT NOT NULL, PRIMARY KEY(world_id,world_epoch,actor_id)
+  )`);
+}
+
+/**
+ * Synchronous simulation bridge.
+ * registry: createTownActorRegistry(db), already synchronized by the host.
+ * readActorFacts(actor,{worldId,worldEpoch,nowUtcMs,action}) returns a batch:
+ * {actorId,worldEpoch,intent:'work'|'rest'|'wait'|'off_town',scheduleKey,
+ *  target:string|null,targetExists:boolean,arrived:boolean,locationKey:string|null,
+ *  allowsAction:boolean,durationMs,minDurationMs}. Host derives intent/target from
+ * existing routine/schedule and authoritative position, never activityText/LLM.
+ * The host advances authoritative movement to context.nowUtcMs before returning.
+ * durationMs: 1..6h, minDurationMs: 0..durationMs. Work requires a target.
+ * moveToTarget({actor,action,target,nowUtcMs}) => {status:'moving'|'unreachable'}.
+ * Movement and stopMoving({actor,action,reason,nowUtcMs}) MUST be idempotent by
+ * action.id, synchronous, and epoch fenced. They run after DB commit. Arrival
+ * is acknowledged only by the next authoritative fact batch, never the callback.
+ *
+ * API: tick(), advanceActor(actorId), getState(actorId),
+ * cancelActor(actorId,reason='SIMULATION_CANCELLED'). tick defaults to canonical
+ * non-player actors (including retirees, so their owned actions can be cancelled).
+ * No timers, LLM, wages, items, or replay of offline attendance. Catch-up metadata
+ * reports bounded elapsed windows; only current observed arrival starts work.
+ */
+export function createTownSimulation({ db, clock, registry, readActorFacts, moveToTarget,
+  stopMoving = () => {}, leaseMs = 120000, cooldownSeconds = 60,
+  retryMs = 30000, maxRetryMs = 600000, maxCatchUpMs = 21600000 } = {}) {
+  if (!db?.transaction || !clock?.now || !registry?.getWorldState || !registry?.getActor
+    || typeof readActorFacts !== 'function' || typeof moveToTarget !== 'function'
+    || typeof stopMoving !== 'function') throw error('MISSING_SIMULATION_DEPENDENCY');
+  for (const n of [retryMs, maxRetryMs, maxCatchUpMs]) if (!Number.isSafeInteger(n) || n < 1) throw error('INVALID_SIMULATION_LIMIT');
+  if (maxRetryMs < retryMs) throw error('INVALID_SIMULATION_LIMIT');
+  let initialized = false, executing = false, activeFacts = null, executionNow = null, executionSequence = null;
+  const recovered = new Set();
+  const ensure = () => { if (!initialized) { migrateTownSimulationSchema(db); initialized = true; } };
+  const engine = createTownRuleEngine({
+    refs: { 'schedule.intent': { type: 'string', values: ['work', 'rest', 'wait', 'off_town'] },
+      'schedule.allowed': { type: 'boolean' },
+      // 空闲等待承诺闸门：只有被日程/岗位/避雨/生活计划锚定的 wait 才允许产生动作行；
+      // 纯游走的未承诺空闲（缺省/false）按三值逻辑拒绝 wait 规则——自然走动是纯演出，
+      // 不产生 town_actions 行（游走由宿主演出层直接驱动）
+      'idle.committed': { type: 'boolean' },
+      // M2 生活动作事实：需求快照（0-100）与宿主决策的生活计划（缺省 = 交给 wait）
+      'needs.satiety': { type: 'number', min: 0, max: 100 }, 'needs.energy': { type: 'number', min: 0, max: 100 },
+      'needs.social': { type: 'number', min: 0, max: 100 }, 'needs.fun': { type: 'number', min: 0, max: 100 },
+      'needs.comfort': { type: 'number', min: 0, max: 100 }, 'needs.security': { type: 'number', min: 0, max: 100 },
+      'life.action': { type: 'string', values: ['', 'eat', 'read', 'sit'] },
+      'life.target': { type: 'string' } },
+    actions: { work_shift: {}, rest: {}, wait: {}, life_eat: {}, life_read: {}, life_sit: {} },
+  });
+  const lifeWhen = action => ({ op: 'eq', args: [{ ref: 'life.action' }, action] });
+  const routineWhen = intent => ({ op: 'all', args: [{ ref: 'schedule.allowed' },
+    { op: 'eq', args: [{ ref: 'schedule.intent' }, intent] }] });
+  const rules = [['work', 'work_shift', 50], ['rest', 'rest', 60]].map(([intent, type, priority]) =>
+    engine.compileRule({ key: `town.routine.${intent}`, version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority, cooldownSeconds,
+      when: routineWhen(intent), score: 80, action: { type } }));
+  // wait 只承认「有承诺的等待」（日程钉点/避雨等，idle.committed=true）；未承诺的空闲
+  // 不产生动作行——否则每次决策重算都会 SCHEDULE_CHANGED 取消重建，把意图日志灌爆
+  rules.push(engine.compileRule({ key: 'town.routine.wait', version: TOWN_SIMULATION_RULE_VERSION,
+    trigger: ['simulation.tick'], priority: 10, cooldownSeconds,
+    when: { op: 'all', args: [routineWhen('wait'), { op: 'eq', args: [{ ref: 'idle.committed' }, true] }] },
+    score: 80, action: { type: 'wait' } }));
+  // M2 生活规则：优先级 40（介于作息 50/60 与 wait 10 之间）——空闲时压过 wait，
+  // 不会被常规作息压制；饥饿 urgency 用分段线性阈值表达（低饱食提升吃饭收益）
+  rules.push(
+    engine.compileRule({ key: 'town.life.eat.urgent', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('eat'),
+        { op: 'lt', args: [{ ref: 'needs.satiety' }, 30] }] },
+      score: 90, action: { type: 'life_eat' } }),
+    engine.compileRule({ key: 'town.life.eat', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('eat')] },
+      score: 60, action: { type: 'life_eat' } }),
+    engine.compileRule({ key: 'town.life.read', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('read')] },
+      score: 45, action: { type: 'life_read' } }),
+    engine.compileRule({ key: 'town.life.sit', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('sit')] },
+      score: 35, action: { type: 'life_sit' } }),
+  );
+  const runner = createTownActionRunner({ db, clock: { now: () => executionNow ?? assertUtcMs(clock.now()) },
+    getWorldEpoch: worldId => registry.getWorldEpoch(worldId),
+    getActor: (actorId, worldId) => registry.getActor(actorId, worldId),
+    readFacts: () => activeFacts, leaseMs });
+  function hasTable() {
+    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='town_simulation_state'").get();
+  }
+  function load(world, actorId) {
+    return JSON.parse(db.prepare('SELECT state_json FROM town_simulation_state WHERE world_id=? AND world_epoch=? AND actor_id=?')
+      .get(world.worldId, world.epoch, actorId)?.state_json ?? 'null');
+  }
+  function save(world, actorId, state) {
+    db.prepare(`INSERT INTO town_simulation_state VALUES(?,?,?,?) ON CONFLICT(world_id,world_epoch,actor_id)
+      DO UPDATE SET state_json=excluded.state_json`).run(world.worldId, world.epoch, actorId, JSON.stringify(state));
+  }
+  function getState(actorId) { return hasTable() ? load(registry.getWorldState(), actorId) : null; }
+  function command(method, action, reasonCode) {
+    // 不传 idempotencyKey：模拟命令由自己生成、无重放来源，不需要幂等台账
+    // （续租 advance 每 5 秒一次，逐条记账曾让 town_action_requests 日增数十万行）
+    return runner[method]({ worldId: action.worldId, worldEpoch: action.worldEpoch, actionId: action.id,
+      expectedVersion: action.version,
+      ...(reasonCode ? { reasonCode } : {}) });
+  }
+  function validateFacts(value, actor, world) {
+    if (!value || value.actorId !== actor.actorId || value.worldEpoch !== world.epoch) throw error('STALE_SIMULATION_FACTS');
+    if (!['work', 'rest', 'wait', 'off_town'].includes(value.intent) || !text(value.scheduleKey)
+      || ![value.targetExists, value.arrived, value.allowsAction].every(v => typeof v === 'boolean')
+      || !(value.target === null || text(value.target)) || !(value.locationKey === null || text(value.locationKey))
+      || !Number.isSafeInteger(value.durationMs) || value.durationMs < 1 || value.durationMs > 21600000
+      || !Number.isSafeInteger(value.minDurationMs) || value.minDurationMs < 0 || value.minDurationMs > value.durationMs
+      || (value.intent === 'work' && !text(value.target))) throw error('INVALID_SIMULATION_FACTS');
+    if (value.shelterForecastAt !== undefined && (!Number.isSafeInteger(value.shelterForecastAt)
+        || value.shelterForecastAt < 0 || value.intent !== 'wait' || !text(value.target)
+        || value.durationMs > SHELTER_WAIT_MS || value.minDurationMs !== 0)) throw error('INVALID_SIMULATION_FACTS');
+    // M2 可选生活事实：类型与取值域校验（缺省 = 缺席事实，规则按三值逻辑拒绝）
+    for (const key of ['needsSatiety', 'needsEnergy', 'needsSocial', 'needsFun', 'needsComfort', 'needsSecurity']) {
+      const v = value[key];
+      if (v !== undefined && (!Number.isFinite(v) || v < 0 || v > 100)) throw error('INVALID_SIMULATION_FACTS');
+    }
+    if (value.lifeAction !== undefined && !['', 'eat', 'read', 'sit'].includes(value.lifeAction)) throw error('INVALID_SIMULATION_FACTS');
+    if (value.lifeTarget !== undefined && value.lifeTarget !== null && !text(value.lifeTarget)) throw error('INVALID_SIMULATION_FACTS');
+    if (value.idleCommitted !== undefined && typeof value.idleCommitted !== 'boolean') throw error('INVALID_SIMULATION_FACTS');
+    // Copy primitives only: later adapter mutations cannot alter this decision batch.
+    return Object.freeze(Object.fromEntries(['actorId', 'worldEpoch', 'intent', 'scheduleKey', 'target',
+      'targetExists', 'arrived', 'locationKey', 'allowsAction', 'durationMs', 'minDurationMs',
+      'shelterForecastAt', 'needsSatiety', 'needsEnergy', 'needsSocial', 'needsFun', 'needsComfort',
+      'needsSecurity', 'lifeAction', 'lifeTarget', 'idleCommitted'].map(k => [k, value[k]])));
+  }
+  function backoff(state) {
+    state.failures = Math.min(30, state.failures + 1);
+    state.nextAttemptAt = executionNow + Math.min(maxRetryMs, retryMs * 2 ** (state.failures - 1));
+    state.plan = null; state.actionId = null; state.minUntil = null;
+  }
+  function createAction(world, actorId, state, type) {
+    const plan = state.plan;
+    let action = runner.create({ worldId: world.worldId, worldEpoch: world.epoch, actorId, type,
+      target: plan.target, payload: type === 'move_to' ? {} : { durationMs: plan.durationMs },
+      ruleKey: plan.ruleKey, ruleVersion: TOWN_SIMULATION_RULE_VERSION });
+    state.actionId = action.id;
+    action = command('reserve', action);
+    action = command('start', action);
+    recovered.add(action.id);
+    if (action.phase === 'running' && type !== 'move_to') {
+      state.cooldowns[plan.cooldownKey] = executionNow;
+      state.minUntil = executionNow + plan.minDurationMs;
+      state.failures = 0; state.nextAttemptAt = 0;
+    }
+    return action;
+  }
+  function advanceActor(actorId, cancelReason = null) {
+    if (!text(actorId)) throw error('INVALID_ACTOR_ID');
+    if (executing) throw error('REENTRANT_SIMULATION');
+    ensure(); executing = true;
+    const effects = [];
+    let result;
+    try {
+      result = db.transaction(() => {
+        const world = registry.getWorldState();
+        const actor = registry.getActor(actorId, world.worldId, { followMerged: false });
+        let state = load(world, actorId);
+        const now = assertUtcMs(clock.now());
+        executionNow = Math.max(now, state?.cursorUtcMs ?? now);
+        const catchUp = planCatchUp({ cursorUtcMs: state?.cursorUtcMs ?? executionNow, nowUtcMs: executionNow, maxCatchUpMs });
+        state ??= { cursorUtcMs: executionNow, decisionSequence: 0, cooldowns: {}, minUntil: null,
+          nextAttemptAt: 0, failures: 0, actionId: null, plan: null, seed: null, pendingStop: null };
+        state.advanceSequence = (state.advanceSequence ?? 0) + 1;
+        executionSequence = state.advanceSequence;
+        state.cursorUtcMs = executionNow;
+        let action = state.actionId ? runner.get(state.actionId) : null;
+        if (state.actionId && (!action || action.worldId !== world.worldId || action.worldEpoch !== world.epoch
+          || action.actorId !== actorId)) throw error('STALE_SIMULATION_ACTION');
+        const finish = reason => {
+          if (state.pendingStop) effects.push({ kind: 'stop', actor, action: runner.get(state.pendingStop.actionId), reason: state.pendingStop.reason });
+          if (action?.type === 'move_to' && action.phase === 'running') effects.push({ kind: 'move', actor, action });
+          save(world, actorId, state);
+          return { actorId, reason, action, decisionSequence: state.decisionSequence, seed: state.seed,
+            nextAttemptAt: state.nextAttemptAt, minUntil: state.minUntil, catchUp };
+        };
+        const end = (method, reason) => {
+          if (action && !terminal.has(action.phase)) action = command(method, action, reason);
+          if (action?.type === 'move_to') state.pendingStop = { actionId: action.id, reason };
+          state.actionId = null; state.plan = null; state.minUntil = null;
+        };
+        if (cancelReason || !actor || actor.archived || !actor.participating || actor.mergedInto || actor.playerId) {
+          const reason = cancelReason || 'actor_unavailable';
+          end('cancel', reason); return finish(reason);
+        }
+        // Runner is the sole owner. Do not commandeer player services or other callers' actions.
+        const other = db.prepare(`SELECT id FROM town_actions WHERE world_id=? AND world_epoch=? AND actor_id=?
+          AND status IN ('validated','reserved','running') AND id<>? LIMIT 1`)
+          .get(world.worldId, world.epoch, actorId, action?.id ?? '');
+        if (other && (!action || terminal.has(action.phase))) return finish('runner_owned_elsewhere');
+        activeFacts = validateFacts(sync(readActorFacts(actor, { worldId: world.worldId, worldEpoch: world.epoch,
+          nowUtcMs: executionNow, action })), actor, world);
+        const f = activeFacts;
+        if (!f.allowsAction || f.intent === 'off_town' || (f.target && !f.targetExists)) {
+          end('cancel', f.intent === 'off_town' ? 'off_town' : 'schedule_or_target_blocked');
+          return finish('blocked');
+        }
+        if (state.plan && (state.plan.scheduleKey !== f.scheduleKey || state.plan.target !== f.target
+          || state.plan.intent !== f.intent)) {
+          end('cancel', 'SCHEDULE_CHANGED'); return finish('schedule_changed');
+        }
+        try {
+          if (action && !terminal.has(action.phase)) {
+            if (action.phase === 'validated') action = command('reserve', action);
+            if (!recovered.has(action.id)) {
+              action = command('recover', action); recovered.add(action.id);
+            }
+            if (action.phase === 'reserved') action = command('start', action);
+            else if (action.phase === 'running') action = command('advance', action);
+          }
+          if (action?.phase === 'failed') {
+            if (action.type === 'move_to') state.pendingStop = { actionId: action.id, reason: action.failureReason };
+            backoff(state); return finish(action.failureReason);
+          }
+          if (action?.phase === 'cancelled') { state.actionId = null; state.plan = null; return finish('cancelled'); }
+          if (action?.phase === 'completed') {
+            if (action.type !== 'move_to') {
+              state.actionId = null; state.plan = null; state.minUntil = null; return finish('completed');
+            }
+            state.pendingStop = { actionId: action.id, reason: 'ARRIVED' };
+            state.actionId = null;
+            // Observed arrival only; work clock starts now, never at departure/dueAt.
+            if (f.shelterForecastAt !== undefined) state.plan.durationMs = f.durationMs;
+            action = createAction(world, actorId, state, state.plan.type);
+            return finish('arrived_and_started');
+          }
+          if (action) return finish('active');
+          if (executionNow < state.nextAttemptAt) return finish('backoff');
+          const batch = createFactSnapshot(engine.registry, {
+            'schedule.intent': f.intent, 'schedule.allowed': f.allowsAction,
+            'needs.satiety': f.needsSatiety, 'needs.energy': f.needsEnergy, 'needs.social': f.needsSocial,
+            'needs.fun': f.needsFun, 'needs.comfort': f.needsComfort, 'needs.security': f.needsSecurity,
+            'life.action': f.lifeAction, 'life.target': f.lifeTarget ?? null,
+            'idle.committed': f.idleCommitted });
+          const decision = selectTownCandidate({ rules, facts: batch, worldId: world.worldId, actorId,
+            decisionSequence: state.decisionSequence, nowUtcMs: executionNow,
+            cooldowns: new Map(Object.entries(state.cooldowns)), targetKey: f.target ?? '' });
+          state.decisionSequence += 1; state.seed = decision.seed;
+          if (!decision.selected) return finish('cooldown');
+          state.plan = { intent: f.intent, scheduleKey: f.scheduleKey, target: f.target,
+            type: decision.selected.action.type, ruleKey: f.shelterForecastAt !== undefined
+              ? shelterRuleKey(f.shelterForecastAt) : decision.selected.key,
+            durationMs: f.durationMs, minDurationMs: f.minDurationMs, cooldownKey: decision.cooldownUpdate.key };
+          action = createAction(world, actorId, state,
+            f.target && !(f.arrived && f.locationKey === f.target) ? 'move_to' : state.plan.type);
+          return finish('started');
+        } catch (e) {
+          if (!['RESOURCE_BUSY', 'LEASE_LOST', 'NOT_ARRIVED'].includes(e.code)) throw e;
+          action = state.actionId ? runner.get(state.actionId) : action;
+          end('fail', e.code); backoff(state); return finish(e.code);
+        }
+      })();
+      // Durable action pointer permits crash/restart to retry movement commands.
+      for (const effect of effects) {
+        const { action, actor } = effect;
+        if (!action || action.actorId !== actorId || registry.getWorldEpoch(action.worldId) !== action.worldEpoch) continue;
+        if (effect.kind === 'stop') {
+          sync(stopMoving({ actor, action, reason: effect.reason, nowUtcMs: executionNow }));
+          db.transaction(() => {
+            const world = registry.getWorldState();
+            if (world.worldId !== action.worldId || world.epoch !== action.worldEpoch) return;
+            const state = load(world, actorId);
+            if (state?.pendingStop?.actionId === action.id) { state.pendingStop = null; save(world, actorId, state); }
+          })();
+        } else {
+          let movement;
+          try {
+            movement = sync(moveToTarget({ actor, action, target: action.target, nowUtcMs: executionNow }));
+            if (!['moving', 'unreachable'].includes(movement?.status)) throw error('INVALID_MOVEMENT_RESULT');
+          } catch (e) { movement = { status: 'unreachable', detail: e.code ?? e.message }; }
+          if (movement.status === 'unreachable') {
+            db.transaction(() => {
+              const world = registry.getWorldState();
+              if (world.worldId !== action.worldId || world.epoch !== action.worldEpoch) return;
+              const state = load(world, actorId), latest = runner.get(action.id);
+              if (state?.actionId !== action.id || terminal.has(latest.phase)) return;
+              const failed = command('fail', latest, 'PATH_UNREACHABLE');
+              backoff(state); state.pendingStop = { actionId: action.id, reason: 'PATH_UNREACHABLE' };
+              save(world, actorId, state);
+              result = { ...result, action: failed, reason: 'PATH_UNREACHABLE', nextAttemptAt: state.nextAttemptAt };
+            })();
+            sync(stopMoving({ actor, action, reason: 'PATH_UNREACHABLE', nowUtcMs: executionNow }));
+          }
+        }
+      }
+      return result;
+    } finally { executing = false; executionNow = null; executionSequence = null; activeFacts = null; }
+  }
+  function tick({ actorIds } = {}) {
+    const ids = actorIds ?? db.prepare('SELECT actor_id FROM town_actors WHERE player_id IS NULL ORDER BY actor_id').all().map(r => r.actor_id);
+    return { actors: [...new Set(ids)].sort().map(id => {
+      try { return advanceActor(id); } catch (e) { return { actorId: id, reason: 'error', error: e.code ?? e.message }; }
+    }) };
+  }
+  return { tick, advanceActor, getState,
+    cancelActor: (actorId, reason = 'SIMULATION_CANCELLED') => advanceActor(actorId, reason) };
+}

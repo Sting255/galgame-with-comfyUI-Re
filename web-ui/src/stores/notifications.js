@@ -1,0 +1,87 @@
+import { defineStore } from 'pinia'
+import { ref, computed, shallowRef } from 'vue'
+import * as api from '../api/index.js'
+import { onEvent } from './unifiedStream.js'
+
+export const useProactiveStore = defineStore('proactive', () => {
+  // 有未读主动消息的角色 ID 集合
+  const unreadIds = shallowRef(new Set())
+  // 每位角色最新主动消息数据 { [charId]: { content, display_name, avatar_path, created_at, msg_id } }
+  const latestMessages = ref({})
+  // SSE 回调（供 App.vue 注入）
+  const onMessageCallback = ref(null)
+
+  const _sseStarted = ref(false)
+  let _unsubProactive = null
+
+  const unreadCount = computed(() => unreadIds.value.size)
+
+  function hasUnread(charId) {
+    return unreadIds.value.has(charId)
+  }
+
+  function addProactive(data) {
+    const id = data.character_id
+    const next = new Set(unreadIds.value)
+    next.add(id)
+    unreadIds.value = next
+    latestMessages.value = { ...latestMessages.value, [id]: data }
+  }
+
+  async function markRead(charId) {
+    const next = new Set(unreadIds.value)
+    if (!next.delete(charId)) return
+    unreadIds.value = next
+    // 后端持久化：写入 proactive_last_read_at，刷新不丢
+    try { await api.markProactiveRead(charId) } catch { /* 非关键 */ }
+  }
+
+  function setOnMessage(callback) {
+    onMessageCallback.value = callback
+  }
+
+  // ── 统一 SSE 订阅 ──
+
+  function _onMessage(data) {
+    addProactive(data)
+    if (onMessageCallback.value) onMessageCallback.value(data)
+  }
+
+  function connectSSE() {
+    if (_sseStarted.value) return
+    _sseStarted.value = true
+
+    // 同步注册 handler（消除与 startUnifiedStream 的启动竞态）
+    _unsubProactive = onEvent('proactive_message', _onMessage)
+
+    // 异步恢复未读状态（DB 为单一数据源，兜底 SSE 断开期间丢失的消息）
+    _restoreUnreadFromDB()
+  }
+
+  async function _restoreUnreadFromDB() {
+    try {
+      const { unread } = await api.getProactiveUnread()
+      if (unread?.length) {
+        const ids = new Set()
+        const msgs = { ...latestMessages.value }
+        for (const r of unread) {
+          ids.add(r.character_id)
+          msgs[r.character_id] = r
+        }
+        unreadIds.value = ids
+        latestMessages.value = msgs
+      }
+    } catch { /* 非关键 */ }
+  }
+
+  function disconnectSSE() {
+    _sseStarted.value = false
+    if (_unsubProactive) { _unsubProactive(); _unsubProactive = null }
+  }
+
+  return {
+    unreadIds, unreadCount, latestMessages,
+    hasUnread, addProactive, markRead, setOnMessage,
+    connectSSE, disconnectSSE,
+  }
+})

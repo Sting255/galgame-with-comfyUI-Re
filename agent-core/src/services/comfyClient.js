@@ -1,0 +1,794 @@
+import fs from 'fs';
+import path from 'path';
+import WebSocket from 'ws';
+import { config } from '../config.js';
+
+const getBase = () => config.comfyui.url.replace(/\/+$/, '');
+const getWsBase = () => config.comfyui.url.replace(/^http/, 'ws');
+const EXECUTION_TIMEOUT_MS = 60 * 60 * 1000; // 1 小时，WebSocket 与轮询兜底共用
+
+// ── 节点定义缓存（从 ComfyUI /object_info 获取，~2.8MB，常驻内存）──
+
+let objectInfoCache = null;   // 完整响应，含 input/output/meta 等，供未来扩展使用
+let widgetSlotMap = null;     // Map<nodeType, [{name, slot}]>  所有 widget 输入的位置
+let pollingTimer = null;
+
+/**
+ * 从 ComfyUI 获取所有已注册节点的完整 input schema。
+ * 用于解析紧凑格式 workflow（如 aki-v2）中省略的 widget 输入。
+ */
+async function fetchObjectInfo() {
+  const url = `${getBase()}/object_info`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`object_info returned ${res.status} (url: ${url})`);
+  return res.json();
+}
+
+/** 判断 object_info 中的类型是否为连接类型（非 widget）*/
+function isConnectionType(typeInfo) {
+  if (!Array.isArray(typeInfo) || typeInfo.length === 0) return false;
+  // ["MODEL"] — 单元素字符串 → 连接类型
+  // ["FLOAT", {...}] — 字符串+配置 → widget
+  // [["opt1","opt2"]] — 嵌套数组 → COMBO widget
+  return typeInfo.length === 1 && typeof typeInfo[0] === 'string';
+}
+
+/** 从 object_info 构建每个节点类型的 widget 插槽列表 */
+function buildWidgetSlotMap(objectInfo) {
+  const map = new Map();
+  for (const [nodeType, info] of Object.entries(objectInfo)) {
+    const inputDef = info.input || {};
+    const required = inputDef.required || {};
+    const optional = inputDef.optional || {};
+
+    const slots = [];
+    let slotIdx = 0;
+
+    for (const entries of [required, optional]) {
+      // 兼容数组格式 [[name, typeInfo], ...] 和对象格式 {name: typeInfo, ...}
+      const list = Array.isArray(entries)
+        ? entries
+        : Object.entries(entries);
+      for (const [name, typeInfo] of list) {
+        if (!isConnectionType(typeInfo)) {
+          slots.push({ name, slot: slotIdx });
+        }
+        slotIdx++;
+      }
+    }
+
+    if (slots.length > 0) {
+      map.set(nodeType, slots);
+    }
+  }
+  return map;
+}
+
+/** 启动后台轮询，直到成功获取 object_info */
+function startObjectInfoPolling() {
+  if (pollingTimer) return;
+
+  const poll = async () => {
+    try {
+      console.log('[comfyClient] Fetching ComfyUI /object_info...');
+      const info = await fetchObjectInfo();
+      objectInfoCache = info;
+      widgetSlotMap = buildWidgetSlotMap(info);
+      console.log(`[comfyClient] object_info cached: ${Object.keys(info).length} types (${(JSON.stringify(info).length/1024).toFixed(0)}KB), ${widgetSlotMap.size} with widgets`);
+      // 成功后清除定时器
+      if (pollingTimer) {
+        clearInterval(pollingTimer);
+        pollingTimer = null;
+      }
+    } catch (err) {
+      console.log(`[comfyClient] object_info unavailable (${err.message}), retrying in 30s...`);
+    }
+  };
+
+  poll(); // 立即尝试一次
+  pollingTimer = setInterval(poll, 30_000);
+  // 后台探测不应阻止进程退出（否则测试进程会被该定时器吊住）
+  pollingTimer.unref();
+}
+
+// 模块加载时启动轮询
+startObjectInfoPolling();
+
+// ── 紧凑格式硬编码兜底（object_info 不可用时的最后防线）──
+
+const NODE_WIDGET_FALLBACK = {
+  PrimitiveInt:    [{ name: 'value', slot: 0 }],
+  PrimitiveString: [{ name: 'value', slot: 0 }],
+  PrimitiveFloat:  [{ name: 'value', slot: 0 }],
+  LoraLoader: [
+    { name: 'lora_name', slot: 2 },
+    { name: 'strength_model', slot: 3 },
+    { name: 'strength_clip', slot: 4 },
+  ],
+  LoraLoaderModelOnly: [
+    { name: 'lora_name', slot: 1 },
+    { name: 'strength_model', slot: 2 },
+  ],
+  'Lora Loader (LoraManager)': [
+    { name: 'lora_name', slot: 1 },
+    { name: 'lora_config', slot: 2 },
+  ],
+};
+
+// ── 节点输出定义兜底（ComfyUI object_info 不可用时的最后防线）──
+const OUTPUT_DEFS_FALLBACK = {
+  'CheckpointLoaderSimple':     [{ name: 'MODEL' }, { name: 'CLIP' }, { name: 'VAE' }],
+  'UNETLoader':                 [{ name: 'MODEL' }],
+  'CLIPLoader':                 [{ name: 'CLIP' }],
+  'DualCLIPLoader':             [{ name: 'CLIP' }],
+  'VAELoader':                  [{ name: 'VAE' }],
+  'VAEDecode':                  [{ name: 'IMAGE' }],
+  'VAEEncode':                  [{ name: 'LATENT' }],
+  'VAEEncodeForInpaint':        [{ name: 'LATENT' }],
+  'KSampler':                   [{ name: 'LATENT' }],
+  'UltimateSDUpscaleNoUpscale': [{ name: 'IMAGE' }],
+  'KSamplerAdvanced':           [{ name: 'LATENT' }],
+  'EmptyLatentImage':           [{ name: 'LATENT' }],
+  'CLIPTextEncode':             [{ name: 'CONDITIONING' }],
+  'PreviewImage':               [],
+  'SaveImage':                  [],
+  'PrimitiveString':            [{ name: 'STRING' }],
+  'PrimitiveInt':               [{ name: 'INT' }],
+  'PrimitiveFloat':             [{ name: 'FLOAT' }],
+  'StringConcatenate':          [{ name: 'STRING' }],
+  'LoraLoaderModelOnly':        [{ name: 'MODEL' }],
+  'LoraLoader':                 [{ name: 'MODEL' }, { name: 'CLIP' }],
+  'CLIPSetLastLayer':           [{ name: 'CLIP' }],
+  'ModelSamplingDiscrete':      [{ name: 'MODEL' }],
+  'ModelSamplingSD3':           [{ name: 'MODEL' }],
+  'FreeU':                      [{ name: 'MODEL' }],
+  'FreeU_V2':                   [{ name: 'MODEL' }],
+  'ImageScaleBy':               [{ name: 'IMAGE' }],
+  'ImageUpscaleWithModel':      [{ name: 'IMAGE' }],
+  'UpscaleModelLoader':         [{ name: 'UPSCALE_MODEL' }],
+  'LoadImage':                  [{ name: 'IMAGE' }, { name: 'MASK' }],
+  'InpaintModelConditioning':   [{ name: 'positive' }, { name: 'negative' }, { name: 'latent' }],
+};
+
+function getOutputDefs(classType) {
+  // 优先从 ComfyUI /object_info 缓存动态获取（支持自定义节点）
+  if (objectInfoCache?.[classType] && Array.isArray(objectInfoCache[classType].output_name)) {
+    const info = objectInfoCache[classType];
+    return info.output_name.map((name, i) => ({
+      name,
+      type: (Array.isArray(info.output) ? info.output[i] : '*') || '*',
+      slot_index: i,
+    }));
+  }
+  // 兜底：硬编码常见节点
+  const fallback = OUTPUT_DEFS_FALLBACK[classType];
+  if (fallback) {
+    return fallback.map((def, i) => ({ type: '*', ...def, slot_index: def.slot_index ?? i }));
+  }
+  console.log(`[comfyClient] apiToGui: unknown node type "${classType}", inferring no outputs`);
+  return [];
+}
+
+/**
+ * 将 ComfyUI API 格式工作流（通过 Export (API) 导出）转换为 GUI 格式
+ * 使得后续 guiToApi → buildWorkflow 流程无须改动
+ */
+export function apiToGui(api) {
+  if (!api || typeof api !== 'object') return api;
+  if (Array.isArray(api.nodes)) return api; // 已经是 GUI 格式
+
+  const keys = Object.keys(api).filter(k => !isNaN(Number(k)));
+  if (keys.length === 0) return api;
+
+  const nodes = [];
+  const links = [];
+  let maxNodeId = 0;
+  let linkIdCounter = 1;
+  const linkBySource = {}; // "srcId_srcSlot" → [linkIds]
+
+  const entries = keys.map(k => ({ id: Number(k), ...api[k] }));
+
+  for (const { id, class_type, inputs, _meta } of entries) {
+    maxNodeId = Math.max(maxNodeId, id);
+    const title = _meta?.title || class_type;
+
+    const guiInputs = [];
+    const widgetsValues = [];
+    const inputKeys = Object.keys(inputs || {});
+
+    for (const name of inputKeys) {
+      const value = inputs[name];
+      if (value === undefined) continue;
+
+      if (Array.isArray(value) && value.length === 2 && typeof value[0] !== 'object') {
+        // 连接类型: [srcNodeId, srcSlot]
+        const lid = linkIdCounter++;
+        guiInputs.push({ name, type: '*', link: lid });
+        links.push([lid, Number(value[0]), Number(value[1]), id, guiInputs.length - 1, '*']);
+
+        const srcKey = `${value[0]}_${value[1]}`;
+        if (!linkBySource[srcKey]) linkBySource[srcKey] = [];
+        linkBySource[srcKey].push(lid);
+      } else {
+        // Widget 值
+        guiInputs.push({ name, type: 'STRING', widget: { name } });
+
+        if (['KSampler', 'UltimateSDUpscaleNoUpscale'].includes(class_type) && name === 'seed') {
+          // KSampler seed 在 GUI 中占两个 slot：[seed, controlMode]
+          widgetsValues.push(value);
+          widgetsValues.push('fixed');
+        } else if (class_type === 'OpenAICompatibleLoader' && name === 'seed') {
+          widgetsValues.push(value);
+          widgetsValues.push('fixed');
+        } else {
+          widgetsValues.push(value !== undefined ? value : '');
+        }
+      }
+    }
+
+    const outputs = getOutputDefs(class_type).map(def => ({
+      ...def,
+      links: [],
+    }));
+
+    nodes.push({
+      id,
+      type: class_type,
+      title,
+      inputs: guiInputs,
+      outputs,
+      widgets_values: widgetsValues,
+      pos: [0, 0],
+      flags: {},
+      order: 0,
+      mode: 0,
+    });
+  }
+
+  // 回填每个节点 output 上的 links
+  for (const node of nodes) {
+    for (const output of node.outputs) {
+      const srcKey = `${node.id}_${output.slot_index}`;
+      const lids = linkBySource[srcKey];
+      if (lids && lids.length > 0) output.links = lids;
+    }
+  }
+
+  return {
+    last_node_id: maxNodeId,
+    last_link_id: linkIdCounter - 1,
+    nodes,
+    links,
+  };
+}
+
+export function guiToApi(workflow) {
+  if (!Array.isArray(workflow.nodes)) {
+    throw new Error('Invalid workflow: missing or malformed "nodes" array. Please check your workflow JSON file.');
+  }
+  const nodeIds = new Set(workflow.nodes.map(n => String(n.id)));
+  const rerouteIds = new Set(workflow.nodes.filter(n => n.type === 'Reroute').map(n => String(n.id)));
+
+  // 索引 links: targetNode_targetSlot → link
+  const linkByTarget = new Map();
+  for (const link of workflow.links || []) {
+    if (!nodeIds.has(String(link[3]))) continue; // 幽灵链接跳过
+    const key = `${link[3]}_${link[4]}`;
+    linkByTarget.set(key, link);
+  }
+
+  // 递归解析 Reroute 链: sourceNode → Reroute → ... → final
+  function resolveReroute(srcId, srcSlot, visited = new Set()) {
+    if (rerouteIds.has(String(srcId)) && !visited.has(String(srcId))) {
+      visited.add(String(srcId));
+      const upLink = linkByTarget.get(`${srcId}_0`);
+      if (upLink) {
+        return resolveReroute(String(upLink[1]), upLink[2], visited);
+      }
+    }
+    return [String(srcId), srcSlot];
+  }
+
+  const api = {};
+  for (const node of workflow.nodes || []) {
+    if (node.type === 'Reroute') continue;
+
+    const apiNode = { inputs: {}, class_type: node.type, _meta: { title: getTitle(node) } };
+    const wvs = node.widgets_values || [];
+    let wvIdx = 0;
+
+    for (let i = 0; i < (node.inputs || []).length; i++) {
+      const inp = node.inputs[i];
+      const hasLink = linkByTarget.has(`${node.id}_${i}`);
+
+      if (hasLink) {
+        const link = linkByTarget.get(`${node.id}_${i}`);
+        const resolved = resolveReroute(String(link[1]), link[2]);
+        apiNode.inputs[inp.name] = resolved;
+
+        if (inp.widget) {
+          wvIdx++;
+          if (['KSampler', 'UltimateSDUpscaleNoUpscale', 'OpenAICompatibleLoader'].includes(node.type) && inp.name === 'seed') {
+            wvIdx++;
+          }
+        }
+      } else if (inp.widget) {
+        if (['KSampler', 'UltimateSDUpscaleNoUpscale'].includes(node.type) && inp.name === 'seed') {
+          apiNode.inputs[inp.name] = wvs[wvIdx];
+          wvIdx += 2;
+        } else if (node.type === 'OpenAICompatibleLoader' && inp.name === 'seed') {
+          apiNode.inputs[inp.name] = wvs[wvIdx];
+          wvIdx += 2;
+        } else {
+          apiNode.inputs[inp.name] = wvs[wvIdx] ?? '';
+          wvIdx++;
+        }
+      }
+    }
+
+    // 孤儿 widget 补全：紧凑格式（如 aki-v2）下 widget-only inputs 从 inputs 数组省略
+    // 优先用 ComfyUI /object_info 的节点定义，不可用时回退到硬编码 NODE_WIDGET_FALLBACK
+    if (wvIdx < wvs.length) {
+      // 优先：object_info 推导的 widget 插槽
+      const objSlots = widgetSlotMap?.get(node.type);
+      if (objSlots) {
+        // consumedCount 个 widget 已被主循环消费，剩余从 objSlots[consumedCount] 开始
+        let consumedCount = 0;
+        // 计算主循环实际消费了多少个 widget（从 inputs 中匹配的 widget 数）
+        for (const inp of (node.inputs || [])) {
+          if (inp.widget) consumedCount++;
+        }
+        // consumedCount 与 wvIdx 应该一致，但以防万一用 consumedCount
+        const remainingSlots = objSlots.slice(wvIdx)
+          .filter(s => !(s.name in apiNode.inputs));
+        for (let j = 0; j < remainingSlots.length && wvIdx + j < wvs.length; j++) {
+          apiNode.inputs[remainingSlots[j].name] = wvs[wvIdx + j] ?? '';
+        }
+        if (remainingSlots.length > 0) {
+          console.log(`[comfyClient] ${node.type}(id=${node.id}) object_info fallback:`,
+            remainingSlots.map((s, j) => `${s.name}=${JSON.stringify(wvs[wvIdx + j])}`).join(', '));
+        }
+      } else {
+        // 兜底：硬编码 NODE_WIDGET_FALLBACK
+        const fallbackDefs = NODE_WIDGET_FALLBACK[node.type];
+        if (fallbackDefs) {
+          const missingSlots = fallbackDefs.filter(f => !(f.name in apiNode.inputs));
+          for (let j = 0; j < missingSlots.length && wvIdx + j < wvs.length; j++) {
+            apiNode.inputs[missingSlots[j].name] = wvs[wvIdx + j] ?? '';
+          }
+          // 2026-10-01：只有真的补了槽位才打印。原来无条件打印，于是日志里天天出现
+          // `[comfyClient] PrimitiveInt(id=122) hardcoded fallback:`（冒号后面空白），
+          // 看起来像「填了空值导致生不出图」，实际是 missingSlots 为空 —— 纯噪声，会带偏排查。
+          if (missingSlots.length > 0) {
+            console.log(`[comfyClient] ${node.type}(id=${node.id}) hardcoded fallback:`,
+              missingSlots.map((f, j) => `${f.name}=${JSON.stringify(wvs[wvIdx + j])}`).join(', '));
+          }
+        }
+      }
+    }
+
+    api[String(node.id)] = apiNode;
+  }
+
+  return api;
+}
+
+function getTitle(node) {
+  const map = {
+    VAELoader: 'VAE加载', UNETLoader: 'UNet加载', CLIPLoader: 'CLIP加载',
+    CLIPTextEncode: 'CLIP文本编码', KSampler: 'K采样器', VAEDecode: 'VAE解码',
+    SaveImage: '保存图像', PreviewImage: '预览图像', EmptyLatentImage: '空Latent',
+    INTConstant: 'INT常数', JoinStringMulti: '合并字符串', JjkText: '文本',
+  };
+  return node.title || map[node.type] || node.type;
+}
+
+// ── 公开 API ──
+
+/**
+ * 解析 ComfyUI 400 错误中的 value_not_in_list 信息，生成用户友好提示
+ * 例如模型缺失 → 建议切换工作流模式或补全模型文件
+ */
+function formatComfyUIError(errText, status) {
+  // 405 特判：Windows 上 localhost 可能解析到 IPv6 或被代理拦截
+  if (status === 405) {
+    const currentUrl = config.comfyui.url || '未配置';
+    const usingLocalhost = currentUrl.includes('localhost');
+    const hint = usingLocalhost
+      ? '\n注意: 当前使用 localhost，Windows 上可能优先解析到 IPv6 (::1) 导致 POST 失败\n  建议前往设置页将 ComfyUI 地址改为 http://127.0.0.1:8188'
+      : `\n当前地址: ${currentUrl}\n  请检查 ComfyUI 是否正常启动，端口是否正确`;
+    return `ComfyUI 连接失败 (405: Method Not Allowed)\n${hint}`;
+  }
+
+  try {
+    const data = JSON.parse(errText);
+    if (!data.node_errors) return `ComfyUI returned ${status}: ${errText.slice(0, 300)}`;
+
+    const missingModels = [];
+    const nodeIssues = [];
+
+    for (const [nodeId, nodeError] of Object.entries(data.node_errors)) {
+      const classType = nodeError.class_type || `node#${nodeId}`;
+      for (const e of nodeError.errors || []) {
+        if (e.type === 'value_not_in_list') {
+          const inputName = e.extra_info?.input_name || '';
+          const received = e.extra_info?.received_value || '';
+          const available = e.extra_info?.input_config?.flat(Infinity).filter(v => typeof v === 'string') || [];
+
+          if (inputName.toLowerCase().includes('unet') || classType.includes('UNET')) {
+            missingModels.push({ nodeId, classType, inputName, received, available });
+          } else {
+            nodeIssues.push({ nodeId, classType, inputName, received, available });
+          }
+        } else {
+          const detail = e.details || e.message;
+          nodeIssues.push({ nodeId, classType, detail });
+        }
+      }
+    }
+
+    const lines = [];
+
+    if (missingModels.length > 0) {
+      const m = missingModels[0];
+      lines.push(`当前工作流需要的模型 "${m.received}" 不存在`);
+      lines.push('');
+      lines.push('建议:');
+      lines.push('  1. 前往网页的系统参数页的画师串 & 分辨率右下角切换工作流模式（turbo → base 或其他）');
+      lines.push(`  2. 下载缺失的模型文件放入 ComfyUI-aki-v3\\ComfyUI\\models\\diffusion_models即可自动识别`);
+    }
+
+    if (nodeIssues.length > 0) {
+      for (const issue of nodeIssues) {
+        if (issue.received !== undefined) {
+          lines.push(`[${issue.classType}] ${issue.inputName}: "${issue.received}" 不在列表中`);
+        } else {
+          lines.push(`[${issue.classType}] ${issue.detail}`);
+        }
+      }
+    }
+
+    if (lines.length > 0) {
+      const summary = lines.join('\n');
+      return `ComfyUI 工作流验证失败:\n${summary}`;
+    }
+  } catch {
+    // 解析失败，返回原始错误（截断）
+  }
+  return `ComfyUI returned ${status}: ${errText.slice(0, 300)}`;
+}
+
+export async function submitWorkflow(guiWorkflow, onProgress) {
+  const clientId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const apiPrompt = guiToApi(guiWorkflow);
+
+  const body = {
+    client_id: clientId,
+    prompt: apiPrompt,
+    extra_data: { extra_pnginfo: { workflow: guiWorkflow } },
+  };
+
+  const res = await fetch(`${getBase()}/api/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(formatComfyUIError(errText, res.status));
+  }
+
+  const data = await res.json();
+  if (data.error) {
+    const msg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+    throw new Error(msg);
+  }
+
+  const promptId = data.prompt_id;
+  if (onProgress) onProgress({ phase: 'submitted', promptId });
+
+  // 优先走 WebSocket 实时进度，失败则回退到轮询
+  try {
+    return await wsProgressAndDownload(clientId, promptId, onProgress);
+  } catch (err) {
+    console.warn(`[comfyClient] WebSocket failed (${err.message}), falling back to polling`);
+    return await pollAndDownload(promptId, onProgress);
+  }
+}
+
+// ── WebSocket 实时进度 + 结果监听 ──
+
+function wsProgressAndDownload(clientId, promptId, onProgress) {
+  const wsUrl = `${getWsBase()}/ws?clientId=${encodeURIComponent(clientId)}`;
+  const wsOpts = config.comfyui.tlsVerify !== false ? {} : { rejectUnauthorized: false };
+  const ws = new WebSocket(wsUrl, wsOpts);
+
+  return new Promise((resolve, reject) => {
+    const timeoutMs = EXECUTION_TIMEOUT_MS;
+    let settled = false;
+    let done = false;
+    let started = false;
+    let lastActivity = Date.now();
+
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(heartbeat);
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+      if (result.error) reject(new Error(result.error));
+      else resolve(result.value);
+    }
+
+    const timeout = setTimeout(() => {
+      settle({ error: `ComfyUI execution timeout (${timeoutMs / 1000}s) for prompt ${promptId}` });
+    }, timeoutMs);
+
+    // 活动心跳检测：120s 无任何消息 → 认为 WS 通道断开，触发上层重试
+    //     大图采样可能长时间不发 progress，放宽到 120s 避免误判
+    const heartbeat = setInterval(() => {
+      if (Date.now() - lastActivity > 120_000 && !done) {
+        settle({ error: `ComfyUI progress stalled (${Math.round((Date.now() - lastActivity) / 1000)}s no update)` });
+      }
+    }, 10_000);
+
+    // ── 收到 node:null → 立即结算（不等 WebSocket close）──
+    async function onExecutionComplete() {
+      done = true;
+      // 通知调用方 ComfyUI 执行完毕（此时还没下载图片）
+      if (onProgress) {
+        onProgress({ phase: 'executed', promptId });
+      }
+      // 等 100ms 让 ComfyUI 更新 history（downloadImagesFromHistory 自带重试兜底慢写盘）
+      await new Promise(r => setTimeout(r, 100));
+      try {
+        const images = await downloadImagesFromHistory(promptId, /* retries */ 3);
+        if (onProgress) {
+          onProgress({ phase: 'done', promptId, imageCount: images.length, progress: 1 });
+        }
+        settle({ value: { images, promptId } });
+      } catch (err) {
+        settle({ error: err.message });
+      }
+    }
+
+    ws.on('open', () => {
+      // 连接成功即可，无需日志；进度通过 message 事件转发给调用方
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        lastActivity = Date.now();
+
+        if (msg.type === 'progress') {
+          const { value, max } = msg.data;
+          const pct = max > 0 ? value / max : 0;
+          if (onProgress) {
+            onProgress({
+              phase: 'sampling',
+              progress: pct,
+              step: value,
+              totalSteps: max,
+              promptId,
+            });
+          }
+          // progress sent to frontend via onProgress callback, no console spam needed
+        } else if (msg.type === 'executing') {
+          const node = msg.data?.node;
+          if (node != null) {
+            if (!started) {
+              started = true;
+              // 首次收到 executing → ComfyUI 开始处理本 prompt，用于计时细分
+              if (onProgress) onProgress({ phase: 'started', promptId });
+            }
+            if (onProgress) onProgress({ phase: 'executing', node, promptId });
+          } else if (!done) {
+            // node === null → 全部执行完毕，立即结算
+            onExecutionComplete();
+          }
+        } else if (msg.type === 'execution_error') {
+          const errMsg = msg.data?.exception_message || msg.data?.traceback || 'Unknown execution error';
+          settle({ error: `ComfyUI execution error: ${errMsg}` });
+        }
+      } catch {
+        // 忽略未知消息格式
+      }
+    });
+
+    ws.on('close', () => {
+      if (!settled && !done) {
+        // WebSocket 在收到完成信号前异常关闭 → 走兜底
+        console.warn(`[comfyClient] WS closed before completion, checking history as fallback`);
+        (async () => {
+          try {
+            const images = await downloadImagesFromHistory(promptId, 5);
+            if (images.length > 0) {
+              if (onProgress) onProgress({ phase: 'done', promptId, imageCount: images.length, progress: 1 });
+              settle({ value: { images, promptId } });
+            } else {
+              settle({ error: 'WebSocket closed before execution — no images in history' });
+            }
+          } catch (err) {
+            settle({ error: err.message });
+          }
+        })();
+      }
+      // done=true → onExecutionComplete 已在处理中，close 无事可做
+    });
+
+    ws.on('error', (err) => {
+      if (!settled && !done) {
+        settle({ error: `WebSocket error: ${err.message}` });
+      }
+    });
+  });
+}
+
+// ── 从 history 下载生成的图片（含重试，处理 ComfyUI 写盘延迟）──
+
+async function downloadImagesFromHistory(promptId, retries = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetch(`${getBase()}/history/${promptId}`);
+      const data = await res.json();
+
+      if (data[promptId]) {
+        const entry = data[promptId];
+        const outputs = entry.outputs || {};
+        const images = [];
+
+        for (const [, output] of Object.entries(outputs)) {
+          if (output.images) {
+            for (const img of output.images) {
+              try {
+                const base64 = await downloadImageAsBase64(img.filename, img.subfolder || '', img.type || 'output');
+                images.push({ base64, filename: img.filename });
+              } catch (e) {
+                console.error(`[comfyClient] download failed: ${img.filename}`, e.message);
+              }
+            }
+          }
+        }
+
+        if (images.length > 0) {
+          return images;
+        }
+        // outputs 存在但没有 image 数据——可能是 ComfyUI 还在写盘
+        lastErr = new Error('History entry exists but no images ready');
+      } else {
+        lastErr = new Error(`No history entry for ${promptId}`);
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+
+    if (attempt < retries - 1) {
+      const waitMs = 1000 * (attempt + 1);
+      console.log(`[comfyClient] History retry ${attempt + 1}/${retries} in ${waitMs}ms...`);
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastErr || new Error(`Failed to download images for ${promptId}`);
+}
+
+// ── 轮询兜底（WebSocket 不可用时）──
+
+async function pollAndDownload(promptId, onProgress, maxRetries = EXECUTION_TIMEOUT_MS / 1000, interval = 1000) {
+  console.warn('[comfyClient] Using polling fallback — progress will be rough');
+
+  for (let i = 0; i < maxRetries; i++) {
+    const res = await fetch(`${getBase()}/history/${promptId}`);
+    const data = await res.json();
+
+    if (data[promptId]) {
+      const entry = data[promptId];
+      const status = entry.status || {};
+
+      if (status.completed === false) {
+        if (onProgress && i % 10 === 0) {
+          // 轮询模式：用时间估算进度（粗糙）
+          onProgress({ phase: 'sampling', progress: Math.min(0.95, i / maxRetries), step: i, max: maxRetries, promptId });
+        }
+        await sleep(interval);
+        continue;
+      }
+
+      const outputs = entry.outputs || {};
+      const images = [];
+
+      for (const [, output] of Object.entries(outputs)) {
+        if (output.images) {
+          for (const img of output.images) {
+            try {
+              const base64 = await downloadImageAsBase64(img.filename, img.subfolder || '', img.type || 'output');
+              images.push({ base64, filename: img.filename });
+            } catch (e) {
+              console.error(`[comfyClient] download failed: ${img.filename}`, e.message);
+            }
+          }
+        }
+      }
+
+      if (onProgress) {
+        onProgress({ phase: 'done', promptId, imageCount: images.length, progress: 1 });
+      }
+      return { images, promptId };
+    }
+
+    if (onProgress && i % 5 === 0) {
+      onProgress({ phase: 'waiting', step: i, max: maxRetries, promptId });
+    }
+    await sleep(interval);
+  }
+
+  throw new Error(`ComfyUI timeout (${maxRetries * interval / 1000}s) for prompt ${promptId}`);
+}
+
+export async function downloadImageAsBase64(filename, subfolder = '', type = 'output') {
+  const params = new URLSearchParams({ filename, type });
+  if (subfolder) params.set('subfolder', subfolder);
+  const url = `${getBase()}/view?${params}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const ext = path.extname(filename).slice(1) || 'png';
+  return `data:image/${ext};base64,${buffer.toString('base64')}`;
+}
+
+/**
+ * 上传图片到 ComfyUI input 目录（供 LoadImage 节点引用）
+ * @returns {Promise<string>} ComfyUI 实际保存的文件名
+ */
+export async function uploadImage(buffer, filename) {
+  const form = new FormData();
+  form.append('image', new Blob([buffer]), filename);
+  form.append('type', 'input');
+  form.append('overwrite', 'true');
+  const res = await fetch(`${getBase()}/upload/image`, { method: 'POST', body: form });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Upload failed (${res.status}): ${errText.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  return data.name || filename;
+}
+
+/**
+ * ⚠️ 死导出（2026-10-15 标注，**只标注不删**）：全仓只在定义处出现，`src/` / `app.js` / `test/` 零调用。
+ * 原意是"ComfyUI 出图后从输出目录捞最新一张"——那是在还没拿到返回值时的兜底手段；
+ * 现在出图链一律走 `submitWorkflow` 的返回值（含 base64），不需要回目录找文件。
+ * 保留原因：真机排查时"这张图到底落在哪"是个高频问题，留着它可以手动调用对一下；
+ * 真要清就**同批处理**（清单见 `scripts/scan-dead-code.mjs` 的输出，别只删这一个）。
+ */
+export function findLatestImageInFolder(folderPath, subfolder = 'bot') {
+  const dir = path.join(folderPath, subfolder);
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir)
+    .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
+    .map(f => ({ name: f, path: path.join(dir, f), mtime: fs.statSync(path.join(dir, f)).mtime }))
+    .sort((a, b) => b.mtime - a.mtime);
+  return files.length > 0 ? files[0] : null;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * 重启 ComfyUI 客户端连接（URL/TLS 变更后调用）。
+ * 清除缓存和轮询定时器，立即以新地址重新拉取 object_info。
+ */
+export function restartComfyClient() {
+  objectInfoCache = null;
+  widgetSlotMap = null;
+  if (pollingTimer) {
+    clearInterval(pollingTimer);
+    pollingTimer = null;
+  }
+  // 重新开始轮询（poll() 内部会立即尝试一次）
+  startObjectInfoPolling();
+}

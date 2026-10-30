@@ -1,0 +1,1311 @@
+import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { load as yamlLoad } from 'js-yaml';
+import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays, updateAntiRepetitionPenalty } from '../config.js';
+import { resetClient, chatSync, resetFreeEggFailureCount, testLlmConnection } from '../llm/llm-client.js';
+import { getDb, getSystemRules } from '../db/index.js';
+import { listWorldSettings, getActiveWorldSetting, getWorldSettingById, createWorldSetting, updateWorldSetting, deleteWorldSetting, activateWorldSetting } from '../db/index.js';
+import { DEFAULT_GLOBAL_RULES } from '../db/seedData.js';
+import { restartProactiveFreq } from '../services/proactiveChatScheduler.js';
+import { restartEventScheduler } from '../services/eventScheduler.js';
+import { restartComfyClient } from '../services/comfyClient.js';
+import { triggerDisturbCheck } from '../services/disturbModeScheduler.js';
+import { shieldStatus, setShieldPrompt, DEFAULT_PROMPT as SHIELD_DEFAULT_PROMPT, shieldRulesStatus, setActiveShieldRule, getShieldTargets, setShieldTargets } from '../services/promptShield.js';
+import { listRules as listJailbreakRules, getRule as getJailbreakRule, createRule as createJailbreakRule, updateRule as updateJailbreakRule, deleteRule as deleteJailbreakRule, RULE_TARGETS as JAILBREAK_TARGETS, RULE_TARGET_LABELS as JAILBREAK_TARGET_LABELS } from '../services/jailbreakRules.js';
+import { restartWeatherScheduler, triggerUpdate as triggerWeatherUpdate } from '../services/weatherService.js';
+import { applyFromConfig } from '../services/llmConcurrency.js';
+import { BUILTIN_RULE_KEYS } from '../builtinRules.js';
+import { getMemorySettings, saveMemorySettings, normalizeMemorySettings } from '../services/memory/memoryConfig.js';
+import { getPreferredMemoryEmbeddingProfile, testEmbeddingProvider, testRerankerProvider } from '../services/memory/memoryProviders.js';
+import { reindexAllMemories } from '../services/memory/memoryRepository.js';
+import { resolveDeclaredOrProviderWindow } from '../services/contextUsage.js';
+import {
+  getAiJudgeQuotaPayload,
+  setAiJudgeDailyLimit,
+} from '../services/intimateAiJudge.js';
+import {
+  getIntimateActionQuotaPayload,
+  setIntimateActionDailyLimit,
+} from '../services/intimateActionQuota.js';
+
+const router = Router();
+
+// 内置官方地址（仅 DeepSeek，其余走自定义中转站）。
+// 命中这些地址时视为官方直连：用于自动关闭「后台 LLM 任务队列」等仅自定义场景可用的开关。
+const PRESET_LLM_URLS = ['https://api.deepseek.com'];
+
+// GET/PUT /api/config/memory — 聊天记忆模型配置（Key 仅保存，不回显）
+router.get('/memory', (_req, res) => {
+  res.json({ ...getMemorySettings(), enabled: config.features.memory });
+});
+
+router.put('/memory', (req, res) => {
+  try {
+    const previous = getMemorySettings({ includeSecrets: true });
+    const previousProfile = getPreferredMemoryEmbeddingProfile(previous).fingerprint;
+    if (req.body?.enabled !== undefined) updateFeatureFlag('memory', Boolean(req.body.enabled));
+    const saved = saveMemorySettings(req.body || {});
+    const nextProfile = getPreferredMemoryEmbeddingProfile(saved).fingerprint;
+    if (previousProfile !== nextProfile) {
+      getDb().prepare(`UPDATE memory_fragments SET embedding_state = ?, embedding_error = NULL WHERE status = 'active'`)
+        .run(nextProfile ? 'stale' : 'disabled');
+      setImmediate(() => reindexAllMemories().catch(error => console.error('[memory] profile reindex failed:', error.message)));
+    }
+    res.json({ ok: true, ...getMemorySettings(), enabled: config.features.memory });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+router.post('/memory/test-embedding', async (req, res) => {
+  try {
+    const current = getMemorySettings({ includeSecrets: true });
+    const embedding = { ...current.embedding, ...(req.body || {}) };
+    if (!embedding.apiKey) embedding.apiKey = current.embedding.apiKey;
+    const candidate = normalizeMemorySettings({ ...current, embedding }, current);
+    res.json(await testEmbeddingProvider(candidate));
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+router.post('/memory/test-reranker', async (req, res) => {
+  try {
+    const current = getMemorySettings({ includeSecrets: true });
+    const reranker = { ...current.reranker, ...(req.body || {}) };
+    if (!reranker.apiKey) reranker.apiKey = current.reranker.apiKey;
+    const candidate = normalizeMemorySettings({ ...current, reranker }, current);
+    res.json(await testRerankerProvider(candidate));
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// GET /api/config — 获取全部配置
+router.get('/', (req, res) => {
+  res.json({
+    comfy: {
+      imageProvider: config.comfyui.imageProvider || 'comfyui',
+      novelaiApiFormat: config.comfyui.novelaiApiFormat || 'relay',
+      url: config.comfyui.url,
+      novelaiUrl: config.comfyui.novelaiUrl,
+      novelaiModel: config.comfyui.novelaiModel,
+      novelaiArtist: config.comfyui.novelaiArtist ?? '',
+      novelaiWidth: config.comfyui.novelaiWidth,
+      novelaiHeight: config.comfyui.novelaiHeight,
+      novelaiSteps: config.comfyui.novelaiSteps,
+      novelaiSampler: config.comfyui.novelaiSampler,
+      novelaiNoiseSchedule: config.comfyui.novelaiNoiseSchedule,
+      novelaiGuidance: config.comfyui.novelaiGuidance,
+      novelaiQualityPrompt: config.comfyui.novelaiQualityPrompt ?? '',
+      novelaiNegativePrompt: config.comfyui.novelaiNegativePrompt ?? '',
+      novelaiApiKeySet: Boolean(getNovelaiApiKey()),
+      artist: config.comfyui.artist,
+      width: config.comfyui.width,
+      height: config.comfyui.height,
+      momentsArtist: config.comfyui.momentsArtist,
+      momentsWidth: config.comfyui.momentsWidth,
+      momentsHeight: config.comfyui.momentsHeight,
+      eventArtist: config.comfyui.eventArtist,
+      eventWidth: config.comfyui.eventWidth,
+      eventHeight: config.comfyui.eventHeight,
+      qualityPrompt: config.comfyui.qualityPrompt ?? '',
+      negativePrompt: config.comfyui.negativePrompt ?? '',
+      tlsVerify: config.comfyui.tlsVerify,
+      globalLora: config.comfyui.globalLora || [],
+      hiresSamplingMode: config.comfyui.hiresSamplingMode,
+      hiresGlobalLoraScale: config.comfyui.hiresGlobalLoraScale,
+      hiresSourceBlend: config.comfyui.hiresSourceBlend,
+      hiresUpscaleModel: config.comfyui.hiresUpscaleModel,
+      hiresWorkflowMode: config.comfyui.hiresWorkflowMode,
+      hiresLora: config.comfyui.hiresLora || [],
+      hiresSteps: config.comfyui.hiresSteps ?? 35,
+      hiresCfg: config.comfyui.hiresCfg ?? 5.0,
+      hiresDenoise: config.comfyui.hiresDenoise ?? 0.2,
+      // 细化是否按 turbo 参数走（默认 true）；「随时开关」，无需重启
+      hiresTurbo: config.comfyui.hiresTurbo !== false,
+      hiresMaxSize: config.comfyui.hiresMaxSize ?? 2000,
+      hiresArtistMode: config.comfyui.hiresArtistMode ?? 'empty',
+      hiresArtist: config.comfyui.hiresArtist ?? '',
+    },
+    features: config.features,
+    weather: { city: config.weather.city || '' },
+    llm: getLlmConfig(),
+    llmProfiles: getLlmProfiles(),
+    activeLlmProfileId: getActiveProfileId(),
+    disturb: {
+      startTime: config.disturb.startTime,
+      endTime: config.disturb.endTime,
+      characterIds: config.disturb.characterIds || [],
+      hideWorld: config.disturb.hideWorld || false,
+      skipWeekends: config.disturb.skipWeekends || false,
+    },
+    workflow: getWorkflowConfig(),
+    groupChat: {
+      activity: config.groupChat?.activity ?? 2,
+      temperature: config.groupChat?.temperature ?? 0.7,
+      summaryInterval: config.groupChat?.summaryInterval ?? 4,
+    },
+    // 「AI 判断行为」的每日配额（usedToday 按本地日期，跨天自动归零；unlimited=true 时 remaining 为 null）
+    aiJudge: getAiJudgeQuotaPayload(),
+    // 亲密推进动作的独立每日配额（2026-10-15 补，与 aiJudge 同形状）
+    intimateActionQuota: getIntimateActionQuotaPayload(),
+  });
+});
+
+// PUT /api/config/ai-judge — 「AI 判断行为」每日配额：0 = 不限制，正整数 = 次/天；非法 400
+//
+// 返回与 GET /api/config 里的 aiJudge 同一形状（{ dailyLimit, usedToday, remaining, unlimited }）：
+// 既嵌在 aiJudge 下（与 GET 一致），也平铺一份，前端两种取法都能用。
+router.put('/ai-judge', (req, res) => {
+  const { dailyLimit } = req.body ?? {};
+  // 只认整数：负数 / 小数 / 字符串 / 布尔 / 缺失都算非法（0 是合法值，代表不限制）
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 0) {
+    return res.status(400).json({ error: 'dailyLimit must be 0 (不限制) or a positive integer (次/天)' });
+  }
+  const saved = setAiJudgeDailyLimit(dailyLimit);
+  if (!saved.ok) {
+    return res.status(500).json({ ok: false, error: saved.error });
+  }
+  const aiJudge = getAiJudgeQuotaPayload();
+  res.json({
+    ok: true,
+    aiJudge,
+    dailyLimit: aiJudge.dailyLimit,
+    usedToday: aiJudge.usedToday,
+    remaining: aiJudge.remaining,
+    unlimited: aiJudge.unlimited,
+  });
+});
+
+// PUT /api/config/intimate-action-quota — 亲密推进的独立每日配额：0 = 不限制，正整数 = 次/天；非法 400
+//
+// 与 /ai-judge 完全同口径（返回同一形状，既嵌在 intimateActionQuota 下也平铺一份）：
+// 这个配额只影响"要不要真的调模型"，**不哑玩法** —— 用完之后状态照常推进、反应留到下一轮补演。
+router.put('/intimate-action-quota', (req, res) => {
+  const { dailyLimit } = req.body ?? {};
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 0) {
+    return res.status(400).json({ error: 'dailyLimit must be 0 (不限制) or a positive integer (次/天)' });
+  }
+  const saved = setIntimateActionDailyLimit(dailyLimit);
+  if (!saved.ok) {
+    return res.status(500).json({ ok: false, error: saved.error });
+  }
+  const intimateActionQuota = getIntimateActionQuotaPayload();
+  res.json({
+    ok: true,
+    intimateActionQuota,
+    dailyLimit: intimateActionQuota.dailyLimit,
+    usedToday: intimateActionQuota.usedToday,
+    remaining: intimateActionQuota.remaining,
+    unlimited: intimateActionQuota.unlimited,
+  });
+});
+
+// PUT /api/config/group-activity — 群聊活跃度 1~5（所有群共享）
+router.put('/group-activity', (req, res) => {
+  const value = req.body?.value;
+  if (!Number.isInteger(value) || value < 1 || value > 5) {
+    return res.status(400).json({ error: 'value must be an integer from 1 to 5' });
+  }
+  res.json({ ok: true, activity: updateGroupActivity(value) });
+});
+
+// PUT /api/config/group-temperature — 更新群聊 LLM 温度 0.5~1.2（所有群共享）
+router.put('/group-temperature', (req, res) => {
+  const { value } = req.body;
+  if (value == null || typeof value !== 'number' || value < 0.5 || value > 1.2) {
+    return res.status(400).json({ error: 'value must be 0.5~1.2' });
+  }
+  updateGroupTemperature(value);
+  res.json({ ok: true, temperature: config.groupChat.temperature });
+});
+
+// PUT /api/config/group-summary-interval — 更新群聊记忆总结/滑动窗口推进轮次 2~6（所有群共享）
+router.put('/group-summary-interval', (req, res) => {
+  const { value } = req.body;
+  if (value == null || typeof value !== 'number' || value < 2 || value > 6) {
+    return res.status(400).json({ error: 'value must be 2~6' });
+  }
+  updateGroupSummaryInterval(value);
+  res.json({ ok: true, summaryInterval: config.groupChat.summaryInterval });
+});
+
+// PUT /api/config/comfy — 更新 ComfyUI 参数
+router.put('/comfy', (req, res) => {
+  const { artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey } = req.body;
+  if (novelaiApiFormat !== 'official' && novelaiUrl !== undefined && String(novelaiUrl).trim()) {
+    try {
+      const parsed = new URL(String(novelaiUrl));
+      if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('invalid protocol');
+    } catch {
+      return res.status(400).json({ error: 'NovelAI 地址必须是有效的 HTTP 或 HTTPS URL' });
+    }
+  }
+  updateComfyConfig({ artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey });
+  // URL 或 TLS 设置变更后立即重启 ComfyUI 客户端连接（使新地址/证书策略立即生效）
+  if (url !== undefined || tlsVerify !== undefined) {
+    restartComfyClient();
+  }
+  res.json({ ok: true, imageProvider: config.comfyui.imageProvider, novelaiApiFormat: config.comfyui.novelaiApiFormat, url: config.comfyui.url, novelaiUrl: config.comfyui.novelaiUrl, novelaiModel: config.comfyui.novelaiModel, novelaiArtist: config.comfyui.novelaiArtist, novelaiWidth: config.comfyui.novelaiWidth, novelaiHeight: config.comfyui.novelaiHeight, novelaiSteps: config.comfyui.novelaiSteps, novelaiSampler: config.comfyui.novelaiSampler, novelaiNoiseSchedule: config.comfyui.novelaiNoiseSchedule, novelaiGuidance: config.comfyui.novelaiGuidance, novelaiQualityPrompt: config.comfyui.novelaiQualityPrompt, novelaiNegativePrompt: config.comfyui.novelaiNegativePrompt, novelaiApiKeySet: Boolean(getNovelaiApiKey()) });
+});
+
+// PUT /api/config/global-lora — 更新全局 LoRA
+router.put('/global-lora', (req, res) => {
+  const { loras } = req.body;
+  if (loras === undefined) {
+    return res.status(400).json({ error: 'loras is required' });
+  }
+  updateGlobalLora(loras);
+  res.json({ ok: true, globalLora: config.comfyui.globalLora });
+});
+
+// PUT /api/config/hires-lora — 更新 HiresFix 细化专用 LoRA（仅作用于放大细化工作流）
+router.put('/hires-lora', (req, res) => {
+  const { loras } = req.body;
+  if (loras === undefined) {
+    return res.status(400).json({ error: 'loras is required' });
+  }
+  updateHiresLora(loras);
+  res.json({ ok: true, hiresLora: config.comfyui.hiresLora });
+});
+
+// PUT /api/config/hires — 更新 HiresFix 细化完整设置（LoRA + 步数/重绘幅度/CFG/最长边/画师串）
+router.put('/hires', (req, res) => {
+  const { loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } = req.body || {};
+  if (loras === undefined && steps === undefined && cfg === undefined && denoise === undefined && maxSize === undefined && artistMode === undefined && artist === undefined && samplingMode === undefined && globalLoraScale === undefined && sourceBlend === undefined && upscaleModel === undefined && workflowMode === undefined && turboMode === undefined) {
+    return res.status(400).json({ error: 'at least one hires setting is required' });
+  }
+  updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode });
+  res.json({
+    ok: true,
+    hiresLora: config.comfyui.hiresLora,
+    hiresSamplingMode: config.comfyui.hiresSamplingMode,
+    hiresGlobalLoraScale: config.comfyui.hiresGlobalLoraScale,
+    hiresSourceBlend: config.comfyui.hiresSourceBlend,
+    hiresUpscaleModel: config.comfyui.hiresUpscaleModel,
+    hiresWorkflowMode: config.comfyui.hiresWorkflowMode,
+    hiresSteps: config.comfyui.hiresSteps,
+    hiresCfg: config.comfyui.hiresCfg,
+    hiresDenoise: config.comfyui.hiresDenoise,
+    hiresTurbo: config.comfyui.hiresTurbo !== false,
+    hiresMaxSize: config.comfyui.hiresMaxSize,
+    hiresArtistMode: config.comfyui.hiresArtistMode,
+    hiresArtist: config.comfyui.hiresArtist,
+  });
+});
+
+// PUT /api/config/features — 更新功能开关
+router.put('/features', (req, res) => {
+  const { key, value } = req.body;
+  if (!key || !(key in config.features)) {
+    return res.status(400).json({ error: `Invalid feature key: ${key}` });
+  }
+  updateFeatureFlag(key, value);
+  if (key === 'serializeBackgroundLLM') {
+    applyFromConfig(config);
+  }
+  if (key === 'weather' && value === true) {
+    // restartWeatherScheduler 内部会立即 tick() 一次，无需再手动触发拉取
+    restartWeatherScheduler();
+  }
+  res.json({ ok: true, features: config.features });
+});
+
+// ── 提示词破限（Prompt Shield）──────────────────────────────────────────────
+// 功能：往每一次 LLM 调用最前面注入一段「不拒答」system 提示词，避免模型
+// 拿"世界观涉及成人/校园内容"为由拒答，把奇遇/日程/朋友圈/亲密链路整条打断。
+// 开关走通用布尔分支（feature_jailbreak），正文单独一个 DB-only 长文本键。
+
+// GET /api/config/jailbreak — 读开关 + 当前生效正文 + 代码默认正文
+router.get('/jailbreak', (req, res) => {
+  const st = shieldStatus();
+  res.json({
+    ok: true,
+    enabled: st.enabled,
+    source: st.source,
+    bytes: st.bytes,
+    content: st.content,
+    defaultContent: SHIELD_DEFAULT_PROMPT,
+  });
+});
+
+// PUT /api/config/jailbreak — 改开关 / 改正文 / 恢复默认
+// body: { enabled?: boolean, content?: string, reset?: true }
+router.put('/jailbreak', (req, res) => {
+  const { enabled, content, reset } = req.body ?? {};
+  if (enabled === undefined && content === undefined && reset !== true) {
+    return res.status(400).json({ error: 'at least one of enabled / content / reset is required' });
+  }
+  if (enabled !== undefined) {
+    updateFeatureFlag('jailbreak', enabled === true || enabled === 'true');
+  }
+  if (reset === true) {
+    // 空串 = 删掉 DB 里的正文 ⇒ 读的时候回落 DEFAULT_PROMPT
+    setShieldPrompt('');
+  } else if (content !== undefined) {
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'content must be a string' });
+    }
+    setShieldPrompt(content);
+  }
+  const st = shieldStatus();
+  res.json({
+    ok: true,
+    enabled: st.enabled,
+    source: st.source,
+    bytes: st.bytes,
+    content: st.content,
+    defaultContent: SHIELD_DEFAULT_PROMPT,
+  });
+});
+
+// ── 破限规则集（多提示词切换 + 按调用链投递）─────────────────────────────────
+// 2026-10-15：把原来"只有一份正文"升级成规则集。旧的 GET/PUT /jailbreak 保留不动
+// （前端老版本、以及只想改那唯一一份正文的用户继续用），新增下面这组规则集端点。
+//
+// ⚠️ 路由顺序：`/jailbreak/rules/active` 必须排在 `/jailbreak/rules/:id` 之前，
+//    否则 "active" 会被当成 id 吃掉（本仓在 outfits/scene 上踩过同一个坑）。
+
+// GET /api/config/jailbreak/rules — 规则集列表 + 激活项 + 投递范围（一次拉齐）
+router.get('/jailbreak/rules', (_req, res) => {
+  res.json({ ok: true, ...shieldRulesStatus() });
+});
+
+// GET /api/config/jailbreak/rules/active — 当前激活的规则集
+router.get('/jailbreak/rules/active', (_req, res) => {
+  const st = shieldStatus();
+  res.json({
+    ok: true, id: st.ruleId, name: st.ruleName, source: st.source, bytes: st.bytes, content: st.content,
+  });
+});
+
+// POST /api/config/jailbreak/rules — 新建规则集
+router.post('/jailbreak/rules', (req, res) => {
+  const { name, content, targets } = req.body ?? {};
+  if (name !== undefined && typeof name !== 'string') {
+    return res.status(400).json({ error: 'name must be a string' });
+  }
+  if (content !== undefined && typeof content !== 'string') {
+    return res.status(400).json({ error: 'content must be a string' });
+  }
+  if (targets !== undefined && !Array.isArray(targets)) {
+    return res.status(400).json({ error: 'targets must be an array' });
+  }
+  try {
+    res.json({ ok: true, rule: createJailbreakRule({ name, content, targets }) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// GET /api/config/jailbreak/rules/:id — 单个读取
+router.get('/jailbreak/rules/:id', (req, res) => {
+  const rule = getJailbreakRule(req.params.id);
+  if (!rule) return res.status(404).json({ error: '规则集不存在' });
+  res.json({ ok: true, rule });
+});
+
+// PUT /api/config/jailbreak/rules/:id — 更新（内置项只允许改名称/targets）
+router.put('/jailbreak/rules/:id', (req, res) => {
+  const { name, content, targets } = req.body ?? {};
+  if (name === undefined && content === undefined && targets === undefined) {
+    return res.status(400).json({ error: 'at least one of name / content / targets is required' });
+  }
+  if (name !== undefined && typeof name !== 'string') return res.status(400).json({ error: 'name must be a string' });
+  if (content !== undefined && typeof content !== 'string') return res.status(400).json({ error: 'content must be a string' });
+  if (targets !== undefined && !Array.isArray(targets)) return res.status(400).json({ error: 'targets must be an array' });
+  let rule;
+  try {
+    rule = updateJailbreakRule(req.params.id, { name, content, targets });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (!rule) return res.status(404).json({ error: '规则集不存在' });
+  res.json({ ok: true, rule });
+});
+
+// DELETE /api/config/jailbreak/rules/:id — 删除（内置项与最后一个自定义项拒绝）
+router.delete('/jailbreak/rules/:id', (req, res) => {
+  let removed;
+  try {
+    removed = deleteJailbreakRule(req.params.id);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (!removed) return res.status(404).json({ error: '规则集不存在' });
+  res.json({ ok: true, ...shieldRulesStatus() });
+});
+
+// POST /api/config/jailbreak/rules/:id/activate — 切换激活（id 传空串 = 清掉激活标记）
+router.post('/jailbreak/rules/:id/activate', (req, res) => {
+  try {
+    const active = setActiveShieldRule(req.params.id);
+    res.json({ ok: true, activeId: active.id, active });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// GET /api/config/jailbreak/targets — 投递范围（含可选项与中文标签）
+router.get('/jailbreak/targets', (_req, res) => {
+  res.json({ ok: true, targets: getShieldTargets(), available: JAILBREAK_TARGETS, labels: JAILBREAK_TARGET_LABELS });
+});
+
+// PUT /api/config/jailbreak/targets — 改写投递范围
+router.put('/jailbreak/targets', (req, res) => {
+  const { targets } = req.body ?? {};
+  if (!Array.isArray(targets)) return res.status(400).json({ error: 'targets must be an array' });
+  res.json({ ok: true, targets: setShieldTargets(targets), available: JAILBREAK_TARGETS, labels: JAILBREAK_TARGET_LABELS });
+});
+
+// GET /api/config/jailbreak/rules/catalog — 可选项清单（前端渲染开关列表用）
+router.get('/jailbreak/catalog', (_req, res) => {
+  res.json({ ok: true, available: JAILBREAK_TARGETS, labels: JAILBREAK_TARGET_LABELS });
+});
+
+// PUT /api/config/anti-repetition — 反重复采样参数（presence_penalty / frequency_penalty）
+// 默认两者都不发送（与加参数前的请求体逐字节一致）；设置页只在用户显式填了值时才透传。
+// 专题（阶段一）要求先拿真网关探针确认参数被接受再上 UI —— 未探明前这里保持"空=不发送"。
+router.put('/anti-repetition', (req, res) => {
+  const { presence, frequency } = req.body ?? {};
+  if (presence === undefined && frequency === undefined) {
+    return res.status(400).json({ error: 'presence or frequency is required' });
+  }
+  const saved = updateAntiRepetitionPenalty({ presence, frequency });
+  if (!saved.ok) return res.status(400).json({ error: saved.error });
+  res.json({
+    ok: true,
+    antiRepetitionPenalty: saved.presence ?? null,
+    antiRepetitionFrequency: saved.frequency ?? null,
+    llm: getLlmConfig(),
+  });
+});
+
+// PUT /api/config/proactive-freq — 更新主动聊天频率 0~1
+router.put('/proactive-freq', (req, res) => {
+  const { value } = req.body;
+  if (value == null || typeof value !== 'number' || value < 0 || value > 1) {
+    return res.status(400).json({ error: 'value must be 0~1' });
+  }
+  updateProactiveFreq(value);
+  restartProactiveFreq();
+  res.json({ ok: true, proactiveChatFreq: config.features.proactiveChatFreq });
+});
+
+// PUT /api/config/event-freq — 更新奇遇触发频率 0~1
+router.put('/event-freq', (req, res) => {
+  const { value } = req.body;
+  if (value == null || typeof value !== 'number' || value < 0 || value > 1) {
+    return res.status(400).json({ error: 'value must be 0~1' });
+  }
+  updateEventFreq(value);
+  restartEventScheduler();
+  res.json({ ok: true, eventFreq: config.features.eventFreq });
+});
+
+// PUT /api/config/moment-freq — 具体时间档 ±20%，mode 区分默认与 2 小时档
+router.put('/moment-freq', (req, res) => {
+  const { value, mode } = req.body;
+  if (!Number.isFinite(value) || value < 0 || value > 24) {
+    return res.status(400).json({ error: 'value must be 0~24' });
+  }
+  if (mode !== undefined && (mode !== 'default' && mode !== 'interval' || mode === 'default' && value !== 1)) {
+    return res.status(400).json({ error: 'mode must be interval, or default with value=1' });
+  }
+  updateMomentFreq(value, mode);
+  res.json({ ok: true, momentFreq: config.features.momentFreq, momentFreqMode: config.features.momentFreqMode });
+});
+
+// PUT /api/config/schedule-refresh-days — 更新日程刷新周期（天，1~3）
+router.put('/schedule-refresh-days', (req, res) => {
+  const { value } = req.body;
+  const n = parseInt(value, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 3) {
+    return res.status(400).json({ error: 'value must be an integer 1~3' });
+  }
+  updateScheduleRefreshDays(n);
+  res.json({ ok: true, scheduleRefreshDays: config.features.scheduleRefreshDays });
+});
+
+// PUT /api/config/background-llm-concurrency — 更新后台 LLM 并发数 1~10
+router.put('/background-llm-concurrency', (req, res) => {
+  const { value } = req.body;
+  if (value == null || typeof value !== 'number' || value < 1 || value > 10) {
+    return res.status(400).json({ error: 'value must be 1~10' });
+  }
+  updateBackgroundConcurrency(value);
+  applyFromConfig(config);
+  res.json({ ok: true, backgroundLLMMaxConcurrency: config.features.backgroundLLMMaxConcurrency });
+});
+
+// PUT /api/config/llm — 更新 LLM 配置
+// contextWindow 留空（null/''）= 用户没声明 → 走三级回退的上游探测（provider），
+// 取不到用保守默认 128000（default）；探测预算压到 5s，保存动作不能被上游拖住
+const LLM_SAVE_PROBE_TIMEOUT_MS = 5000;
+router.put('/llm', async (req, res) => {
+  const { apiKey, baseURL, model, thinkingMode, reasoningEffort, headers, extraBody, contextWindow, contextWindowSource,
+    // 接入方式 / Vertex / 输出额度（上游 v3.10.0 合并，2026-10-19）
+    connectionType, vertexRegion, vertexServiceAccount, maxTokens } = req.body;
+
+  const effectiveConnectionType = connectionType ?? config.llm.connectionType;
+  let resolvedWindow = contextWindow;
+  let resolvedSource = contextWindowSource;
+  if ((contextWindow === null || contextWindow === '') && effectiveConnectionType !== 'vertexai') {
+    // Vertex 的窗口由 google 模型清单给，不要拿 OpenAI 的 /models 去探
+    const probe = await resolveDeclaredOrProviderWindow({
+      baseURL: baseURL || config.llm.baseURL,
+      apiKey: apiKey || config.llm.apiKey,
+      headers: headers || config.llm.headers,
+      model: model || config.llm.model,
+      timeoutMs: LLM_SAVE_PROBE_TIMEOUT_MS,
+    });
+    resolvedWindow = probe.contextWindow;
+    resolvedSource = probe.contextWindowSource;
+  }
+
+  const result = updateLlmConfig({ apiKey, baseURL, model, thinkingMode, reasoningEffort, headers, extraBody,
+    connectionType, vertexRegion, vertexServiceAccount, maxTokens,
+    contextWindow: resolvedWindow, contextWindowSource: resolvedSource });
+  if (!result.ok) {
+    return res.status(400).json(result);
+  }
+  resetClient();
+
+  const effectiveUrl = baseURL || config.llm.baseURL;
+  if (effectiveUrl && PRESET_LLM_URLS.includes(effectiveUrl) && config.features.serializeBackgroundLLM) {
+    updateFeatureFlag('serializeBackgroundLLM', false);
+    console.log('[config] serializeBackgroundLLM auto-disabled (preset LLM selected)');
+  }
+
+  syncActiveLlmProfile();
+
+  res.json({ ok: true, ...getLlmConfig() });
+});
+
+// PUT /api/config/llm/free-egg — 每日免费鸡蛋开关（opencode zen 免费端点，免 Key）
+router.put('/llm/free-egg', (req, res) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be boolean' });
+  }
+  updateFreeEggEnabled(enabled);
+  resetFreeEggFailureCount();
+  resetClient();
+  res.json({ ok: true, ...getLlmConfig() });
+});
+
+// GET /api/config/llm/key — 获取当前 LLM API Key（前端复制用）
+// 明文 Key 属敏感信息，仅限本机回环调用（手机端仍可从 /api/config 看到脱敏预览）
+router.get('/llm/key', (req, res) => {
+  const addr = req.socket?.remoteAddress || '';
+  const isLoopback = addr === '::1' || addr === '127.0.0.1' || addr === '::ffff:127.0.0.1';
+  if (!isLoopback) {
+    return res.status(403).json({ ok: false, error: 'API Key 明文仅允许本机获取' });
+  }
+  const apiKey = getLlmApiKey();
+  if (!apiKey) {
+    return res.status(404).json({ ok: false, error: '未设置 API Key' });
+  }
+  res.json({ ok: true, apiKey });
+});
+
+// POST /api/config/llm/vertex/validate — 校验 Vertex 服务账号（上游 v3.10.0 合并，2026-10-19）
+// 只做"拿一次 access token"，通过即返回 projectId / clientEmail；15s 超时
+router.post('/llm/vertex/validate', async (req, res) => {
+  try {
+    const account = parseServiceAccount(req.body?.vertexServiceAccount || config.llm.vertexServiceAccount);
+    await getVertexAccessToken(account, { signal: AbortSignal.timeout(15000) });
+    res.json({ ok: true, projectId: account.project_id, clientEmail: account.client_email });
+  } catch (error) {
+    res.status(error.status === 400 ? 400 : 502).json({ ok: false, error: error.message });
+  }
+});
+
+// POST /api/config/llm/models — 从 OpenAI-compatible 接口获取可用模型
+// POST /api/config/llm/test — 使用当前或表单 LLM 配置测试一次最小对话请求
+router.post('/llm/test', async (req, res) => {
+  try {
+    const result = await testLlmConnection({
+      // Vertex 路由与输出额度（上游 v3.10.0 合并）：不传就回落配置，行为与旧版一致
+      connectionType: req.body?.connectionType ?? config.llm.connectionType,
+      vertexRegion: req.body?.vertexRegion ?? config.llm.vertexRegion,
+      vertexServiceAccount: req.body?.vertexServiceAccount || config.llm.vertexServiceAccount,
+      baseURL: req.body?.baseURL || config.llm.baseURL,
+      apiKey: req.body?.apiKey || config.llm.apiKey,
+      model: req.body?.model || config.llm.model,
+      maxTokens: req.body?.maxTokens ?? config.llm.maxTokens,
+      thinkingMode: req.body?.thinkingMode ?? config.llm.thinkingMode,
+      headers: req.body?.headers || config.llm.headers,
+      extraBody: req.body?.extraBody || config.llm.extraBody,
+    });
+    res.json(result);
+  } catch (error) {
+    const status = error?.status || error?.response?.status || 502;
+    const rawDetail = error?.error?.message || error?.message || 'LLM 连接测试失败';
+    const unstablePattern = /no body|status code|fetch failed|timeout|abort|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND/i;
+    const detail = status >= 500 || unstablePattern.test(rawDetail)
+      ? `${rawDetail}。这通常是上游服务未响应或暂时超时，建议稍后重试。`
+      : rawDetail;
+    res.status(status >= 400 && status < 600 ? status : 502).json({ ok: false, error: detail });
+  }
+});
+
+router.post('/llm/models', async (req, res) => {
+  // Vertex AI 走 Google 的模型列表接口，不复用 OpenAI 的 /models（上游 v3.10.0 合并）
+  if ((req.body?.connectionType ?? config.llm.connectionType) === 'vertexai') {
+    try {
+      return res.json(await listVertexModels({
+        vertexServiceAccount: req.body?.vertexServiceAccount || config.llm.vertexServiceAccount,
+        vertexRegion: req.body?.vertexRegion ?? config.llm.vertexRegion,
+      }));
+    } catch (error) { return res.status(error.status === 400 ? 400 : 502).json({ error: error.message }); }
+  }
+  const baseURL = String(req.body?.baseURL || config.llm.baseURL || '').trim().replace(/\/+$/, '');
+  if (!baseURL) return res.status(400).json({ error: '请先填写 API 地址' });
+
+  let modelsURL;
+  try {
+    modelsURL = new URL(`${baseURL}/models`);
+    if (!['http:', 'https:'].includes(modelsURL.protocol)) throw new Error('unsupported protocol');
+  } catch {
+    return res.status(400).json({ error: 'API 地址格式无效' });
+  }
+
+  const apiKey = String(req.body?.apiKey || config.llm.apiKey || '').trim();
+  const customHeaders = req.body?.headers && typeof req.body.headers === 'object' && !Array.isArray(req.body.headers)
+    ? req.body.headers
+    : {};
+  const requestHeaders = {
+    Accept: 'application/json',
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    ...customHeaders,
+  };
+
+  try {
+    const response = await fetch(modelsURL, {
+      method: 'GET',
+      headers: requestHeaders,
+      signal: AbortSignal.timeout(15000),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
+      return res.status(502).json({ error: `模型列表请求失败：${detail}` });
+    }
+
+    const rows = Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload?.models)
+        ? payload.models
+        : Array.isArray(payload)
+          ? payload
+          : [];
+    const models = [...new Set(rows
+      .map(item => typeof item === 'string' ? item : item?.id || item?.name)
+      .filter(Boolean)
+      .map(id => String(id).replace(/^models\//, '')))]
+      .sort((a, b) => a.localeCompare(b));
+
+    if (!models.length) {
+      return res.status(502).json({ error: '接口未返回可识别的模型列表' });
+    }
+    res.json({ ok: true, models, endpoint: modelsURL.toString() });
+  } catch (error) {
+    const message = error?.name === 'TimeoutError' ? '请求超时' : error.message;
+    res.status(502).json({ error: `获取模型失败：${message}` });
+  }
+});
+
+// ── LLM Profile 管理 ──
+
+// GET /api/config/llm/profiles — 获取所有 profile
+router.get('/llm/profiles', (req, res) => {
+  res.json({ profiles: getLlmProfiles(), activeProfileId: getActiveProfileId() });
+});
+
+// POST /api/config/llm/profiles — 新增 profile（默认快照当前 LLM 配置，可传字段覆盖）
+// contextWindow 可选：填了按用户声明（declared）；没填则尝试上游 GET /v1/models 的
+// context_length（provider），取不到用保守默认 128000（default）——三级回退见 services/contextUsage.js
+router.post('/llm/profiles', async (req, res) => {
+  const { name, ...overrides } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+
+  const baseURL = overrides.baseURL !== undefined ? overrides.baseURL : (config.llm.baseURL || '');
+  const model = overrides.model !== undefined ? overrides.model : (config.llm.model || '');
+  const apiKey = overrides.apiKey !== undefined ? overrides.apiKey : (config.llm.apiKey || '');
+  const headers = overrides.headers !== undefined ? overrides.headers : (config.llm.headers || {});
+  const resolved = await resolveDeclaredOrProviderWindow({
+    declared: overrides.contextWindow,
+    baseURL,
+    apiKey,
+    headers,
+    model,
+  });
+
+  addLlmProfile(name, { ...overrides, contextWindow: resolved.contextWindow, contextWindowSource: resolved.contextWindowSource });
+  res.json({
+    ok: true,
+    profiles: getLlmProfiles(),
+    activeProfileId: getActiveProfileId(),
+    contextWindow: resolved.contextWindow,
+    contextWindowSource: resolved.contextWindowSource,
+  });
+});
+
+// DELETE /api/config/llm/profiles/:id — 删除 profile
+router.delete('/llm/profiles/:id', (req, res) => {
+  const result = deleteLlmProfile(req.params.id);
+  if (!result.ok) return res.status(400).json(result);
+  resetClient();
+  res.json({ ok: true, profiles: getLlmProfiles(), activeProfileId: getActiveProfileId() });
+});
+
+// POST /api/config/llm/profiles/:id/activate — 切换激活 profile
+router.post('/llm/profiles/:id/activate', (req, res) => {
+  const result = activateLlmProfile(req.params.id);
+  if (!result.ok) return res.status(400).json(result);
+  resetClient();
+
+  // preset 检测：与 PUT /api/config/llm 一致
+  if (PRESET_LLM_URLS.includes(config.llm.baseURL) && config.features.serializeBackgroundLLM) {
+    updateFeatureFlag('serializeBackgroundLLM', false);
+  }
+
+  res.json({ ok: true, llmConfig: getLlmConfig(), profiles: getLlmProfiles(), activeProfileId: getActiveProfileId() });
+});
+
+// PUT /api/config/llm/profiles/active/sync — 同步当前配置到激活的 profile
+router.put('/llm/profiles/active/sync', (req, res) => {
+  syncActiveLlmProfile();
+  res.json({ ok: true });
+});
+
+// GET /api/config/rules — 获取全部全局规则
+router.get('/rules', (req, res) => {
+  const db = getDb();
+  const rules = db.prepare(`SELECT id, rule_key, rule_content, is_active, created_at, updated_at FROM global_rules ORDER BY id`).all();
+  res.json({ rules: rules.filter(r => !BUILTIN_RULE_KEYS.has(r.rule_key)) });
+});
+
+// PUT /api/config/rules/:key — 更新或新建单条全局规则
+router.put('/rules/:key', (req, res) => {
+  if (BUILTIN_RULE_KEYS.has(req.params.key)) {
+    return res.status(403).json({ error: 'This rule is now built-in and cannot be modified via API.' });
+  }
+  const db = getDb();
+  const { rule_content, is_active } = req.body;
+  const existing = db.prepare(`SELECT id FROM global_rules WHERE rule_key = ?`).get(req.params.key);
+  if (!existing) {
+    // 不存在则新建
+    const content = rule_content !== undefined ? rule_content : '';
+    const active = is_active !== undefined ? (is_active ? 1 : 0) : 1;
+    const result = db.prepare(
+      `INSERT INTO global_rules (rule_key, rule_content, is_active) VALUES (?, ?, ?)`
+    ).run(req.params.key, content, active);
+    const created = db.prepare(`SELECT * FROM global_rules WHERE id = ?`).get(result.lastInsertRowid);
+    return res.json({ ok: true, rule: created });
+  }
+  const updates = [];
+  const params = [];
+  if (rule_content !== undefined) { updates.push('rule_content = ?'); params.push(rule_content); }
+  if (is_active !== undefined) { updates.push('is_active = ?'); params.push(is_active ? 1 : 0); }
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+  updates.push("updated_at = datetime('now')");
+  params.push(req.params.key);
+  db.prepare(`UPDATE global_rules SET ${updates.join(', ')} WHERE rule_key = ?`).run(...params);
+  const updated = db.prepare(`SELECT * FROM global_rules WHERE rule_key = ?`).get(req.params.key);
+  res.json({ ok: true, rule: updated });
+});
+
+// GET /api/config/user — 获取用户昵称 + 自我设定
+router.get('/user', (req, res) => {
+  res.json(getUserConfig());
+});
+
+// PUT /api/config/user — 更新用户昵称 + 性别 + 外观 + 其他说明
+router.put('/user', (req, res) => {
+  const { nickname, gender, appearance, persona } = req.body;
+  updateUserConfig({ nickname, gender, appearance, persona });
+  res.json({ ok: true, ...getUserConfig() });
+});
+
+// GET /api/config/user-avatar — 获取用户头像路径
+router.get('/user-avatar', (req, res) => {
+  const __filename = fileURLToPath(import.meta.url);
+  const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
+  const avatarDir = path.join(projectRoot, 'data', 'avatars');
+  const userAvatarPath = path.join(avatarDir, 'user_avatar.png');
+  if (fs.existsSync(userAvatarPath)) {
+    const mtime = fs.statSync(userAvatarPath).mtimeMs;
+    res.json({ avatar_path: `/avatars/user_avatar.png?v=${mtime}` });
+  } else {
+    res.json({ avatar_path: null });
+  }
+});
+
+// POST /api/config/user-avatar — 上传用户头像（base64）
+router.post('/user-avatar', (req, res) => {
+  const { base64 } = req.body;
+  const __filename = fileURLToPath(import.meta.url);
+  const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
+  const avatarDir = path.join(projectRoot, 'data', 'avatars');
+  fs.mkdirSync(avatarDir, { recursive: true });
+
+  // null / 空字符串 = 删除头像
+  if (!base64) {
+    const userAvatarPath = path.join(avatarDir, 'user_avatar.png');
+    try { if (fs.existsSync(userAvatarPath)) fs.unlinkSync(userAvatarPath); } catch {}
+    return res.json({ ok: true, avatar_path: null });
+  }
+
+  const filePath = path.join(avatarDir, 'user_avatar.png');
+  const base64Data = base64.replace(/^data:image\/\w+;base64,/, '');
+  fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+  const mtime = fs.statSync(filePath).mtimeMs;
+
+  res.json({ ok: true, avatar_path: `/avatars/user_avatar.png?v=${mtime}` });
+});
+
+// GET /api/config/loras-files — 从 launcher_config.json 读取 comfyui_exe，推导 loras 文件夹，并解析 extra_model_paths.yaml 获取外部路径
+router.get('/loras-files', (req, res) => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
+    const launcherConfigPath = path.join(projectRoot, '..', 'launcher_config.json');
+
+    if (!fs.existsSync(launcherConfigPath)) {
+      return res.json({ files: [], lorasDir: null, error: 'launcher_config.json 不存在，请先在启动器中配置 ComfyUI 路径' });
+    }
+
+    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf-8'));
+    const comfyuiExe = launcherConfig.comfyui_exe;
+    if (!comfyuiExe) {
+      return res.json({ files: [], lorasDir: null, error: 'comfyui_exe 未配置，请先在启动器中设置 ComfyUI 启动器路径' });
+    }
+
+    const rootDir = path.dirname(comfyuiExe);
+    const defaultLoraDir = path.join(rootDir, 'ComfyUI', 'models', 'loras');
+
+    // 收集所有待扫描目录
+    const scanDirs = new Set();
+    const dirSourceMap = new Map(); // absPath → source groupName
+
+    if (fs.existsSync(defaultLoraDir)) {
+      scanDirs.add(defaultLoraDir);
+    }
+
+    // 读取额外 LoRA 文件夹（launcher_config.json 中的 extra_lora_folders，多个用;分隔）
+    const extraFoldersStr = launcherConfig.extra_lora_folders;
+    if (extraFoldersStr && typeof extraFoldersStr === 'string') {
+      extraFoldersStr.split(';').map(s => s.trim()).filter(Boolean).forEach(folder => {
+        const absPath = path.resolve(folder);
+        if (fs.existsSync(absPath)) {
+          scanDirs.add(absPath);
+          dirSourceMap.set(absPath, 'custom');
+        }
+      });
+    }
+
+    // 解析 extra_model_paths.yaml（可能在 rootDir 或 rootDir/ComfyUI 下）
+    let yamlPath = path.join(rootDir, 'extra_model_paths.yaml');
+    if (!fs.existsSync(yamlPath)) {
+      yamlPath = path.join(rootDir, 'ComfyUI', 'extra_model_paths.yaml');
+    }
+    if (fs.existsSync(yamlPath)) {
+      const yamlDir = path.dirname(yamlPath);
+      try {
+        const yamlContent = yamlLoad(fs.readFileSync(yamlPath, 'utf-8'));
+        if (yamlContent && typeof yamlContent === 'object') {
+          for (const [groupName, groupConfig] of Object.entries(yamlContent)) {
+            if (!groupConfig || typeof groupConfig !== 'object') continue;
+            const basePath = groupConfig.base_path;
+            const lorasField = groupConfig.loras;
+            if (!basePath || lorasField === undefined) continue;
+
+            const lorasValues = Array.isArray(lorasField)
+              ? lorasField
+              : typeof lorasField === 'string' ? [lorasField] : [];
+
+            for (const lv of lorasValues) {
+              if (typeof lv !== 'string') continue;
+              const lines = lv.split('\n').map(s => s.trim()).filter(Boolean);
+              for (const line of lines) {
+                const absPath = path.resolve(yamlDir, basePath, line === '.' ? '.' : line);
+                if (fs.existsSync(absPath)) {
+                  scanDirs.add(absPath);
+                  dirSourceMap.set(absPath, groupName);
+                }
+              }
+            }
+          }
+        }
+      } catch (yamlErr) {
+        console.warn('[loras-files] extra_model_paths.yaml 解析失败，仅扫描默认目录:', yamlErr.message);
+      }
+    }
+
+    // 遍历所有目录收集 .safetensors 文件
+    const files = [];
+    const seen = new Set();
+
+    function walkDir(dir) {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walkDir(fullPath);
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.safetensors')) {
+          const relToDefault = path.relative(defaultLoraDir, fullPath);
+          const isDefault = !relToDefault.startsWith('..') && !path.isAbsolute(relToDefault);
+
+          if (isDefault) {
+            const name = relToDefault;
+            if (!seen.has(name)) {
+              seen.add(name);
+              files.push({ name, path: fullPath, source: null });
+            }
+          } else {
+            const name = entry.name;
+            let source = 'unknown';
+            for (const [absPath, groupName] of dirSourceMap) {
+              const rel = path.relative(absPath, fullPath);
+              if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+                source = groupName;
+                break;
+              }
+            }
+            const key = name + '|' + source;
+            if (!seen.has(key)) {
+              seen.add(key);
+              files.push({ name, path: fullPath, source });
+            }
+          }
+        }
+      }
+    }
+
+    for (const dir of scanDirs) {
+      walkDir(dir);
+    }
+
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    console.log(`[loras-files] ${files.length} files from ${scanDirs.size} dir(s)`);
+
+    res.json({ files, lorasDir: defaultLoraDir });
+  } catch (err) {
+    res.status(500).json({ files: [], lorasDir: null, error: err.message });
+  }
+});
+
+// ── 画师串收藏夹 ──
+
+// GET /api/config/artist-favorites
+router.get('/artist-favorites', (req, res) => {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT id, label, artist, sort_order, created_at FROM artist_favorites ORDER BY sort_order, created_at DESC`
+  ).all();
+  res.json({ favorites: rows });
+});
+
+// POST /api/config/artist-favorites
+router.post('/artist-favorites', (req, res) => {
+  const db = getDb();
+  const { label, artist } = req.body;
+  if (!label || !artist) {
+    return res.status(400).json({ error: 'label and artist are required' });
+  }
+  // 去重检查
+  const existing = db.prepare(`SELECT id FROM artist_favorites WHERE artist = ?`).get(artist.trim());
+  if (existing) {
+    return res.status(409).json({ error: 'duplicate', id: existing.id });
+  }
+  const result = db.prepare(
+    `INSERT INTO artist_favorites (label, artist) VALUES (?, ?)`
+  ).run(label.trim(), artist.trim());
+  const row = db.prepare(`SELECT * FROM artist_favorites WHERE id = ?`).get(result.lastInsertRowid);
+  res.json({ ok: true, favorite: row });
+});
+
+// PUT /api/config/artist-favorites/:id
+router.put('/artist-favorites/:id', (req, res) => {
+  const db = getDb();
+  const { label, artist } = req.body;
+  const existing = db.prepare(`SELECT id FROM artist_favorites WHERE id = ?`).get(req.params.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Favorite not found' });
+  }
+  const updates = [];
+  const params = [];
+  if (label !== undefined) { updates.push('label = ?'); params.push(label.trim()); }
+  if (artist !== undefined) { updates.push('artist = ?'); params.push(artist.trim()); }
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+  params.push(req.params.id);
+  db.prepare(`UPDATE artist_favorites SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  const updated = db.prepare(`SELECT * FROM artist_favorites WHERE id = ?`).get(req.params.id);
+  res.json({ ok: true, favorite: updated });
+});
+
+// DELETE /api/config/artist-favorites/:id
+router.delete('/artist-favorites/:id', (req, res) => {
+  const db = getDb();
+  const existing = db.prepare(`SELECT id FROM artist_favorites WHERE id = ?`).get(req.params.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Favorite not found' });
+  }
+  db.prepare(`DELETE FROM artist_favorites WHERE id = ?`).run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ── 防打扰模式 ──
+
+// PUT /api/config/disturb-mode — 更新防打扰模式总开关
+router.put('/disturb-mode', (req, res) => {
+  const { value } = req.body;
+  if (value == null || typeof value !== 'boolean') {
+    return res.status(400).json({ error: 'value must be boolean' });
+  }
+  updateDisturbMode(value);
+  // 总开关变更后立即触发一次检测
+  triggerDisturbCheck();
+  res.json({ ok: true, disturbMode: config.features.disturbMode });
+});
+
+// PUT /api/config/workflow-mode — 更新工作流模式 (base|turbo|hybrid|custom)
+// mode === 'custom' 时可同时传 customTemplate（workflow/ 目录下的文件名）—— 上游 v3.10.0 合并
+router.put('/workflow-mode', (req, res) => {
+  const { mode, customTemplate } = req.body;
+  if (!mode || !['base', 'turbo', 'hybrid', 'custom'].includes(mode)) {
+    return res.status(400).json({ error: 'mode must be base, turbo, hybrid, or custom' });
+  }
+  if (customTemplate !== undefined) {
+    const customResult = updateWorkflowCustomTemplate(customTemplate);
+    if (!customResult.ok) return res.status(400).json(customResult);
+  }
+  const result = updateWorkflowMode(mode);
+  if (!result.ok) return res.status(400).json(result);
+  res.json({ ok: true, workflow: getWorkflowConfig() });
+});
+
+// PUT /api/config/workflow-scene — 更新 hybrid 模式下场景→工作流映射
+router.put('/workflow-scene', (req, res) => {
+  const { scene } = req.body;
+  const result = updateWorkflowScene(scene);
+  if (!result.ok) return res.status(400).json(result);
+  res.json({ ok: true, workflow: getWorkflowConfig() });
+});
+
+// PUT /api/config/disturb-settings — 更新防打扰时间段和角色列表
+router.put('/disturb-settings', (req, res) => {
+  const { startTime, endTime, characterIds, hideWorld, skipWeekends } = req.body;
+  if (startTime !== undefined && !/^\d{2}:\d{2}$/.test(startTime)) {
+    return res.status(400).json({ error: 'startTime must be HH:MM format' });
+  }
+  if (endTime !== undefined && !/^\d{2}:\d{2}$/.test(endTime)) {
+    return res.status(400).json({ error: 'endTime must be HH:MM format' });
+  }
+  if (characterIds !== undefined && !Array.isArray(characterIds)) {
+    return res.status(400).json({ error: 'characterIds must be an array' });
+  }
+  if (hideWorld !== undefined && typeof hideWorld !== 'boolean') {
+    return res.status(400).json({ error: 'hideWorld must be boolean' });
+  }
+  if (skipWeekends !== undefined && typeof skipWeekends !== 'boolean') {
+    return res.status(400).json({ error: 'skipWeekends must be boolean' });
+  }
+  updateDisturbSettings({ startTime, endTime, characterIds, hideWorld, skipWeekends });
+  // 设置变更后立即触发一次检测
+  triggerDisturbCheck();
+  res.json({
+    ok: true,
+    disturb: {
+      startTime: config.disturb.startTime,
+      endTime: config.disturb.endTime,
+      characterIds: config.disturb.characterIds || [],
+      hideWorld: config.disturb.hideWorld || false,
+      skipWeekends: config.disturb.skipWeekends || false,
+    },
+  });
+});
+
+// GET /api/config/rules/:key/default — 获取单条规则的默认值（不修改，仅供预览）
+router.get('/rules/:key/default', (req, res) => {
+  if (BUILTIN_RULE_KEYS.has(req.params.key)) {
+    return res.status(403).json({ error: 'This rule is now built-in and cannot be modified via API.' });
+  }
+  const defaultRule = DEFAULT_GLOBAL_RULES.find(r => r.rule_key === req.params.key);
+  if (!defaultRule) {
+    return res.status(404).json({ error: `No default value for rule key: ${req.params.key}` });
+  }
+  res.json({ ok: true, rule_key: defaultRule.rule_key, rule_content: defaultRule.rule_content });
+});
+
+// POST /api/config/rules/:key/reset — 重置单条全局规则为默认值
+router.post('/rules/:key/reset', (req, res) => {
+  if (BUILTIN_RULE_KEYS.has(req.params.key)) {
+    return res.status(403).json({ error: 'This rule is now built-in and cannot be modified via API.' });
+  }
+  const db = getDb();
+  const defaultRule = DEFAULT_GLOBAL_RULES.find(r => r.rule_key === req.params.key);
+  if (!defaultRule) {
+    return res.status(404).json({ error: `No default value for rule key: ${req.params.key}` });
+  }
+  const existing = db.prepare(`SELECT id FROM global_rules WHERE rule_key = ?`).get(req.params.key);
+  if (!existing) {
+    // 规则不存在则用默认值新建
+    const result = db.prepare(
+      `INSERT INTO global_rules (rule_key, rule_content, is_active) VALUES (?, ?, 1)`
+    ).run(req.params.key, defaultRule.rule_content);
+    const created = db.prepare(`SELECT * FROM global_rules WHERE id = ?`).get(result.lastInsertRowid);
+    return res.json({ ok: true, rule: created });
+  }
+  db.prepare(
+    `UPDATE global_rules SET rule_content = ?, updated_at = datetime('now') WHERE rule_key = ?`
+  ).run(defaultRule.rule_content, req.params.key);
+  const updated = db.prepare(`SELECT * FROM global_rules WHERE rule_key = ?`).get(req.params.key);
+  res.json({ ok: true, rule: updated });
+});
+
+// ── 世界观收藏 ──
+
+// GET /api/world-settings — 获取全部世界观列表
+router.get('/world-settings', (req, res) => {
+  res.json({ list: listWorldSettings() });
+});
+
+// POST /api/world-settings — 创建新世界观
+router.post('/world-settings', (req, res) => {
+  const { name, content } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  const item = createWorldSetting({ name: name.trim(), content: content?.trim() || '' });
+  res.json({ ok: true, item });
+});
+
+// PUT /api/world-settings/:id — 编辑某个世界观
+router.put('/world-settings/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id || !getWorldSettingById(id)) return res.status(404).json({ error: 'not found' });
+  const { name, content } = req.body;
+  const item = updateWorldSetting(id, { name: name?.trim(), content: content?.trim() });
+  res.json({ ok: true, item });
+});
+
+// DELETE /api/world-settings/:id — 删除某个世界观
+router.delete('/world-settings/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const result = deleteWorldSetting(id);
+  if (!result.ok) return res.status(400).json(result);
+  res.json({ ok: true });
+});
+
+// POST /api/world-settings/:id/activate — 切换激活某个世界观
+router.post('/world-settings/:id/activate', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const item = activateWorldSetting(id);
+  if (!item) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true, item });
+});
+
+// GET /api/config/system-rules — 获取系统破限词（供世界观润色等 AI 功能请求体携带）
+router.get('/system-rules', (_req, res) => {
+  res.json({ content: getSystemRules({ roleplay: false }) || '' });
+});
+
+// POST /api/world-settings/polish — AI 一键润色扩写世界观（酒馆世界书风格）
+// 请求体带系统破限词：LLM 首条 system 消息注入破限词，保证扩写创作自由。
+router.post('/world-settings/polish', async (req, res) => {
+  const { name, content } = req.body || {};
+  const source = typeof content === 'string' ? content.trim() : '';
+  if (!source || source.length < 2) {
+    return res.status(400).json({ error: '当前世界观内容为空，请先填写内容再润色' });
+  }
+
+  try {
+    const model = config.llm.model || 'deepseek-chat';
+
+    // 请求体（LLM messages）带上系统破限词：虚构文学定位 + 创作自由
+    const jailbreak = (typeof req.body?.jailbreak === 'string' && req.body.jailbreak.trim())
+      ? req.body.jailbreak.trim()
+      : getSystemRules({ roleplay: false });
+
+const systemPrompt = `你是一名资深的世界观设定师，擅长撰写「酒馆AI世界书（World Info / Lorebook）」风格的设定文本，服务于沉浸式角色扮演。
+
+用户会提供一份世界观底稿。请忠于原意进行润色与扩写，写成一份简洁、自然、可直接用于角色扮演的世界书。
+
+核心原则：
+- 把底稿中最有冲击力的设定，当成这个世界**已经彻底内化**的绝对常识，不要写任何“怎么变成这样”的过程（禁止写改造、强制、适应期、带头示范等起源故事）。
+- 重点写清两件事：1. 人们日常真正怎么做；2. 支撑这些行为的深层逻辑是什么。
+- 整体语气要口语化、生活化，像在跟朋友随口介绍这个世界，自然随意，不要写成说明书，也不要有文学腔和修辞。
+- 所有在常人看来私密或特殊的行为，必须处理得极其平淡自然，像喝水、上厕所、打哈欠一样普通，不要写成表演、炫耀或社交手段。
+- 不要面面俱到，只抓住最能改变日常生活的核心点写透。
+
+【输出结构要求】严格按以下 Markdown 分节顺序输出：
+
+## 世界背景
+- （用极短篇幅点明最核心的常识差异，不超过3行）
+
+## 日常规则
+- （写真正管着大家日常生活的规矩，用口语化的短句，直接说清楚平时该怎么做）
+
+## 深层逻辑
+- （用轻松自然的口吻解释，为什么在这个世界里这些事会变得这么理所当然。只讲现在的认知，不讲历史）
+
+## 人们的行为
+- （全篇重点。写 5-6 条典型行为。
+  不要出现具体人名。
+  用「在……的时候，大家通常会……」这种口语结构。
+  每条只写一个主要动作，怎么处理就怎么写，别加多余的描写和铺垫。
+  涉及私密行为时，必须写得冷静、随意，不要出现故意展示、围观起哄、提升人气这类内容。）
+
+【写作要求】
+- 保留原文专有名词与核心设定，不得弱化或道德化原设定；
+- 语言口语化、自然，避免书面腔、说明书腔和文学修辞；
+- 全文控制在 700～1200 字；
+- 只输出设定正文，不要任何解释、前后缀或代码块；
+- 使用简体中文。`;
+
+    const userPrompt = [
+      typeof name === 'string' && name.trim() ? `世界名称：${name.trim()}（仅作题材与基调参考，正文不要输出名称标题）` : '',
+      `原始世界观：\n${source}`,
+    ].filter(Boolean).join('\n\n');
+
+    const msgs = [];
+    if (jailbreak) msgs.push({ role: 'system', content: jailbreak });
+    msgs.push({ role: 'system', content: systemPrompt });
+    msgs.push({ role: 'user', content: userPrompt });
+
+    const result = await chatSync(msgs, { model, temperature: 0.7, max_tokens: 4096, label: '世界观润色' });
+
+    // 防御：剥离可能包裹输出的 Markdown 代码块
+    let polished = (result || '').trim();
+    const fence = polished.match(/^```[a-zA-Z]*\n?([\s\S]*?)\n?```$/);
+    if (fence) polished = fence[1].trim();
+    if (!polished) {
+      return res.status(500).json({ error: 'AI 生成结果为空，请重试' });
+    }
+    res.json({ ok: true, content: polished });
+  } catch (err) {
+    console.error('[world-settings] polish failed:', err.message);
+    res.status(500).json({ error: '润色失败: ' + err.message });
+  }
+});
+// PUT /api/config/weather-city — 设置天气城市
+router.put('/weather-city', (req, res) => {
+  const { city } = req.body;
+  if (typeof city !== 'string') {
+    return res.status(400).json({ error: 'city must be a string' });
+  }
+  updateWeatherConfig(city);
+  res.json({ ok: true, city: config.weather.city });
+});
+
+export default router;

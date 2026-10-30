@@ -1,0 +1,4881 @@
+<template>
+  <div ref="scrollEl" class="settings-view" @scroll="onSettingsScroll">
+    <div class="page-header" :class="{ 'header-hidden': isMobile && !headerVisible }">
+      <h2 @click="isMobile && toggleMobileSidebar()" :class="{ 'is-clickable': isMobile }">系统参数</h2>
+      <div class="header-meta">
+        <span class="hint">修改即时生效，无需重启</span>
+        <update-tag />
+      </div>
+    </div>
+
+    <div class="settings-grid">
+      <!-- ComfyUI params: 对话配图 / 朋友圈配图 / 奇遇配图（Tab 切换） -->
+      <div class="card comfy-params-card">
+        <h3>画师串 & 分辨率</h3>
+        <p class="fd">直接描述画面风格 或者 选择0~2个画风，英文逗号分隔，参考来源：<a href="https://anima.mooshieblob.com/" target="_blank" rel="noopener" class="ext-link">https://anima.mooshieblob.com/</a> · 分辨率越高出图越精细，代价是变慢。参考：5070ti 768×512 base约 7s/图|turbo 约2.5s/图</p>
+
+        <linshe-tabs
+          :model-value="comfyTab"
+          :options="comfyTabs"
+          class="comfy-tabs"
+          @update:model-value="switchComfyTab"
+        />
+
+        <div class="comfy-form-stage">
+          <Transition :name="'tab-slide-' + tabSlideDir" mode="out-in">
+            <div :key="comfyTab" class="comfy-form-inner">
+              <div class="fav-input-row">
+                <linshe-input
+                  v-model="form[activeFields.artist]"
+                  class="fi fav-input"
+                  placeholder="画师串"
+                  @input="markDirty"
+                />                <div
+                  role="button"
+                  tabindex="0"
+                  class="fav-star-btn"
+                  :class="{ 'is-disabled': !form[activeFields.artist].trim() }"
+                  :aria-disabled="!form[activeFields.artist].trim()"
+                  title="收藏当前画师串"
+                  @click="addToFavorites(comfyTab)"
+                  @keydown.enter.prevent="addToFavorites(comfyTab)"
+                  @keydown.space.prevent="addToFavorites(comfyTab)"
+                >
+☆
+</div>
+              </div>
+              <template v-if="artistFavorites.length">
+                <div class="fav-section-title">收藏的画师 / 风格</div>
+                <div class="fav-chips">
+                <linshe-button v-for="fav in artistFavorites" :key="fav.id" class="fav-chip" variant="chip" :active="fav.artist === form[activeFields.artist]" @click="applyFavorite(fav, comfyTab)" :title="fav.artist">
+                  {{ fav.label }}
+                  <span class="fav-chip-x" @click.stop="removeFavorite(fav.id)">×</span>
+                </linshe-button>
+                </div>
+              </template>
+              <div class="fr">
+                <div class="fh"><label class="fl">宽度</label><linshe-input v-model.number="form[activeFields.width]" type="number" min="256" max="4096" @input="markDirty" /></div>
+                <div class="fh"><label class="fl">高度</label><linshe-input v-model.number="form[activeFields.height]" type="number" min="256" max="4096" @input="markDirty" /></div>
+              </div>
+              <div class="fpresets-head">
+                <span class="resolution-title">分辨率</span>
+                <span class="resolution-hint">不建议超过 1536×1536 个像素，人体崩坏概率会上升</span>
+              </div>
+              <div class="fpresets">
+                <span class="pl">预设：</span>
+                <linshe-button v-for="p in presets" :key="p.label" class="pbtn" variant="chip" :active="isPresetActive(p)" @click="applyPreset(p, comfyTab)">{{ p.label }}</linshe-button>
+              </div>
+            </div>
+          </Transition>
+        </div>
+
+        <div v-if="imageProvider !== 'novelai'" class="hiresfix-section">
+          <div class="hiresfix-header">
+            <span class="hiresfix-title">HiresFix 细化</span>
+          </div>
+          <div class="hiresfix-row">
+            <div class="hiresfix-copy">
+              <div class="hiresfix-desc">图片进一步高清细化设置</div>
+            </div>
+            <span class="hiresfix-summary">{{ hiresSummary }}</span>
+            <linshe-button class="hiresfix-link" variant="link" @click="openHiresFixSettings">设置 →</linshe-button>
+          </div>
+          <div class="hiresfix-row hiresfix-turbo-row">
+            <div class="hiresfix-copy">
+              <div class="hiresfix-turbo-title">细化用 turbo 参数（更快）</div>
+              <div class="hiresfix-desc">打开：CFG {{ HIRES_TURBO_CFG.toFixed(1) }} / {{ HIRES_TURBO_STEPS }} 步，速度约快一倍、更贴合 turbo 模型；关闭：沿用「设置 →」里的步数与 CFG</div>
+              <div class="hiresfix-desc">{{ hiresTurbo ? '当前「设置 →」里的步数与 CFG 不生效（仍可照常修改，关掉本开关后即按它们细化）' : '当前按「设置 →」里的步数与 CFG 细化' }}</div>
+            </div>
+            <linshe-switch
+              v-model="hiresTurbo"
+              on-text="已启用"
+              off-text="已关闭"
+              aria-label="细化用 turbo 参数"
+              title="细化用 turbo 参数（CFG 1.0 / 12 步）"
+              @change="onHiresTurboToggle"
+            />
+          </div>
+          <div class="hiresfix-row">
+            <div class="hiresfix-copy">
+              <div class="hiresfix-turbo-title">细化精度</div>
+              <div class="hiresfix-desc">她出图后那道细化重绘的步数。越低越快、细节略软；越高越保真、更慢。（高 12 步 / 中 10 步 / 低 8 步，默认低）</div>
+            </div>
+            <linshe-tabs
+              :model-value="normalizeHiresQuality(features.hiresQuality)"
+              :options="HIRES_QUALITY_MODES"
+              size="sm"
+              class="hiresfix-quality-tabs"
+              @update:model-value="saveHiresQuality"
+            />
+          </div>
+        </div>
+        <div class="quality-section">
+          <div class="quality-row">
+            <div class="quality-copy">
+              <div class="quality-subtitle">质量提示词</div>
+              <div class="quality-desc">生图时注入的画质增强词，留空使用系统默认</div>
+            </div>
+            <span class="quality-summary" :class="{ 'is-default': !qualityPrompt }" :title="qualityPrompt || '使用工作流内置的质量提示词'">{{ qualityPrompt ? qualityPrompt : '系统默认' }}</span>
+            <linshe-button class="quality-link" variant="link" @click="openQualityDialog">更改 →</linshe-button>
+          </div>
+          <div class="quality-row">
+            <div class="quality-copy">
+              <div class="quality-subtitle">负面提示词</div>
+              <div class="quality-desc">生图时排除的负面词条，留空使用工作流内置默认</div>
+            </div>
+            <span class="quality-summary" :class="{ 'is-default': !negativePrompt }" :title="negativePrompt || '使用工作流内置的负面提示词'">{{ negativePrompt ? negativePrompt : '工作流默认' }}</span>
+            <linshe-button class="quality-link" variant="link" @click="openNegativeDialog">更改 →</linshe-button>
+          </div>
+        </div>
+        <div class="sa">
+          <linshe-button variant="primary" :disabled="!dirty || comfySaving" :loading="comfySaving" @click="saveComfy">保存</linshe-button>
+          <span v-if="saved" class="smsg">已保存</span>
+          <div class="sa-spacer"></div>
+          <linshe-button class="wf-action-btn wf-lora-btn" variant="secondary" @click="openGlobalLora">
+            全局LoRA
+            <span v-if="globalLoraCount > 0" class="float-badge active">已生效 {{ globalLoraCount }}</span>
+          </linshe-button>
+          <linshe-button class="wf-action-btn wf-mode-btn" variant="secondary" :disabled="wfResetting" @click="doWorkflowReset2">{{ wfResetting ? '重置中...' : '重置工作流' }}</linshe-button>
+          <linshe-button class="wf-action-btn wf-mode-btn" variant="secondary" @click="openWfModeDialog">切换工作流模式</linshe-button>
+        </div>
+      </div>
+
+      <GlobalLoraModal v-model="globalLoraModalVisible" :initial-loras="globalLoras" @saved="onGlobalLoraSaved" />
+      <HiresFixModal v-if="imageProvider !== 'novelai'" v-model="hiresFixModalVisible" :initial-sampling-mode="hiresSamplingMode" :initial-global-lora-scale="hiresGlobalLoraScale" :initial-source-blend="hiresSourceBlend" :initial-upscale-model="hiresUpscaleModel" :initial-workflow-mode="hiresWorkflowMode" :initial-loras="hiresLoras" :initial-steps="hiresSteps" :initial-cfg="hiresCfg" :initial-denoise="hiresDenoise" :initial-max-size="hiresMaxSize" :initial-artist-mode="hiresArtistMode" :initial-artist="hiresArtist" :initial-turbo="hiresTurbo" @saved="onHiresFixSaved" />
+
+
+      <!-- 测试画风：自由画面描述（LLM 完善提示词）或固定提示词测试 -->
+      <div class="card">
+        <h3>图片实验室</h3>
+        <p class="fd">可测试当前生图服务，使用对应画师串和分辨率发送生图请求，图片仅作预览不保存</p>
+        <p class="fd">Anima文生图模型的数据库大约在2025年9月，过新的角色不识别，越久的角色特征越稳定</p>
+        <p class="fd">切换模型之后首次生图需要加载模型所以会慢一点</p>
+
+        <div class="free-scene-row">
+          <div class="free-scene-input-wrap">
+            <linshe-auto-textarea
+              ref="sceneDescRef"
+              v-model="freeSceneDesc"
+              class="free-scene-textarea"
+              collapsible
+              placeholder="（置空使用默认）自由描述任意画面"
+              @focus="onSceneDescFocus"
+              @blur="onSceneDescBlur"
+              @enter="submitOnEnter($event, runFreeSceneTest)"
+            />
+</div>
+          <!-- 有输入内容时才出现，渐入渐出 -->
+          <Transition name="gen-btn-fade">
+            <linshe-button
+              v-if="freeSceneDesc.trim() || styleTesting"
+              class="free-scene-btn"
+              variant="primary"
+              :disabled="styleTesting || !freeSceneDesc.trim()"
+              @click="runFreeSceneTest"
+            >
+              {{ styleTesting ? '生成中...' : generatedPrompt ? '重新生成提示词' : '生成提示词' }}
+            </linshe-button>
+          </Transition>
+        </div>
+
+        <div
+          v-if="generatedPrompt && !promptEditing"
+          class="generated-prompt-box editable"
+          title="点击编辑提示词"
+          @click="startPromptEdit"
+        >
+{{ generatedPrompt }}
+</div>
+        <linshe-auto-textarea
+          v-else-if="generatedPrompt"
+          ref="promptEditRef"
+          v-model="generatedPrompt"
+          class="generated-prompt-box generated-prompt-editor"
+          placeholder=""
+          @blur="promptEditing = false"
+          @enter="submitOnEnter($event, runGeneratedPromptTest)"
+          @escape="promptEditing = false"
+        />
+        <div v-if="styleError" class="style-error">{{ styleError }}</div>
+
+        <div v-if="styleTesting" class="style-loading">
+          <span class="style-spinner"></span>
+          <span>{{ imageProvider === 'novelai' ? 'NovelAI 正在生成图片，请耐心等待...' : 'ComfyUI 正在生成图片，请耐心等待...' }}</span>
+        </div>
+
+        <div v-if="styleImages.length > 0" class="style-result">
+          <div v-if="styleElapsed != null" class="style-elapsed">
+            ⏱ 生成耗时 {{ formatElapsed(styleElapsed) }}
+            <span v-if="styleTiming" class="style-timing-breakdown">
+              · {{ imageProvider === 'novelai' ? 'NovelAI' : 'ComfyUI' }} {{ formatElapsed(styleTiming.comfyui_ms) }}
+              · 下载 {{ formatElapsed(styleTiming.download_ms) }}
+              <span v-if="styleTiming.ws_setup_ms != null" title="WebSocket 建连 + ComfyUI 预热">
+                · 连接预热 {{ formatElapsed(styleTiming.ws_setup_ms) }}
+              </span>
+            </span>
+          </div>
+          <img
+            v-for="(img, i) in styleImages"
+            :key="i"
+            :src="img.base64"
+            class="style-preview-img"
+            @click="openLightbox(i)"
+            alt="测试画风结果"
+          />
+        </div>
+
+        <div class="style-test-row">
+          <linshe-button
+            class="style-test-btn"
+            variant="primary"
+            :disabled="styleTesting"
+            @click="runStyleTest"
+          >
+            {{ styleTesting ? '生成中...' : '🎨 生成画面' }}
+          </linshe-button>
+          <linshe-tabs
+            v-model="testMode"
+            :options="testModes"
+            :disabled="styleTesting"
+            size="sm"
+            class="test-mode-segmented"
+          />
+          <linshe-button
+            v-if="imageProvider !== 'novelai'"
+            class="style-test-btn hires-test-btn"
+            variant="primary"
+            :disabled="hireTesting"
+            @click="runHiresTest"
+          >
+            {{ hireTesting ? '细化中...' : '测试HiresFix细化' }}
+          </linshe-button>
+          <linshe-button class="test-prompt-btn" variant="link" @click="openPromptEditor">默认测试提示词</linshe-button>
+        </div>
+
+        <div v-if="imageProvider !== 'novelai' && hiresError" class="style-error">{{ hiresError }}</div>
+
+        <div v-if="imageProvider !== 'novelai' && hireTesting" class="style-loading">
+          <span class="style-spinner"></span>
+          <span>正在按 HiresFix 参数细化最近一张图...</span>
+        </div>
+
+        <div v-if="imageProvider !== 'novelai' && hiresCompare" class="style-result">
+          <div class="style-elapsed">细化耗时 {{ formatElapsed(hiresCompare.elapsed) }}</div>
+          <BeforeAfterSlider :before="hiresCompare.original" :after="hiresCompare.refined" />
+        </div>
+
+        <!-- 全屏预览（纯预览，无删除/重生成/放大操作栏） -->
+        <Teleport to="body">
+          <ImageLightbox
+            :visible="lightboxVisible"
+            :imgs="lightboxImgs"
+            :index="lightboxIndex"
+            :show-delete="false"
+            :show-regenerate="false"
+            :show-upscale="false"
+            @hide="lightboxVisible = false"
+          />
+        </Teleport>
+      </div>
+
+      <!-- 测试提示词编辑弹窗 -->
+      <linshe-modal v-model="showPromptEditor" title="编辑测试提示词" wide>
+        <div class="prompt-editor-field">
+          <label class="fl">对话配图提示词</label>
+          <linshe-input v-model="testPrompts.chat" class="fi prompt-textarea" type="textarea" rows="5" />
+        </div>
+        <div class="prompt-editor-field">
+          <label class="fl">朋友圈配图提示词</label>
+          <linshe-input v-model="testPrompts.moments" class="fi prompt-textarea" type="textarea" rows="5" />
+        </div>
+        <div class="prompt-editor-field">
+          <label class="fl">奇遇配图提示词</label>
+          <linshe-input v-model="testPrompts.event" class="fi prompt-textarea" type="textarea" rows="5" />
+        </div>
+        <template #footer>
+          <linshe-button variant="secondary" @click="resetTestPrompts">恢复默认</linshe-button>
+          <linshe-button variant="primary" @click="saveTestPrompts">保存</linshe-button>
+        </template>
+      </linshe-modal>
+      <!-- LLM API 设置 -->
+      <div class="card llm-card" :class="{ 'llm-card-first': llmCardFirst }">
+        <div class="llm-card-header">
+          <h3>LLM API 设置</h3>
+          <!-- 每日免费鸡蛋：点击开启/关闭，免 Key 走 opencode zen 免费端点 -->
+          <div
+            v-if="llmSetupMode === 'full' || freeEgg"
+            ref="freeEggBtn"
+            role="button"
+            tabindex="0"
+            :class="['free-egg-btn', { active: freeEgg, 'is-disabled': freeEggBusy }]"
+            :aria-disabled="freeEggBusy"
+            :title="freeEgg ? '点击关闭，恢复自有 LLM 配置' : '点击开启：免 Key 使用 opencode 免费模型（按 IP 限流，上游限速会调整）'"
+            @click="onFreeEggClick"
+            @keydown.enter.prevent="onFreeEggClick"
+            @keydown.space.prevent="onFreeEggClick"
+          >
+            <span class="free-egg-label">{{ freeEgg ? '🥚 免费鸡蛋享用中' : '🥚 每日免费鸡蛋' }}</span>
+            <span v-if="eggSplash" :key="eggSplash.id" class="egg-splash" aria-hidden="true">
+              <i v-for="drop in eggSplash.drops" :key="drop.id" class="egg-drop" :style="drop.style"></i>
+              <i v-for="shard in eggSplash.shards" :key="shard.id" class="egg-shard" :style="shard.style"></i>
+            </span>
+          </div>
+        </div>
+
+        <Transition name="egg-page" mode="out-in">
+        <!-- 首次/未配置：DeepSeek 简易设置（上游 v3.10.0 D 组） -->
+        <p v-if="llmSetupMode === 'loading'" key="llm-loading" class="fd" role="status">正在读取接口设置…</p>
+        <p v-else-if="llmSetupMode === 'error'" key="llm-error" class="gen-error" role="alert">暂时无法读取接口设置，请刷新页面重试。</p>
+        <DeepseekSetup
+          v-else-if="!freeEgg && llmSetupMode === 'guided'"
+          key="llm-guided"
+          :has-api-key="llmPreview.hasApiKey"
+          :preview="llmPreview.preview"
+          @connected="onGuidedLlmConnected"
+          @configure="openFullLlmSetup"
+          @start-chat="router.push('/chat')"
+        />
+        <div v-else-if="!freeEgg" key="llm-custom" class="llm-api-switch-body">
+        <div class="llm-setup-intro-row">
+          <p class="fd" style="margin:0">配置 AI 对话和角色生成所使用的 LLM 接口</p>
+          <div class="llm-setup-intro-actions">
+            <linshe-button variant="link" size="sm" @click="showLlmHelp = true">接入说明</linshe-button>
+            <linshe-button v-if="canReturnToGuidedSetup" variant="link" size="sm" @click="returnToGuidedSetup">返回 DeepSeek 简易设置</linshe-button>
+          </div>
+        </div>
+        <p class="fd">deepseek的key获取地址：<a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" class="ext-link">https://platform.deepseek.com/api_keys</a> ，充多少用多少</p>
+
+        <!-- 接入方式（上游 v3.10.0）：OpenAI 兼容接口 / Google Vertex AI -->
+        <label class="fl llm-label" for="llm-connection-type">接入方式</label>
+        <linshe-select
+          id="llm-connection-type"
+          v-model="llmConnectionType"
+          :options="llmConnectionOptions"
+          style="margin-bottom:6px"
+          aria-label="接入方式"
+          @update:model-value="onLlmConnectionChange"
+        />
+        <template v-if="llmConnectionType === 'vertexai'">
+          <label class="fl llm-label" for="vertex-account">服务账号 JSON</label>
+          <linshe-input
+            id="vertex-account"
+            v-model="vertexServiceAccount"
+            type="textarea"
+            :rows="4"
+            placeholder="粘贴完整 service_account JSON（包括最外层大括号）；留空则沿用已保存的账号"
+            @input="onVertexAccountInput"
+          />
+          <div class="vertex-status-row">
+            <linshe-button
+              variant="secondary"
+              size="sm"
+              :loading="vertexValidating"
+              :disabled="vertexValidating || (!vertexServiceAccount.trim() && !hasVertexServiceAccount)"
+              @click="validateVertexAccount"
+            >验证 JSON</linshe-button>
+            <span class="vertex-status" aria-live="polite">{{ vertexValidation || (vertexServiceAccount.trim() ? '新 JSON 尚未验证 / 保存' : hasVertexServiceAccount ? '服务账号已配置' : '缺少服务账号') }}</span>
+          </div>
+          <label class="fl llm-label" for="vertex-region">地区</label>
+          <linshe-select
+            id="vertex-region"
+            v-model="vertexRegion"
+            :options="vertexRegionOptions"
+            searchable
+            allow-free-input
+            aria-label="地区"
+            @update:model-value="onLlmEndpointInput"
+          />
+          <p class="fd">默认 global，模型可用性取决于项目权限和地区。</p>
+        </template>
+
+        <!-- LLM Profile 切换 -->
+        <div class="llm-profiles-bar">
+          <div v-for="p in llmProfiles" :key="p.id" class="profile-item-row">
+            <div
+              role="button"
+              tabindex="0"
+              :class="['profile-tag', { active: p.id === activeLlmProfileId }]"
+              @click="switchProfile(p.id)"
+              @keydown.enter.prevent="switchProfile(p.id)"
+              @keydown.space.prevent="switchProfile(p.id)"
+              :title="(p.preview || '未设置Key') + ' · ' + (p.model || '?')"
+            >
+              <span class="profile-name">{{ p.name }}</span>
+              <span v-if="p.id === activeLlmProfileId" class="profile-dot"></span>
+            </div>
+            <div
+              v-if="llmProfiles.length > 1 && p.id !== activeLlmProfileId"
+              role="button"
+              tabindex="0"
+              class="profile-tag profile-delete-btn"
+              @click="removeProfile(p.id)"
+              @keydown.enter.prevent="removeProfile(p.id)"
+              @keydown.space.prevent="removeProfile(p.id)"
+              title="删除该配置"
+            >
+              <span class="profile-x">×</span>
+            </div>
+          </div>
+          <div role="button" tabindex="0" class="profile-tag profile-add" @click="showAddProfile = true" @keydown.enter.prevent="showAddProfile = true" @keydown.space.prevent="showAddProfile = true">
+            <span>+ 新增配置</span>
+          </div>
+        </div>
+
+        <!-- 新增 Profile 弹窗 -->
+        <linshe-modal v-model="showAddProfile" title="新增配置">
+          <p class="fd">将当前 LLM 配置（地址、模型、自定义开关等）保存为一个新的配置快照（不含 API Key）</p>
+          <linshe-input
+            v-model="newProfileName"
+            class="fi"
+            placeholder="输入配置名称，如：我的OpenAI、本地LLM"
+            @keyup.enter="addProfile"
+            ref="newProfileInput"
+          />
+          <template #footer>
+            <linshe-button variant="secondary" @click="showAddProfile = false">取消</linshe-button>
+            <linshe-button variant="primary" :disabled="!newProfileName.trim()" @click="addProfile">确定</linshe-button>
+          </template>
+        </linshe-modal>
+        <!-- API Key / API 地址：仅 OpenAI 兼容接口需要（Vertex 走服务账号） -->
+        <template v-if="llmConnectionType === 'openai'">
+        <!-- API Key -->
+        <label class="fl llm-label">API Key</label>
+        <div class="apikey-row">
+          <linshe-input
+            v-model="llmApiKey"
+            :type="showApiKey ? 'text' : 'password'"
+            class="fi"
+            name="linshe-llm-key"
+            autocomplete="new-password"
+            style="margin-bottom:0"
+            :placeholder="llmPreview.hasApiKey ? '已保存密钥，输入新密钥可替换' : 'sk-xxxxxxxxxxxxxxxxxxxxxxxx'"
+            @input="onLlmKeyInput"
+          />
+          <linshe-button class="sp-btn-small" size="sm" style="flex-shrink:0" title="复制完整 API Key" @click="copyLlmApiKey">复制</linshe-button>
+          <linshe-button class="sp-btn-small" variant="ghost" size="sm" style="flex-shrink:0" @click="showApiKey = !showApiKey">
+            {{ showApiKey ? '隐藏' : '显示' }}
+          </linshe-button>
+        </div>
+        <div v-if="llmPreview.hasApiKey" class="key-status">
+          <span class="key-ok">🔑 当前:</span>
+          <code class="key-preview" role="button" tabindex="0" title="点击复制完整 API Key" @click="copyLlmApiKey" @keydown.enter="copyLlmApiKey">{{ llmPreview.preview }}</code>
+        </div>
+        <div v-else class="key-status key-missing">⚠️ 未设置，AI 对话功能不可用</div>
+
+        <!-- API 地址 -->
+        <label class="fl llm-label" style="margin-top:14px">API 地址</label>
+        <linshe-select v-model="llmBaseURLSelectVal" :options="llmBaseURLOptions" placeholder="请选择API地址" style="margin-bottom:6px" />
+        <linshe-input v-if="isCustomBaseURL" v-model="llmBaseURL" class="fi" placeholder="https://your-api-endpoint/v1" @input="onLlmEndpointInput" />
+        </template>
+
+        <!-- 模型 -->
+        <label class="fl llm-label">模型（建议点击自动获取选择deepseek-flash）</label>
+        <div class="llm-model-row">
+          <linshe-select
+            ref="llmModelSelect"
+            v-model="llmModelSelectVal"
+            class="llm-model-select"
+            :options="llmModelOptions"
+            searchable
+            allow-free-input
+            :placeholder="llmConnectionType === 'vertexai' ? '如 gemini-2.5-pro' : 'deepseek-flash'"
+            aria-label="模型"
+          />
+          <linshe-button
+            class="model-fetch-btn"
+            variant="secondary"
+            :disabled="llmModelsLoading || (llmConnectionType === 'openai' && !llmBaseURL.trim())"
+            @click="loadAvailableModels"
+          >
+{{ llmModelsLoading ? '获取中…' : '自动获取' }}
+</linshe-button>
+        </div>
+        <p v-if="llmModelsError" class="model-fetch-error" role="alert">{{ llmModelsError }}</p>
+
+        <!-- 最大输出 tokens（上游 v3.10.0）：非法值会同时挡住保存 -->
+        <label class="fl llm-label" for="llm-max-tokens">最大输出 tokens</label>
+        <linshe-input
+          id="llm-max-tokens"
+          v-model.number="llmMaxTokens"
+          class="fi"
+          type="number"
+          min="1"
+          step="1"
+          :invalid="!llmMaxTokensValid"
+          aria-describedby="llm-max-tokens-hint"
+          aria-label="最大输出 tokens"
+          @input="onLlmMaxTokensInput"
+        />
+        <p id="llm-max-tokens-hint" class="fd" :class="{ 'gen-error': !llmMaxTokensValid }" aria-live="polite">{{ llmMaxTokensHint }}</p>
+
+        <!-- 上下文窗口（token）：留空则由服务端从上游探测 / 用默认值 -->
+        <label class="fl llm-label" for="llm-context-window">上下文窗口</label>
+        <linshe-input
+          id="llm-context-window"
+          v-model.trim="llmContextWindowText"
+          class="fi"
+          inputmode="numeric"
+          :invalid="!llmContextWindowValid"
+          placeholder="1000000"
+          aria-label="上下文窗口（token）"
+          @input="markLlmDirty"
+        />
+        <p v-if="!llmContextWindowValid" class="gen-error" role="alert">请填写大于 0 的整数 token 数，或留空自动探测</p>
+        <p v-else class="fd llm-context-window-hint">留空则自动从服务端模型列表探测</p>
+
+        <div v-if="isCustomBaseURL" class="toggle-row thinking-setting">
+          <div>
+            <div class="tl llm-label">思考模式</div>
+            <div class="td">默认「关」：请求里明确禁用思考，回复更快也更省 token。开启后模型先思考再作答，适合需要推演复杂设定的场景，但更慢、更耗额度。</div>
+          </div>
+          <!-- 分段选择统一用 LinsheTabs：原先自绘的滑块选中色取的是 --accent（暖色主题下是珊瑚红），
+               看着像警告色，与页面其它分段控件也不一致（2026-10-30 用户反馈「反色」）。 -->
+          <linshe-tabs
+            :model-value="llmThinkingMode === 'enabled' ? 'enabled' : 'disabled'"
+            :options="thinkingModeOptions"
+            size="sm"
+            aria-label="思考模式"
+            @update:modelValue="onThinkingModePick"
+          />
+        </div>
+
+        <template v-if="isCustomBaseURL">
+          <div
+            role="button"
+            tabindex="0"
+            class="llm-advanced-toggle"
+            :aria-expanded="llmAdvancedOpen"
+            @click="toggleLlmAdvanced"
+            @keydown.enter.prevent="toggleLlmAdvanced"
+            @keydown.space.prevent="toggleLlmAdvanced"
+          >
+            <span class="llm-advanced-label llm-label">高级设置</span>
+            <svg class="llm-advanced-chevron" :class="{ open: llmAdvancedOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
+          </div>
+          <CollapseTransition :show="llmAdvancedOpen">
+            <div class="llm-advanced-body">
+              <!-- 自定义请求头（仅自定义API时显示，部分中转站如 OpenRouter 需要） -->
+          <div class="toggle-row llm-custom-toggle">
+            <div>
+              <div class="tl">自定义请求头</div>
+              <div class="td">为 OpenRouter 等中转服务附加 HTTP 请求头</div>
+            </div>
+            <linshe-switch v-model="llmHeadersEnabled" title="启用自定义请求头" aria-label="启用自定义请求头" @change="markLlmDirty" />
+          </div>
+          <div v-if="llmHeadersEnabled" class="llm-custom-editor">
+            <label class="fl" for="llm-custom-headers">请求头 JSON</label>
+            <linshe-input
+              id="llm-custom-headers"
+              v-model="llmHeadersText"
+              class="fi llm-json-textarea"
+              type="textarea"
+              :invalid="!llmHeadersValid"
+              placeholder="{&quot;HTTP-Referer&quot;:&quot;https://example.com&quot;,&quot;X-Title&quot;:&quot;MyApp&quot;}"
+              @input="markLlmDirty"
+            />
+            <p v-if="!llmHeadersValid" class="gen-error" role="alert">JSON 格式无效</p>
+          </div>
+
+          <!-- 自定义请求体参数（仅自定义API时显示，用于注入 body 级参数如 thinking / agent 等） -->
+          <div class="toggle-row llm-custom-toggle">
+            <div>
+              <div class="tl">自定义请求体</div>
+              <div class="td">注入 agent 等额外 body 参数；同名字段会覆盖内置参数</div>
+            </div>
+            <linshe-switch v-model="llmExtraBodyEnabled" title="启用自定义请求体" aria-label="启用自定义请求体" @change="markLlmDirty" />
+          </div>
+          <div v-if="llmExtraBodyEnabled" class="llm-custom-editor">
+            <label class="fl" for="llm-custom-body">请求体 JSON</label>
+            <linshe-input
+              id="llm-custom-body"
+              v-model="llmExtraBodyText"
+              class="fi llm-json-textarea"
+              type="textarea"
+              :invalid="!llmExtraBodyValid"
+              placeholder="{&quot;agent&quot;:&quot;my-agent&quot;,&quot;agentName&quot;:&quot;Nova&quot;}"
+              @input="markLlmDirty"
+            />
+            <p v-if="!llmExtraBodyValid" class="gen-error" role="alert">JSON 格式无效</p>
+          </div>
+
+          <!-- 后台 LLM 任务队列（仅自定义 API 时显示） -->
+          <div class="toggle-row llm-option-row" style="padding-top:14px">
+            <div>
+              <div class="tl">后台 LLM 任务队列</div>
+              <div class="td">限制LLM并发数量，避免本地 LLM 过载导致雪崩</div>
+            </div>
+            <linshe-switch v-model="features.serializeBackgroundLLM" @change="markLlmDirty()" />
+          </div>
+          <div v-if="features.serializeBackgroundLLM" class="toggle-row freq-row llm-option-row" style="margin-top:8px">
+            <div>
+              <div class="tl">最大并发后台请求数</div>
+              <div class="td">同时运行的后台 LLM 任务数上限</div>
+            </div>
+            <div class="freq-control">
+              <input
+type="range" min="1" max="10" step="1"
+                v-model.number="backgroundConcurrency" @change="markLlmDirty()"
+/>
+              <span class="freq-val">{{ backgroundConcurrency }}</span>
+            </div>
+          </div>
+
+          <div class="toggle-row llm-option-row" style="padding-bottom:4px">
+            <div>
+              <div class="tl">合并消息兼容更多llm模板</div>
+              <div class="td">合并连续Assistant或User消息，解决 LM Studio本地模型或其他llm的模板冲突</div>
+            </div>
+            <linshe-switch v-model="features.mergeMessages" @change="markLlmDirty()" />
+          </div>
+            </div>
+          </CollapseTransition>
+        </template>
+
+        <div class="sa" style="margin-top:12px">
+          <linshe-button variant="primary" :disabled="!llmDirty || !llmHeadersValid || !llmExtraBodyValid || !llmContextWindowValid || !llmMaxTokensValid || llmSaving" :loading="llmSaving" @click="saveLlmConfig">保存</linshe-button>
+          <span v-if="llmSaved" class="smsg">已保存</span>
+          <linshe-button class="llm-test-btn" variant="secondary" :disabled="llmTesting || !llmHeadersValid || !llmExtraBodyValid" @click="runLlmConnectionTest">
+            {{ llmTesting ? '测试中…' : '测试连接' }}
+          </linshe-button>
+          <div
+            role="button"
+            tabindex="0"
+            class="relay-intro-btn relay-intro-footer"
+            @click="showRelayModal = true"
+            @keydown.enter.prevent="showRelayModal = true"
+            @keydown.space.prevent="showRelayModal = true"
+          >
+推荐中转站
+</div>
+        </div>
+        </div>
+
+        <!-- 免费鸡蛋模式：隐藏全部 LLM 配置项，仅显示说明 -->
+        <div v-else key="llm-free" class="free-egg-notice">
+          <span class="free-egg-icon" aria-hidden="true">🥚</span>
+          <div class="free-egg-copy">
+            <div class="free-egg-title">正在使用 opencode go 免费模型</div>
+            <div class="free-egg-desc">每5小时每个IP限额200次请求</div>
+            <div class="free-egg-hint">免费模型失败会自动切换；本轮全部失败会自动关闭鸡蛋，改用自有配置重试</div>
+          </div>
+        </div>
+        </Transition>
+      </div>
+
+      <!-- 推荐中转站弹窗 -->
+      <linshe-modal v-model="showRelayModal" title="推荐中转站" wide>
+        <p class="relay-modal-tip">以下为第三方 LLM 中转站，API Key 请在其官网获取</p>
+        <div v-for="station in relayStations" :key="station.name" class="relay-station">
+          <div class="relay-station-head">
+            <span class="relay-station-name">{{ station.name }}</span>
+            <linshe-button class="relay-quick-btn" variant="secondary" :disabled="relayConfigBusy" @click="applyRelayConfig(station)">
+              <svg class="relay-quick-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+              <span>{{ relayConfigBusy ? '新增中…' : '快速配置' }}</span>
+            </linshe-button>
+          </div>
+          <p class="relay-station-desc">{{ station.desc }}</p>
+          <p class="relay-station-line"><a :href="station.keysUrl" target="_blank" rel="noopener" class="ext-link relay-station-link">跳转官网→</a></p>
+        </div>
+        <p class="relay-sponsor-note">可以注意到以上中转均未支付赞助费，看到请及时支付 <strong>**广告位招租**</strong></p>
+      </linshe-modal>
+
+      <linshe-modal v-model="showNovelaiRelayModal" title="NovelAI 推荐中转站" wide>
+        <p class="relay-modal-tip">以下为 NovelAI 图像生成兼容中转服务，API Key 请在其官网获取。</p>
+        <div class="relay-station">
+          <div class="relay-station-head">
+            <span class="relay-station-name">NAI.Rinko</span>
+            <linshe-button class="relay-quick-btn" variant="secondary" :loading="novelaiRelayConfigBusy" @click="applyNovelaiRelayConfig">
+              <svg class="relay-quick-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+              <span>{{ novelaiRelayConfigBusy ? '配置中…' : '快速配置' }}</span>
+            </linshe-button>
+          </div>
+          <p class="relay-station-desc">点击快速配置会保存接口地址 https://nai.rinko.ai；API Key 需在官网获取后自行填写。</p>
+          <p class="relay-station-line"><a href="https://nai.rinko.ai/sign-up?aff=gOkj" target="_blank" rel="noopener" class="ext-link relay-station-link">跳转官网→</a></p>
+        </div>
+      </linshe-modal>
+
+      <!-- 功能开关 -->
+      <div class="card">
+        <h3>功能开关</h3>
+
+        <div class="toggle-row theme-mode-row">
+          <div>
+            <div class="tl">界面主题</div>
+            <div class="td">暖色、暗夜，或按时间自动切换</div>
+          </div>
+          <div class="theme-mode-options" role="group" aria-label="界面主题">
+            <linshe-button
+              v-for="t in themeModes"
+              :key="t.id"
+              size="sm"
+              variant="chip"
+              :active="settingsStore.themeMode === t.id"
+              @click="settingsStore.setThemeMode(t.id)"
+            >
+{{ t.name }}
+</linshe-button>
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">好感度系统</div>
+            <div class="td">每轮对话后评估 AI 情绪变化，影响回复语气</div>
+          </div>
+          <linshe-switch v-model="features.emotion" @change="saveFeature('emotion', features.emotion)" />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">聊天候选词</div>
+            <div class="td">LLM回复后预测用户接下来可能说的话，在输入框上方显示快捷候选</div>
+          </div>
+          <linshe-switch v-model="features.replyGuesses" @change="saveFeature('replyGuesses', features.replyGuesses)" />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">实时显示好感度</div>
+            <div class="td">在聊天顶部实时显示当前好感度数值和最近变化原因</div>
+          </div>
+          <linshe-switch v-model="features.realtimeAffinityDisplay" @change="saveFeature('realtimeAffinityDisplay', features.realtimeAffinityDisplay)" />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">深度思考<span class="beta-tag">测试版</span></div>
+            <div class="td">私聊回复前角色先在内心盘算用什么形式表达（文字/表情包/照片），思考过程默认折叠显示。</div>
+          </div>
+          <linshe-switch :model-value="deepThinkMode" @change="onDeepThinkChange" />
+        </div>
+
+        <div class="toggle-row freq-row">
+          <div>
+            <div class="tl">主动聊天频率</div>
+            <div class="td">0 关闭，越大越频繁。</div>
+          </div>
+          <div class="freq-control">
+            <input
+type="range" min="0" max="1" step="0.1"
+              v-model.number="freqSlider"
+              @change="onFreqChange"
+            />
+            <span class="freq-val">{{ freqSlider.toFixed(1) }}</span>
+          </div>
+        </div>
+
+        <div class="toggle-row freq-row">
+          <div>
+            <div class="tl">奇遇触发频率</div>
+            <div class="td">0 关闭自动触发，1 为默认频率（约 30 分钟一次）。</div>
+          </div>
+          <div class="freq-control">
+            <input
+type="range" min="0" max="1" step="0.1"
+              v-model.number="eventFreqSlider"
+              @change="onEventFreqChange"
+            />
+            <span class="freq-val">{{ eventFreqSlider.toFixed(1) }}</span>
+          </div>
+        </div>
+
+        <!-- 防打扰模式 -->
+        <div class="toggle-row">
+          <div style="flex:1">
+            <div class="tl">防打扰模式</div>
+            <div class="td">在指定时间段内自动禁用勾选角色的朋友圈、主动聊天和奇遇</div>
+          </div>
+          <div
+            v-if="disturbMode"
+            class="disturb-setup-btn"
+            title="防打扰设置"
+            @click="openDisturbDialog"
+          >
+<gear-icon :size="17" />
+</div>
+          <linshe-switch v-model="disturbMode" @change="onDisturbModeToggle" />
+        </div>
+
+        <!-- 实时天气 -->
+        <div class="toggle-row">
+          <div style="flex:1">
+            <div class="tl">实时天气</div>
+            <div class="td">你将和角色共享天气</div>
+          </div>
+          <div
+            v-if="features.weather"
+            class="disturb-setup-btn"
+            title="设置城市"
+            @click="openWeatherCityDialog"
+          >
+<gear-icon :size="17" />
+</div>
+          <linshe-switch v-model="features.weather" @change="saveFeature('weather', features.weather)" />
+        </div>
+
+        <!-- 亲密度看板（总开关：关闭后不再自动记账，看板写入与回填接口返回 409） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">亲密度看板</div>
+            <div class="td">记录角色的身体档案与相处统计，并允许角色在对话中知晓；关闭后停止自动记账与历史回填</div>
+          </div>
+          <linshe-switch v-model="features.intimate" aria-label="亲密度看板" title="亲密度看板" @change="saveIntimateFeature('intimate', features.intimate)" />
+        </div>
+
+        <!-- 历史对话回填（默认开：把以往会话中能识别的记录补进看板流水） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">历史对话回填</div>
+            <div class="td">把以往的对话记录补进看板流水，仅在亲密度看板开启时生效</div>
+          </div>
+          <linshe-switch v-model="features.intimateBackfill" aria-label="历史对话回填" title="历史对话回填" @change="saveIntimateFeature('intimateBackfill', features.intimateBackfill)" />
+        </div>
+      </div>
+
+      <!-- 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）
+           顶上三个开关是纯 prompt 增强（零额外 LLM 调用），默认开；关闭后与加功能前逐字节一致。
+           「重写兜底」antiRepetitionReroll（专题 L4 / D2）**已接线**：默认关，打开后每触发一次会**多消耗一次模型调用**，
+           故说明里写明代价；替换语义见 stores/chat.js 与 docs/anti-repetition.md。 -->
+      <div class="card anti-rep-card">
+        <h3>反重复与话题推进</h3>
+        <p class="fd">角色连续几轮围绕同一话题打转时，动态提示她换角度、引入新信息或推进事件；同一情绪持续多轮时提示她像真人一样打断自己。全部是提示词层的增强，不额外调用模型。</p>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">反车轱辘话</div>
+            <div class="td">最近几轮话题重叠超过阈值时，提示她换一种说法或推进话题（另附一条近端自身输出标注）</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetition"
+            aria-label="反车轱辘话"
+            title="反车轱辘话"
+            @change="saveAntiRepFeature('antiRepetition', features.antiRepetition)"
+          />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">反钻牛角尖</div>
+            <div class="td">同一情绪极值连续多轮且话题没换时，提示她自我打断、分心或做个小决定，让对话往前走</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetitionLock"
+            aria-label="反钻牛角尖"
+            title="反钻牛角尖"
+            @change="saveAntiRepFeature('antiRepetitionLock', features.antiRepetitionLock)"
+          />
+        </div>
+
+        <!-- B1 阶段二：升级档（默认开）。关掉只留温和提示；重写兜底 antiRepetitionReroll 本轮不接线，故无入口。 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">重复时自动加强约束</div>
+            <div class="td">她连续 3 轮在复述同一件事时，把约束从温和升到更强；一旦不再重复立刻回落。关掉则只保留温和提示</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetitionEscalation"
+            aria-label="重复时自动加强约束"
+            title="重复时自动加强约束"
+            @change="saveAntiRepFeature('antiRepetitionEscalation', features.antiRepetitionEscalation)"
+          />
+        </div>
+
+        <!-- D2 重写兜底（默认关）：用户点名「做个开关放到设置里说明」，说明里必须写清代价 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">重写这一轮</div>
+            <div class="td">她还在复读时，把这一轮的话重写一次（会多消耗一次模型调用，默认关闭）—— 重写后原先那段会被整段换掉，不会重复出现</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetitionReroll"
+            aria-label="重写这一轮"
+            title="重写这一轮"
+            @change="saveAntiRepFeature('antiRepetitionReroll', features.antiRepetitionReroll)"
+          />
+        </div>
+
+        <!-- 玩具系统总开关（用户拍板：一次性解锁，同 touchGroupAdult 先例；默认关） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">解锁成人玩具</div>
+            <div class="td">打开后，触摸面板里多一块「玩具控制」：可以给她戴上跳蛋 / 振动棒 / 肛塞 / 乳夹 / 项圈，调强度、随时摘下，她会当场有反应（默认关）</div>
+          </div>
+          <linshe-switch
+            v-model="features.toys"
+            aria-label="解锁成人玩具"
+            title="解锁成人玩具"
+            @change="saveFeatureWithToast('toys', features.toys, '成人玩具')"
+          />
+        </div>
+
+        <!-- 采样层（专题 L3）：默认留空 = 请求体里完全不发送这两个字段，行为与历史完全一致。
+             规划 C5 要求先拿真网关探针确认参数被接受再上 UI；未探明前请保持留空。 -->
+        <div class="anti-rep-penalty">
+          <div class="anti-rep-penalty-copy">
+            <div class="tl">重复惩罚参数（高级）</div>
+            <div class="td">透传 presence_penalty / frequency_penalty 给模型接口，范围 -2 ~ 2。留空表示不发送；部分第三方中转站不接受该参数，若保存后回复出错请清空重试。</div>
+          </div>
+          <div class="anti-rep-penalty-inputs">
+            <label class="anti-rep-field">
+              <span class="anti-rep-field-label">presence</span>
+              <linshe-input v-model="antiRepPenaltyPresence" class="fi anti-rep-input" placeholder="留空" :invalid="!antiRepPenaltyPresenceValid" @keyup.enter="onAntiRepPenaltySave" />
+            </label>
+            <label class="anti-rep-field">
+              <span class="anti-rep-field-label">frequency</span>
+              <linshe-input v-model="antiRepPenaltyFrequency" class="fi anti-rep-input" placeholder="留空" :invalid="!antiRepPenaltyFrequencyValid" @keyup.enter="onAntiRepPenaltySave" />
+            </label>
+            <linshe-button variant="secondary" size="sm" :loading="antiRepPenaltySaving" :disabled="!antiRepPenaltyValid" @click="onAntiRepPenaltySave">保存</linshe-button>
+            <span v-if="antiRepPenaltySaved" class="smsg">已保存</span>
+          </div>
+        </div>
+        <p v-if="antiRepPenaltyError" class="gen-error" role="alert">{{ antiRepPenaltyError }}</p>
+      </div>
+
+      <!-- SLG 动作系统（触摸互动 · 专题-SLG动作系统）
+           前两个开关默认开：总开关控制聊天页动作条与 POST /touch；即时反应关掉后走"隐式注入"，
+           她的反应并进下一轮回复，不额外调用模型（配额清零只影响即时那条路）。
+           第三个（群聊敏感动作）**默认关**：关着时群里点 Lv3 一律被拦，行为与加开关前一致。 -->
+      <div class="card touch-action-card">
+        <h3>动作系统（触摸互动）</h3>
+        <p class="fd">聊天页输入框上方会出现一条动作胶囊条（摸头 / 抱抱 / 亲脸颊…）。点下去她会当场有反应，连续点同一个动作会逐渐不耐烦。即时反应是"立刻单独回一条"，关掉后改成并进下一轮回复。</p>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">动作系统</div>
+            <div class="td">关闭后聊天页不再显示动作条，后端也会拒绝动作请求（已记录的动作反应不受影响）</div>
+          </div>
+          <linshe-switch
+            v-model="features.touch"
+            aria-label="动作系统"
+            title="动作系统"
+            @change="saveTouchFeature('touch', features.touch)"
+          />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">即时反应</div>
+            <div class="td">点动作后立刻单独发一条反应（含表情与心情变化）；每日 100 次，额度用完自动并回下一轮</div>
+          </div>
+          <linshe-switch
+            v-model="features.touchInstant"
+            aria-label="即时反应"
+            title="即时反应"
+            @change="saveTouchFeature('touchInstant', features.touchInstant)"
+          />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">群聊里的敏感动作</div>
+            <div class="td">允许在群聊里对角色做 Lv3 敏感动作（摸胸 / 摸臀等）。默认关闭：这种事留到只有你们俩的时候；打开后群成员可能围观</div>
+          </div>
+          <linshe-switch
+            v-model="features.touchGroupAdult"
+            aria-label="群聊里的敏感动作"
+            title="群聊里的敏感动作"
+            @change="saveTouchFeature('touchGroupAdult', features.touchGroupAdult)"
+          />
+        </div>
+
+        <!-- 动作出图档位（阶段三）：三档用 LinsheTabs，键与后端 features.touchImageMode 同口径 -->
+        <div class="toggle-row touch-image-mode-row">
+          <div>
+            <div class="tl">动作出图</div>
+            <div class="td">她做完动作后要不要顺手配一张图。「智能」只在合适的时候配（默认）；「总是」每次都配；「从不」只要文字。</div>
+          </div>
+          <linshe-tabs
+            :model-value="normalizeTouchImageMode(features.touchImageMode)"
+            :options="TOUCH_IMAGE_MODES"
+            size="sm"
+            class="touch-image-mode-tabs"
+            @update:model-value="saveTouchImageMode"
+          />
+        </div>
+
+        <!-- 即时反应风格（task-30）：后端 features.touchReactionMode 一直是完整的，前端此前零引用 -->
+        <div class="toggle-row touch-image-mode-row">
+          <div>
+            <div class="tl">动作反应风格</div>
+            <div class="td">她回应你动作时的写法。「对话式」把人格、心情、关系、日程和最近几句对话都喂给她，回得更像真人、还能顺着话题接话（默认）；「快速」只给最近两句、回得短，更快但更像应付。</div>
+          </div>
+          <linshe-tabs
+            :model-value="normalizeTouchReactionMode(features.touchReactionMode)"
+            :options="TOUCH_REACTION_MODES"
+            size="sm"
+            class="touch-image-mode-tabs"
+            @update:model-value="saveTouchReactionMode"
+          />
+        </div>
+
+        <!-- 群聊围观插话概率（task-22）：开关 + 概率滑块；关掉＝这轮其他成员都不发言 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">群聊里的围观插话</div>
+            <div class="td">在群里对某人做动作时，其他成员凑过来插一句的概率。关掉＝这一轮谁都不插话（与加功能前完全一致）</div>
+          </div>
+          <linshe-switch
+            v-model="bystanderEnabled"
+            aria-label="群聊里的围观插话"
+            title="群聊里的围观插话"
+            @change="saveBystanderEnabled"
+          />
+        </div>
+
+        <div v-if="bystanderEnabled" class="bystander-row">
+          <div class="bystander-slider">
+            <linshe-slider
+              id="touch-bystander-chance"
+              v-model="bystanderPercent"
+              :min="0"
+              :max="100"
+              :step="5"
+              aria-label="围观插话概率"
+              @change="saveBystanderChance"
+            />
+          </div>
+          <span class="bystander-value">{{ bystanderPercent }}%</span>
+        </div>
+      </div>
+
+      <!-- 生图服务连接 -->
+      <div class="card image-connection-card">
+        <h3>图片生成服务</h3>
+        <linshe-tabs
+          v-model="imageProvider"
+          :options="imageProviderOptions"
+          size="sm"
+          class="image-provider-tabs"
+          @update:model-value="onImageProviderChange"
+        />
+        <Transition name="expand" mode="out-in">
+          <div v-if="imageProvider === 'comfyui'" key="comfyui" class="image-connection-fields">
+            <p class="fd">ComfyUI 服务地址，默认 http://localhost:8188</p>
+            <linshe-input v-model="comfyUrl" class="fi" placeholder="http://localhost:8188" @input="markConnDirty" />
+            <div class="conn-switch-row">
+              <span>跳过 TLS 证书验证（仅在连接云端 HTTPS ComfyUI 失败时开启）</span>
+              <linshe-switch v-model="comfySkipTls" @change="markConnDirty" />
+            </div>
+          </div>
+          <div v-else key="novelai" class="image-connection-fields">
+            <p class="fd">NovelAI 生图固定单张，使用这里设置的分辨率和参数，不跟随系统分辨率。免费标准档适用尺寸：512×512、832×1216、1216×832、1024×1024，步数上限为 28。</p>
+            <div class="novelai-api-mode-row">
+              <!-- 三协议（上游 v3.10.0）：官方直连 / native 原生 / relay OpenAI 兼容中转 -->
+              <linshe-select
+                id="novelai-protocol"
+                v-model="novelaiApiFormat"
+                class="novelai-api-format-select"
+                :options="novelaiApiFormatOptions"
+                aria-label="NovelAI 连接方式"
+                @update:model-value="changeNovelaiFormat(); markConnDirty()"
+              />
+              <linshe-input
+                id="novelai-url"
+                v-model="novelaiUrl"
+                class="novelai-api-url"
+                :disabled="novelaiApiFormat === 'official'"
+                placeholder="接口地址"
+                aria-label="NovelAI 接口地址"
+                @input="markConnDirty"
+              />
+            </div>
+            <label class="novelai-setting-label" for="novelai-proxy">代理地址（可选）</label>
+            <linshe-input
+              id="novelai-proxy"
+              v-model="novelaiProxyUrl"
+              class="novelai-api-url"
+              placeholder="例如 http://127.0.0.1:7890（留空走环境变量代理）"
+              aria-label="NovelAI 代理地址"
+              @input="markConnDirty"
+            />
+            <p class="novelai-model-hint">{{ novelaiApiFormat === 'official' ? '官方 API 直连 NovelAI。' : novelaiApiFormat === 'native' ? '原生协议：直连自建/中转的 NovelAI 兼容服务。' : '中转站模式使用上方地址。' }}保存后生效。</p>
+            <div class="novelai-model-row">
+              <linshe-select v-model="novelaiModel" class="novelai-model-select" :options="novelaiModels" searchable allow-free-input placeholder="请先自动获取模型" @update:model-value="markConnDirty" />
+              <linshe-button variant="secondary" size="md" :loading="novelaiModelsLoading" @click="fetchNovelaiModels">自动获取</linshe-button>
+            </div>
+            <p v-if="novelaiModels.length === 0" class="novelai-model-hint">填写 API Key 后点击“自动获取”，读取{{ novelaiApiFormat === 'relay' ? '当前中转站' : '官方 API' }}提供的模型。</p>
+            <label class="novelai-setting-label" for="novelai-quality-prompt">质量提示词</label>
+            <linshe-input
+              id="novelai-quality-prompt"
+              v-model="novelaiQualityPrompt"
+              class="novelai-quality-prompt"
+              placeholder="masterpiece, best quality, score_9, score_8, highres, absurdres, year 2025"
+              @input="markConnDirty"
+            />
+            <label class="novelai-setting-label" for="novelai-artist">画师串</label>
+            <linshe-input
+              id="novelai-artist"
+              v-model="novelaiArtist"
+              placeholder="例如：@ebora"
+              @input="markConnDirty"
+            />
+            <label class="novelai-setting-label" for="novelai-negative-prompt">反向提示词</label>
+            <linshe-input
+              id="novelai-negative-prompt"
+              v-model="novelaiNegativePrompt"
+              placeholder="输入希望避免出现的内容，留空表示不额外限制"
+              @input="markConnDirty"
+            />
+            <div class="novelai-resolution-field">
+              <div class="fpresets-head">
+                <span class="resolution-title">分辨率</span>
+                <span class="resolution-hint">输入宽高，或选用预设</span>
+              </div>
+              <div class="fr novelai-dimensions-row">
+                <div class="fh"><label class="fl" for="novelai-width">宽度</label><linshe-input id="novelai-width" v-model.number="novelaiWidth" type="number" min="64" max="4096" step="64" @input="onNovelaiDimensionInput('width', $event)" /></div>
+                <div class="fh"><label class="fl" for="novelai-height">高度</label><linshe-input id="novelai-height" v-model.number="novelaiHeight" type="number" min="64" max="4096" step="64" @input="onNovelaiDimensionInput('height', $event)" /></div>
+              </div>
+              <div class="fpresets novelai-resolution-presets">
+                <span class="pl">预设：</span>
+                <linshe-button v-for="preset in novelaiResolutionPresets" :key="preset.label" class="pbtn" variant="chip" :active="novelaiWidth === preset.width && novelaiHeight === preset.height" @click="applyNovelaiResolutionPreset(preset)">{{ preset.label }}</linshe-button>
+              </div>
+            </div>
+            <div class="novelai-param-row">
+              <div class="novelai-param-field">
+                <label class="fl" for="novelai-sampler">采样器</label>
+                <linshe-select id="novelai-sampler" v-model="novelaiSampler" :options="novelaiSamplerOptions" @update:model-value="markConnDirty" />
+              </div>
+              <div class="novelai-param-field">
+                <label class="fl" for="novelai-noise-schedule">噪声调度</label>
+                <linshe-select id="novelai-noise-schedule" v-model="novelaiNoiseSchedule" :options="novelaiNoiseScheduleOptions" @update:model-value="markConnDirty" />
+              </div>
+            </div>
+            <div class="novelai-steps-field">
+              <div class="novelai-slider-heading">
+                <label class="fl" for="novelai-steps">步数（1–50）</label>
+                <span>{{ novelaiSteps }}</span>
+              </div>
+              <linshe-slider id="novelai-steps" v-model="novelaiSteps" :min="1" :max="50" :step="1" aria-label="NovelAI 步数" @update:model-value="markConnDirty" />
+            </div>
+            <div class="novelai-steps-field">
+              <div class="novelai-slider-heading">
+                <label class="fl" for="novelai-guidance">引导强度</label>
+                <span>{{ Number(novelaiGuidance).toFixed(1) }}</span>
+              </div>
+              <linshe-slider id="novelai-guidance" v-model="novelaiGuidance" :min="0" :max="10" :step="0.1" aria-label="NovelAI 引导强度" @update:model-value="markConnDirty" />
+            </div>
+            <label class="novelai-setting-label" for="novelai-api-key">NovelAI API Key（按当前接口格式发送）</label>
+            <linshe-input
+              id="novelai-api-key"
+              v-model="novelaiApiKey"
+              class="fi"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="novelaiApiKeySaved ? '已保存，留空保持不变' : '输入 NovelAI API Key'"
+              @input="onNovelaiKeyInput"
+            />
+            <div class="conn-key-hint">
+              <span v-if="novelaiApiKeySaved && !novelaiApiKeyCleared">API Key 已保存；留空会继续使用已保存的密钥。</span>
+              <span v-else>填写对应接口使用的 API Key，保存后可测试连接。</span>
+              <linshe-button
+                v-if="novelaiApiKeySaved && !novelaiApiKey && !novelaiApiKeyCleared"
+                variant="link"
+                size="sm"
+                @click="clearNovelaiKey"
+              >
+清除密钥
+</linshe-button>
+            </div>
+          </div>
+        </Transition>
+        <div class="sr">
+          <span :class="['sd', health?.connected ? 'on' : 'off']"></span>
+          <span>{{ health?.connected ? '已连接' : '未连接' }}</span>
+          <span v-if="health?.provider === 'novelai' && health?.modelAvailable === false" class="conn-health-hint">当前模型未在服务端模型列表中</span>
+          <span v-else-if="health?.error" class="conn-health-hint">{{ health.error }}</span>
+        </div>
+        <div class="sa" style="margin-top:12px">
+          <linshe-button variant="primary" :disabled="!connDirty" @click="saveComfyUrl">保存</linshe-button>
+          <span v-if="connSaved" class="smsg">已保存</span>
+          <linshe-button variant="secondary" @click="checkHealth">测试连接</linshe-button>
+        </div>
+        <div v-if="imageProvider === 'novelai'" class="sa novelai-relay-entry-row">
+          <div
+            role="button"
+            tabindex="0"
+            class="relay-intro-btn relay-intro-footer"
+            @click="showNovelaiRelayModal = true"
+            @keydown.enter.prevent="showNovelaiRelayModal = true"
+            @keydown.space.prevent="showNovelaiRelayModal = true"
+          >
+推荐中转站
+</div>
+        </div>
+      </div>
+
+      <!-- 聊天记忆 -->
+      <div class="card memory-settings-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>聊天记忆</h3>
+            <p>PAI风格记忆整理：让角色记住你们聊过的重要事情，并在之后的聊天中自然想起来</p>
+          </div>
+        </div>
+
+        <!-- 状态与配置提示：记忆"记不住 / 搜不到 / 整理没动静"的原因分散在多个开关里，
+             这里把结论直接摆在卡片最上面，并明确这一块是可以配置的 -->
+        <memory-health-panel mode="compact" class="memory-settings-health" />
+
+        <div class="toggle-row memory-settings-row">
+          <div class="memory-settings-copy">
+            <div class="tl">启用聊天记忆</div>
+          </div>
+          <linshe-switch v-model="features.memory" title="启用聊天记忆" aria-label="启用聊天记忆" @change="saveFeature('memory', features.memory)" />
+        </div>
+
+        <div
+          role="button"
+          tabindex="0"
+          class="memory-settings-entry sheen"
+          aria-label="打开记忆设置：调整智能匹配模型、整理节奏、记忆条数与归档管理"
+          @click="router.push('/settings/memory')"
+          @keydown.enter.prevent="router.push('/settings/memory')"
+          @keydown.space.prevent="router.push('/settings/memory')"
+        >
+          <span class="memory-entry-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 7h10M18 7h2M4 17h2M10 17h10M9 4v6M15 14v6" />
+            </svg>
+          </span>
+          <span class="memory-entry-copy">
+            <span class="memory-entry-title">打开记忆设置</span>
+            <span class="memory-entry-desc">智能匹配模型、整理节奏、记忆条数与归档，都在这里调</span>
+            <span class="memory-entry-tags">
+              <span class="memory-entry-tag">智能匹配模型</span>
+              <span class="memory-entry-tag">整理节奏</span>
+              <span class="memory-entry-tag">记忆条数</span>
+              <span class="memory-entry-tag">归档管理</span>
+            </span>
+          </span>
+          <span class="memory-entry-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
+        </div>
+      </div>
+
+      <!-- 破限规则集：入口卡片（复用「聊天记忆」入口样式，2026-10-15） -->
+      <div class="card memory-settings-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>破限规则集</h3>
+            <p>给模型一段「别拒答」的底稿，并决定它注入哪些对话链路（私聊 / 群聊 / 奇遇 / 日程 / 朋友圈 …）</p>
+          </div>
+          <linshe-switch v-model="features.jailbreak" title="启用破限注入" aria-label="启用破限注入" @change="saveFeatureWithToast('jailbreak', features.jailbreak, '破限注入')" />
+        </div>
+
+        <div
+          role="button"
+          tabindex="0"
+          class="memory-settings-entry sheen"
+          aria-label="打开破限规则集：多套底稿切换、注入范围与正文编辑"
+          @click="router.push('/settings/jailbreak')"
+          @keydown.enter.prevent="router.push('/settings/jailbreak')"
+          @keydown.space.prevent="router.push('/settings/jailbreak')"
+        >
+          <span class="memory-entry-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6zM9 12l2 2 4-4" />
+            </svg>
+          </span>
+          <span class="memory-entry-copy">
+            <span class="memory-entry-title">打开破限规则集</span>
+            <span class="memory-entry-desc">多套底稿随时切换 · 按调用链投递 · 正文可编辑</span>
+            <span class="memory-entry-tags">
+              <span class="memory-entry-tag">规则集切换</span>
+              <span class="memory-entry-tag">注入范围</span>
+              <span class="memory-entry-tag">正文编辑</span>
+            </span>
+          </span>
+          <span class="memory-entry-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
+        </div>
+      </div>
+
+      <!-- MaiBot 桥接：入口卡片（复用「聊天记忆」入口样式） -->
+      <div class="card memory-settings-card maibot-settings-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>MaiBot 桥接（需要邻舍v3.0.0以上支持）</h3>
+            <p>管理注入到 MaiBot 主聊天流的人格信息（角色卡 / 风格 / 记忆）与全部插件参数</p>
+          </div>
+        </div>
+
+        <div
+          role="button"
+          tabindex="0"
+          class="memory-settings-entry sheen"
+          aria-label="管理 MaiBot 桥接：连接设置、插件配置、人格信息与记忆整理"
+          @click="router.push('/settings/maibot')"
+          @keydown.enter.prevent="router.push('/settings/maibot')"
+          @keydown.space.prevent="router.push('/settings/maibot')"
+        >
+          <span class="memory-entry-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 6h16v14H4zM9 3h6M10 3v3M14 3v3M7 11h2M7 14h4M15 11h2M15 14h2" />
+            </svg>
+          </span>
+          <span class="memory-entry-copy">
+            <span class="memory-entry-title">人格管理</span>
+            <span class="memory-entry-desc">连接设置 · 插件配置 · 人格信息 · 最新记忆整理</span>
+          </span>
+          <span class="memory-entry-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
+        </div>
+      </div>
+
+      <!-- 更新说明：重新查看历次更新内容（平时只在版本变化后自动弹一次） -->
+      <div class="card memory-settings-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>更新说明</h3>
+            <p>查看历次版本都改了什么，内容随版本一同发布</p>
+          </div>
+        </div>
+
+        <div
+          role="button"
+          tabindex="0"
+          class="memory-settings-entry sheen"
+          aria-label="打开更新说明"
+          @click="openChangelog"
+          @keydown.enter.prevent="openChangelog"
+          @keydown.space.prevent="openChangelog"
+        >
+          <span class="memory-entry-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M6 3h9l4 4v14H6zM15 3v4h4M9 12h7M9 16h5" />
+            </svg>
+          </span>
+          <span class="memory-entry-copy">
+            <span class="memory-entry-title">
+              {{ changelogLatest ? `最新 ${changelogLatest.version}` : '更新说明' }}
+            </span>
+            <span class="memory-entry-desc">
+              {{ changelogTotal ? `共 ${changelogTotal} 个版本 · 点击查看全文` : '暂无更新条目' }}
+            </span>
+          </span>
+          <span class="memory-entry-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
+        </div>
+      </div>
+
+      <!-- 程序时间：白天/黑夜、第几天、快进 N 天、设定具体日期时间（现实模拟时钟） -->
+      <div class="card card-full memory-settings-card time-control-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>程序时间</h3>
+            <p>游戏里的"现在几点"。快进一天或直接跳到某个日期，所有角色的日程与睡眠会跟着重算；聊天记录的时间戳仍按真实时间走</p>
+          </div>
+        </div>
+        <TimeControlPanel />
+      </div>
+
+      <!-- 数据备份：一键导出全部数据 / 一键导入（导入是覆盖式操作，导入前自动备份） -->
+      <div class="card card-full memory-settings-card data-backup-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>数据备份</h3>
+            <p>把角色、聊天记录、群聊、记忆与图片打包成一个 .tar.gz；换电脑或重装后用同一个归档一键恢复</p>
+          </div>
+        </div>
+
+        <div class="data-backup-info" role="status" aria-live="polite">
+          <span class="data-backup-info-label">当前数据</span>
+          <span class="data-backup-info-text">{{ exportInfoLoading ? '读取中…' : exportInfoText }}</span>
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">包含模型配置（含 API Key）</div>
+            <div class="td">归档里会带上 config\.env；里面有你的密钥，这份备份不要发给别人</div>
+          </div>
+          <linshe-switch
+            v-model="exportIncludeConfig"
+            aria-label="导出时包含模型配置（含 API Key）"
+          />
+        </div>
+
+        <div class="data-backup-actions">
+          <linshe-button
+            variant="secondary"
+            size="sm"
+            :loading="exportBusy"
+            :disabled="exportBusy || importBusy"
+            @click="onExportData"
+          >
+            {{ exportBusy ? '导出中…' : '一键导出全部数据' }}
+          </linshe-button>
+          <linshe-button
+            variant="secondary"
+            size="sm"
+            :disabled="exportBusy || importBusy"
+            @click="pickImportFile"
+          >
+            一键导入
+          </linshe-button>
+          <span class="data-backup-tip">导入会覆盖当前数据库与资产文件；导入前会自动备份到 data\backups\</span>
+        </div>
+
+        <Transition name="backup-notice-fade">
+          <p v-if="importNotice" class="data-backup-notice" :class="`is-${importNotice.type}`" role="status">
+            {{ importNotice.text }}
+          </p>
+        </Transition>
+
+        <!-- 唯一允许的裸 input：隐藏的文件选择器（AGENTS.md 特殊交互元素白名单），
+             真正可点的控件是上面的 LinsheButton，因此这里不进 tab 序列也不读给读屏 -->
+        <input
+          ref="importFileEl"
+          class="data-backup-file"
+          type="file"
+          accept=".gz,.tar.gz,application/gzip"
+          tabindex="-1"
+          aria-hidden="true"
+          @change="onImportFilePicked"
+        />
+      </div>
+</div>
+
+    <!-- 导入二次确认：覆盖式破坏操作，必须让用户看清后果再上传 -->
+    <linshe-modal v-model="importDialog.show" title="确认导入备份？" panel-class="data-backup-modal">
+      <p class="data-backup-modal-line">
+        导入会<strong>覆盖当前数据库与资产文件</strong>；导入前会自动备份到
+        <code>data\backups\</code>，万一不满意可以用那份备份回滚。
+      </p>
+      <p class="data-backup-modal-line">
+        选中的文件：<strong>{{ importDialog.fileName }}</strong>
+        <span v-if="importDialog.fileSize" class="data-backup-modal-size">（{{ importDialog.fileSize }}）</span>
+      </p>
+      <p class="data-backup-modal-line">确认后开始上传，中途请不要关闭页面或退出程序。</p>
+      <template #footer>
+        <linshe-button variant="secondary" :disabled="importBusy" @click="importDialog.show = false">取消</linshe-button>
+        <linshe-button variant="danger" :loading="importBusy" :disabled="importBusy" @click="confirmImport">
+          {{ importBusy ? '导入中…' : '确认导入' }}
+        </linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- 收藏画师串弹窗 -->
+    <linshe-modal v-model="favDialog.show" title="收藏画师串">
+      <p class="form-dialog-desc">为当前画师串起个名字，方便以后快速识别：</p>
+      <linshe-input
+        ref="favDialogInput"
+        v-model="favDialog.label"
+        placeholder="输入收藏名称"
+        maxlength="30"
+        @keyup.enter="confirmAddFavorite"
+      />
+      <template #footer>
+        <linshe-button variant="secondary" @click="cancelAddFavorite">取消</linshe-button>
+        <linshe-button variant="primary" :disabled="!favDialog.label.trim()" @click="confirmAddFavorite">确认收藏</linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- 质量提示词弹窗 -->
+    <linshe-modal v-model="qualityDialog.show" title="质量提示词" wide :transition-ms="300">
+      <p class="form-dialog-desc">填写英文质量提示词覆盖工作流默认值，留空则使用系统默认</p>
+      <linshe-input
+        v-model="qualityDialog.text"
+        type="textarea"
+        rows="8"
+        placeholder="masterpiece, best quality, score_9, score_8，highres, absurdres, year 2025"
+      />
+      <template #footer>
+        <linshe-button variant="secondary" @click="qualityDialog.show = false">取消</linshe-button>
+        <linshe-button variant="primary" :disabled="qualitySaving" @click="saveQualityPrompt">{{ qualitySaving ? '保存中…' : '保存' }}</linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- 负面提示词弹窗 -->
+    <linshe-modal v-model="negativeDialog.show" title="负面提示词" wide :transition-ms="300">
+      <p class="form-dialog-desc">填写英文负面提示词覆盖工作流默认值，留空则使用工作流内置默认</p>
+      <linshe-input
+        v-model="negativeDialog.text"
+        type="textarea"
+        rows="8"
+        placeholder="score_1, score_2, score_3, bad anatomy, bad proportions, deformed anatomy, deformed face, deformed eyes, multiple fingers, text, watermark, artist name, censor, mosaic, signature, logo, twitter username, patreon username, username, shadows, highlights, strong lighting, dramatic lighting, rim light, backlighting, high contrast, volumetric lighting"
+      />
+      <template #footer>
+        <linshe-button variant="secondary" @click="negativeDialog.show = false">取消</linshe-button>
+        <linshe-button variant="primary" :disabled="negativeSaving" @click="saveNegativePrompt">{{ negativeSaving ? '保存中…' : '保存' }}</linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- 防打扰模式设置弹窗 -->
+    <linshe-modal v-model="disturbDialog.show" title="防打扰设置" wide>
+      <div class="disturb-dialog-section">
+        <span class="disturb-dialog-label">⏰ 静默时段</span>
+        <p class="disturb-dialog-hint">在此时段内自动禁用所选角色的朋友圈、主动聊天和奇遇。支持跨午夜（如 22:00 ~ 08:00）。</p>
+        <div class="disturb-time-row">
+          <linshe-input type="time" v-model="disturbDialog.startTime" class="disturb-time-input" />
+          <span class="disturb-time-sep">—</span>
+          <linshe-input type="time" v-model="disturbDialog.endTime" class="disturb-time-input" />
+        </div>
+      </div>
+      <div class="disturb-dialog-section">
+        <span class="disturb-dialog-label">👤 适用角色</span>
+        <p class="disturb-dialog-hint">勾选需要在静默时段内暂停互动通知的角色</p>
+        <div v-if="allCharacters.length === 0" class="disturb-no-chars">暂无角色，请先创建角色</div>
+        <div v-else class="disturb-char-grid">
+          <label
+            v-for="ch in allCharacters"
+            :key="ch.id"
+            class="disturb-char-chip"
+            :class="{ selected: disturbDialog.characterIds.includes(ch.id) }"
+            @click="toggleDisturbDialogChar(ch.id)"
+          >
+            <div
+              class="disturb-char-avatar"
+              :style="ch.avatar_path
+                ? { backgroundImage: `url(${ch.avatar_path})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                : { background: 'var(--accent)' }"
+            >{{ ch.avatar_path ? '' : ch.display_name.charAt(0) }}</div>
+            <span class="disturb-char-name">{{ ch.display_name }}</span>
+          </label>
+        </div>
+      </div>
+      <div class="disturb-dialog-section disturb-dialog-toggles">
+        <label class="disturb-option-row">
+          <span class="disturb-option-label">隐藏世界观</span>
+          <span class="disturb-option-hint">时段内暂时不向角色注入世界背景设定</span>
+          <linshe-switch v-model="disturbDialog.hideWorld" aria-label="隐藏世界观" />
+        </label>
+        <label class="disturb-option-row">
+          <span class="disturb-option-label">跳过周末</span>
+          <span class="disturb-option-hint">周六周日不执行防打扰，恢复全部互动</span>
+          <linshe-switch v-model="disturbDialog.skipWeekends" aria-label="跳过周末" />
+        </label>
+      </div>
+      <template #footer>
+        <linshe-button variant="secondary" @click="cancelDisturbDialog">取消</linshe-button>
+        <linshe-button variant="primary" @click="confirmDisturbDialog">保存设置</linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- 天气城市设置弹窗 -->
+    <linshe-modal v-model="weatherCityDialog.show" title="天气城市设置">
+      <p class="disturb-dialog-hint">输入城市名（中文），留空则自动根据 IP 定位</p>
+      <linshe-input type="text" v-model="weatherCityDialog.city" class="fi" placeholder="如：北京、上海、杭州" @keyup.enter="confirmWeatherCity" />
+      <template #footer>
+        <linshe-button variant="primary" @click="confirmWeatherCity">保存</linshe-button>
+      </template>
+    </linshe-modal>
+    <!-- 工作流模式弹窗 -->
+    <linshe-modal v-model="showWfModeDialog" title="工作流模式" wide>
+      <div class="wf-mode-options">
+        <div
+v-for="m in workflowModeOptions" :key="m.value"
+          role="button"
+          tabindex="0"
+          :class="['wf-mode-option', { active: wfModeDraft === m.value }]"
+          @click="wfModeDraft = m.value"
+          @keydown.enter.prevent="wfModeDraft = m.value"
+          @keydown.space.prevent="wfModeDraft = m.value"
+>
+          <span class="wf-mo-title">{{ m.label }}</span>
+          <span class="wf-mo-desc" v-html="m.desc"></span>
+        </div>
+      </div>
+      <div class="wf-mode-downloads">
+        <p class="wf-mode-dl-hint">整合包内一般只有一个模型（检查路径ComfyUI-aki-v3\ComfyUI\models\diffusion_models），如需额外下载：</p>
+        <div class="wf-dl-item">
+          <span class="wf-dl-label">Anima-turbo：</span>
+          <a href="https://civitai.com/api/download/models/3108589?fileId=2988553" target="_blank" rel="noopener">Civitai 下载</a>
+          <span class="wf-dl-sep">|</span>
+          <a href="https://pan.quark.cn/s/8ee40c22ccc6?pwd=SWwE" target="_blank" rel="noopener">网盘下载</a>
+        </div>
+        <div class="wf-dl-item">
+          <span class="wf-dl-label">Anima-base：</span>
+          <a href="https://civitai.com/api/download/models/2945208?fileId=2824391" target="_blank" rel="noopener">Civitai 下载</a>
+          <span class="wf-dl-sep">|</span>
+          <a href="https://pan.quark.cn/s/8ee40c22ccc6?pwd=SWwE" target="_blank" rel="noopener">网盘下载</a>
+        </div>
+      </div>
+      <Transition name="expand">
+        <div v-if="wfModeDraft === 'hybrid'" class="wf-mode-scenes">
+          <p class="wf-mode-hint">hybrid 模式下可为不同场景分配不同工作流，默认生图用 turbo</p>
+          <div v-for="s in sceneOptions" :key="s.key" class="wf-scene-row-h">
+            <span class="wf-scene-name">{{ s.label }}</span>
+            <div class="wf-scene-toggle">
+              <linshe-button
+class="wf-toggle-btn" variant="chip" size="sm"
+                :active="wfSceneDraft[s.key] === 'turbo'"
+                @click="wfSceneDraft[s.key] = 'turbo'"
+>
+turbo
+</linshe-button>
+              <linshe-button
+class="wf-toggle-btn" variant="chip" size="sm"
+                :active="wfSceneDraft[s.key] === 'base'"
+                @click="wfSceneDraft[s.key] = 'base'"
+>
+base
+</linshe-button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+      <!-- 自定义工作流（上游 v3.10.0）：仅当 workflow/ 目录里存在可选文件时出现 -->
+      <Transition name="expand">
+        <div v-if="wfModeDraft === 'custom'" class="wf-mode-custom">
+          <p class="wf-mode-hint">选择 workflow 目录下的工作流文件（角色专属工作流仍优先于它）</p>
+          <linshe-select
+            v-model="wfCustomDraft"
+            :options="customWorkflowOptions"
+            :disabled="customWorkflowLoading"
+            :placeholder="customWorkflowLoading ? '正在读取 workflow 目录…' : '选择工作流文件'"
+            aria-label="自定义工作流"
+            searchable
+          />
+        </div>
+      </Transition>
+      <template #footer>
+        <linshe-button variant="secondary" @click="showWfModeDialog = false">取消</linshe-button>
+        <linshe-button variant="primary" :disabled="wfSaving" @click="saveWfModeDialog">{{ wfSaving ? '保存中...' : '保存' }}</linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- LLM 接入说明（上游 v3.10.0 D 组） -->
+    <linshe-modal v-model="showLlmHelp" title="LLM 接入说明">
+      <div class="llm-help-section">
+        <h4>Google Vertex AI / Agent Platform</h4>
+        <p class="fd">使用完整版 Service Account：粘贴下载的完整 JSON，点击「验证 JSON」。项目 ID 会自动读取，无需 API Key 或 API 地址；地区默认 global。保存后隐藏 JSON，仅显示配置状态。</p>
+        <p class="fd">可获取模型目录或手动填写模型 ID（如 gemini-2.5-pro）。目录不代表项目已获授权，请用「测试连接」验证。Gemini Pro 选择关闭思考时，会使用模型允许的最低档位或自动预算。</p>
+      </div>
+      <template #footer><linshe-button variant="secondary" @click="showLlmHelp = false">知道了</linshe-button></template>
+    </linshe-modal>
+</div>
+</template>
+
+<script setup>
+import { ref, reactive, computed, onMounted, inject, watch, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
+// 上游 v3.10.0 合并（2026-10-19）：输出额度默认值 / Vertex 校验 / 设置向导 / 自定义工作流
+import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/modelCapabilities.js'
+import { validateVertexServiceAccount } from '../api/index.js'
+import DeepseekSetup from '../components/DeepseekSetup.vue'
+import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, downloadDataArchive, getDataExportInfo, importDataArchive } from '../api/index.js'
+import { useSettingsStore } from '../stores/settings.js'
+import ImageLightbox from '../components/ImageLightbox.vue'
+import LinsheModal from '../components/ui/LinsheModal.vue'
+import BeforeAfterSlider from '../components/BeforeAfterSlider.vue'
+import LinsheSelect from '../components/ui/LinsheSelect.vue'
+import LinsheTabs from '../components/ui/LinsheTabs.vue'
+import { TOUCH_IMAGE_MODES, TOUCH_IMAGE_MODE_KEY, DEFAULT_TOUCH_IMAGE_MODE, normalizeTouchImageMode, touchImageModeLabel, TOUCH_REACTION_MODES, TOUCH_REACTION_MODE_KEY, DEFAULT_TOUCH_REACTION_MODE, normalizeTouchReactionMode, touchReactionModeLabel } from '../components/touchActionLogic.js'
+import LinsheAutoTextarea from '../components/ui/LinsheAutoTextarea.vue'
+import CollapseTransition from '../components/CollapseTransition.vue'
+import GlobalLoraModal from '../components/GlobalLoraModal.vue'
+import HiresFixModal from '../components/HiresFixModal.vue'
+import { THEME_MODES } from '../theme.js'
+import LinsheButton from '../components/ui/LinsheButton.vue'
+import LinsheInput from '../components/ui/LinsheInput.vue'
+import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
+import LinsheSlider from '../components/ui/LinsheSlider.vue'
+import GearIcon from '../components/GearIcon.vue'
+import MemoryHealthPanel from '../components/MemoryHealthPanel.vue'
+import TimeControlPanel from '../components/TimeControlPanel.vue'
+import UpdateTag from '../components/UpdateTag.vue'
+import { CHANGELOG_ENTRIES } from '../data/changelog.js'
+import {
+  formatBytes,
+  formatExportSummary,
+  importFailureText,
+  importSuccessText,
+  restoredText,
+  validateImportFile,
+} from '../utils/dataBackup.js'
+
+const settingsStore = useSettingsStore()
+const themeModes = THEME_MODES
+const router = useRouter()
+const isMobile = inject('isMobile')
+const toggleMobileSidebar = inject('toggleMobileSidebar')
+const toastFn = inject('toast')
+const confirmFn = inject('confirm')
+const showChangelogFn = inject('showChangelog', null)
+
+// ── 更新说明入口：显示最新版本号与条目数，点击重新打开弹窗 ──
+const changelogLatest = computed(() => CHANGELOG_ENTRIES[0] || null)
+const changelogTotal = computed(() => CHANGELOG_ENTRIES.length)
+function openChangelog() {
+  if (showChangelogFn) showChangelogFn()
+  else toastFn?.('更新说明弹窗未就绪，请刷新页面重试', 'info')
+}
+
+// ── 数据备份：一键导出 / 一键导入 ──
+//
+// 导出：GET /api/data/export 拿二进制 tar.gz，前端直接触发下载（不经过 JSON 层）。
+// 导入：POST /api/data/import 发原始字节，属于覆盖式破坏操作，必须先过二次确认弹窗。
+const exportIncludeConfig = ref(false)
+const exportBusy = ref(false)
+const importBusy = ref(false)
+const exportInfoLoading = ref(false)
+const exportInfo = ref(null)
+/** 导入/导出的结果提示：留在页面上（失败时带上可回滚的备份路径，toast 装不下） */
+const importNotice = ref(null)
+const importFileEl = ref(null)
+/** 选中的文件本体不放 reactive：File 不需要响应式，也避免被代理后传给 fetch */
+let pendingImportFile = null
+const importDialog = reactive({ show: false, fileName: '', fileSize: '' })
+
+/** 一行摘要：角色/消息/群聊/记忆条数 + 预计大小（后端 dbBytes 只是估算上界） */
+const exportInfoText = computed(() => formatExportSummary(exportInfo.value))
+
+async function refreshExportInfo() {
+  exportInfoLoading.value = true
+  try {
+    exportInfo.value = await getDataExportInfo()
+  } catch (err) {
+    // 摘要读不到不影响导出/导入本身，静默降级成「暂无可用数据」
+    exportInfo.value = null
+    console.warn('[数据备份] 读取导出摘要失败:', err?.message || err)
+  } finally {
+    exportInfoLoading.value = false
+  }
+}
+
+async function onExportData() {
+  if (exportBusy.value || importBusy.value) return
+  exportBusy.value = true
+  importNotice.value = null
+  try {
+    const { fileName, bytes } = await downloadDataArchive(exportIncludeConfig.value)
+    toastFn?.(`已导出 ${fileName}（${formatBytes(bytes)}）`, 'success')
+    await refreshExportInfo()
+  } catch (err) {
+    toastFn?.(`导出失败：${err?.message || '未知错误'}`, 'error')
+  } finally {
+    exportBusy.value = false
+  }
+}
+
+/** 触发隐藏 file input 的系统文件选择框（真正的可访问控件是那个 LinsheButton） */
+function pickImportFile() {
+  if (exportBusy.value || importBusy.value) return
+  importFileEl.value?.click()
+}
+
+function onImportFilePicked(event) {
+  const input = event?.target
+  const file = input?.files?.[0] || null
+  // 清空 value，否则连续选同一个文件不会再触发 change
+  if (input) input.value = ''
+
+  // 本地预检：后缀 / 空文件 / 超过 2GB 直接拒绝，不上传
+  const check = validateImportFile(file)
+  if (!check.ok) {
+    importNotice.value = { type: 'error', text: check.reason }
+    toastFn?.(check.reason, 'error')
+    return
+  }
+
+  pendingImportFile = file
+  importDialog.fileName = file.name
+  importDialog.fileSize = formatBytes(file.size)
+  importDialog.show = true
+}
+
+async function confirmImport() {
+  const file = pendingImportFile
+  if (!file || importBusy.value) return
+  importBusy.value = true
+  importNotice.value = null
+  try {
+    const result = await importDataArchive(file)
+    const restored = restoredText(result?.restored)
+    const text = restored ? `${importSuccessText(result)}（${restored}）` : importSuccessText(result)
+    importNotice.value = { type: 'success', text }
+    toastFn?.(text, 'success')
+    importDialog.show = false
+    await refreshExportInfo()
+  } catch (err) {
+    // 500 时后端会带回导入前的自动备份路径：一并写进页面，用户可按它回滚
+    const text = importFailureText(err)
+    importNotice.value = { type: 'error', text }
+    toastFn?.(text, 'error')
+    importDialog.show = false
+  } finally {
+    importBusy.value = false
+  }
+}
+
+// ── 移动端滚动方向感知：下滑隐藏标题，上滑显示 ──
+const scrollEl = ref(null)
+const headerVisible = ref(true)
+let settingsLastScroll = 0
+function onSettingsScroll() {
+  if (!isMobile) return
+  const el = scrollEl.value
+  if (!el) return
+  const delta = el.scrollTop - settingsLastScroll
+  if (el.scrollTop > 40 && delta > 8) {
+    headerVisible.value = false
+  } else if (delta < -4) {
+    headerVisible.value = true
+  }
+  settingsLastScroll = el.scrollTop
+}
+
+const form = ref({ artist: '', width: 1600, height: 1200, momentsArtist: '', momentsWidth: 1600, momentsHeight: 1200, eventArtist: '', eventWidth: 1600, eventHeight: 1200 })
+const globalLoras = ref([])
+const globalLoraModalVisible = ref(false)
+const hiresFixModalVisible = ref(false)
+const globalLoraCount = computed(() => (globalLoras.value || []).filter(l => l.path && l.enabled !== false).length)
+const hiresSamplingMode = ref('source')
+const hiresGlobalLoraScale = ref(1)
+const hiresSourceBlend = ref(0)
+const hiresWorkflowMode = ref('basic')
+const hiresUpscaleModel = ref('RealESRGAN_x4plus_anime_6B.pth')
+const hiresLoras = ref([])
+const hiresSteps = ref(35)
+const hiresCfg = ref(5)
+const hiresDenoise = ref(0.2)
+const hiresMaxSize = ref(2000)
+const hiresArtistMode = ref('empty')
+const hiresArtist = ref('')
+const hiresLoraCount = computed(() => (hiresLoras.value || []).filter(l => l.path && l.enabled !== false).length)
+// ── 细化是否按 turbo 参数走（与后端 config.comfyui.hiresTurbo 一致，默认 true）──
+// 打开＝细化阶段强制 CFG 1.0 / 12 步（忽略 hiresSteps/hiresCfg）；关闭＝沿用那两个值。切换即时生效。
+const hiresTurbo = ref(true)
+
+// ── 细化精度三档（D1 用户裁决：精度可选高中低，默认 8 步）──
+// 键 features.hiresQuality（high|medium|low，默认 low）；映射：高 12 步 / 中 10 步 / 低 8 步（都走 turbo CFG 1.0）。
+const HIRES_QUALITY_MODES = [
+  { value: 'high', label: '高' },
+  { value: 'medium', label: '中' },
+  { value: 'low', label: '低' },
+]
+const DEFAULT_HIRES_QUALITY = 'low'
+
+/** 任意输入 → 合法档位；不认识的一律回落默认 low（8 步） */
+function normalizeHiresQuality(value) {
+  return HIRES_QUALITY_MODES.some(mode => mode.value === value) ? value : DEFAULT_HIRES_QUALITY
+}
+
+function hiresQualityLabel(value) {
+  const mode = HIRES_QUALITY_MODES.find(item => item.value === normalizeHiresQuality(value))
+  return mode ? mode.label : ''
+}
+
+// 三档保存：走通用 features PUT；失败把本地档位拨回去，避免「界面改了、后端没存上」
+async function saveHiresQuality(value) {
+  const next = normalizeHiresQuality(value)
+  const previous = normalizeHiresQuality(features.hiresQuality)
+  if (next === previous) return
+  features.hiresQuality = next
+  try {
+    await updateFeatureFlag('hiresQuality', next)
+    toastFn?.('细化精度已改为「' + hiresQualityLabel(next) + '」', 'success')
+  } catch (err) {
+    features.hiresQuality = previous
+    toastFn?.('细化精度保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+// turbo 模式下的细化参数，与后端 config.comfyui.hiresTurboSteps / hiresTurboCfg 的默认值保持一致
+const HIRES_TURBO_STEPS = 12
+const HIRES_TURBO_CFG = 1.0
+// 细化摘要显示**实际生效**的参数：turbo 打开时后端会忽略 hiresSteps/hiresCfg；
+// 进阶版还要带上工作流版本，并在「采样跟随原图」时标明采样来源（该模式步数/CFG 取自源工作流）
+const hiresSummary = computed(() => {
+  const lora = hiresLoraCount.value > 0 ? ` · LoRA ${hiresLoraCount.value}` : ''
+  const advancedPrefix = hiresWorkflowMode.value === 'advanced' ? '进阶版 · ' : ''
+  // 2026-10-01：进阶版 + 跟随原图时，步数/CFG **由源工作流决定**（turbo 开着时则由 turbo 参数决定），
+  // 这时再把「35 步 · CFG 5」和「采样跟随原图」并排写出来是两个互斥的说法 —— 二选一，别并列。
+  const followsSource = hiresWorkflowMode.value === 'advanced' && hiresSamplingMode.value === 'source'
+  if (hiresTurbo.value) {
+    // turbo 接管步数/CFG 时仍跟随原图的只剩采样器与调度器，措辞要写准（别写成「采样跟随原图」）
+    return `${advancedPrefix}最长边 ${hiresMaxSize.value} · ${HIRES_TURBO_STEPS} 步 · 重绘 ${hiresDenoise.value} · CFG ${HIRES_TURBO_CFG.toFixed(1)}${lora} · turbo${followsSource ? ' · 采样器跟随原图' : ''}`
+  }
+  if (followsSource) {
+    return `${advancedPrefix}最长边 ${hiresMaxSize.value} · 采样跟随原图 · 重绘 ${hiresDenoise.value}${lora}`
+  }
+  return `${advancedPrefix}最长边 ${hiresMaxSize.value} · ${hiresSteps.value} 步 · 重绘 ${hiresDenoise.value} · CFG ${hiresCfg.value}${lora}`
+})
+// ── 质量提示词（非空覆盖工作流默认，留空不改） ──
+const qualityPrompt = ref('')
+const qualityDialog = reactive({ show: false, text: '' })
+const qualitySaving = ref(false)
+// ── 负面提示词（非空覆盖工作流默认，留空不改） ──
+const negativePrompt = ref('')
+const negativeDialog = reactive({ show: false, text: '' })
+const negativeSaving = ref(false)
+const comfyTab = ref('chat')
+const comfyTabs = [
+  { value: 'chat', label: '对话配图' },
+  { value: 'moments', label: '朋友圈&信件配图' },
+  { value: 'event', label: '奇遇&日程配图' },
+]
+const activeFields = computed(() => {
+  if (comfyTab.value === 'moments') return { artist: 'momentsArtist', width: 'momentsWidth', height: 'momentsHeight' }
+  if (comfyTab.value === 'event') return { artist: 'eventArtist', width: 'eventWidth', height: 'eventHeight' }
+  return { artist: 'artist', width: 'width', height: 'height' }
+})
+const tabSlideDir = ref('forward')
+const comfyTabOrder = { chat: 0, moments: 1, event: 2 }
+function switchComfyTab(mode) {
+  const prev = comfyTabOrder[comfyTab.value] ?? 0
+  const next = comfyTabOrder[mode] ?? 0
+  tabSlideDir.value = next > prev ? 'forward' : 'back'
+  comfyTab.value = mode
+}
+const comfyUrl = ref('')
+const comfySkipTls = ref(false)
+const imageProvider = ref('comfyui')
+const imageProviderOptions = [
+  { value: 'comfyui', label: 'ComfyUI' },
+  { value: 'novelai', label: 'NovelAI' },
+]
+const novelaiUrl = ref('')
+// 三协议（上游 v3.10.0）：official=官方直连 / native=原生协议 / relay=OpenAI 兼容中转
+const novelaiApiFormat = ref('relay')
+const novelaiApiFormatOptions = [
+  { value: 'official', label: 'NovelAI 官方 API' },
+  { value: 'native', label: '原生协议（自建 / 兼容服务）' },
+  { value: 'relay', label: 'OpenAI 兼容中转站' },
+]
+const novelaiProxyUrl = ref('')
+// 官方/原生有内置模型清单；中转站的模型要问接口要
+const novelaiBuiltinModels = ['nai-diffusion-5-full', 'nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-full']
+function changeNovelaiFormat() {
+  novelaiModels.value = novelaiApiFormat.value === 'relay'
+    ? []
+    : novelaiBuiltinModels.map(id => ({ value: id, label: id }))
+}
+/** 兼容旧代码/旧模板的布尔口径：官方 = official，其余 = relay 语义 */
+const novelaiApiFormatOfficial = computed({
+  get: () => novelaiApiFormat.value === 'official',
+  set: (v) => { novelaiApiFormat.value = v ? 'official' : 'relay' },
+})
+const novelaiModel = ref('nai-diffusion-4-5-full')
+const novelaiArtist = ref('@ebora')
+const novelaiModels = ref([])
+const novelaiWidth = ref(1216)
+const novelaiHeight = ref(832)
+const novelaiResolutionPresets = [
+  { label: '512×512', width: 512, height: 512 },
+  { label: '832×1216', width: 832, height: 1216 },
+  { label: '1216×832', width: 1216, height: 832 },
+  { label: '1024×1024', width: 1024, height: 1024 },
+  { label: '1024×1536', width: 1024, height: 1536 },
+  { label: '1536×1024', width: 1536, height: 1024 },
+]
+const novelaiSteps = ref(28)
+const novelaiSampler = ref('k_euler_ancestral')
+const novelaiSamplerOptions = [
+  { value: 'k_euler', label: 'Euler' },
+  { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
+  { value: 'k_dpm_2', label: 'DPM 2' },
+  { value: 'k_dpm_2_ancestral', label: 'DPM 2 Ancestral' },
+  { value: 'k_dpmpp_2m', label: 'DPM++ 2M' },
+  { value: 'k_dpmpp_2m_sde', label: 'DPM++ 2M SDE' },
+  { value: 'k_dpmpp_2s_ancestral', label: 'DPM++ 2S Ancestral' },
+  { value: 'k_dpmpp_sde', label: 'DPM++ SDE' },
+  { value: 'ddim', label: 'DDIM' },
+  { value: 'ddim_v3', label: 'DDIM V3' },
+]
+const novelaiNoiseSchedule = ref('karras')
+const novelaiNoiseScheduleOptions = [
+  { value: 'native', label: 'Native' },
+  { value: 'karras', label: 'Karras' },
+  { value: 'exponential', label: 'Exponential' },
+  { value: 'polyexponential', label: 'Polyexponential' },
+]
+const novelaiGuidance = ref(5)
+const novelaiQualityPrompt = ref('masterpiece, best quality, score_9, score_8, highres, absurdres, year 2025')
+const novelaiDefaultNegativePrompt = 'lowres, bad_anatomy, bad_hands, text, error, missing_fingers, extra_digit, fewer_digits, cropped, worst_quality, low_quality, normal_quality, jpeg_artifacts, signature, watermark, username, blurry, bad_feet, fused_fingers, too_many_fingers, long_neck, cross-eyed, mutated_hands, polar_lowres, bad_body, bad_proportions, gross_proportions, text, error, missing_fingers, missing_arms, missing_legs, extra_digit, extra_arms, extra_leg, extra_foot'
+const novelaiNegativePrompt = ref(novelaiDefaultNegativePrompt)
+const novelaiModelsLoading = ref(false)
+const novelaiApiKey = ref('')
+const novelaiApiKeySaved = ref(false)
+const novelaiApiKeyCleared = ref(false)
+const connDirty = ref(false)
+const connSaved = ref(false)
+const features = reactive({ emotion: false, memory: false, replyGuesses: false, realtimeAffinityDisplay: false, serializeBackgroundLLM: false, backgroundLLMMaxConcurrency: 3, mergeMessages: false, weather: true, intimate: true, intimateBackfill: true, antiRepetition: true, antiRepetitionLock: true, antiRepetitionEscalation: true, antiRepetitionReroll: false, hiresQuality: DEFAULT_HIRES_QUALITY, toys: false, touch: true, touchInstant: true, touchGroupAdult: false, touchImageMode: DEFAULT_TOUCH_IMAGE_MODE, touchReactionMode: DEFAULT_TOUCH_REACTION_MODE, touchBystanderChance: 0.3, jailbreak: true })
+
+/**
+ * 亲密度看板两个总开关的读取口径：**fail-closed**。
+ * 它们是"会写档案 / 写流水"的功能，只有后端明确给出布尔 `true` 才算开启：
+ *   · 键缺失（旧后端没有这两个键）→ 关闭。不能沿用 reactive 的初始默认值，否则界面显示"已开启"、
+ *     而后端根本没有这个概念（静默不一致）。
+ *   · 脏值（字符串 `"false"` 之类）→ 关闭，且不把非布尔塞进 LinsheSwitch（否则 Vue prop 类型告警，
+ *     且非空字符串为真会渲染成"开"）。
+ * 依据：task-22 浏览器实机核对的反例 F1（缺键）/ F2（脏值），两条原本都渲染成了"开"。
+ */
+function normalizeIntimateFlags(source) {
+  if (!source || typeof source !== 'object') return
+  features.intimate = source.intimate === true
+  features.intimateBackfill = source.intimateBackfill === true
+}
+const freqSlider = ref(0.5)
+const eventFreqSlider = ref(1)
+// 仅换算显示，保留原有 0~1 参数；公式对应两个 scheduler 的现有间隔。
+function frequencyTimeLabel(minutes) {
+  return minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`
+}
+const chatFreqLabel = computed(() => freqSlider.value <= 0
+  ? '关闭' : frequencyTimeLabel(Math.round(8 + (1 - freqSlider.value) / 0.9 * 112)))
+const eventFreqLabel = computed(() => eventFreqSlider.value <= 0
+  ? '关闭' : frequencyTimeLabel(Math.round(30 / eventFreqSlider.value)))
+// 具体时间档以 2 小时 / value 为中心浮动 ±20%；默认档保留原有节奏。
+// 时间档从慢到快排列，最右侧额外提供沿用原有频率的「默认」档。
+const MOMENT_FREQ_STEPS = [
+  { value: 0,    label: '关闭',    hint: '关闭自动发帖（仍可手动发）。' },
+  // 上游 v3.10.0 新增的「36 小时」档（2026-10-19 合并）：比 24 小时更慢，给低活跃角色留白
+  { value: 1 / 18, label: '36 小时', hint: '每个角色以 36 小时为中心，随机间隔 28.8~43.2 小时。' },
+  { value: 1 / 12, label: '24 小时', hint: '每个角色以 24 小时为中心，随机间隔 19.2~28.8 小时。' },
+  { value: 1 / 8, label: '16 小时', hint: '每个角色以 16 小时为中心，随机间隔 12.8~19.2 小时。' },
+  { value: 1 / 6, label: '12 小时', hint: '每个角色以 12 小时为中心，随机间隔 9.6~14.4 小时。' },
+  { value: 0.25, label: '8 小时',  hint: '每个角色以 8 小时为中心，随机间隔 6.4~9.6 小时。' },
+  { value: 0.5,  label: '4 小时',  hint: '每个角色以 4 小时为中心，随机间隔 3.2~4.8 小时。' },
+  { value: 1,    label: '2 小时',  hint: '每个角色以 2 小时为中心，随机间隔 1.6~2.4 小时。' },
+  { value: 2,    label: '1 小时',  hint: '每个角色以 1 小时为中心，随机间隔 48~72 分钟。' },
+  { value: 4,    label: '30 分钟', hint: '每个角色以 30 分钟为中心，随机间隔 24~36 分钟。' },
+  { value: 8,    label: '15 分钟', hint: '每个角色以 15 分钟为中心，随机间隔 12~18 分钟。' },
+  { value: 24,   label: '5 分钟',  hint: '每个角色以 5 分钟为中心，随机间隔 4~6 分钟，LLM 与生图消耗很高。' },
+  { value: 1, mode: 'default', label: '默认', hint: '沿用原有频率：每个角色约 2~8 小时一条，首次等待 1~4 小时。' },
+]
+const DEFAULT_MOMENT_STEP = MOMENT_FREQ_STEPS.length - 1
+const momentFreqStepIdx = ref(DEFAULT_MOMENT_STEP)
+const momentFreqHint = computed(() => {
+  const step = MOMENT_FREQ_STEPS[momentFreqStepIdx.value]
+  if (!step) return ''
+  return step.hint + (step.value > 0 && step.mode !== 'default' ? ' 首次等待相同；调度扫描与生成排队可能延后发帖。' : '')
+})
+const momentFreqLabel = computed(() => MOMENT_FREQ_STEPS[momentFreqStepIdx.value]?.label || '')
+/** 库里存的 momentFreq → 最接近的档位下标（老值可能是任意数） */
+function momentStepFromValue(v, mode) {
+  if (v == null) return DEFAULT_MOMENT_STEP
+  if (Number(v) === 1 && mode !== 'interval') return DEFAULT_MOMENT_STEP
+  let best = 0
+  let bestDiff = Infinity
+  MOMENT_FREQ_STEPS.forEach((s, i) => {
+    const d = Math.abs(s.value - v)
+    if (d < bestDiff) { bestDiff = d; best = i }
+  })
+  return best
+}
+const backgroundConcurrency = ref(3)
+
+// ── 防打扰模式 ──
+const disturbMode = ref(false)
+const disturbStartTime = ref('22:00')
+const disturbEndTime = ref('08:00')
+const disturbCharacterIds = ref([])
+const disturbHideWorld = ref(false)
+const disturbSkipWeekends = ref(false)
+const allCharacters = ref([]) // 全部角色列表（含头像）
+
+// ── 天气 ──
+const weatherCity = ref('')
+const weatherCityDialog = reactive({ show: false, city: '' })
+
+// 弹窗状态（编辑期间使用独立副本，确认后才同步）
+const disturbDialog = reactive({
+  show: false,
+  startTime: '22:00',
+  endTime: '08:00',
+  characterIds: [],
+  hideWorld: false,
+  skipWeekends: false,
+})
+const dirty = ref(false)
+const saved = ref(false)
+// 保存中：防止连点，也避免用户在请求未回时以为没生效又点一次
+const comfySaving = ref(false)
+// 模型配置保存中：按钮 loading，防止连点（保存失败必须有可见反馈，见 saveLlmConfig）
+const llmSaving = ref(false)
+const health = ref(null)
+
+const presets = [
+  { label: '768×512', width: 768, height: 512 },
+  { label: '768×768', width: 768, height: 768 },
+  { label: '1024×1024', width: 1024, height: 1024 },
+  { label: '1280×720', width: 1280, height: 720 },
+  { label: '1200×900', width: 1200, height: 900 },
+  { label: '1600×1200', width: 1600, height: 1200 },
+]
+
+// ── 画师串收藏夹 ──
+const artistFavorites = ref([])
+const favDialog = reactive({
+  show: false,
+  mode: 'chat',
+  label: '',
+})
+
+async function loadArtistFavorites() {
+  try {
+    const data = await getArtistFavorites()
+    artistFavorites.value = data.favorites || []
+  } catch {}
+}
+
+function addToFavorites(mode) {
+  const artist = (mode === 'moments' ? form.value.momentsArtist : mode === 'event' ? form.value.eventArtist : form.value.artist).trim()
+  if (!artist) return
+  if (artistFavorites.value.some(f => f.artist === artist)) {
+    toastFn('已收藏过该画师串', 'warning')
+    return
+  }
+  favDialog.mode = mode
+  favDialog.label = artist.length > 20 ? artist.slice(0, 20) + '…' : artist
+  favDialog.show = true
+}
+
+async function confirmAddFavorite() {
+  const artist = (favDialog.mode === 'moments' ? form.value.momentsArtist : favDialog.mode === 'event' ? form.value.eventArtist : form.value.artist).trim()
+  const label = favDialog.label.trim() || artist
+  try {
+    const result = await addArtistFavorite({ label, artist })
+    if (result.ok) {
+      artistFavorites.value.push(result.favorite)
+    }
+  } catch (err) {
+    console.error('[favorites] add failed:', err)
+  }
+  favDialog.show = false
+}
+
+function cancelAddFavorite() {
+  favDialog.show = false
+}
+
+const favDialogInput = ref(null)
+watch(() => favDialog.show, async (v) => {
+  if (v) {
+    await nextTick()
+    favDialogInput.value?.focus()
+    favDialogInput.value?.select()
+  }
+})
+
+function applyFavorite(fav, mode) {
+  if (mode === 'moments') {
+    form.value.momentsArtist = fav.artist
+  } else if (mode === 'event') {
+    form.value.eventArtist = fav.artist
+  } else {
+    form.value.artist = fav.artist
+  }
+  markDirty()
+}
+
+async function removeFavorite(id) {
+  try {
+    await deleteArtistFavorite(id)
+    artistFavorites.value = artistFavorites.value.filter(f => f.id !== id)
+  } catch {}
+}
+
+// ── LLM API ──
+const llmPreview = ref({ provider: 'deepseek', hasApiKey: false, preview: '', model: 'deepseek-chat' })
+const freeEgg = ref(false)
+const llmApiKey = ref('')
+/**
+ * 只有**用户手动输入过**才把 apiKey 提交（上游 v3.10.0 口径）：
+ * 浏览器自动填充的旧值如果被当成"用户输入"，会被写回库/覆盖 Profile。
+ */
+const llmApiKeyTouched = ref(false)
+function onLlmKeyInput() {
+  llmApiKeyTouched.value = true
+  clearLlmModels()
+  markLlmDirty()
+}
+const llmBaseURL = ref('https://api.deepseek.com')
+// 接入方式：OpenAI 兼容接口 / Google Vertex AI（服务账号）
+const llmConnectionType = ref('openai')
+const llmConnectionOptions = [
+  { value: 'openai', label: 'OpenAI 兼容接口（DeepSeek / 自定义）' },
+  { value: 'vertexai', label: 'Google Vertex AI（服务账号）' },
+]
+const vertexServiceAccount = ref('')
+const hasVertexServiceAccount = ref(false)
+const vertexRegion = ref('global')
+const vertexRegionOptions = ['global', 'us-central1', 'europe-west1', 'asia-northeast1'].map(value => ({ value, label: value }))
+const vertexValidating = ref(false)
+const vertexValidation = ref('')
+let vertexValidationVersion = 0
+function onVertexAccountInput() {
+  vertexValidationVersion++
+  vertexValidation.value = ''
+  vertexValidating.value = false
+  clearLlmModels()
+  markLlmDirty()
+}
+/** 回显已保存的 Vertex 配置：账号明文永远不回显，只回 hasVertexServiceAccount */
+function restoreVertexSettings(saved) {
+  llmConnectionType.value = saved.connectionType === 'vertexai' ? 'vertexai' : 'openai'
+  vertexRegion.value = saved.vertexRegion || 'global'
+  hasVertexServiceAccount.value = Boolean(saved.hasVertexServiceAccount)
+  vertexServiceAccount.value = ''
+  vertexValidation.value = ''
+  vertexValidationVersion++
+  vertexValidating.value = false
+}
+function onLlmConnectionChange() {
+  if (llmConnectionType.value === 'vertexai') {
+    llmBaseURL.value = 'https://aiplatform.googleapis.com'
+    llmModel.value = 'gemini-2.5-pro'
+    llmThinkingMode.value = 'omit'
+    isCustomBaseURL.value = true
+  } else {
+    llmBaseURL.value = 'https://api.deepseek.com'
+    llmModel.value = 'deepseek-flash'
+    // DeepSeek 官方地址原生态支持 thinking:disabled，用它速度更快更省 token；
+    // 只有自定义中转（默认 'omit'）才完全不发思考字段。
+    llmThinkingMode.value = 'disabled'
+    isCustomBaseURL.value = false
+  }
+  llmHeadersEnabled.value = false
+  llmExtraBodyEnabled.value = false
+  clearLlmModels()
+  fillLlmMaxTokens()
+  markLlmDirty()
+}
+async function validateVertexAccount() {
+  if (vertexValidating.value) return
+  const version = ++vertexValidationVersion
+  vertexValidating.value = true
+  vertexValidation.value = ''
+  try {
+    const result = await validateVertexServiceAccount({ vertexServiceAccount: vertexServiceAccount.value.trim() || undefined })
+    if (version !== vertexValidationVersion) return
+    vertexValidation.value = `认证通过 · ${result.projectId}${vertexServiceAccount.value.trim() ? ' · 请保存配置' : ''}`
+  } catch (error) {
+    if (version !== vertexValidationVersion) return
+    vertexValidation.value = error.message || '服务账号验证失败'
+  } finally {
+    if (version === vertexValidationVersion) vertexValidating.value = false
+  }
+}
+const llmModel = ref('deepseek-chat')
+const llmModels = ref([])
+const llmModelsLoading = ref(false)
+const llmModelsError = ref('')
+const llmModelSelect = ref(null)
+// Vertex 没有"取模型列表"那一步，给两个常用模型兜底
+const llmModelOptions = computed(() => (llmModels.value.length
+  ? llmModels.value
+  : llmConnectionType.value === 'vertexai' ? ['gemini-2.5-pro', 'gemini-2.5-flash'] : []
+).map(model => ({ value: model, label: model })))
+const llmModelSelectVal = computed({
+  get: () => llmModel.value,
+  set: (val) => {
+    if (llmModel.value === val) return
+    llmModel.value = val
+    fillLlmMaxTokens()
+    markLlmDirty()
+  },
+})
+// ── 输出额度（MAX_tokens）：默认按「地址 + 模型」算，模型能力拿到后优先用接口上限 ──
+const llmMaxTokens = ref(defaultMaxTokens(llmBaseURL.value, llmModel.value))
+const llmMaxTokensValid = computed(() => isValidMaxTokens(llmMaxTokens.value))
+const llmTokenSource = ref('default')
+const llmModelCapabilities = ref({})
+let llmModelsVersion = 0
+let llmTokenEditVersion = 0
+const llmMaxTokensHint = computed(() => {
+  if (!llmMaxTokensValid.value) return '请输入大于 0 的整数。'
+  const amount = Number(llmMaxTokens.value).toLocaleString()
+  if (llmTokenSource.value === 'model') return '已从模型能力自动填入 ' + amount + ' tokens，可手动调整。'
+  if (llmTokenSource.value === 'manual' || llmTokenSource.value === 'saved') return '当前额度 ' + amount + ' tokens，仍受服务商上限约束。'
+  return '默认额度 ' + amount + ' tokens；自动获取模型后优先使用接口上限，也可手动调整。'
+})
+function clearLlmModels() {
+  llmModelsVersion++
+  llmModelsLoading.value = false
+  llmModels.value = []
+  llmModelCapabilities.value = {}
+  llmModelsError.value = ''
+}
+function fillLlmMaxTokens() {
+  const capability = llmModelCapabilities.value[llmModel.value]
+  llmMaxTokens.value = isValidMaxTokens(capability?.maxTokens) ? capability.maxTokens : defaultMaxTokens(llmBaseURL.value, llmModel.value)
+  llmTokenSource.value = isValidMaxTokens(capability?.maxTokens) ? 'model' : 'default'
+}
+/** 保存/切换配置后回填（含 Vertex 的公开字段；账号明文不接受回显） */
+function restoreLlmMaxTokens(saved) {
+  restoreVertexSettings(saved)
+  clearLlmModels()
+  llmTokenEditVersion++
+  llmMaxTokens.value = isValidMaxTokens(saved.maxTokens) ? saved.maxTokens : defaultMaxTokens(llmBaseURL.value, llmModel.value)
+  llmTokenSource.value = isValidMaxTokens(saved.maxTokens) ? 'saved' : 'default'
+}
+function onLlmMaxTokensInput() {
+  llmTokenEditVersion++
+  llmTokenSource.value = 'manual'
+  markLlmDirty()
+}
+function onLlmEndpointInput() {
+  clearLlmModels()
+  fillLlmMaxTokens()
+  markLlmDirty()
+}
+const llmThinkingMode = ref('disabled')
+// ── 上下文窗口声明（token）：留空交给服务端从上游模型列表探测 / 用默认值 ──
+// 用字符串持有输入，避免数字输入框在清空过程中把用户输到一半的内容吃掉。
+const llmContextWindowText = ref('')
+const llmContextWindowValid = computed(() => {
+  const raw = String(llmContextWindowText.value ?? '').trim()
+  if (!raw) return true   // 留空 = 自动探测，合法
+  return /^\d+$/.test(raw) && Number(raw) > 0
+})
+/** 保存口径：留空传 null（服务端清掉声明），否则传整数 token */
+const llmContextWindowValue = computed(() => {
+  const raw = String(llmContextWindowText.value ?? '').trim()
+  if (!raw || !llmContextWindowValid.value) return null
+  return Number(raw)
+})
+function applyLlmContextWindow(value) {
+  llmContextWindowText.value = value === null || value === undefined || value === '' ? '' : String(value)
+}
+// 只留「关 / 开」两项（2026-10-30 用户要求）：
+// 后端的 omit（一个思考字段都不发）仍保留给免费通道与个别中转自动使用，
+// 界面上统一按「关」呈现 —— 它就是"不启用思考"，用户没必要为此多一个选项。
+const thinkingModeOptions = [
+  { value: 'disabled', label: '关' },
+  { value: 'enabled', label: '开' },
+]
+/** 只两档：点「关」写 disabled（明确禁用），点「开」写 enabled；历史值 omit 在界面上即「关」 */
+function onThinkingModePick(value) {
+  llmThinkingMode.value = value === 'enabled' ? 'enabled' : 'disabled'
+  markLlmDirty()
+}
+const isCustomBaseURL = ref(false)
+// 目前只内置 DeepSeek 一个官方地址，其余服务统一走「自定义…」手填
+const presetURLs = ['https://api.deepseek.com']
+const llmBaseURLOptions = [
+  { value: 'https://api.deepseek.com', label: 'DeepSeek' },
+  { value: '', label: '自定义…' },
+]
+const llmBaseURLSelectVal = computed({
+  get: () => isCustomBaseURL.value ? '' : llmBaseURL.value,
+  set: (val) => {
+    if (val === '') {
+      isCustomBaseURL.value = true
+      llmBaseURL.value = ''
+    } else {
+      isCustomBaseURL.value = false
+      llmBaseURL.value = val
+      // 换回官方地址：思考口径与自定义请求头一律复位（上游 v3.10.0）
+      llmThinkingMode.value = 'disabled'
+      llmHeadersEnabled.value = false
+      llmExtraBodyEnabled.value = false
+      llmHeadersText.value = '{}'
+      llmExtraBodyText.value = '{}'
+      features.serializeBackgroundLLM = false
+      backgroundConcurrency.value = 3
+      features.mergeMessages = false
+    }
+    clearLlmModels()
+    fillLlmMaxTokens()
+    markLlmDirty()
+  }
+})
+const llmHeadersEnabled = ref(false)
+const llmHeadersText = ref('{}')
+const llmHeadersValid = computed(() => {
+  if (!llmHeadersEnabled.value) return true
+  try { JSON.parse(llmHeadersText.value); return true } catch { return false }
+})
+const llmExtraBodyEnabled = ref(false)
+const llmExtraBodyText = ref('{}')
+// Vertex 的额外请求体是 Google 的 generationConfig，OpenAI 兼容接口则是自定义字段
+const llmExtraBodyPlaceholder = computed(() => JSON.stringify(llmConnectionType.value === 'vertexai'
+  ? { generationConfig: { topK: 40 } }
+  : { agent: 'my-agent', agentName: 'Nova' }))
+const llmExtraBodyValid = computed(() => {
+  if (!llmExtraBodyEnabled.value) return true
+  try { JSON.parse(llmExtraBodyText.value); return true } catch { return false }
+})
+const showApiKey = ref(false)
+const llmDirty = ref(false)
+const llmSaved = ref(false)
+const llmTesting = ref(false)
+function markLlmDirty() { llmDirty.value = true; llmSaved.value = false }
+
+// 高级设置抽屉
+const llmAdvancedOpen = ref(false)
+function toggleLlmAdvanced() { llmAdvancedOpen.value = !llmAdvancedOpen.value }
+
+// 推荐第三方 LLM 中转站
+const showRelayModal = ref(false)
+const showNovelaiRelayModal = ref(false)
+const relayStations = [
+  { name: '词元跳动', keysUrl: 'https://tokendance.space/keys', url: 'https://tokendance.space/gateway/v1', desc: '仍然提供v4flash预览版，所以没有涨价' },
+  { name: '基元律动', keysUrl: 'https://tokenrhythm.studio/i/rf_tr_sFVpaGViDHbVQrjGtHKXT2in', url: 'https://tokenrhythm.studio/v1', desc: '注册即送68元，邀请还送68元，同样还有flash预览版，但是不够稳定' },
+]
+
+const relayConfigBusy = ref(false)
+const novelaiRelayConfigBusy = ref(false)
+
+async function applyNovelaiRelayConfig() {
+  if (novelaiRelayConfigBusy.value) return
+  novelaiRelayConfigBusy.value = true
+  try {
+    const url = 'https://nai.rinko.ai'
+    const result = await updateComfyConfig({ novelaiUrl: url })
+    novelaiUrl.value = result.novelaiUrl || url
+    health.value = null
+    connSaved.value = true
+    setTimeout(() => { connSaved.value = false }, 2000)
+    showNovelaiRelayModal.value = false
+    toastFn?.('已配置 NAI.Rinko 接口地址；请填写 API Key 后测试连接', 'success')
+  } catch (err) {
+    toastFn?.('快速配置失败: ' + (err.message || '未知错误'), 'error')
+  } finally {
+    novelaiRelayConfigBusy.value = false
+  }
+}
+
+function uniqueProfileName(baseName) {
+  const names = new Set(llmProfiles.value.map(p => p.name))
+  if (!names.has(baseName)) return baseName
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+  let candidate = `${baseName}-${date}`
+  let index = 2
+  while (names.has(candidate)) {
+    candidate = `${baseName}-${date}-${index}`
+    index += 1
+  }
+  return candidate
+}
+
+async function applyRelayConfig(station) {
+  if (relayConfigBusy.value) return
+  relayConfigBusy.value = true
+  try {
+    isCustomBaseURL.value = true
+    llmBaseURL.value = station.url
+    llmModel.value = 'deepseek-flash'
+    // 一键接入中转站：同样走默认「关」（与全局口径一致）；若该站不认 thinking 字段
+    // 而返回 400，后端会自动去掉可选参数重试一次，用户也可手动改「不传」。
+    llmThinkingMode.value = 'disabled'
+    applyLlmContextWindow(null)   // 中转站不声明窗口，交给服务端探测
+    llmHeadersEnabled.value = false
+    llmHeadersText.value = '{}'
+    llmExtraBodyEnabled.value = false
+    llmExtraBodyText.value = '{}'
+    const name = uniqueProfileName(station.name)
+    const result = await addLlmProfile(name, {
+      apiKey: '',
+      baseURL: station.url,
+      model: 'deepseek-flash',
+      thinkingMode: 'disabled',
+      headers: {},
+      extraBody: {},
+      serializeBackgroundLLM: false,
+      mergeMessages: false,
+      backgroundConcurrency: 3,
+    })
+    if (!result.ok) throw new Error(result.error || '新增配置失败')
+    const profiles = result.profiles || []
+    llmProfiles.value = profiles
+    const created = profiles.find(p => p.name === name)
+    if (!created) throw new Error('未找到新增配置')
+    await switchProfile(created.id)
+    if (activeLlmProfileId.value !== created.id) throw new Error('启用新配置失败')
+    showRelayModal.value = false
+    toastFn?.(`已新增并启用「${name}」`, 'success')
+  } catch (err) {
+    toastFn?.('快速配置失败: ' + (err.message || '未知错误'), 'error')
+  } finally {
+    relayConfigBusy.value = false
+  }
+}
+
+// 每日免费鸡蛋：点击按钮开/关；开 = 走 opencode zen 免费端点（免 Key、强制关思考），关 = 恢复自有配置
+const freeEggBusy = ref(false)
+const freeEggBtn = ref(null)
+const eggSplash = ref(null)
+let eggSplashSeq = 0
+
+function burstEggSplash() {
+  const btn = freeEggBtn.value
+  if (btn) {
+    btn.animate(
+      [
+        { transform: 'scale(1.02, 0.8) rotate(-2deg)', boxShadow: 'inset 0 0 0 5px rgba(255, 214, 70, 0.95)', filter: 'brightness(1.5)' },
+        { transform: 'scale(1.12, 1.24) rotate(2deg)', boxShadow: 'inset 0 0 0 2px rgba(255, 214, 70, 0.45)', filter: 'brightness(1.2)', offset: 0.35 },
+        { transform: 'scale(0.96, 1.04) rotate(0deg)', boxShadow: 'inset 0 0 0 0 rgba(255, 214, 70, 0)', filter: 'brightness(1.02)', offset: 0.68 },
+        { transform: 'scale(1, 1) rotate(0deg)', boxShadow: 'inset 0 0 0 0 rgba(255, 214, 70, 0)', filter: 'brightness(1)' }
+      ],
+      { duration: 460, easing: 'cubic-bezier(0.22, 0.9, 0.3, 1.35)' }
+    )
+  }
+
+  const drops = []
+  const dropColors = ['#ffd83d', '#ffc61a', '#fff3c4', '#ffb02e', '#ffe38a']
+  for (let i = 0; i < 16; i++) {
+    const angle = (Math.PI * 2 * i) / 16 + (Math.random() - 0.5) * 0.55
+    const dist = 52 + Math.random() * 88
+    const x = Math.cos(angle) * dist
+    const y = Math.sin(angle) * dist
+    const size = 4 + Math.random() * 7
+    drops.push({
+      id: i,
+      style: {
+        '--x': `${x.toFixed(1)}px`,
+        '--y': `${y.toFixed(1)}px`,
+        '--mx': `${(x * 0.6).toFixed(1)}px`,
+        '--my': `${(y * 0.6).toFixed(1)}px`,
+        '--fall': `${(16 + Math.random() * 44).toFixed(1)}px`,
+        '--size': `${size.toFixed(1)}px`,
+        '--rot': `${(angle * 180 / Math.PI + 90).toFixed(1)}deg`,
+        '--dur': `${(540 + Math.random() * 340).toFixed(0)}ms`,
+        '--delay': `${(Math.random() * 40).toFixed(0)}ms`,
+        '--color': dropColors[i % dropColors.length]
+      }
+    })
+  }
+
+  const shards = []
+  for (let i = 0; i < 7; i++) {
+    const angle = (Math.PI * 2 * i) / 7 + (Math.random() - 0.5) * 0.7
+    const dist = 66 + Math.random() * 60
+    const x = Math.cos(angle) * dist
+    const y = Math.sin(angle) * dist
+    const size = 7 + Math.random() * 6
+    shards.push({
+      id: i,
+      style: {
+        '--x': `${x.toFixed(1)}px`,
+        '--y': `${y.toFixed(1)}px`,
+        '--mx': `${(x * 0.55).toFixed(1)}px`,
+        '--my': `${(y * 0.55).toFixed(1)}px`,
+        '--size': `${size.toFixed(1)}px`,
+        '--rot': `${(angle * 180 / Math.PI).toFixed(1)}deg`,
+        '--dur': `${(620 + Math.random() * 260).toFixed(0)}ms`,
+        '--delay': `${(Math.random() * 35).toFixed(0)}ms`
+      }
+    })
+  }
+
+  eggSplash.value = { id: ++eggSplashSeq, drops, shards }
+}
+
+function onFreeEggClick() {
+  if (freeEggBusy.value) return
+  burstEggSplash()
+  toggleFreeEgg()
+}
+async function toggleFreeEgg() {
+  if (freeEggBusy.value) return
+  freeEggBusy.value = true
+  freeEgg.value = !freeEgg.value
+  try {
+    const result = await setLlmFreeEgg(freeEgg.value)
+    if (result.ok) {
+      llmPreview.value = { ...result }
+      settingsStore.setHasApiKey(result.hasApiKey)
+      llmApiKey.value = ''
+      llmDirty.value = false
+      llmSaved.value = false
+      toastFn?.(freeEgg.value ? '已开启每日免费鸡蛋 🥚' : '已恢复自有 LLM 配置', 'success')
+    }
+  } catch (err) {
+    freeEgg.value = !freeEgg.value
+    toastFn?.('切换免费鸡蛋失败: ' + (err.message || '未知错误'), 'error')
+  } finally {
+    freeEggBusy.value = false
+  }
+}
+
+function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text)
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
+  return Promise.resolve()
+}
+
+async function copyLlmApiKey() {
+  let key = llmApiKey.value.trim()
+  if (!key) {
+    try {
+      const data = await fetchLlmApiKey()
+      key = data.apiKey || ''
+    } catch (err) {
+      const msg = err.message || '未知错误'
+      toastFn?.(msg === '未设置 API Key' ? '暂无 API Key 可复制' : '获取 API Key 失败: ' + msg, msg === '未设置 API Key' ? 'warning' : 'error')
+      return
+    }
+  }
+  if (!key) {
+    toastFn?.('暂无 API Key 可复制', 'warning')
+    return
+  }
+  try {
+    await copyTextToClipboard(key)
+    toastFn?.('API Key 已复制', 'success')
+  } catch (err) {
+    toastFn?.('复制失败: ' + (err.message || '未知错误'), 'error')
+  }
+}
+
+async function loadAvailableModels() {
+  if (llmModelsLoading.value || (llmConnectionType.value === 'openai' && !llmBaseURL.value.trim())) return
+  if (llmHeadersEnabled.value && !llmHeadersValid.value) {
+    llmModelsError.value = '请先修正自定义请求头 JSON'
+    return
+  }
+
+  // 版本号：慢请求回来时如果地址/模型/手动额度已经变过，就不许覆盖用户的新选择
+  const requestVersion = ++llmModelsVersion
+  const editVersion = llmTokenEditVersion
+  llmModelsLoading.value = true
+  llmModelsError.value = ''
+  llmModels.value = []
+  try {
+    const headers = llmHeadersEnabled.value ? JSON.parse(llmHeadersText.value) : {}
+    const result = await fetchLlmModels({
+      connectionType: llmConnectionType.value,
+      vertexRegion: vertexRegion.value,
+      vertexServiceAccount: llmConnectionType.value === 'vertexai' ? vertexServiceAccount.value.trim() || undefined : undefined,
+      baseURL: llmBaseURL.value.trim(),
+      // 未手动输入时不传 key，由后端回落到库里存的那个（避免用浏览器自动填充的旧值去请求）
+      apiKey: llmApiKeyTouched.value ? (llmApiKey.value.trim() || undefined) : undefined,
+      headers,
+    })
+    if (requestVersion !== llmModelsVersion) return
+    llmModels.value = result.models || []
+    llmModelCapabilities.value = result.capabilities || {}
+    if (editVersion === llmTokenEditVersion) {
+      fillLlmMaxTokens()
+      markLlmDirty()
+    }
+    if (llmModels.value.length) llmModelSelect.value?.open()
+  } catch (error) {
+    if (requestVersion !== llmModelsVersion) return
+    llmModelsError.value = error.message || '获取模型失败'
+    toastFn?.(llmModelsError.value, 'error')
+  } finally {
+    if (requestVersion === llmModelsVersion) llmModelsLoading.value = false
+  }
+}
+
+// ── LLM Profile 切换 ──
+const showLlmHelp = ref(false)
+// 设置页两种形态（上游 v3.10.0）：guided=DeepSeek 简易向导 / full=完整配置
+// loading / error 是首屏读配置的过渡态 —— 别把「还没读到」当成「没配置」
+const llmSetupMode = ref('loading')
+const llmCardFirst = ref(false)
+const canReturnToGuidedSetup = computed(() => !llmDirty.value && !freeEgg.value && canUseDeepseekSetup({
+  llm: llmPreview.value, llmProfiles: llmProfiles.value, features,
+}))
+function openFullLlmSetup() {
+  writeLlmSetupPreference(localStorage, 'full')
+  llmSetupMode.value = 'full'
+}
+function returnToGuidedSetup() {
+  // 只在「没改过 + 仍是官方预设」时允许回去，否则会把用户的自定义配置藏起来
+  if (!canReturnToGuidedSetup.value) return
+  writeLlmSetupPreference(localStorage, 'guided')
+  llmSetupMode.value = 'guided'
+}
+function onGuidedLlmConnected(result) {
+  settingsStore.setHasApiKey(result.hasApiKey)
+  llmPreview.value = { ...result }
+  llmBaseURL.value = result.baseURL
+  llmModel.value = result.model
+  llmThinkingMode.value = result.thinkingMode
+  restoreLlmMaxTokens(result)
+  llmApiKey.value = ''
+  llmApiKeyTouched.value = false
+  llmDirty.value = false
+  llmSaved.value = true
+  llmProfiles.value = llmProfiles.value.map(profile => profile.id === activeLlmProfileId.value
+    ? { ...profile, hasApiKey: result.hasApiKey, preview: result.preview, model: result.model, baseURL: result.baseURL }
+    : profile)
+  writeLlmSetupPreference(localStorage, 'guided')
+}
+
+const llmProfiles = ref([])
+const activeLlmProfileId = ref('')
+const showAddProfile = ref(false)
+const newProfileName = ref('')
+const newProfileInput = ref(null)
+watch(() => showAddProfile.value, async (v) => {
+  if (v) {
+    newProfileName.value = ''
+    await nextTick()
+    newProfileInput.value?.focus()
+  }
+})
+
+async function loadLlmProfiles(data) {
+  if (data) {
+    llmProfiles.value = data.llmProfiles || []
+    activeLlmProfileId.value = data.activeLlmProfileId || ''
+  } else {
+    const res = await getLlmProfiles()
+    llmProfiles.value = res.profiles || []
+    activeLlmProfileId.value = res.activeProfileId || ''
+  }
+}
+
+async function switchProfile(id) {
+  if (id === activeLlmProfileId.value) return
+  try {
+    const result = await activateLlmProfile(id)
+    if (result.ok) {
+      activeLlmProfileId.value = result.activeProfileId
+      llmProfiles.value = result.profiles || []
+      if (result.llmConfig) {
+        llmPreview.value = { ...result.llmConfig }
+        llmBaseURL.value = result.llmConfig.baseURL || 'https://api.deepseek.com'
+        llmModel.value = result.llmConfig.model || 'deepseek-chat'
+        llmThinkingMode.value = result.llmConfig.thinkingMode || 'disabled'
+        restoreLlmMaxTokens(result.llmConfig)
+        applyLlmContextWindow(result.llmConfig.contextWindow)
+        const hasCustom = (result.llmConfig.headers && Object.keys(result.llmConfig.headers).length > 0)
+          || (result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length > 0)
+        isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
+        llmHeadersEnabled.value = Boolean(result.llmConfig.headers && Object.keys(result.llmConfig.headers).length)
+        llmExtraBodyEnabled.value = Boolean(result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length)
+        llmHeadersText.value = result.llmConfig.headers && Object.keys(result.llmConfig.headers).length
+          ? JSON.stringify(result.llmConfig.headers, null, 2) : '{}'
+        llmExtraBodyText.value = result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length
+          ? JSON.stringify(result.llmConfig.extraBody, null, 2) : '{}'
+        settingsStore.setHasApiKey(result.llmConfig.hasApiKey)
+        llmApiKey.value = ''
+        llmDirty.value = false
+        llmSaved.value = false
+        // 刷新完整的 features 和 concurrency（profile 切换会影响这些）
+        const cfg = await getConfig()
+        Object.assign(features, cfg.features)
+        normalizeIntimateFlags(cfg.features)
+        backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
+        freqSlider.value = cfg.features.proactiveChatFreq ?? 0.5
+        eventFreqSlider.value = cfg.features.eventFreq ?? 1
+        momentFreqStepIdx.value = momentStepFromValue(cfg.features.momentFreq, cfg.features.momentFreqMode)
+      }
+    }
+  } catch (err) {
+    console.error('[llm] switch profile failed:', err)
+  }
+}
+
+async function addProfile() {
+  const name = newProfileName.value.trim()
+  if (!name) return
+  try {
+    await addLlmProfile(name)
+    showAddProfile.value = false
+    newProfileName.value = ''
+    await loadLlmProfiles()
+  } catch (err) {
+    console.error('[llm] add profile failed:', err)
+  }
+}
+
+async function removeProfile(id) {
+  const profile = llmProfiles.value.find(p => p.id === id)
+  const name = profile?.name || '该配置'
+  const title = `删除「${name}」`
+  const body = llmProfiles.value.length <= 1
+    ? '这是最后一套配置，不可删除'
+    : `将删除该配置快照，当前正在使用的配置不受影响，此操作不可撤销`
+
+  if (!confirmFn) {
+    if (!window.confirm(`${title}\n\n${body}`)) return
+  } else {
+    const ok = await confirmFn({ title, message: body, danger: true, okText: '删除' })
+    if (!ok) return
+  }
+  if (llmProfiles.value.length <= 1) return
+  try {
+    const result = await deleteLlmProfile(id)
+    if (result.ok) {
+      llmProfiles.value = result.profiles || []
+      activeLlmProfileId.value = result.activeProfileId || ''
+      // 如果删除的是激活的，需要刷新当前配置
+      const cfg = await getConfig()
+      llmPreview.value = { ...cfg.llm }
+      llmBaseURL.value = cfg.llm.baseURL || 'https://api.deepseek.com'
+      llmModel.value = cfg.llm.model || 'deepseek-chat'
+      llmThinkingMode.value = cfg.llm.thinkingMode || 'disabled'
+      applyLlmContextWindow(cfg.llm.contextWindow)
+      const hasCustom = (cfg.llm.headers && Object.keys(cfg.llm.headers).length > 0)
+        || (cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length > 0)
+        || cfg.features?.mergeMessages
+      isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
+      llmHeadersEnabled.value = Boolean(cfg.llm.headers && Object.keys(cfg.llm.headers).length)
+      llmExtraBodyEnabled.value = Boolean(cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length)
+      llmHeadersText.value = cfg.llm.headers && Object.keys(cfg.llm.headers).length
+        ? JSON.stringify(cfg.llm.headers, null, 2) : '{}'
+      llmExtraBodyText.value = cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length
+        ? JSON.stringify(cfg.llm.extraBody, null, 2) : '{}'
+      Object.assign(features, cfg.features)
+      normalizeIntimateFlags(cfg.features)
+      backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
+      settingsStore.setHasApiKey(cfg.llm.hasApiKey)
+      llmApiKey.value = ''
+      llmDirty.value = false
+      llmSaved.value = false
+    }
+  } catch (err) {
+    console.error('[llm] delete profile failed:', err)
+  }
+}
+
+onMounted(async () => {
+  // 数据备份摘要独立加载：读失败只影响这一行，不阻塞设置页其它配置
+  refreshExportInfo()
+  try {
+    const data = await getConfig()
+    // 画师串口径（与后端 routes/images.js 一致）：空串 '' ＝ 用户明确要「不要画师串」，
+    // 必须原样保留；只有 undefined / 字段缺失（旧配置）才回落到上一个页签的值。
+    // 所以这里一律用 ??，不能用 || —— || 会把显式空串当成"没值"，把 @chat 又塞回去。
+    // 三个页签各自的字段分别判断，互不影响。
+    form.value = {
+      artist: data.comfy.artist, width: data.comfy.width, height: data.comfy.height,
+      momentsArtist: data.comfy.momentsArtist ?? data.comfy.artist,
+      momentsWidth: data.comfy.momentsWidth ?? 1600,
+      momentsHeight: data.comfy.momentsHeight ?? 1200,
+      eventArtist: data.comfy.eventArtist ?? data.comfy.momentsArtist ?? data.comfy.artist,
+      eventWidth: data.comfy.eventWidth ?? 1600,
+      eventHeight: data.comfy.eventHeight ?? 1200,
+    }
+    globalLoras.value = data.comfy.globalLora || []
+    hiresSamplingMode.value = data.comfy.hiresSamplingMode ?? 'source'
+    hiresGlobalLoraScale.value = data.comfy.hiresGlobalLoraScale ?? 1
+    hiresSourceBlend.value = data.comfy.hiresSourceBlend ?? 0
+    hiresWorkflowMode.value = data.comfy.hiresWorkflowMode === 'advanced' ? 'advanced' : 'basic'
+    hiresUpscaleModel.value = data.comfy.hiresUpscaleModel ?? 'RealESRGAN_x4plus_anime_6B.pth'
+    hiresLoras.value = data.comfy.hiresLora || []
+    hiresTurbo.value = data.comfy.hiresTurbo ?? true
+    hiresSteps.value = data.comfy.hiresSteps ?? 35
+    hiresCfg.value = data.comfy.hiresCfg ?? 5
+    hiresDenoise.value = data.comfy.hiresDenoise ?? 0.2
+    hiresMaxSize.value = data.comfy.hiresMaxSize ?? 2000
+    hiresArtistMode.value = data.comfy.hiresArtistMode ?? 'empty'
+    hiresArtist.value = data.comfy.hiresArtist ?? ''
+    qualityPrompt.value = data.comfy.qualityPrompt ?? ''
+    negativePrompt.value = data.comfy.negativePrompt ?? ''
+    comfyUrl.value = data.comfy.url || 'http://localhost:8188'
+    comfySkipTls.value = data.comfy.tlsVerify === false
+    imageProvider.value = data.comfy.imageProvider === 'novelai' ? 'novelai' : 'comfyui'
+    novelaiApiFormat.value = ['official', 'native', 'relay'].includes(data.comfy.novelaiApiFormat) ? data.comfy.novelaiApiFormat : 'relay'
+    novelaiProxyUrl.value = data.comfy.novelaiProxyUrl || ''
+    novelaiUrl.value = data.comfy.novelaiUrl ?? ''
+    novelaiModel.value = data.comfy.novelaiModel || 'nai-diffusion-4-5-full'
+    novelaiArtist.value = data.comfy.novelaiArtist ?? '@ebora'
+    novelaiWidth.value = data.comfy.novelaiWidth || 1216
+    novelaiHeight.value = data.comfy.novelaiHeight || 832
+    novelaiSteps.value = data.comfy.novelaiSteps || 28
+    novelaiSampler.value = data.comfy.novelaiSampler || 'k_euler_ancestral'
+    novelaiNoiseSchedule.value = data.comfy.novelaiNoiseSchedule || 'karras'
+    novelaiGuidance.value = data.comfy.novelaiGuidance ?? 5
+    novelaiQualityPrompt.value = data.comfy.novelaiQualityPrompt ?? 'masterpiece, best quality, score_9, score_8, highres, absurdres, year 2025'
+    novelaiNegativePrompt.value = data.comfy.novelaiNegativePrompt ?? novelaiDefaultNegativePrompt
+    novelaiApiKeySaved.value = data.comfy.novelaiApiKeySet === true
+    settingsStore.setComfySize(data.comfy.width, data.comfy.height)
+    Object.assign(features, data.features)
+    normalizeIntimateFlags(data.features)
+    freqSlider.value = features.proactiveChatFreq ?? 0.5
+    eventFreqSlider.value = features.eventFreq ?? 1
+    momentFreqStepIdx.value = momentStepFromValue(features.momentFreq, features.momentFreqMode)
+    backgroundConcurrency.value = features.backgroundLLMMaxConcurrency ?? 3
+    // 防打扰模式
+    if (data.disturb) {
+      disturbMode.value = features.disturbMode ?? false
+      disturbStartTime.value = data.disturb.startTime || '22:00'
+      disturbEndTime.value = data.disturb.endTime || '08:00'
+      disturbCharacterIds.value = data.disturb.characterIds || []
+      disturbHideWorld.value = data.disturb.hideWorld ?? false
+      disturbSkipWeekends.value = data.disturb.skipWeekends ?? false
+    }
+    weatherCity.value = data.weather?.city || ''
+    llmPreview.value = { ...data.llm }
+    freeEgg.value = data.llm?.freeEgg === true
+    llmBaseURL.value = data.llm.baseURL || 'https://api.deepseek.com'
+    llmModel.value = data.llm.model || 'deepseek-chat'
+    llmThinkingMode.value = data.llm.thinkingMode || 'disabled'
+    // 输出额度 / 接入方式 / Vertex 公开字段（上游 v3.10.0）
+    restoreLlmMaxTokens(data.llm)
+    applyLlmContextWindow(data.llm.contextWindow)
+    const hasCustom = (data.llm.headers && Object.keys(data.llm.headers).length > 0)
+      || (data.llm.extraBody && Object.keys(data.llm.extraBody).length > 0)
+      || data.features?.mergeMessages
+    isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
+    llmHeadersEnabled.value = Boolean(data.llm.headers && Object.keys(data.llm.headers).length)
+    llmExtraBodyEnabled.value = Boolean(data.llm.extraBody && Object.keys(data.llm.extraBody).length)
+    // 反重复采样参数：null = 不发送该字段（默认）→ 输入框留空
+    antiRepPenaltyPresence.value = data.llm.antiRepetitionPenalty === null || data.llm.antiRepetitionPenalty === undefined
+      ? '' : String(data.llm.antiRepetitionPenalty)
+    antiRepPenaltyFrequency.value = data.llm.antiRepetitionFrequency === null || data.llm.antiRepetitionFrequency === undefined
+      ? '' : String(data.llm.antiRepetitionFrequency)
+    llmHeadersText.value = data.llm.headers && Object.keys(data.llm.headers).length
+      ? JSON.stringify(data.llm.headers, null, 2) : '{}'
+    llmExtraBodyText.value = data.llm.extraBody && Object.keys(data.llm.extraBody).length
+      ? JSON.stringify(data.llm.extraBody, null, 2) : '{}'
+    if (data.workflow) {
+      workflowMode.value = data.workflow.mode || 'turbo'
+      workflowCustomTemplate.value = data.workflow.customTemplate || ''
+      workflowScene.value = { chat: 'turbo', group: 'base', moments: 'base', events: 'base', schedule: 'base', mailbox: 'base', ...data.workflow.scene }
+    }
+    loadLlmProfiles(data)
+    // 读到了配置才决定形态：没配置 / 用户选过 guided → 简易向导；否则完整配置
+    llmSetupMode.value = initialLlmSetupMode(data, readLlmSetupPreference(localStorage))
+    llmCardFirst.value = llmSetupMode.value === 'guided' || !data.llm.hasApiKey
+  } catch {
+    llmSetupMode.value = 'error'
+  }
+  await checkHealth()
+  await loadArtistFavorites()
+})
+
+function markDirty() { dirty.value = true; saved.value = false }
+function markConnDirty() { connDirty.value = true; connSaved.value = false; health.value = null }
+async function onImageProviderChange(provider) {
+  health.value = null
+  try {
+    const result = await updateComfyConfig({ imageProvider: provider })
+    settingsStore.setImageProvider(result.imageProvider)
+    connSaved.value = true
+    setTimeout(() => { connSaved.value = false }, 2000)
+  } catch (err) {
+    imageProvider.value = settingsStore.imageProvider
+    toastFn?.(err.message || '切换生图服务失败', 'error')
+  }
+}
+function applyNovelaiResolutionPreset(preset) {
+  novelaiWidth.value = preset.width
+  novelaiHeight.value = preset.height
+  markConnDirty()
+}
+function onNovelaiDimensionInput(axis, event) {
+  const value = Number(event?.target?.value)
+  if (axis === 'width') novelaiWidth.value = value
+  else novelaiHeight.value = value
+  markConnDirty()
+}
+function onNovelaiKeyInput() {
+  novelaiApiKeyCleared.value = false
+  markConnDirty()
+}
+function clearNovelaiKey() {
+  novelaiApiKeyCleared.value = true
+  markConnDirty()
+}
+
+async function saveComfy() {
+  if (comfySaving.value) return
+  comfySaving.value = true
+  try {
+    await updateComfyConfig({
+      artist: form.value.artist, width: form.value.width, height: form.value.height,
+      momentsArtist: form.value.momentsArtist, momentsWidth: form.value.momentsWidth, momentsHeight: form.value.momentsHeight,
+      eventArtist: form.value.eventArtist, eventWidth: form.value.eventWidth, eventHeight: form.value.eventHeight,
+    })
+    settingsStore.setComfySize(form.value.width, form.value.height)
+    settingsStore.setEventSize(form.value.eventWidth, form.value.eventHeight)
+    dirty.value = false; saved.value = true
+    setTimeout(() => saved.value = false, 2000)
+  } catch (err) {
+    // 以前这里没有 try/catch：保存失败就是 unhandled rejection，界面毫无反应、
+    // dirty 仍是 true，用户会以为已经存上了（生图配置恰恰是最需要确认写库成功的地方）。
+    toastFn?.(`生图配置保存失败：${err?.message || '未知错误'}`, 'error')
+  } finally {
+    comfySaving.value = false
+  }
+}
+
+function onGlobalLoraSaved(globalList) {
+  if (Array.isArray(globalList)) globalLoras.value = globalList
+}
+
+function onHiresFixSaved({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turbo }) {
+  if (samplingMode !== undefined) hiresSamplingMode.value = samplingMode
+  if (globalLoraScale !== undefined) hiresGlobalLoraScale.value = globalLoraScale
+  if (sourceBlend !== undefined) hiresSourceBlend.value = sourceBlend
+  if (workflowMode !== undefined) hiresWorkflowMode.value = workflowMode
+  if (upscaleModel !== undefined) hiresUpscaleModel.value = upscaleModel
+  if (Array.isArray(loras)) hiresLoras.value = loras
+  if (steps !== undefined) hiresSteps.value = steps
+  if (cfg !== undefined) hiresCfg.value = cfg
+  if (denoise !== undefined) hiresDenoise.value = denoise
+  if (maxSize !== undefined) hiresMaxSize.value = maxSize
+  if (artistMode !== undefined) hiresArtistMode.value = artistMode
+  if (artist !== undefined) hiresArtist.value = artist
+  if (turbo !== undefined) hiresTurbo.value = turbo
+}
+
+// 「细化用 turbo 参数」开关：即改即存（改完立刻生效，无需重启）；
+// 保存失败回滚本地开关，避免界面显示与后端实际状态不一致（沿用本页 saveIntimateFeature 的写法）
+async function onHiresTurboToggle(val) {
+  try {
+    await updateHiresSettings({ turboMode: val })
+    hiresTurbo.value = val
+    toastFn?.(val
+      ? `细化已改用 turbo 参数（CFG ${HIRES_TURBO_CFG.toFixed(1)} / ${HIRES_TURBO_STEPS} 步）`
+      : '细化已恢复「设置」里的步数与 CFG', 'success')
+  } catch (err) {
+    hiresTurbo.value = !val
+    toastFn?.(`turbo 参数保存失败：${err.message || '未知错误'}`, 'error')
+  }
+}
+
+function openGlobalLora() {
+  globalLoraModalVisible.value = true
+}
+
+function openHiresFixSettings() {
+  hiresFixModalVisible.value = true
+}
+
+function openQualityDialog() {
+  qualityDialog.text = qualityPrompt.value
+  qualityDialog.show = true
+}
+
+async function saveQualityPrompt() {
+  qualitySaving.value = true
+  try {
+    const text = qualityDialog.text.trim()
+    await updateComfyConfig({ qualityPrompt: text })
+    qualityPrompt.value = text
+    qualityDialog.show = false
+    toastFn(text ? '质量提示词已更新，下张图生效' : '已恢复系统默认质量提示词', 'success')
+  } catch (e) {
+    console.error('saveQualityPrompt failed:', e)
+    toastFn(e.message || '保存失败', 'error')
+  } finally {
+    qualitySaving.value = false
+  }
+}
+
+function openNegativeDialog() {
+  negativeDialog.text = negativePrompt.value
+  negativeDialog.show = true
+}
+
+async function saveNegativePrompt() {
+  negativeSaving.value = true
+  try {
+    const text = negativeDialog.text.trim()
+    await updateComfyConfig({ negativePrompt: text })
+    negativePrompt.value = text
+    negativeDialog.show = false
+    toastFn(text ? '负面提示词已更新，下张图生效' : '已恢复工作流默认负面提示词', 'success')
+  } catch (e) {
+    console.error('saveNegativePrompt failed:', e)
+    toastFn(e.message || '保存失败', 'error')
+  } finally {
+    negativeSaving.value = false
+  }
+}
+
+async function saveComfyUrl() {
+  try {
+    if (imageProvider.value === 'novelai' && (!Number.isInteger(Number(novelaiWidth.value)) || !Number.isInteger(Number(novelaiHeight.value))
+      || Number(novelaiWidth.value) < 64 || Number(novelaiHeight.value) < 64
+      || Number(novelaiWidth.value) > 4096 || Number(novelaiHeight.value) > 4096)) {
+      toastFn?.('NovelAI 分辨率需为 64–4096 之间的整数像素', 'error')
+      return
+    }
+    const hasNovelaiKey = Boolean(novelaiApiKey.value.trim() || (novelaiApiKeySaved.value && !novelaiApiKeyCleared.value))
+    if (imageProvider.value === 'novelai' && !hasNovelaiKey) {
+      toastFn?.('切换到 NovelAI 前，请先填写 API Key', 'error')
+      return
+    }
+    const payload = {
+      imageProvider: imageProvider.value,
+      novelaiApiFormat: novelaiApiFormat.value,
+      novelaiProxyUrl: novelaiProxyUrl.value.trim(),
+      novelaiUrl: novelaiUrl.value.trim().replace(/\/+$/, ''),
+      novelaiModel: novelaiModel.value,
+      novelaiArtist: novelaiArtist.value,
+      novelaiWidth: Number(novelaiWidth.value),
+      novelaiHeight: Number(novelaiHeight.value),
+      novelaiSteps: Math.min(50, Math.max(1, Number(novelaiSteps.value) || 28)),
+      novelaiSampler: novelaiSampler.value,
+      novelaiNoiseSchedule: novelaiNoiseSchedule.value,
+      novelaiGuidance: Number(novelaiGuidance.value),
+      novelaiQualityPrompt: novelaiQualityPrompt.value,
+      novelaiNegativePrompt: novelaiNegativePrompt.value,
+    }
+    if (imageProvider.value === 'comfyui') {
+      payload.url = comfyUrl.value.trim().replace(/\/+$/, '')
+      payload.tlsVerify = !comfySkipTls.value
+    }
+    if (novelaiApiKey.value.trim()) payload.novelaiApiKey = novelaiApiKey.value.trim()
+    if (novelaiApiKeyCleared.value) payload.clearNovelaiApiKey = true
+    const result = await updateComfyConfig(payload)
+    settingsStore.setImageProvider(result.imageProvider)
+    novelaiApiKeySaved.value = result.novelaiApiKeySet === true
+    novelaiApiKey.value = ''
+    novelaiApiKeyCleared.value = false
+    connDirty.value = false; connSaved.value = true
+    setTimeout(() => connSaved.value = false, 2000)
+    await checkHealth()
+  } catch (err) {
+    toastFn?.(err.message || '生图连接设置保存失败', 'error')
+  }
+}
+
+async function checkHealth() {
+  const result = await imageProviderHealth({
+    provider: imageProvider.value,
+    apiFormat: novelaiApiFormat.value,
+    proxyUrl: novelaiProxyUrl.value.trim(),
+    url: imageProvider.value === 'novelai' ? novelaiUrl.value : comfyUrl.value,
+    model: novelaiModel.value,
+    ...(novelaiApiKey.value.trim() ? { apiKey: novelaiApiKey.value.trim() } : {}),
+  })
+  health.value = result
+  if (result.provider === 'novelai') {
+    novelaiModels.value = Array.isArray(result.models)
+      ? result.models.map(model => ({ value: model, label: model }))
+      : []
+  }
+}
+
+async function fetchNovelaiModels() {
+  novelaiModelsLoading.value = true
+  try {
+    const result = await imageProviderHealth({
+      provider: 'novelai',
+      apiFormat: novelaiApiFormat.value,
+      proxyUrl: novelaiProxyUrl.value.trim(),
+      url: novelaiUrl.value,
+      model: novelaiModel.value,
+      ...(novelaiApiKey.value.trim() ? { apiKey: novelaiApiKey.value.trim() } : {}),
+    })
+    health.value = result
+    novelaiModels.value = Array.isArray(result.models)
+      ? result.models.map(model => ({ value: model, label: model }))
+      : []
+    if (result.connected) toastFn?.(`已获取 ${result.modelCount} 个模型`, 'success')
+    else toastFn?.(result.error || '获取模型列表失败', 'error')
+  } finally {
+    novelaiModelsLoading.value = false
+  }
+}
+
+function buildLlmPayload() {
+  // 接入方式（上游 v3.10.0）：Vertex 走服务账号，不下发 apiKey
+  const payload = { connectionType: llmConnectionType.value }
+  if (llmConnectionType.value === 'vertexai') {
+    payload.vertexRegion = vertexRegion.value.trim() || 'global'
+    if (vertexServiceAccount.value.trim()) payload.vertexServiceAccount = vertexServiceAccount.value.trim()
+  }
+  // 只有用户手动输入过才提交 apiKey —— 否则浏览器自动填充的旧值会被当成"用户的输入"写回库
+  if (llmConnectionType.value === 'openai' && llmApiKeyTouched.value && llmApiKey.value.trim()) {
+    payload.apiKey = llmApiKey.value.trim()
+  }
+  if (llmBaseURL.value) payload.baseURL = llmBaseURL.value
+  if (llmModel.value) payload.model = llmModel.value
+  // 输出额度：非法值直接拦在这里，不要发一个半截配置给后端
+  if (!llmMaxTokensValid.value) throw new Error('MAX_tokens 必须为正整数')
+  payload.maxTokens = llmMaxTokens.value
+  payload.thinkingMode = llmThinkingMode.value
+  // 上下文窗口：留空传 null，让服务端从上游探测 / 用默认值
+  payload.contextWindow = llmContextWindowValue.value
+  payload.headers = isCustomBaseURL.value && llmHeadersEnabled.value
+    ? JSON.parse(llmHeadersText.value)
+    : {}
+  payload.extraBody = isCustomBaseURL.value && llmExtraBodyEnabled.value
+    ? JSON.parse(llmExtraBodyText.value)
+    : {}
+  return payload
+}
+
+async function runLlmConnectionTest() {
+  if (llmTesting.value) return
+  if (!llmHeadersValid.value || !llmExtraBodyValid.value) {
+    toastFn?.('请先修正 LLM 自定义请求头或请求体 JSON', 'warning')
+    return
+  }
+  if (!llmBaseURL.value.trim()) {
+    toastFn?.('请先填写 API 地址', 'warning')
+    return
+  }
+
+  llmTesting.value = true
+  try {
+    const result = await testLlmConnection(buildLlmPayload())
+    const parts = ['LLM 连接成功']
+    if (result.model) parts.push(result.model)
+    if (result.latencyMs != null) parts.push(`${result.latencyMs}ms`)
+    toastFn?.(parts.join(' · '), 'success')
+  } catch (err) {
+    toastFn?.('LLM 连接失败: ' + (err.message || '未知错误'), 'error')
+  } finally {
+    llmTesting.value = false
+  }
+}
+
+async function saveLlmConfig() {
+  if (llmSaving.value) return
+  llmSaving.value = true
+
+  try {
+    const payload = buildLlmPayload()
+    const result = await updateLlmConfig(payload)
+    if (result.ok) {
+      settingsStore.setHasApiKey(result.hasApiKey)
+      llmPreview.value = { ...result }
+      llmBaseURL.value = result.baseURL || llmBaseURL.value
+      llmModel.value = result.model || llmModel.value
+      llmThinkingMode.value = result.thinkingMode || 'disabled'
+      // 回填输出额度 + 接入方式/Vertex 公开字段（账号明文永远不回显）
+      restoreLlmMaxTokens(result)
+      // contextWindow 走 result（服务端可能把 null 解析成探测到的真实窗口）
+      if ('contextWindow' in result) applyLlmContextWindow(result.contextWindow)
+      llmHeadersEnabled.value = Boolean(result.headers && Object.keys(result.headers).length)
+      llmExtraBodyEnabled.value = Boolean(result.extraBody && Object.keys(result.extraBody).length)
+      llmHeadersText.value = result.headers && Object.keys(result.headers).length
+        ? JSON.stringify(result.headers, null, 2) : '{}'
+      llmExtraBodyText.value = result.extraBody && Object.keys(result.extraBody).length
+        ? JSON.stringify(result.extraBody, null, 2) : '{}'
+      if (payload.apiKey) llmApiKey.value = ''
+      llmApiKeyTouched.value = false
+
+      // 保存后台 LLM 任务队列设置（仅自定义 API 时有效，否则强制关闭）
+      if (isCustomBaseURL.value) {
+        await updateFeatureFlag('serializeBackgroundLLM', features.serializeBackgroundLLM)
+        if (features.serializeBackgroundLLM) {
+          await updateBackgroundConcurrency(backgroundConcurrency.value)
+        }
+        await updateFeatureFlag('mergeMessages', features.mergeMessages)
+      } else {
+        features.serializeBackgroundLLM = false
+        backgroundConcurrency.value = 3
+        await updateFeatureFlag('serializeBackgroundLLM', false)
+        features.mergeMessages = false
+        await updateFeatureFlag('mergeMessages', false)
+      }
+
+      await syncActiveLlmProfile()
+
+      llmDirty.value = false
+      llmSaved.value = true
+      setTimeout(() => llmSaved.value = false, 2000)
+    } else {
+      // 服务端拒绝了这次保存（字段校验/凭据无效）：以前这里什么都不做，
+      // 界面停在「未保存」但没有任何原因，用户只会反复点。
+      toastFn?.(`模型配置保存失败：${result.error || result.message || '服务端拒绝了这次保存'}`, 'error')
+    }
+  } catch (err) {
+    console.error('[llm] save failed:', err)
+    toastFn?.(`模型配置保存失败：${err?.message || '网络或服务异常'}`, 'error')
+  } finally {
+    llmSaving.value = false
+  }
+}
+
+function isPresetActive(p) {
+  const f = activeFields.value
+  return form.value[f.width] === p.width && form.value[f.height] === p.height
+}
+
+function applyPreset(p, mode = 'chat') {
+  if (mode === 'moments') {
+    form.value.momentsWidth = p.width; form.value.momentsHeight = p.height;
+  } else if (mode === 'event') {
+    form.value.eventWidth = p.width; form.value.eventHeight = p.height;
+  } else {
+    form.value.width = p.width; form.value.height = p.height;
+  }
+  dirty.value = true; saved.value = false;
+}
+
+async function saveFeature(key, val) {
+  await updateFeatureFlag(key, val)
+}
+
+// ── 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）──
+// 两个开关都是纯 prompt 增强，保存失败时回滚本地开关（沿用页面既有 toastFn 口径）
+const antiRepFeatureLabels = { antiRepetition: '反车轱辘话', antiRepetitionLock: '反钻牛角尖', antiRepetitionEscalation: '重复时自动加强约束', antiRepetitionReroll: '重写这一轮' }
+
+/**
+ * 功能开关的保存闭环（失败回滚本地开关 + toast）——反重复卡片与动作卡片共用一份，
+ * 免得两处各写一套回滚逻辑。保存失败时把开关拨回去，避免"界面显示开了、后端没存上"的静默不一致。
+ */
+async function saveFeatureWithToast(key, val, label) {
+  try {
+    await updateFeatureFlag(key, val)
+    toastFn?.(val ? `已开启${label}` : `已关闭${label}`, 'success')
+  } catch (err) {
+    features[key] = !val
+    toastFn?.(`${label}保存失败：${err.message || '未知错误'}`, 'error')
+  }
+}
+
+async function saveAntiRepFeature(key, val) {
+  return saveFeatureWithToast(key, val, antiRepFeatureLabels[key] || '设置')
+}
+
+// ── SLG 动作系统（触摸互动 · 专题-SLG动作系统 · 阶段一）──
+const touchFeatureLabels = { touch: '动作系统', touchInstant: '即时反应', touchGroupAdult: '群聊里的敏感动作' }
+
+async function saveTouchFeature(key, val) {
+  return saveFeatureWithToast(key, val, touchFeatureLabels[key] || '设置')
+}
+
+// 动作出图档位（阶段三）：三档选择，键与后端 features.touchImageMode 同口径
+// （always | smart | never，默认 smart）。失败回滚到上一档，避免"界面显示改了、后端没存上"。
+async function saveTouchImageMode(value) {
+  const next = normalizeTouchImageMode(value)
+  const previous = normalizeTouchImageMode(features.touchImageMode)
+  if (next === previous) return
+  features.touchImageMode = next
+  try {
+    await updateFeatureFlag(TOUCH_IMAGE_MODE_KEY, next)
+    toastFn?.('动作出图已改为「' + touchImageModeLabel(next) + '」', 'success')
+  } catch (err) {
+    features.touchImageMode = previous
+    toastFn?.('动作出图保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// 动作反应风格（task-30）：键 features.touchReactionMode，取值 conversation | quick，默认 conversation。
+// 与出图档位同口径：失败回滚到上一档，避免"界面显示改了、后端没存上"。
+async function saveTouchReactionMode(value) {
+  const next = normalizeTouchReactionMode(value)
+  const previous = normalizeTouchReactionMode(features.touchReactionMode)
+  if (next === previous) return
+  features.touchReactionMode = next
+  try {
+    await updateFeatureFlag(TOUCH_REACTION_MODE_KEY, next)
+    toastFn?.('动作反应已改为「' + touchReactionModeLabel(next) + '」', 'success')
+  } catch (err) {
+    features.touchReactionMode = previous
+    toastFn?.('动作反应保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// ── 群聊围观插话概率（task-22）──
+// 契约：features.touchBystanderChance 是 **数字 0~1 = 开启**，'' / null / false = 关闭（退回 task-17 口径）。
+// 写：通用 PUT /api/config/features { key:'touchBystanderChance', value } —— 数字由后端 0~1 夹取，
+//     'off' / null = 关闭，非数字回落 0.3（见 agent-core/src/config.js:549-556）。
+// 失败一律回滚本地值；features 变了会带动下面的 watch 把开关与滑块一起同步回去。
+const BYSTANDER_DEFAULT_PERCENT = 30
+
+/** 0~1（或 '' / null / false）→ 整数百分比；非法 / 关闭都给默认 30 */
+function chanceToPercent(value) {
+  if (value === '' || value === null || value === undefined || value === false) return BYSTANDER_DEFAULT_PERCENT
+  const n = Number(value)
+  if (!Number.isFinite(n)) return BYSTANDER_DEFAULT_PERCENT
+  return Math.round(Math.min(1, Math.max(0, n)) * 100)
+}
+
+/** 任意输入 → 0~100 整数百分比（滑块的值已经是百分比，别拿 chanceToPercent 再乘一遍）；非数字回落默认 30 */
+function clampPercent(value) {
+  if (value === '' || value === null || value === undefined || value === false) return BYSTANDER_DEFAULT_PERCENT
+  const n = Number(value)
+  if (!Number.isFinite(n)) return BYSTANDER_DEFAULT_PERCENT
+  return Math.round(Math.min(100, Math.max(0, n)))
+}
+
+const bystanderEnabled = ref(true)
+const bystanderPercent = ref(BYSTANDER_DEFAULT_PERCENT)
+
+// 载入 / 回滚后同步本地开关与滑块；**关闭时保留上次的百分比**，方便再打开
+watch(() => features.touchBystanderChance, (value) => {
+  const closed = value === '' || value === null || value === undefined || value === false
+  bystanderEnabled.value = !closed
+  if (!closed) bystanderPercent.value = chanceToPercent(value)
+}, { immediate: true })
+
+async function saveBystanderEnabled(enabled) {
+  const previous = features.touchBystanderChance
+  const pct = clampPercent(bystanderPercent.value)
+  const next = enabled ? (pct / 100) : 'off'
+  features.touchBystanderChance = next
+  try {
+    await updateFeatureFlag('touchBystanderChance', next)
+    toastFn?.(enabled
+      ? '已开启群聊围观插话（' + pct + '%）'
+      : '已关闭群聊围观插话：这轮其他成员都不发言', 'success')
+  } catch (err) {
+    features.touchBystanderChance = previous
+    toastFn?.('围观插话保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+async function saveBystanderChance(percent) {
+  // 关闭状态下不发送概率（关闭语义由 'off' 表达）
+  if (!bystanderEnabled.value) return
+  const pct = clampPercent(percent)
+  const previous = features.touchBystanderChance
+  if (chanceToPercent(previous) === pct) return
+  features.touchBystanderChance = pct / 100
+  try {
+    await updateFeatureFlag('touchBystanderChance', pct / 100)
+    toastFn?.('围观插话概率已改为 ' + pct + '%', 'success')
+  } catch (err) {
+    features.touchBystanderChance = previous
+    toastFn?.('围观插话保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// 重复惩罚参数（L3）：留空 = 不发送该字段。字符串与 number 都接受，范围 -2 ~ 2。
+const antiRepPenaltyPresence = ref('')
+const antiRepPenaltyFrequency = ref('')
+const antiRepPenaltySaving = ref(false)
+const antiRepPenaltySaved = ref(false)
+const antiRepPenaltyError = ref('')
+
+function parsePenaltyInput(raw) {
+  const text = String(raw ?? '').trim()
+  if (!text) return { valid: true, value: null }
+  const n = Number(text)
+  if (!Number.isFinite(n) || n < -2 || n > 2) return { valid: false, value: null }
+  return { valid: true, value: n }
+}
+
+const antiRepPenaltyPresenceValid = computed(() => parsePenaltyInput(antiRepPenaltyPresence.value).valid)
+const antiRepPenaltyFrequencyValid = computed(() => parsePenaltyInput(antiRepPenaltyFrequency.value).valid)
+const antiRepPenaltyValid = computed(() => antiRepPenaltyPresenceValid.value && antiRepPenaltyFrequencyValid.value)
+
+async function onAntiRepPenaltySave() {
+  antiRepPenaltyError.value = ''
+  const presence = parsePenaltyInput(antiRepPenaltyPresence.value)
+  const frequency = parsePenaltyInput(antiRepPenaltyFrequency.value)
+  if (!presence.valid || !frequency.valid) {
+    antiRepPenaltyError.value = '两个参数都必须是 -2 ~ 2 之间的数字，留空表示不发送'
+    return
+  }
+  antiRepPenaltySaving.value = true
+  try {
+    const result = await updateAntiRepetitionPenalty({ presence: presence.value, frequency: frequency.value })
+    const savedPresence = result?.antiRepetitionPenalty
+    const savedFrequency = result?.antiRepetitionFrequency
+    antiRepPenaltyPresence.value = savedPresence === null || savedPresence === undefined ? '' : String(savedPresence)
+    antiRepPenaltyFrequency.value = savedFrequency === null || savedFrequency === undefined ? '' : String(savedFrequency)
+    antiRepPenaltySaved.value = true
+    setTimeout(() => { antiRepPenaltySaved.value = false }, 2000)
+  } catch (err) {
+    antiRepPenaltyError.value = `保存失败：${err.message || '未知错误'}`
+  } finally {
+    antiRepPenaltySaving.value = false
+  }
+}
+
+// 亲密度看板 / 历史对话回填两个开关的中文名（保存结果提示复用）
+const intimateFeatureLabels = { intimate: '亲密度看板', intimateBackfill: '历史对话回填' }
+
+// 看板开关关闭是有实际副作用的操作（停止自动记账），所以单独处理：
+// 保存失败时回滚本地开关，避免界面显示与后端实际状态不一致（沿用页面既有 toastFn）
+async function saveIntimateFeature(key, val) {
+  const label = intimateFeatureLabels[key] || '设置'
+  try {
+    await updateFeatureFlag(key, val)
+    toastFn?.(val ? `已开启${label}` : `已关闭${label}`, 'success')
+  } catch (err) {
+    features[key] = !val
+    toastFn?.(`${label}保存失败：${err.message || '未知错误'}`, 'error')
+  }
+}
+
+// ── 深度思考（测试版）：开关在 settings store 持久化，聊天页实时读取 ──
+const deepThinkMode = computed(() => settingsStore.deepThinkMode)
+function onDeepThinkChange(v) {
+  settingsStore.setDeepThinkMode(v)
+}
+
+// 滑块松手时触发，持久化到后端并更新 features
+async function onFreqChange() {
+  const v = freqSlider.value
+  features.proactiveChatFreq = v
+  try { await updateProactiveFreq(v) } catch { /* 非关键 */ }
+}
+
+async function onEventFreqChange() {
+  const v = eventFreqSlider.value
+  features.eventFreq = v
+  try { await updateEventFreq(v) } catch { /* 非关键 */ }
+}
+
+async function onMomentFreqChange() {
+  const step = MOMENT_FREQ_STEPS[momentFreqStepIdx.value]
+  if (!step) return
+  const v = step.value
+  features.momentFreq = v
+  features.momentFreqMode = step.mode || 'interval'
+  try {
+    await updateMomentFreq(v, features.momentFreqMode)
+    toastFn?.(v <= 0 ? '已关闭自动发帖' : `朋友圈频率已设为「${step.label}」`, 'success')
+  } catch (err) {
+    toastFn?.('保存失败: ' + (err?.message || '未知错误'), 'error')
+  }
+}
+
+// ── 防打扰模式 ──
+
+async function onDisturbModeToggle() {
+  try {
+    await updateDisturbMode(disturbMode.value)
+    features.disturbMode = disturbMode.value
+  } catch { /* 非关键 */ }
+}
+
+function openDisturbDialog() {
+  // 复制当前已保存的设置到弹窗副本
+  disturbDialog.startTime = disturbStartTime.value
+  disturbDialog.endTime = disturbEndTime.value
+  disturbDialog.characterIds = [...disturbCharacterIds.value]
+  disturbDialog.hideWorld = disturbHideWorld.value
+  disturbDialog.skipWeekends = disturbSkipWeekends.value
+  disturbDialog.show = true
+  // 按需加载角色列表
+  if (allCharacters.value.length === 0) {
+    loadAllCharacters()
+  }
+}
+
+function cancelDisturbDialog() {
+  disturbDialog.show = false
+}
+
+async function confirmDisturbDialog() {
+  try {
+    await updateDisturbSettings({
+      startTime: disturbDialog.startTime,
+      endTime: disturbDialog.endTime,
+      characterIds: [...disturbDialog.characterIds],
+      hideWorld: disturbDialog.hideWorld,
+      skipWeekends: disturbDialog.skipWeekends,
+    })
+    // 同步到外层状态
+    disturbStartTime.value = disturbDialog.startTime
+    disturbEndTime.value = disturbDialog.endTime
+    disturbCharacterIds.value = [...disturbDialog.characterIds]
+    disturbHideWorld.value = disturbDialog.hideWorld
+    disturbSkipWeekends.value = disturbDialog.skipWeekends
+    disturbDialog.show = false
+  } catch (err) {
+    console.error('[disturb] save failed:', err)
+  }
+}
+
+function toggleDisturbDialogChar(id) {
+  const idx = disturbDialog.characterIds.indexOf(id)
+  if (idx >= 0) {
+    disturbDialog.characterIds.splice(idx, 1)
+  } else {
+    disturbDialog.characterIds.push(id)
+  }
+}
+
+// ── 天气城市设置 ──
+
+function openWeatherCityDialog() {
+  weatherCityDialog.city = weatherCity.value
+  weatherCityDialog.show = true
+}
+
+async function confirmWeatherCity() {
+  try {
+    await updateWeatherCity(weatherCityDialog.city || '')
+    weatherCity.value = weatherCityDialog.city
+    settingsStore.setWeatherCity(weatherCity.value)
+    weatherCityDialog.show = false
+  } catch (err) {
+    console.error('[weather] save city failed:', err)
+  }
+}
+
+async function loadAllCharacters() {
+  try {
+    const data = await listCharacters()
+    allCharacters.value = data.characters || []
+  } catch { /* 非关键 */ }
+}
+
+// ── 测试画风 ──
+const testMode = ref('chat')
+const testModes = [
+  { value: 'chat', label: '对话参数' },
+  { value: 'moments', label: '朋友圈参数' },
+  { value: 'event', label: '奇遇参数' },
+]
+const styleTesting = ref(false)
+const styleError = ref('')
+const styleImages = ref([])
+// 两阶段提示词（上游 v3.9.0 契约）：先 preparing（LLM 完善中），再 generating（生图中）。
+// 后端通过 testStyle 的 onPrompt 回调在最终结果到达前就把提示词推给前端，所以失败/中断时
+// 已经产出的提示词也不该丢——这条链路是「提示词可见」而不是「出图计时」。
+const styleStage = ref('prompt')
+// 当前展示的 prompting 是否已经过完善（决定重生成时要不要再走一遍 LLM 合并）
+const generatedPromptPrepared = ref(true)
+const styleElapsed = ref(null)  // ms
+const styleTiming = ref(null)  // { comfyui_ms, download_ms, overhead_ms }
+const freeSceneDesc = ref('')  // 自由画面描述（LLM 完善提示词）
+const generatedPrompt = ref('')  // RAG 召回合并后的最终 prompt 展示
+const promptEditing = ref(false)  // prompt 展示框的点击编辑态
+const promptEditRef = ref(null)
+
+// 切换参数组后重新使用对应的默认提示词，避免沿用上一组的编辑结果。
+watch(testMode, () => {
+  generatedPrompt.value = ''
+  generatedPromptPrepared.value = true
+  promptEditing.value = false
+})
+
+function submitOnEnter(event, action) {
+  if (event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  action()
+}
+
+// 点击 prompt 框进入编辑：光标定位到末尾
+async function startPromptEdit() {
+  promptEditing.value = true
+  await nextTick()
+  promptEditRef.value?.focusToEnd()
+}
+// 画面描述框：收起态单行省略展示 ↔ 聚焦展开编辑
+const sceneDescFocused = ref(false)
+const sceneDescRef = ref(null)
+
+// 点击收起态的省略展示 → 展开编辑，光标到末尾
+function focusSceneDesc() {
+  sceneDescRef.value?.focusToEnd()
+}
+function onSceneDescFocus() {
+  sceneDescFocused.value = true
+}
+
+// 失焦后组件自动回到单行
+function onSceneDescBlur() {
+  sceneDescFocused.value = false
+}
+
+const hireTesting = ref(false)
+const hiresError = ref('')
+const hiresCompare = ref(null)
+
+// ── 工作流 ──
+const BASE_WORKFLOW_MODE_OPTIONS = [
+  { value: 'turbo', label: 'turbo', desc: '只用 Anima_turbo 模型，<span class="wf-mo-highlight">速度提升300%+</span>，但代价是构图能力下降，画师串影响略微下降' },
+  { value: 'base', label: 'base', desc: '只用 Anima_base 模型，泛用性最强的基底模型，构图能力强，画师串遵循强，速度较慢' },
+  { value: 'hybrid', label: 'base+turbo', desc: 'turbo + base，切换时需要加载模型导致首图较慢' },
+]
+// 自定义工作流卡片：仅当 workflow 目录里存在可选工作流时才出现（上游 v3.10.0）
+const CUSTOM_WORKFLOW_MODE_OPTION = {
+  value: 'custom',
+  label: '自定义',
+  desc: '使用上游自带的生图工作流，或你自己放进 workflow 目录的工作流，所有生图场景统一生效（角色专属工作流仍优先）',
+}
+// 放大细化工作流由 HiresFix 单独管理，不作为生图工作流选项
+const NON_GENERATION_WORKFLOWS = ['放大细化工作流.json', '放大细化工作流-进阶.json']
+
+const sceneOptions = [
+  { key: 'chat', label: '私聊' },
+  { key: 'group', label: '群聊' },
+  { key: 'moments', label: '朋友圈' },
+  { key: 'events', label: '奇遇' },
+  { key: 'schedule', label: '日程' },
+  { key: 'mailbox', label: '信箱' },
+]
+
+const workflowMode = ref('turbo')
+const workflowScene = ref({ chat: 'turbo', group: 'base', moments: 'base', events: 'base', schedule: 'base', mailbox: 'base' })
+const workflowCustomTemplate = ref('')
+const customWorkflowList = ref([])
+const customWorkflowLoading = ref(false)
+const wfResetting = ref(false)
+const wfSaving = ref(false)
+const showWfModeDialog = ref(false)
+
+const workflowModeOptions = computed(() => customWorkflowList.value.length > 0
+  ? [...BASE_WORKFLOW_MODE_OPTIONS, CUSTOM_WORKFLOW_MODE_OPTION]
+  : BASE_WORKFLOW_MODE_OPTIONS)
+// 内置生图工作流也在这份列表里（后端 builtin: true）—— 「自定义」开箱即可选，不用先自备文件
+const customWorkflowOptions = computed(() => customWorkflowList.value.map(w => ({
+  value: w.filename,
+  label: w.builtin ? `${w.label}（内置）` : w.label,
+})))
+
+// 弹窗草稿状态
+const wfModeDraft = ref('turbo')
+const wfSceneDraft = ref({ chat: 'turbo', group: 'base', moments: 'base', events: 'base', schedule: 'base', mailbox: 'base' })
+const wfCustomDraft = ref('')
+
+async function fetchCustomWorkflows() {
+  customWorkflowLoading.value = true
+  try {
+    const data = await getWorkflows()
+    customWorkflowList.value = (data.workflows || [])
+      .filter(w => !NON_GENERATION_WORKFLOWS.includes(w.filename))
+  } catch {
+    customWorkflowList.value = []
+  } finally {
+    customWorkflowLoading.value = false
+  }
+}
+
+function openWfModeDialog() {
+  wfModeDraft.value = workflowMode.value
+  wfSceneDraft.value = { ...workflowScene.value }
+  wfCustomDraft.value = workflowCustomTemplate.value
+  showWfModeDialog.value = true
+  // 每次打开都重新拉取：workflow 目录新增文件后不用刷新页面
+  fetchCustomWorkflows()
+}
+
+async function saveWfModeDialog() {
+  if (wfModeDraft.value === 'custom' && !wfCustomDraft.value) {
+    toastFn?.('请先选择一个自定义工作流', 'warning')
+    return
+  }
+  wfSaving.value = true
+  try {
+    const modeChanged = wfModeDraft.value !== workflowMode.value
+    const sceneChanged = JSON.stringify(wfSceneDraft.value) !== JSON.stringify(workflowScene.value)
+    const customChanged = wfCustomDraft.value !== workflowCustomTemplate.value
+
+    if (modeChanged || customChanged) await updateWorkflowMode(wfModeDraft.value, wfCustomDraft.value)
+    if (sceneChanged || modeChanged) await updateWorkflowScene({ ...wfSceneDraft.value })
+
+    workflowMode.value = wfModeDraft.value
+    workflowScene.value = { ...wfSceneDraft.value }
+    workflowCustomTemplate.value = wfCustomDraft.value
+    showWfModeDialog.value = false
+  } catch {} finally { wfSaving.value = false }
+}
+
+async function doWorkflowReset2() {
+  const ok = await confirmFn({
+    title: '重置工作流',
+    message: '将用内置模板覆盖现有的\n制图工作流.json 和 制图工作流-pro.json',
+    okText: '重置',
+  })
+  if (!ok) return
+  wfResetting.value = true
+  try {
+    await restoreWorkflow()
+  } catch {} finally { wfResetting.value = false }
+}
+
+// Lightbox
+const lightboxVisible = ref(false)
+const lightboxIndex = ref(0)
+const lightboxImgs = computed(() => styleImages.value.map(i => i.base64))
+
+function openLightbox(index) {
+  lightboxIndex.value = index
+  lightboxVisible.value = true
+}
+
+function formatElapsed(ms) {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  const min = Math.floor(ms / 60000)
+  const sec = ((ms % 60000) / 1000).toFixed(0)
+  return `${min}min ${sec}s`
+}
+
+async function executeStyleTest({ prompt = '', sceneDesc = '', reuseSceneLoras = false, alreadyPrepared = false } = {}) {
+  styleTesting.value = true
+  styleStage.value = sceneDesc ? 'prompt' : alreadyPrepared ? 'generating' : 'preparing'
+  styleError.value = ''
+  styleImages.value = []
+  styleElapsed.value = null
+  styleTiming.value = null
+  promptEditing.value = false
+
+  try {
+    const isMoments = testMode.value === 'moments'
+    const isEvent = testMode.value === 'event'
+    const result = await testStyle({
+      artist: isMoments ? form.value.momentsArtist : isEvent ? form.value.eventArtist : form.value.artist,
+      width: isMoments ? form.value.momentsWidth : isEvent ? form.value.eventWidth : form.value.width,
+      height: isMoments ? form.value.momentsHeight : isEvent ? form.value.eventHeight : form.value.height,
+      mode: testMode.value,
+      prompt,
+      sceneDesc,
+      reuseSceneLoras,
+      alreadyPrepared,
+    }, {
+      // 流式回调：最终结果还没回来就先展示提示词（跨字节分块由 api 层负责拼）
+      onPrompt: ({ generatedPrompt: text, stage }) => {
+        generatedPrompt.value = text
+        generatedPromptPrepared.value = stage === 'generating'
+        styleStage.value = stage
+      },
+    })
+    if (result.generatedPrompt) {
+      generatedPrompt.value = result.generatedPrompt
+      if (result.success) generatedPromptPrepared.value = true
+    }
+    if (result.elapsed != null) styleElapsed.value = result.elapsed
+    if (result.timing) styleTiming.value = result.timing
+    if (result.success && result.images?.length > 0) {
+      styleImages.value = result.images
+    } else {
+      styleError.value = result.error || `生成失败，请检查${imageProvider.value === 'novelai' ? ' NovelAI' : ' ComfyUI'} 连接`
+    }
+  } catch (err) {
+    styleError.value = '请求失败: ' + (err.message || '网络错误')
+  } finally {
+    styleTesting.value = false
+    // 收尾把阶段落回生成态：提示词已经确定，后面只等图片
+    if (styleStage.value !== 'prompt') styleStage.value = 'generating'
+  }
+}
+
+function runStyleTest() {
+  if (styleTesting.value) return
+  // 中间的最终提示词优先；与编辑框回车共用入口，不依赖上方自由描述是否为空。
+  if (generatedPrompt.value.trim()) {
+    return runGeneratedPromptTest()
+  }
+  generatedPrompt.value = ''
+  return executeStyleTest({ prompt: testPrompts.value[testMode.value] || '' })
+}
+
+// 自由画面描述 → 后端分层 LLM 链路完善提示词后生图
+function runFreeSceneTest() {
+  const desc = freeSceneDesc.value.trim()
+  if (!desc || styleTesting.value) return
+  generatedPrompt.value = ''
+  return executeStyleTest({ sceneDesc: desc })
+}
+
+// 最终 prompt 已包含 RAG 合并结果；按钮或回车重生成时跳过重复合并
+function runGeneratedPromptTest() {
+  const prompt = generatedPrompt.value.trim()
+  if (!prompt || styleTesting.value) return
+  return executeStyleTest({
+    prompt,
+    reuseSceneLoras: Boolean(freeSceneDesc.value.trim()),
+    alreadyPrepared: generatedPromptPrepared.value,
+  })
+}
+
+async function runHiresTest() {
+  hireTesting.value = true
+  hiresError.value = ''
+  hiresCompare.value = null
+  try {
+    const result = await testHires()
+    if (result.success && result.original && result.refined) {
+      hiresCompare.value = { original: result.original, refined: result.refined, elapsed: result.elapsed }
+    } else {
+      hiresError.value = result.error || '测试细化失败，请检查 ComfyUI 连接'
+    }
+  } catch (err) {
+    hiresError.value = '请求失败: ' + (err.message || '网络错误')
+  } finally {
+    hireTesting.value = false
+  }
+}
+
+// ── 测试提示词编辑器 ──
+const TEST_PROMPTS_KEY = 'test-style-prompts'
+const DEFAULT_TEST_PROMPTS = {
+  chat: `Hatsune Miku (VOCALOID), 1girl, close-up shot, teal twin-tailed hair, blue eyes, black school uniform with tie, holding a fork, looking happily at a matcha mille crepe cake on a white plate, matcha latte with musical note latte art beside it, soft natural lighting, shallow depth of field, cafe background with wooden tables, warm and cozy atmosphere, 1girl, teal-haired Hatsune Miku smiling while eating matcha cake`,
+  moments: `2girls, Kiana Kaslana(honkai impact 3rd), white hair in twin braids, blue eyes, wearing a casual outfit, sitting at a cozy café table with a giant strawberry cake in front of her, laughing joyfully. Raiden Mei(honkai impact 3rd) is sitting across from her, smiling softly, two pudding cups on the table. Warm afternoon sunlight streaming through the window, soft bokeh, cute and heartwarming atmosphere, anime style, high quality illustration.`,
+  event: `Yae Miko (Genshin Impact), long pink hair in a high ponytail, M-shaped bangs, purple fox-like eyes with a sly expression, wearing a red and white shrine maiden outfit with exposed side breast, lying on a futon in the Grand Narukami Shrine's private sleeping quarters. She is half-asleep, one hand loosely holding a closed light novel on her chest, the other tucked under her cheek. Her posture is relaxed, legs slightly bent, bare feet peeking out from under the thin silk blanket. Around her, soft lantern light casts warm shadows on tatami mats, a half-eaten plate of fried tofu sits on a low wooden tray nearby, and a faint smile plays on her lips as she drifts into peaceful slumber. Camera angle: slightly elevated, looking down from a 45-degree angle, capturing her serene yet mischievous aura in the dim, cozy chamber.`,
+}
+
+function loadTestPrompts() {
+  try {
+    const raw = localStorage.getItem(TEST_PROMPTS_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return { ...DEFAULT_TEST_PROMPTS }
+}
+
+const testPrompts = ref(loadTestPrompts())
+const showPromptEditor = ref(false)
+
+function openPromptEditor() {
+  showPromptEditor.value = true
+}
+
+function saveTestPrompts() {
+  localStorage.setItem(TEST_PROMPTS_KEY, JSON.stringify(testPrompts.value))
+  showPromptEditor.value = false
+}
+
+function resetTestPrompts() {
+  testPrompts.value = { ...DEFAULT_TEST_PROMPTS }
+}
+
+</script>
+
+<style scoped>
+.settings-view { padding: 32px; overflow-y: auto; height: 100vh; height: 100dvh; flex: 1; }
+.page-header {
+  margin-bottom: 28px;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+  /* will-change 让标题栏自成层叠上下文，「有更新噢」弹层的 z-index 被封在里面，
+     默认（auto）会被下面的 .card 整块盖住 —— 给标题栏正层级，弹层才盖得住卡片 */
+  position: relative;
+  z-index: 20;
+}
+.page-header.header-hidden { transform: translateY(-200%); margin-bottom: 0; }
+.page-header h2 { font-size: 24px; color: var(--text-bright); font-weight: 700; }
+.is-clickable { cursor: pointer; }
+.header-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.hint { font-size: 13px; color: var(--text-secondary); }
+
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.memory-settings-card { gap: 0; }
+
+/* ── 程序时间（面板自带皮肤，这里只负责与卡片头的间距） ── */
+.time-control-card .memory-settings-header { margin-bottom: 12px; }
+
+/* ── 数据备份（一键导出 / 一键导入） ── */
+.data-backup-card .toggle-row { border-bottom: none; }
+.data-backup-info {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 2px;
+}
+.data-backup-info-label { font-size: 12px; color: var(--text-secondary); flex-shrink: 0; }
+.data-backup-info-text {
+  font-size: 13px;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+.data-backup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 14px;
+}
+.data-backup-tip {
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.data-backup-notice {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  word-break: break-all;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-primary);
+}
+.data-backup-notice.is-success {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  color: var(--success);
+}
+.data-backup-notice.is-error {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--danger);
+}
+/* 导入结果提示的出现 / 消失：与全局口径一致的 0.3s 淡入淡出 */
+.backup-notice-fade-enter-active,
+.backup-notice-fade-leave-active {
+  transition: opacity 0.3s var(--ease-standard);
+}
+.backup-notice-fade-enter-from,
+.backup-notice-fade-leave-to { opacity: 0; }
+/* 隐藏的文件选择器：不进布局、不进 tab 序列（可点入口是旁边的 LinsheButton） */
+.data-backup-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.data-backup-modal-line {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.75;
+  margin: 0 0 8px;
+}
+.data-backup-modal-line code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text-bright);
+}
+.data-backup-modal-size { color: var(--text-secondary); font-size: 12px; }
+.maibot-settings-card .memory-settings-entry { margin-top: 14px; }
+.memory-settings-header h3 { margin-bottom: 4px; }
+.memory-settings-header p {
+  max-width: 560px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.memory-settings-copy { flex: 1; min-width: 0; }
+.memory-settings-row { margin-top: 6px; }
+.memory-settings-health { display: block; margin-top: 12px; }
+/* 入口卡片上直接列出"可配置项"，避免用户以为记忆只有开 / 关 */
+.memory-entry-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.memory-entry-tag {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  line-height: 1.7;
+}
+.memory-settings-entry {
+  width: 100%; min-height: 68px; margin-top: auto; padding: 12px 14px;
+  display: flex; align-items: center; gap: 12px;
+  color: var(--text-primary); text-align: left;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s var(--ease-out);
+}
+.memory-settings-entry:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: var(--shadow-sm), var(--shadow-hard-sm);
+  transform: translateY(-2px);
+}
+.memory-settings-entry:active { background: rgba(var(--accent-rgb), 0.16); }
+.memory-settings-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.memory-entry-icon {
+  width: 40px; height: 40px; flex: 0 0 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: 12px;
+}
+.memory-entry-icon svg,
+.memory-entry-arrow svg {
+  width: 20px; height: 20px;
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.memory-entry-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.memory-entry-title { color: var(--text-bright); font-size: 14px; font-weight: 600; line-height: 1.4; }
+.memory-entry-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
+.memory-entry-arrow {
+  width: 32px; height: 40px; flex: 0 0 32px;
+  display: inline-flex; align-items: center; justify-content: flex-end;
+  color: var(--text-secondary);
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+.memory-settings-entry:hover .memory-entry-arrow { color: var(--accent); transform: translateX(2px); }
+
+/* ── 保存为 Primary，工作流操作为 Secondary ── */
+.comfy-params-card .sa { gap: 10px; }
+.wf-action-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 14px; font-size: 12px; font-weight: 500;
+  white-space: nowrap;
+}
+.float-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  background: rgba(var(--accent-rgb), 0.10); color: var(--accent); margin-left: 4px;
+  white-space: nowrap;
+}
+.float-badge.active { background: rgba(var(--accent-rgb), 0.14); color: var(--accent); }
+
+/* ── 卡片：视觉样式走全局 .card，这里只保留布局 ── */
+.card {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+.card-full { grid-column: 1 / -1; margin-top: 16px; }
+.card h3 { font-size: 15px; color: var(--text-bright); margin-bottom: 12px; font-weight: 600; }
+.fl { font-size: 13px; font-weight: 600; color: var(--text-bright); display: block; margin-bottom: 2px; }
+.fd { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.fi { margin-bottom: 14px; }
+.prompt-editor-field { margin-bottom: 16px; }
+.prompt-textarea { min-height: 100px; margin-bottom: 0; }
+/* ── 画师串参数卡：轻量 Tab + 紧凑表单节奏 ── */
+.comfy-params-card { padding: 22px; }
+.comfy-params-card h3 { margin-bottom: 18px; }
+.comfy-params-card .fd { margin-bottom: 14px; line-height: 1.55; }
+.comfy-params-card .fr { margin-bottom: 18px; }
+.comfy-params-card .fpresets { margin: 0 0 24px; }
+
+.comfy-form-stage {
+  overflow: hidden;
+  position: relative;
+}
+/* ── Tab 切换过渡：0.25s 纯淡入淡出 ── */
+.tab-slide-forward-enter-active,
+.tab-slide-forward-leave-active,
+.tab-slide-back-enter-active,
+.tab-slide-back-leave-active {
+  transition: opacity 0.25s ease;
+}
+.tab-slide-forward-enter-from,
+.tab-slide-forward-leave-to,
+.tab-slide-back-enter-from,
+.tab-slide-back-leave-to {
+  opacity: 0;
+}
+
+.gen-error { margin-top: 6px; font-size: 12px; color: var(--danger, #ff4d4f); }
+.fr { display: flex; gap: 12px; }
+.fh { flex: 1; min-width: 0; }
+.fr .fl {
+  display: block; margin-bottom: 6px;
+  font-size: 14px; font-weight: 600; color: var(--text-bright);
+}
+.fpresets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.fpresets-head {
+  display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: 2px 10px; margin-bottom: 6px;
+}
+.resolution-title {
+  font-size: 14px; font-weight: 600; color: var(--text-bright);
+}
+.resolution-hint {
+  font-size: 12px; color: var(--text-secondary);
+}
+/* ── 全局细化 / HiresFix 独立层级 ── */
+.hiresfix-section {
+  margin: 8px 0 0; padding: 16px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.hiresfix-header {
+  display: flex; align-items: baseline;
+  justify-content: space-between; margin-bottom: 10px;
+}
+.hiresfix-title {
+  font-size: 14px; font-weight: 600; color: var(--text-bright);
+}
+.hiresfix-tag {
+  font-size: 12px; font-weight: 500; color: var(--text-secondary);
+  background: var(--bg-tertiary); border-radius: 8px; padding: 3px 9px;
+}
+.hiresfix-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.hiresfix-copy { flex: 1; min-width: 200px; }
+.hiresfix-desc {
+  font-size: 12px; color: var(--text-secondary); margin-top: 2px;
+}
+/* ── turbo 参数开关行（与上一行同区，靠上边框分隔）── */
+.hiresfix-quality-tabs { flex-shrink: 0; }
+.hiresfix-turbo-row {
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  align-items: flex-start;
+}
+.hiresfix-turbo-title { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+.hiresfix-summary { font-size: 12px; color: var(--text-secondary); }
+.hiresfix-link, .quality-link {
+  font-size: 13px;
+}
+/* ── 质量提示词 ── */
+.quality-section {
+  margin: 0 0 20px; padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.quality-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.quality-row + .quality-row { margin-top: 14px; }
+.quality-copy { flex: 1; min-width: 180px; }
+.quality-subtitle { font-size: 13px; font-weight: 700; color: var(--text-bright); }
+.quality-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.quality-summary {
+  font-size: 12px; color: var(--text-secondary);
+  /* 桌面端压缩摘要宽度：flex 换行按 max-width 参与分配，太宽会把摘要挤到第二行 */
+  max-width: 200px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quality-summary.is-default { color: var(--text-secondary); }
+.pl { font-size: 12px; color: var(--text-secondary); margin-right: 2px; }
+.pbtn {
+  display: inline-flex; align-items: center; height: 30px; padding: 0 12px;
+  font-size: 12px;
+}
+.cb { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); margin: -6px 0 12px; cursor: pointer; user-select: none; }
+.cb input { width: 14px; height: 14px; cursor: pointer; }
+
+/* ── 外部链接高亮 ── */
+.ext-link {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 500;
+  transition: color 0.15s;
+}
+.ext-link:hover { color: var(--accent-text); }
+
+/* ── 画师串收藏夹：输入框一体 + 轻量文字标签 ── */
+.fav-input-row {
+  display: flex; align-items: center; gap: 2px;
+  padding: 0 4px 0 12px; margin-bottom: 8px;
+  background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.fav-input-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.10);
+}
+.fav-input {
+  flex: 1; min-width: 0; height: 38px; padding: 0; margin: 0;
+  font-size: 13px; background: transparent; border: none; box-shadow: none;
+}
+.fav-input:focus { box-shadow: none; }
+.fav-star-btn {
+  width: 34px; height: 34px; flex-shrink: 0; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--text-secondary);
+  font-size: 16px; line-height: 1; cursor: pointer;
+  transition: color 0.15s ease;
+  user-select: none;
+}
+.fav-star-btn:hover:not(.is-disabled) { color: #E2A83E; }
+.fav-star-btn.is-disabled { opacity: 0.35; cursor: not-allowed; }
+.fav-section-title {
+  font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;
+}
+.fav-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px;
+}
+.fav-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 10px; font-size: 14px;
+}
+.fav-chip-x {
+  font-size: 12px; line-height: 1; color: var(--text-secondary);
+}
+.fav-chip-x:hover { color: var(--accent); }
+
+.sa { display: flex; align-items: center; gap: 12px; margin-top: auto; }
+.sa-spacer { flex: 1; }
+.smsg { color: var(--success); font-size: 13px; }
+
+.toggle-row { display: flex; gap: 14px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--glass-border); }
+.toggle-row:last-child { border-bottom: none; }
+/* 动作出图档位：窄屏让三档换到下一行，别把说明文字挤成一列 */
+.touch-image-mode-row { flex-wrap: wrap; }
+.touch-image-mode-tabs { flex-shrink: 0; }
+/* 围观插话概率：滑块撑满，右侧百分比定宽不跳 */
+.bystander-row { display: flex; align-items: center; gap: 12px; padding: 0 0 14px; }
+.bystander-slider { flex: 1; min-width: 0; }
+.bystander-value { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; color: var(--text-secondary); }
+.tl { font-size: 14px; font-weight: 500; color: var(--text-bright); }
+/* 测试版小标签：珊瑚描边弱强调 */
+.beta-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--accent-text);
+  border: 1px solid var(--accent-light);
+  vertical-align: 1px;
+}
+.td { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+/* ── 反重复与话题推进（专题·车轱辘话与钻牛角尖 · 阶段一）──
+   只做本卡内部排版，控件皮肤一律走 Linshe 组件与既有 token，不覆盖组件样式 */
+.anti-rep-card .anti-rep-penalty {
+  display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between; align-items: flex-start;
+  padding: 14px 0 0; margin-top: 2px; border-top: 1px solid var(--glass-border);
+}
+.anti-rep-card .anti-rep-penalty-copy { flex: 1 1 260px; min-width: 220px; }
+.anti-rep-card .anti-rep-penalty-inputs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.anti-rep-field { display: flex; flex-direction: column; gap: 4px; }
+.anti-rep-field-label { font-size: 11px; color: var(--text-secondary); }
+.anti-rep-card .anti-rep-input { width: 92px; }
+
+.freq-control {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+.freq-control input[type="range"] {
+  border: none;
+  width: 100px; accent-color: var(--accent);
+  -webkit-appearance: none; appearance: none;
+  background: transparent;
+}
+.freq-control input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px; background: #ffffff;box-shadow: 0 0 2px 1px lightcoral;
+}
+.freq-control input[type="range"]::-moz-range-track {
+  height: 4px; border-radius: 2px; background: #fff;
+}
+.freq-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); margin-top: -6px; cursor: pointer;
+}
+.freq-control input[type="range"]::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: none; cursor: pointer;
+}
+.freq-val {
+  font-size: 14px; font-weight: 600; color: var(--accent-text); min-width: 28px; text-align: right;
+}
+
+/* ── 防打扰模式 ── */
+.disturb-setup-btn {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid transparent;
+  cursor: pointer; transition: all 0.2s ease;
+  display: flex; align-items: center; justify-content: center;
+  margin-right: 6px; flex-shrink: 0;
+  font-size: 17px; line-height: 1;
+}
+.disturb-setup-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: rotate(60deg);
+}
+
+/* ── 防打扰内容（窗体由 LinsheModal 提供） ── */
+.form-dialog-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+.disturb-dialog-section { margin-bottom: 18px; flex-shrink: 0; }
+.disturb-dialog-section.disturb-char-scroll {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  margin-bottom: 0;
+}
+.disturb-dialog-label {
+  font-size: 14px; font-weight: 600; color: var(--text-bright);
+}
+.disturb-dialog-hint {
+  font-size: 12px; color: var(--text-secondary); margin: 4px 0 10px;
+}
+.disturb-time-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.disturb-time-input {
+  font-size: 14px;
+  width: 130px;
+}
+.disturb-time-sep { color: var(--text-secondary); }
+.disturb-no-chars {
+  font-size: 13px; color: var(--text-secondary); margin: 8px 0;
+}
+.disturb-char-grid {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  overflow-y: auto; flex: 1; min-height: 0;
+  align-content: flex-start;
+}
+.disturb-char-chip {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 12px; border-radius: 12px;
+  border: 2px solid transparent;
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  min-width: 70px;
+}
+.disturb-char-chip:hover {
+  border-color: var(--border);
+  background: var(--bg-hover);
+}
+.disturb-char-chip.selected {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+.disturb-char-avatar {
+  width: 42px; height: 42px; border-radius: 50%;
+  background-size: cover; background-position: center;
+  border: 2px solid transparent;
+  transition: border-color 0.15s;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 13px; font-weight: 700;
+  user-select: none;
+}
+.disturb-char-chip.selected .disturb-char-avatar {
+  border-color: var(--accent);
+}
+.disturb-char-name {
+  font-size: 12px; color: var(--text-secondary); text-align: center;
+  max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.disturb-char-chip.selected .disturb-char-name {
+  color: var(--accent); font-weight: 500;
+}
+.disturb-dialog-toggles {
+  padding-top: 10px; border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.disturb-option-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0;
+  cursor: pointer; user-select: none;
+  flex-wrap: wrap;
+}
+.disturb-option-label {
+  font-size: 13px; font-weight: 500; color: var(--text-bright);
+}
+.disturb-option-hint {
+  flex: 1; min-width: 140px; font-size: 12px; color: var(--text-secondary);
+}
+.sr { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }
+.image-connection-card { gap: 8px; }
+.novelai-relay-entry-row { justify-content: flex-end; }
+.image-provider-tabs { margin-bottom: 4px; }
+.image-connection-fields { min-width: 0; }
+.image-connection-fields .fd { margin-bottom: 8px; line-height: 1.5; }
+.novelai-model-row { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 14px; }
+.novelai-model-select { flex: 1; min-width: 0; }
+.novelai-api-mode-row { display: flex; align-items: center; gap: 12px; min-width: 0; margin: 8px 0; }
+.novelai-api-mode-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: 0 0 100px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.novelai-api-url { flex: 1; min-width: 0; }
+.novelai-model-hint { margin: -4px 0 6px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.novelai-resolution-field { min-width: 0; margin: 10px 0; }
+.novelai-steps-field { min-width: 0; margin: 10px 0; }
+.novelai-param-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.novelai-param-field { min-width: 0; }
+.novelai-slider-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.novelai-slider-heading > span { min-width: 32px; color: var(--text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.novelai-setting-label { display: block; margin: 0 0 6px; color: var(--text-secondary); font-size: 12px; }
+.novelai-dimensions-row { margin-bottom: 8px; }
+.novelai-resolution-presets { margin-bottom: 8px; }
+.conn-switch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 8px 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45;
+}
+.conn-key-hint {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin: -2px 0 4px; color: var(--text-secondary); font-size: 11px; line-height: 1.45;
+}
+.conn-health-hint { color: var(--text-secondary); font-size: 11px; }
+.sd { width: 9px; height: 9px; border-radius: 50%; }
+.sd.on { background: var(--success); }
+.sd.off { background: var(--danger); }
+
+.sp-btn-small { padding:6px 14px; font-size:12px; margin-right:6px; }
+
+/* ── LLM API ── */
+.apikey-row { display: flex; gap: 8px; align-items: center; }
+.apikey-row .fi { flex: 1; min-width: 0; }
+.key-status { margin-top: 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.key-ok { color: #24682a; }   /* --success(#52c41a) 在白底上只有 1.9:1；#24682a 约 5.2:1 */
+.key-missing { color: var(--danger); padding: 6px 10px; border-radius: 6px; background: rgba(255, 77, 79, 0.06); }
+.key-preview { font-size: 12px; padding: 2px 8px; border-radius: 4px; background: var(--glass-bg-strong); border: 1px solid var(--glass-border); color: var(--text-secondary); cursor: pointer; transition: border-color 0.15s; }
+.key-preview:hover { border-color: var(--accent); }
+
+/* ── 每日免费鸡蛋（LLM 卡片右上角按钮） ── */
+.llm-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+/* LLM 卡片首屏：简易向导形态下给它更多存在感（上游 v3.10.0） */
+.llm-card-first { border-color: var(--accent, #d9a441); }
+.llm-setup-intro-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.llm-setup-intro-actions { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.llm-card-header h3 { margin-bottom: 0; }
+.free-egg-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 13px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 2px solid rgba(250, 204, 21, 0.45);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  white-space: nowrap;
+  position: relative;
+}
+.free-egg-btn:hover:not(.is-disabled) { border-color: #facc15; background: rgba(250, 204, 21, 0.08); color: #facc15; }
+.free-egg-btn.active { border-color: #facc15; background: rgba(250, 204, 21, 0.16); color: #facc15; }
+.free-egg-btn.is-disabled { opacity: 0.6; cursor: wait; }
+.free-egg-label { position: relative; z-index: 3; }
+
+/* ── 推荐中转站入口与弹窗 ── */
+.relay-intro-btn {
+  padding: 0; border: none; background: none;
+  font-size: 12px; font-weight: 500; color: var(--accent-text);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+.relay-intro-btn:hover { color: var(--accent-text); }
+.relay-intro-footer { margin-left: auto; }
+.relay-modal-tip { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; }
+.relay-station {
+  border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px;
+  background: var(--bg-secondary);
+}
+.relay-station-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px;
+}
+.relay-station-name { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+.relay-quick-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.relay-quick-icon { flex-shrink: 0; }
+.relay-station-desc {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin: 0 0 10px;
+}
+.relay-station-line {
+  font-size: 12px; color: var(--text-secondary); margin: 4px 0; line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.relay-station-link { overflow-wrap: anywhere; }
+.relay-sponsor-note {
+  margin: 4px 0 0; text-align: right; font-size: 11px;
+  color: var(--text-muted, #b3aca4); opacity: 0.55;
+}
+.relay-sponsor-note strong { font-weight: 600; color: var(--text-muted, #b3aca4); }
+@media (max-width: 640px) {
+  .relay-station-head { align-items: flex-start; }
+  .novelai-api-mode-toggle { flex-basis: 120px; }
+}
+
+/* LLM API 面板切换：退出淡出上收，进入弹性下压 */
+.egg-page-leave-active { transition: opacity 0.16s ease, transform 0.18s ease; }
+.egg-page-enter-active { transition: opacity 0.22s ease, transform 0.38s cubic-bezier(0.2, 0.9, 0.3, 1.25); }
+.egg-page-leave-to { opacity: 0; transform: translateY(-8px) scale(0.995); }
+.egg-page-enter-from { opacity: 0; transform: translateY(14px) scale(0.98); }
+.egg-splash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.egg-drop {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--size);
+  height: calc(var(--size) * 1.35);
+  margin: calc(var(--size) * -0.675) 0 0 calc(var(--size) * -0.5);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.95) 0 10%, var(--color) 42%, rgba(190, 118, 10, 0.9) 100%);
+  box-shadow: 0 0 6px rgba(255, 190, 40, 0.5);
+  animation: egg-drop-fly var(--dur) cubic-bezier(0.14, 0.62, 0.36, 1) var(--delay) both;
+}
+@keyframes egg-drop-fly {
+  0% { transform: translate(0, 0) rotate(var(--rot)) scale(0.15, 0.15); opacity: 0; }
+  8% { opacity: 1; }
+  32% { transform: translate(var(--mx), var(--my)) rotate(var(--rot)) scale(0.85, 1.45); }
+  68% { transform: translate(var(--x), var(--y)) rotate(var(--rot)) scale(0.6, 0.9); opacity: 0.95; }
+  100% { transform: translate(var(--x), calc(var(--y) + var(--fall))) rotate(var(--rot)) scale(1.3, 0.08); opacity: 0; }
+}
+.egg-shard {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--size) * 1.7);
+  height: var(--size);
+  margin: calc(var(--size) * -0.5) 0 0 calc(var(--size) * -0.85);
+  background: linear-gradient(135deg, #fffdf5 0%, #ead9b0 55%, #cbb177 100%);
+  clip-path: polygon(18% 0, 100% 28%, 84% 100%, 0 74%, 10% 22%);
+  box-shadow: inset 0 0 2px rgba(255, 255, 255, 0.75);
+  animation: egg-shard-fly var(--dur) cubic-bezier(0.18, 0.7, 0.28, 1) var(--delay) both;
+}
+@keyframes egg-shard-fly {
+  0% { transform: translate(0, 0) rotate(0deg) scale(0.2); opacity: 0; }
+  12% { opacity: 1; }
+  55% { transform: translate(var(--mx), var(--my)) rotate(calc(var(--rot) + 150deg)) scale(1.05); }
+  100% { transform: translate(var(--x), var(--y)) rotate(calc(var(--rot) + 290deg)) scale(0.5); opacity: 0; }
+}
+.free-egg-notice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  margin-top: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(250, 204, 21, 0.28);
+  background: rgba(250, 204, 21, 0.07);
+}
+.free-egg-icon { font-size: 30px; line-height: 1; flex-shrink: 0; }
+.free-egg-copy { min-width: 0; }
+.free-egg-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.free-egg-desc { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+.free-egg-hint { font-size: 11px; color: var(--text-secondary); opacity: 0.75; margin-top: 2px; }
+.llm-model-row { display: flex; align-items: stretch; gap: 8px; margin-bottom: 14px; }
+.llm-model-row .ls-select-wrapper { flex: 1; min-width: 0; }
+.model-fetch-btn {
+  min-width: 82px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.model-fetch-error { margin-top: -8px; margin-bottom: 14px; color: var(--danger); font-size: 12px; line-height: 1.5; }
+/* 上下文窗口：输入框已有 .fi 的底部留白，说明行只需贴住上一条 */
+.llm-context-window-hint { margin-top: -8px; margin-bottom: 14px; }
+.thinking-setting { min-width: 0; }
+.thinking-setting,
+.llm-custom-toggle,
+.llm-option-row { border-bottom: none; }
+.llm-custom-editor { padding: 4px 0 2px; }
+.llm-json-textarea { min-height: 72px; font-family: monospace; font-size: 12px; resize: vertical; }
+.llm-label { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+.llm-advanced-toggle {
+  display: flex; align-items: center; justify-content: flex-start; gap: 6px;
+  width: 100%; margin-top: 4px; padding: 12px 0 10px;
+  border: none; border-bottom: 1px solid var(--glass-border);
+  background: none; color: var(--text-bright);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+.llm-advanced-label { min-width: 0; }
+.llm-advanced-chevron { flex-shrink: 0; color: var(--text-secondary); transition: color 0.15s, transform 0.25s ease; }
+.llm-advanced-toggle:hover .llm-advanced-chevron { color: var(--accent); }
+.llm-advanced-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.llm-advanced-chevron.open { transform: rotate(180deg); }
+.llm-advanced-body { padding-top: 2px; }
+
+/* ── LLM Profile 切换 ── */
+.llm-profiles-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+.profile-item-row { display: flex; align-items: center; gap: 0; }
+.profile-tag {
+  padding: 4px 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-strong);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  border-radius: 8px;
+  font-family: inherit;
+  user-select: none;
+}
+.profile-item-row .profile-tag { border-radius: 0; }
+.profile-item-row .profile-tag:first-child { border-radius: 9999px 0 0 9999px; }
+.profile-item-row .profile-tag:last-child { border-radius: 0 9999px 9999px 0; }
+.profile-item-row .profile-tag:first-child:last-child { border-radius: 9999px; }
+.profile-item-row .profile-tag:first-child:not(:last-child) { padding-right: 8px; }
+.profile-item-row .profile-tag:last-child:not(:first-child) { padding-left: 6px; }
+.profile-tag:hover { border-color: var(--accent); color: var(--text-bright); }
+.profile-tag.active {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  font-weight: 600;
+}
+.profile-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  flex-shrink: 0;
+}
+.profile-delete-btn { padding: 4px 8px; min-width: unset; border: none; background: transparent; }
+.profile-delete-btn:hover { background: rgba(255, 77, 79, 0.08); }
+.profile-x { font-size: 14px; line-height: 1; color: var(--danger); }
+.profile-add { border-radius: 20px; border-style: dashed; color: var(--text-muted); }
+.profile-add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── 测试画风 ── */
+.style-test-row { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 12px; flex-wrap: wrap; }
+.free-scene-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.free-scene-input-wrap { position: relative; flex: 1; min-width: 0; }
+.free-scene-btn { margin: 0; flex-shrink: 0; }
+/* 生成提示词按钮：随输入内容渐入渐出 */
+.gen-btn-fade-enter-active, .gen-btn-fade-leave-active { transition: opacity 0.25s ease; }
+.gen-btn-fade-enter-from, .gen-btn-fade-leave-to { opacity: 0; }
+.generated-prompt-box {
+  padding: 10px 14px; margin-bottom: 12px; border-radius: 12px;
+  background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
+  color: var(--text-secondary); font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.generated-prompt-box.editable { cursor: text; transition: border-color 0.15s; }
+.generated-prompt-box.editable:hover { border-color: var(--accent); }
+.generated-prompt-editor {
+  resize: none; overflow: hidden; outline: none; font-family: inherit;
+  color: var(--text-bright); margin-bottom: 12px;
+}
+.generated-prompt-editor:focus { border-color: var(--accent); }
+.style-test-btn { margin: 0; }
+.test-prompt-btn {
+  margin-left: auto; padding: 0; font-size: 12px;
+}
+.style-error { padding: 8px 12px; border-radius: 8px; background: rgba(255, 77, 79, 0.06); color: var(--danger); font-size: 13px; margin-bottom: 12px; white-space: pre-wrap; line-height: 1.5; }
+.style-loading { display: flex; align-items: center; gap: 10px; padding: 12px 0; color: var(--text-secondary); font-size: 13px; }
+.style-spinner { width: 18px; height: 18px; border: 2px solid var(--glass-border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.style-result { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; align-items: flex-start; flex-direction: column; }
+.style-elapsed { font-size: 13px; color: var(--text-secondary); padding: 4px 10px; border-radius: 6px; background: var(--glass-bg-strong); border: 1px solid var(--glass-border); }
+.style-timing-breakdown { font-size: 12px; color: var(--text-muted, #999); }
+.style-timing-breakdown::before { content: ' '; }
+.style-preview-img { max-width: 480px; max-height: 480px; border-radius: 12px; border: 1px solid var(--glass-border); cursor: pointer; object-fit: contain; background: var(--glass-bg-strong); transition: transform 0.2s ease; }
+.style-preview-img:hover { transform: scale(1.03); }
+
+
+/* ── 移动端：卡片单列 + 间距收缩 ── */
+@media (max-width: 767px) {
+  .settings-view { padding: 16px; }
+  .page-header {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 8px 0; margin-bottom: 20px;
+  }
+  .settings-grid { grid-template-columns: 1fr; }
+  .novelai-param-row { grid-template-columns: 1fr; gap: 8px; }
+  .fr { flex-direction: column; gap: 10px; }
+  .style-preview-img { max-width: 100%; }
+  /* 自由画面测试：textarea 与按钮纵向堆叠，输入区占满卡片宽度 */
+  .free-scene-row { flex-direction: column; align-items: stretch; }
+  .free-scene-input-wrap { width: 100%; }
+  .free-scene-btn { width: 100%; }
+  /* 图片实验室操作区：生成画面/细化按钮占满一行，三个参数切换共占一行 */
+  .style-test-row .style-test-btn { width: 100%; }
+  .style-test-row .test-mode-segmented { flex: 1 1 0; }
+  .test-prompt-btn { margin-left: 0; }
+  /* 画师串操作按钮行：允许换行，避免挤压 */
+  .sa { flex-wrap: wrap; gap: 8px; }
+  .sa .sa-spacer { flex-basis: 100%; height: 0; margin: 0; }
+  .sa .wf-action-btn { flex: 1 1 0; justify-content: center; padding: 8px 6px; }
+  /* 质量提示词行：窄屏摘要占满整行 */
+  .quality-summary { max-width: 100%; flex-basis: 100%; order: 2; }
+  .quality-row .quality-link { order: 3; margin-left: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-settings-entry,
+  .memory-entry-arrow,
+  .thinking-option span,
+  .thinking-options::before { transition: none; }
+  .memory-settings-entry:hover .memory-entry-arrow { transform: none; }
+}
+
+/* ── 工作流模式弹窗 ── */
+.wf-mode-options {
+  display: flex; gap: 12px; margin-bottom: 16px;
+}
+.wf-mode-option {
+  flex: 1;
+  background: var(--bg-secondary);
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s;
+  display: flex; flex-direction: column; gap: 6px;
+  text-align: center;
+}
+.wf-mode-option:hover { border-color: var(--accent); }
+.wf-mode-option.active {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+.wf-mo-title {
+  font-size: 14px; font-weight: 600; color: var(--text-bright);
+}
+.wf-mo-desc {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.4;
+}
+.wf-mo-desc:deep(.wf-mo-highlight) {
+  color: var(--accent); font-weight: 700;
+}
+.wf-mode-downloads {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 4px;
+}
+.wf-mode-dl-hint {
+  font-size: 12px; color: var(--text-secondary); margin: 0 0 6px;
+}
+.wf-dl-item {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.8;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+}
+.wf-dl-label { font-weight: 500; color: var(--text-bright); min-width: 40px; }
+.wf-dl-item a { color: var(--accent); text-decoration: underline; }
+.wf-dl-item a:hover { color: var(--accent-hover, var(--accent)); }
+.wf-dl-sep { opacity: 0.4; margin: 0 2px; }
+.wf-dl-alt { opacity: 0.5; }
+.wf-mode-hint {
+  font-size: 12px; color: var(--text-secondary);
+  margin-bottom: 10px; text-align: center;
+}
+.wf-mode-scenes {
+  background: rgba(var(--accent-rgb), 0.04);
+  border: 1px solid rgba(var(--accent-rgb), 0.12);
+  border-radius: 8px; padding: 12px 16px;
+}
+.wf-scene-row-h {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0;
+}
+.wf-scene-row-h + .wf-scene-row-h { border-top: 1px solid var(--border); }
+.wf-scene-name {
+  font-size: 13px; color: var(--text-primary);
+}
+.wf-scene-toggle {
+  display: flex; gap: 4px;
+}
+.wf-toggle-btn {
+  padding: 3px 14px; font-size: 12px;
+}
+/* hybrid 场景展开/收起动画 */
+.expand-enter-active, .expand-leave-active {
+  transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease, border-width 0.3s ease;
+  overflow: hidden;
+}
+.expand-enter-from, .expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0; padding-bottom: 0;
+  border-top-width: 0; border-bottom-width: 0;
+}
+.expand-enter-to, .expand-leave-from {
+  max-height: 300px;
+  opacity: 1;
+}
+
+/* ── 界面主题（功能开关内）── */
+.theme-mode-row { align-items: flex-start; }
+.theme-mode-options { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; padding-top: 2px; }
+@media (max-width: 767px) {
+  .theme-mode-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .theme-mode-options { justify-content: flex-start; }
+}
+</style>
