@@ -1009,11 +1009,6 @@ export function buildConversationReactionPrompt({
     systemParts.push('- **群里还有人看着**：在 `reaction_text` 的**最后另起一行**，用 `[' + byName + ']: ` 前缀写一句她的插话（1 句、符合她的人设与此刻气氛，可以幸灾乐祸、可以起哄、也可以尴尬）；' +
     '  只有这一行是别人的台词，**别写别的旁观者**，也别让 `' + byName + '` 替她说话。没有旁人时不要写这一行。',);
   }
-  if (scene === 'group' && bystanderName) {
-    const byName = String(bystanderName).trim();
-    systemParts.push('- **群里还有人看着**：在 `reaction_text` 的**最后另起一行**，用 `[' + byName + ']: ` 前缀写一句她的插话（1 句、符合她的人设与此刻气氛，可以幸灾乐祸、可以起哄、也可以尴尬）；' +
-    '  只有这一行是别人的台词，**别写别的旁观者**，也别让 `' + byName + '` 替她说话。没有旁人时不要写这一行。',);
-  }
   if (recentSameAction && Number(recentSameAction.minutesAgo) <= 5) {
     systemParts.push('- 她**刚刚才**被这样摸过（' + Math.max(1, Math.round(Number(recentSameAction.minutesAgo))) + ' 分钟前）：这一下**回短一点**，别重复上一条的说法。');
   }

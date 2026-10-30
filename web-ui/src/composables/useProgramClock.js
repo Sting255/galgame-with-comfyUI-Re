@@ -21,6 +21,7 @@ import { getProgramTime } from '../api/timeControl.js'
 const offsetMs = ref(0)
 const loaded = ref(false)
 let inflight = null
+let retried = false
 
 async function ensureLoaded({ force = false } = {}) {
   if (loaded.value && !force) return offsetMs.value
@@ -33,6 +34,13 @@ async function ensureLoaded({ force = false } = {}) {
     } catch {
       // 拿不到就退回真实时间：宁可显示真实时间，也不要显示一个来路不明的偏移
       offsetMs.value = 0
+      // 但**别把真实时间钉死整页**：后端刚起、路由还没就绪时第一次必然失败，
+      // 以前这种情况会一直显示真实时间（用户 2026-10-31 实测踩到）。
+      // 这里补一次延迟重试，成功后靠 offsetMs 响应式刷新已渲染的时间。
+      if (!retried) {
+        retried = true
+        setTimeout(() => { ensureLoaded({ force: true }).catch(() => {}) }, 3000)
+      }
     } finally {
       inflight = null
     }
