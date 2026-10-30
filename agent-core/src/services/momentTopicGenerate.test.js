@@ -14,8 +14,9 @@ config.features.serializeBackgroundLLM = false;
 const { resetClient } = await import('../llm/llm-client.js');
 resetClient();
 const { getDb, closeDb } = await import('../db/index.js');
-const { default: router } = await import('../routes/moments.js');
-afterEach(closeDb);
+const { default: router, generateMomentPost } = await import('../routes/moments.js');
+const { invalidateAllCache } = await import('./scheduleManager.js');
+afterEach(() => { invalidateAllCache(); closeDb(); });
 
 function seedCharacter() {
   const db = getDb();
@@ -57,17 +58,14 @@ test('指定话题：未勾选、同名不同来源和空描述均按所选 id �
   const requests = [];
   // 在真正的 LLM 边界截获请求后终止，不调用网络、生图或发布真实内容。
   t.mock.method(OpenAI.Chat.Completions.prototype, 'create', async params => {
-    requests.push(structuredClone(params));
+    requests.push(params);
     throw Object.assign(new Error('TEST_PROMPT_CAPTURED'), { status: 400 });
   });
   t.mock.method(Math, 'random', () => 0.5);
-  const firstRequestOf = [];
   for (const [id, name, desc] of [[topicId, '同名测试', '指定的雨后花园'], [emptyId, '仅名称话题', '仅名称话题']]) {
-    const start = requests.length;
     const result = await generate({ character_id: characterId, topic_id: id });
     assert.equal(result.payload.error, 'TEST_PROMPT_CAPTURED');
-    firstRequestOf.push(start);
-    const { messages } = requests[start];
+    const { messages } = requests.at(-1);
     const selected = messages.find(m => m.content.startsWith('【用户指定的朋友圈话题】'));
     assert.equal(selected.role, 'system');
     assert.ok(selected.content.includes(`名称：${name}\n描述：${desc}`));
@@ -78,13 +76,135 @@ test('指定话题：未勾选、同名不同来源和空描述均按所选 id �
     const post = db.prepare('SELECT style, status FROM moment_posts ORDER BY id DESC LIMIT 1').get();
     assert.deepEqual(post, { style: name, status: 'failed' });
   }
-  // 每次生成最多两次请求：首次 + 网关 400 降级重试；重试必须去掉可选参数。
-  assert.equal(requests.length, 2 * firstRequestOf.length);
-  for (const start of firstRequestOf) {
-    assert.ok(Object.hasOwn(requests[start], 'thinking') || Object.hasOwn(requests[start], 'reasoning_effort'));
-    assert.ok(!Object.hasOwn(requests[start + 1], 'thinking'));
-    assert.ok(!Object.hasOwn(requests[start + 1], 'reasoning_effort'));
+  // 本 fork 的 llm-client 在 HTTP 400 时会去掉可选参数重试一次（网关兼容降级，见 llm-client.js
+  // 「网关兼容降级」段），而这里的 mock 恒抛 400 ⇒ 每个话题各 2 次请求。
+  assert.equal(requests.length, 4);
+  // 不同指定话题保持前面的任务和人格层稳定，话题只出现在变量尾层（取每轮首次请求比较）。
+  assert.deepEqual(requests[0].messages.slice(0, 3), requests[2].messages.slice(0, 3));
+});
+
+test('随机梦境：单图与多图请求均强化梦内画面，普通朋友圈不注入梦境规则', async t => {
+  const characterId = seedCharacter();
+  const requests = [];
+  t.mock.method(OpenAI.Chat.Completions.prototype, 'create', async params => {
+    requests.push(params);
+    throw Object.assign(new Error('TEST_PROMPT_CAPTURED'), { status: 400 });
+  });
+  let rolls = [];
+  t.mock.method(Math, 'random', () => rolls.length ? rolls.shift() : 0.5);
+
+  for (const imageCount of [1, 2, 3]) {
+    // 模式抽签、特殊模式抽签、配图张数；后续随机不影响所选分支。
+    rolls = [0.01, 0, [0, 0.5, 0.8, 0.99][imageCount]];
+    const result = await generate({ character_id: characterId });
+    assert.equal(result.payload.error, 'TEST_PROMPT_CAPTURED');
+    const { messages } = requests.at(-1);
+    const task = messages.find(m => m.content.startsWith('你正在发朋友圈。')).content;
+    assert.match(task, /每个 imagePrompt 都必须以 "A surreal dreamscape scene:" 开头/);
+    assert.match(task, /至少两处相互关联的非现实变化/);
+    assert.match(task, /ethereal soft lighting/);
+    assert.match(task, /Environment reference 只约束醒着时的叙述/);
+    assert.match(task, /未采纳梦境时完全忽略本条/);
+    assert.match(task, /日程为主时，仅在梦境动因自然契合日程时采用/);
+    assert.match(task, /动因为主时可以直接分享梦境/);
+    const example = JSON.parse(task.split('输出格式（严格 JSON）：\n')[1].split('\n')[0]);
+    assert.match(example.text, /80-400字/);
+    assert.equal(Object.keys(example).length, imageCount + 1);
+    for (const [field, value] of Object.entries(example)) {
+      if (field === 'text') continue;
+      assert.match(value, /A surreal dreamscape scene:/);
+      assert.match(value, /若未采纳，正常描绘当前日程/);
+    }
+    assert.equal(messages.filter(m => m.role === 'user').length, 1);
+    assert.equal(messages.at(-1).role, 'user');
   }
-  // 不同指定话题保持前面的任务和人格层稳定，话题只出现在变量尾层。
-  assert.deepEqual(requests[firstRequestOf[0]].messages.slice(0, 3), requests[firstRequestOf[1]].messages.slice(0, 3));
+
+  rolls = [0.5];
+  assert.equal((await generate({ character_id: characterId })).payload.error, 'TEST_PROMPT_CAPTURED');
+  const ordinary = requests.at(-1).messages.map(m => m.content).join('\n');
+  assert.doesNotMatch(ordinary, /A surreal dreamscape scene|梦境配图（仅在采纳/);
+});
+
+test('random topic source and focus determine schedule detail in the actual LLM request', async t => {
+  const characterId = seedCharacter();
+  const db = getDb();
+  const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId);
+  db.prepare('UPDATE moment_topics SET is_active = 0').run();
+  const insertTopic = db.prepare('INSERT INTO moment_topics (name, desc, source, is_active) VALUES (?, ?, ?, 0)');
+  // 同名话题仍按 source 区分，不能靠名称或描述猜来源。
+  const customId = Number(insertTopic.run('同名来源测试', '发现新手机壳', 'custom').lastInsertRowid);
+  const systemId = Number(insertTopic.run('同名来源测试', '发现新手机壳', 'default').lastInsertRowid);
+  const { createLorebookRepository } = await import('../db/lorebookRepository.js');
+  const worldId = db.prepare('SELECT id FROM world_settings WHERE is_active = 1').get().id;
+  createLorebookRepository(db).save(worldId, {
+    document: { entries: {
+      0: { uid: 0, constant: true, position: 0, content: 'FOCUS_STABLE_RULE' },
+      1: { uid: 1, constant: false, key: ['独有日程细节'], position: 0, content: 'DETAIL_ONLY_LORE' },
+    } },
+    settings: { positionPolicy: 'cache', contextTokens: 32768, budgetPercent: 100, budgetCap: 0 },
+  });
+  const requests = [];
+  t.mock.method(OpenAI.Chat.Completions.prototype, 'create', async params => {
+    requests.push(params);
+    throw Object.assign(new Error('TEST_PROMPT_CAPTURED'), { status: 400 });
+  });
+  let rolls = [];
+  t.mock.method(Math, 'random', () => rolls.length ? rolls.shift() : 0.5);
+  const activity = { location: '裁缝店', activity: '整理量尺', description: '独有日程细节：用户帮忙熨平布料' };
+  for (const [id, coin, focus] of [[customId, 0, 'motive'], [systemId, 0.49, 'schedule'], [systemId, 0.5, 'motive']]) {
+    db.prepare('UPDATE moment_topics SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END').run(id);
+    // 模式、话题、形态、张数，然后才是系统话题的主次硬币（自定义不消耗）。
+    rolls = [0.5, 0, 0.5, 0.5, coin];
+    await assert.rejects(generateMomentPost(character, { backfill: true, activity }), /TEST_PROMPT_CAPTURED/);
+    const messages = requests.at(-1).messages;
+    const user = messages.at(-1).content;
+    assert.match(user, /【此刻正在做】.*裁缝店整理量尺/);
+    assert.match(user, /【本次发朋友圈动因】发现新手机壳/);
+    assert.match(user, focus === 'schedule' ? /【本次内容主次】日程为主/ : /【本次内容主次】动因为主/);
+    const all = messages.map(m => m.content).join('\n');
+    if (focus === 'schedule') {
+      assert.match(user, /独有日程细节/);
+      assert.match(user, /DETAIL_ONLY_LORE/);
+      assert.ok(messages.some(m => m.content.startsWith('**【此刻与你同在的人：')));
+    } else {
+      assert.doesNotMatch(all, /独有日程细节|熨平布料/);
+      assert.doesNotMatch(all, /DETAIL_ONLY_LORE/);
+      assert.ok(!messages.some(m => m.content.startsWith('**【此刻与你同在的人：')));
+    }
+    const task = messages.find(m => m.content.startsWith('你正在发朋友圈。')).content;
+    assert.ok(task.indexOf('FOCUS_STABLE_RULE') >= 0);
+    assert.ok(task.indexOf('FOCUS_STABLE_RULE') < task.indexOf('输出格式（严格 JSON）：'));
+    const example = JSON.parse(task.split('输出格式（严格 JSON）：\n')[1].split('\n')[0]);
+    assert.match(example.text, /字数范围：\d+-\d+字/);
+    assert.equal(messages.filter(m => m.role === 'user').length, 1);
+  }
+  const prefixes = requests.map(r => r.messages.find(m => m.content.startsWith('你正在发朋友圈。')).content.split('输出格式（严格 JSON）：')[0]);
+  assert.ok(prefixes.every(prefix => prefix === prefixes[0]), 'source/focus must not enter the static prefix');
+});
+
+test('发朋友圈 system2：生图格式留在静态区，随本次变化的字段只在输出格式之后', async t => {
+  const characterId = seedCharacter();
+  const requests = [];
+  t.mock.method(OpenAI.Chat.Completions.prototype, 'create', async params => {
+    requests.push(params);
+    throw Object.assign(new Error('TEST_PROMPT_CAPTURED'), { status: 400 });
+  });
+  let rolls = [];
+  t.mock.method(Math, 'random', () => rolls.length ? rolls.shift() : 0.5);
+  const prefixes = [];
+  // 模式、话题、形态、张数；张数取三段不同区间，验证静态区不随张数变化。
+  for (const [index, countRoll] of [0.5, 0.75, 0.95].entries()) {
+    rolls = [0.5, 0.5, 0.5, countRoll];
+    assert.equal((await generate({ character_id: characterId })).payload.error, 'TEST_PROMPT_CAPTURED');
+    const task = requests.at(-1).messages.find(m => m.content.startsWith('你正在发朋友圈。')).content;
+    const [prefix, tail] = task.split('输出格式（严格 JSON）：\n');
+    prefixes.push(prefix);
+    // 静态区含生图格式，且不含任何按本次调用变化的字段。
+    assert.match(prefix, /生图格式（每个 imagePrompt 均适用）：\n\S/);
+    // 生图规则正文本身含 "Environment reference" 字样，这里只认天气提示的全角冒号写法。
+    assert.doesNotMatch(prefix, /Environment reference：|发布形态参考|正文字数范围：|已缔结誓约/);
+    // 张数只改输出格式的字段数与其后的动态要求。
+    assert.equal(Object.keys(JSON.parse(tail.split('\n')[0])).length, index + 2);
+  }
+  assert.ok(prefixes.every(prefix => prefix === prefixes[0]), 'image count must not enter the static prefix');
 });

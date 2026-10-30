@@ -1137,6 +1137,25 @@ function saveBlobAsFile(blob, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
+// ── NovelAI 配置 Profile 管理 ──
+
+export async function getNovelaiProfiles() {
+  return request(`/config/novelai/profiles`)
+}
+
+/** 新增配置：后端默认复制当前生效的整套 NovelAI 参数（含 API Key） */
+export async function addNovelaiProfile(name) {
+  return request(`/config/novelai/profiles`, { method: 'POST', body: { name } })
+}
+
+export async function deleteNovelaiProfile(id) {
+  return request(`/config/novelai/profiles/${id}`, { method: 'DELETE' })
+}
+
+export async function activateNovelaiProfile(id) {
+  return request(`/config/novelai/profiles/${id}/activate`, { method: 'POST' })
+}
+
 // ── Chat Memory ──
 async function jsonRequest(url, options) {
   const res = await fetch(url, options)
@@ -2565,6 +2584,9 @@ export const updateExpressionStandingPrompt = (id, slot, prompt, generation) => 
 export const editExpressionStanding = (id, slot, action, body = {}) => request(expressionStandingPath(id, slot) + '/' + action, { method: 'POST', body })
 export const deleteExpressionStanding = (id, slot) => request(expressionStandingPath(id, slot), { method: 'DELETE' })
 export const getStandingDisplayState = () => request('/standing-display/state')
+// 上游 v4.0.0 合并：立绘触摸台词的语音合成与批量补齐
+export const generateStandingTouchSpeech = (id, body) => request(`/characters/${id}/expression-standings/touch-lines/speech`, {method:'POST',body})
+export const fillAllStandingTouchSpeech = () => request('/expression-standings/touch-lines/speech/fill', {method:'POST'})
 export const setStandingDisplayCharacter = body => request('/standing-display/active', { method: 'PUT', body })
 
 // ── 上游 v3.9.0 合并：朋友圈回填（补发今日动态）──────────────────────────────

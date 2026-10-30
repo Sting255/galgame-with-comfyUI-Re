@@ -48,11 +48,12 @@ test('② buildProtocolBlock 逐字节不变（sha256 钉全文；2026-10-19 因
   //   2026-10-01 按用户要求重写生图规范（精确描述衣着状态 + 身体动作直述）⇒ 5135 → 7470
   //   2026-10-19 合并上游 v3.10.0：上游在规范里新增「Camera & Framing」整段
   //              （自拍视角 / 机位选择 / 景深），本地把它插为第 5 步 ⇒ 7470 → 9333
+  //   2026-10-30 合并上游 v4.0.0：上游把配图的字符上限 800 → 1000 ⇒ 9333 → 9334
   // ⇒ 文本**有意**变长，sha 随之改变；这里更新的只是钉子本身，
   //   它钉住的仍是"这块文本必须稳定，改动了就会被发现"。
   const s = eng.buildProtocolBlock()
-  assert.equal(s.length, 9333)
-  assert.equal(sha(s), '8617bf080f472ceb')
+  assert.equal(s.length, 9334)
+  assert.equal(sha(s), 'dd8bf4d3778bfa34')
   assert.ok(s.includes('Priority order: what the bodies are doing'), '生图规范确实嵌在这块里（改规范就要更新本钉子）')
   assert.ok(s.includes('Camera & Framing'), '上游 v3.10.0 的取景/构图段确实进来了')
   assert.ok(s.startsWith('<group_chat_rules>'))

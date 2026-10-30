@@ -12,39 +12,89 @@ export const MOMENT_DREAM_IMAGE_RULES = [
 export const MOMENT_DREAM_IMAGE_REQUIREMENT = '若采纳做梦/幻想动因，以 A surreal dreamscape scene: 开头，描述正文梦内场景、至少两处关联的超现实变化及梦幻光影；若未采纳，正常描绘当前日程，不加梦境前缀或效果';
 
 export const MOMENT_FORMS = [
-  { name: '短句流',  desc: '只留一句最想说的话，省略背景', len: '5-20字', weight: 2.0, nightBoost: false },
-  { name: '纯图党',  desc: '用 1～3 个 emoji 或极短一句回应照片，不复述画面', len: '1-15字', weight: 0.5, nightBoost: true },
-  { name: '括号吐槽', desc: '短正文加一处括号，补同一件事的内心OS或自我拆台', len: '15-45字', weight: 0.8, nightBoost: false },
-  { name: '发疯文学', desc: '对眼前的小刺激夸张反应，保留角色口吻，不堆砌标点', len: '10-45字', weight: 0.5, nightBoost: false },
-  { name: '抛个问题', desc: '整条就是一个具体问题或求助，带够场景让人能回答；禁止"有没有人懂这种感觉"这类空泛句式', len: '15-45字', weight: 0.9, nightBoost: false },
-  { name: '颜文字体', desc: '一个颜文字，可配一句极短的话', len: '1-20字', weight: 1.4, nightBoost: true },
-  { name: '只发个语气词', desc: '只有几个语气词或一个 emoji，不解释，场景交给照片', len: '1-12字', weight: 0.2, nightBoost: true },
-  { name: '话说一半', desc: '停在一个念头上，可用省略号，不补解释', len: '5-30字', weight: 0.8, nightBoost: false },
+  { name: '短句流',  desc: '可以直接说出最想说的感想，保留让意思成立的细节', len: '5-40字', weight: 2.0, nightBoost: false },
+  { name: '纯图党',  desc: '照片能传达主要信息时，可以用简短感想或表情回应，不必复述画面', len: '1-30字', weight: 0.5, nightBoost: true },
+  { name: '括号吐槽', desc: '有顺口的补充或自我拆台时可以放进括号，不必专门安排反差', len: '15-90字', weight: 0.8, nightBoost: false },
+  { name: '发疯文学', desc: '符合角色和当下心情时，可以夸张回应眼前的小刺激，不强行搞笑或堆砌标点', len: '10-90字', weight: 0.5, nightBoost: false },
+  { name: '抛个问题', desc: '确实有疑问或需要帮助时可以提问，带够场景让人能回答，不为互动强凑问题', len: '15-90字', weight: 0.9, nightBoost: false },
+  { name: '颜文字体', desc: '符合角色习惯时可以用颜文字表达情绪，不用也可以，不挤掉具体感想', len: '1-40字', weight: 1.4, nightBoost: true },
+  { name: '只发个语气词', desc: '确实只想给个反应时，可以只用语气词或表情；已有具体感想时保留它', len: '1-24字', weight: 0.2, nightBoost: true },
+  { name: '话说一半', desc: '念头自然停住时可以留白，不故意截断意思或强加省略号', len: '5-60字', weight: 0.8, nightBoost: false },
 ];
 
-/** 图文以当前日程为单一中心；动因只在非常契合日程时作为弱参考。 */
+/** 图文保持一个中心，日程与动因的主次由请求组装时确定。 */
 export const MOMENT_SINGLE_FOCUS_RULE = [
-  '- **单中心、日程优先（最高优先级）**：有【此刻正在做】时，先从当前日程本身选一个具体细节或互动作为唯一主线，text 与所有 imagePrompt 都围绕它；日程决定地点、活动和分享重点。',
-  '- **动因仅作弱参考**：【本次发朋友圈动因】不是必须完成的话题。只有它与当前日程非常契合、无需添加额外事件或转移重点就能自然成立时，才允许轻微影响语气或同一细节的表达；即使采纳，日程仍是主体。仅仅不冲突、勉强能联想，不算非常契合。',
-  '- 动因不够契合或无法确定是否契合时，完全忽略它及其场景、情绪、配图建议，直接记录当前日程；不要保留其关注点或分享欲，不为动因改换地点、活动、虚构经历，也不靠回忆、比喻或额外道具硬接。不要在正文解释取舍。',
-  '- 照片交代日程现场，文字留下一个反应，不必复述日程或点明动因；其他经历、旧动态只作背景，不另开主题。未提供当前日程时，才可参考动因选取符合人设与已知事实的单一场景。',
+  '- **单中心、按本次主次（最高优先级）**：遵守【本次内容主次】，text 与所有 imagePrompt 围绕主项中的一个分享点展开。人设决定注意什么、有什么态度、愿意透露多少。没有标注主次时，有日程就以日程为主，否则围绕提供的话题或亲历记录写。',
+  '- **日程为主时**：从当前日程挑一个细节或反应；动因只是弱参考，不自然相关就忽略，不为照顾动因添加第二件事。',
+  '- **动因为主时**：围绕动因选一个分享点；简要日程只作低优先级背景，正文可以完全不提，不必交代日程过程，也不必解释如何从日程联想到动因。',
+  '- 弱项不是必须出现的内容，不把两件事各写一遍，不用巧合、额外道具、回忆或因果解释硬串联。其他经历、旧动态也只作背景，不逐项汇报；不编造与已知事实冲突的经历。',
 ].join('\n');
+
+/** 用发帖时的处境示范正文，不把修辞手法当成写作任务。
+ * 固定放入共用静态前缀；场景均为虚构教学素材，不参与本次事实与世界书扫描。 */
+export const MOMENT_TEXT_EXAMPLES = `【朋友圈正文表达示例】
+下面是几种虚构处境下，一个人可能直接打出来的话。每个引号内都是另一条独立帖，只看说话的感觉，不套句式，不把这些经历移到本次角色身上。
+
+吃到喜欢的东西，配了食物照片：
+“这个好吃诶”
+“怎么这么少 我还没吃够”
+
+终于买到了想要的东西，发张照片给熟人看看：
+“买到了嘿嘿”
+“实物比照片好看好多啊”
+
+想晒自己做的饭，照片已经能说明做了什么：
+“我做的！！”
+“第一次弄这个，盐放多了，下次少放点”
+
+事情没弄完，有点烦，暂时不想管了：
+“不弄了 明天再说”
+“弄了一晚上还是这样，先放着吧。”
+
+刚到家，想发一句近况：
+“到家了 累死”
+“已经躺下了，谁叫我都不出门了”
+
+想让熟人来找自己，或真的需要点东西：
+“有人出来吃饭吗 我还没吃”
+“谁有小一点的螺丝刀 借我用一下”
+
+约好吃饭的人迟到了，消息也没回，越等越烦：
+“人呢？？？”
+“约的时间都过了还没来，发消息也不回。我都想先回去了，但菜已经点了”
+
+同行的人给自己拍了照，挑了一张喜欢的：
+“就这张吧”
+“这张好看 多发几遍”
+
+平时说话克制，确实只想记一件事：
+“花开了。”
+“书到了，晚上看。”
+
+有件小事一直在脑子里转，想多说几句：
+“缝到一半线不够了，剩下那个颜色也差不多，想直接用了算了。但又怕缝完一直看着不顺眼，还是明天去买”
+
+短、长、重复、感叹号、空格都随这个人的习惯，不按示例统一口吻。例子不覆盖本次字数、世界观和输出要求；只输出本次正文到 text，不带处境说明或外层引号，换行按 JSON 规则转义。`;
 
 /** 朋友圈口吻总纲：朋友圈是随手一发的生活碎片，不是成文的作品。角色帖与镇民帖共用。 */
 export const MOMENT_TONE_RULES = [
-  '- **口吻优先于字数**：像给熟人随手发一条，用角色自己的语气写具体反应，可省略主语、只说半句，不凑字数或强行玩梗。',
-  '- 通常 1～2 个短句、至多一次换行；括号只作口语补充，表情适量。不写标题、列表、Markdown、标签或动作旁白。',
-  '- 写完就停，不铺背景、不解释心情，不加总结、感悟、祝福或种草套话。',
+  '- 你在用自己的账号发动态。根据本次素材想想此刻为什么想发：想晒、想抱怨、想找人、想记一下，或者就是想发这张图。直接写那句话，不需要先从生活中提炼一个感想；这个判断不输出。',
+  '- 默认是熟人在看，照片和共同经历已经交代了一部分。允许只说“这个”“又来了”“终于”，不用为不认识你的读者补齐前因后果；也可以只是说好吃、好看、累了，不必找一个特别的角度。省略背景不等于编造经历，仍遵守本次事实、主次和同行要求。',
+  '- 用角色平时打字的习惯。可以有口头重复、语气词、表情、熟人间的叫法，也可以规规矩矩写完整句；不要把所有人都写成爱撒娇或爱吐槽的年轻人。想炫耀、舍不得、嫌麻烦、没什么想法，都可以直接表现，不强求讨喜或体面。',
+  '- 说完想说的就结束。不要替自己再润色出一句漂亮的收尾，不必给抱怨加笑点、给开心加自嘲、给低落加安慰。不要为了显得随意刻意错字、删标点、加省略号或设计反转。',
+  '- 遵守本次字数范围，范围内说完就停；形态只作参考，不为凑括号、问题或颜文字补一句。有话可以多说，没话不补活动总结。不写标题、列表、Markdown、标签、动作旁白或虚构评论对话。',
+  '',
+  MOMENT_TEXT_EXAMPLES,
 ].join('\n');
 
 /** 配图补足同一个瞬间的可见信息；不把短文案、隐喻或话题建议机械翻译成画面。 */
 export const MOMENT_IMAGE_RULES = [
   '- **图文互补**：配图呈现同一瞬间，依上下文补足短文案省略的场景；每张只有一个视觉重点，不把夸张比喻画成实物。',
   '- 只写可见的外观、位置、动作、道具和光线，按分享点取景，不默认看镜头摆拍。遵守已知外观及同行者要求，天气通过合理的环境细节体现。',
-  '- 遵循下方生图格式与长度限制；优先保留人物和主要动作，少堆背景。不画无关字幕、水印或社交界面。',
+  '- 下方生图格式与长度限制仅约束 imagePrompt 等配图字段，不约束中文正文；优先保留人物和主要动作，少堆背景。不画无关字幕、水印或社交界面。',
 ].join('\n');
 
-/** 随机抽中的话题仅作为候选动因；日程优先与契合门槛由 MOMENT_SINGLE_FOCUS_RULE 规定，
+/** 随机抽中的话题提供动因；与日程的主次由本次内容主次决定，
  * 这里只给候选内容，不再复述规则，避免 user 层与 system 层口径打架。 */
 export function buildMomentMotiveDirective(description) {
   const topic = String(description || '').trim();
@@ -52,13 +102,27 @@ export function buildMomentMotiveDirective(description) {
   return `\n**【本次发朋友圈动因】${topic}**`;
 }
 
-/** 日程告知此刻真实地点与正在做的事；这里只给事实，日程优先规则
+/** 用户话题始终以动因为主；系统随机话题在有日程时等概率确定主次。
+ * 显式点题（含报纸任务）保留围绕指定话题生成的语义，不再随机弱化它。 */
+export function pickMomentFocus({ hasSchedule, hasMotive, topicSource = 'default', explicitTopic = false, random = Math.random }) {
+  if (!hasMotive) return hasSchedule ? 'schedule' : 'free';
+  if (!hasSchedule || explicitTopic || topicSource === 'custom') return 'motive';
+  return random() < 0.5 ? 'schedule' : 'motive';
+}
+
+export function buildMomentFocusDirective(focus) {
+  if (focus === 'schedule') return '\n**【本次内容主次】日程为主，动因为弱参考；动因不自然相关就忽略，不必将两者串联。**';
+  if (focus === 'motive') return '\n**【本次内容主次】动因为主，简要日程仅作低优先级背景；正文可以不提日程，不必交代两者的联系。**';
+  return '';
+}
+
+/** 日程告知此刻真实地点与正在做的事；这里只给事实，主次规则
  * 由 MOMENT_SINGLE_FOCUS_RULE 规定，不再复述规则，避免 user 层与 system 层口径打架。 */
-export function buildMomentScheduleContext(characterName, activity = {}) {
+export function buildMomentScheduleContext(characterName, activity = {}, { includeDescription = true } = {}) {
   const name = String(characterName || '').trim();
   const doing = [String(activity.location || '').trim(), String(activity.activity || '').trim()]
     .filter(Boolean).join('');
-  const description = String(activity.description || '').trim();
+  const description = includeDescription ? String(activity.description || '').trim() : '';
   if (!name || !doing) return '';
   const descPart = description ? `（${description}）` : '';
   return `\n**【此刻正在做】${name}此刻正在${doing}${descPart}**`;
@@ -76,12 +140,12 @@ export const MOMENT_IMAGE_FIELDS = ['imagePrompt', 'imagePrompt2', 'imagePrompt3
 export const CHINESE_NUM = ['', '一', '两', '三'];
 
 /** 用合法 JSON 展示完整字段结构，动态文本中的引号、换行、反斜杠不能破坏示例。 */
-export function buildMomentOutputFormat({ imageCount = 1, textRequirement = '中文口语，只围绕一个具体中心，写角色的随口反应', imageRequirement = '' } = {}) {
+export function buildMomentOutputFormat({ imageCount = 1, textRequirement = '中文口语，只围绕一个具体中心，用角色自己的语气表达', textLength = '30-160字', imageRequirement = '' } = {}) {
   if (!Number.isInteger(imageCount) || imageCount < 1 || imageCount > MOMENT_IMAGE_FIELDS.length) {
     throw new RangeError('Moment image count must be an integer from 1 to 3');
   }
   const example = {
-    text: `朋友圈正文：${textRequirement}；按本次形态与字数，非空，可只有表情，无标题或总结`,
+    text: `朋友圈正文：${textRequirement}；字数范围：${textLength}，不凑字；形态仅供参考，保留关键意思；非空，可只有表情，无标题`,
   };
   for (const [index, name] of MOMENT_IMAGE_FIELDS.slice(0, imageCount).entries()) {
     example[name] = `第${index + 1}张照片：非空英文单段，独立写清场景、主体动作和光线，遵守生图格式及长度限制${index > 0 ? '；与首图连续，不写同上' : ''}${imageRequirement ? `；${imageRequirement}` : ''}`;
@@ -123,10 +187,11 @@ ${sequence}
 
 /** 朋友圈评论区通用规则：角色帖与镇民帖、首评/回评/续评共用，避免各处模板各自演化。 */
 export const MOMENT_COMMENT_RULES = [
-  '- **长度**：以 3~25 字短评为主，偶尔可以长一点到 40 字左右；短到只回一个 emoji、"哈哈哈"、"？？？"、"行吧"也算完整的一条评论，不必凑字数。',
+  '- **长度**：以 3~50 字短评为主，偶尔可以长一点到 80 字左右；短到只回一个 emoji、"哈哈哈"、"？？？"、"行吧"也算完整的一条评论，不必凑字数。',
   '- 自然口语化，像熟人刷朋友圈时随口打的字：可以省略主语、可以只有半句话、可以连发两个短句。',
   '- 可以调侃、抬杠、拆台、接梗、追问细节、@ 对方，也可以只是附和一声；不要每条都温柔客套，也不要空洞地夸"好棒""真好看"。',
-  '- 禁止客套式的总结、升华、祝福和"点赞+点评"套路；禁止复述对方刚说过的话。',
+  '- 不机械复述帖子，不套用“点赞+点评”、总结升华或通用祝福；确实有值得祝贺或关心的事，可以按角色和关系自然表达。',
+  '- 有趣与否由人设和场合决定，不必每条调侃或追问；对方认真时先接住内容，不强加笑点，回应完可以停。',
   '- 保持你自身的人设、语气和口癖；不用刻意称呼对方名字，熟人之间不需要每句都叫。',
   '- 禁止括号里的动作描写（如（笑）（点头））和旁白，禁止解释自己在评论什么。',
   '- 只输出评论/回复的文本本身，不要任何前缀、引号、JSON 或说明。',

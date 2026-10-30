@@ -43,6 +43,8 @@ import { migrateCharacterReactionPacksSchema } from './characterReactionPackSche
 import { createMediaTables, migrateMediaSchema } from './mediaSchema.js';
 // 上游 v3.9.0 合并：小镇特殊建筑「描述驱动的可执行玩法」（见 services/town/townBuildingFeature*）
 import { migrateTownBuildingFeatureSchema } from './townBuildingFeatureSchema.js';
+// 上游 v4.0.0 合并：语音合成任务表与中断回收（见 services/speechService.js）
+import { migrateTtsSchema, recoverSpeechJobs } from './ttsSchema.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -210,6 +212,7 @@ function runStartupDbMaintenance(database) {
 // ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
 // moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
 function cleanupOrphanedInFlight(database) {
+  recoverSpeechJobs(database);
   recoverExpressionStandingJobs(database);
   cleanupTownDialogueRequests(database);
   const tasks = [
@@ -1320,6 +1323,8 @@ function initSchema(db) {
   migrateEmojiCategoriesV2(db);
   // 迁移: 表情包多配置单（emoji_sets + character_emojis.set_id，旧数据回填默认配置单）
   migrateEmojiSetsSchema(db);
+  // 迁移: 语音合成任务表（tts_speech_jobs / character_api_voices 等，幂等）
+  migrateTtsSchema(db);
 
   // 种子: 奇遇事件类型库 + 朋友圈话题库（INSERT OR IGNORE，仅插入缺失的系统条目，不覆盖用户编辑）
   seedEventLibraries(db);

@@ -21,6 +21,8 @@ import { buildTouchLineMessages, readTouchLines, startTouchLines, hasTouchLines 
 import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
 // 世界观签名（与主立绘同一套口径，见 services/worldSignature.js）：槽位生成时记下"哪个世界观"
 import { currentWorldSignature, isStandingStale } from './worldSignature.js';
+// 上游 v4.0.0 合并：台词语音 —— 立绘触摸台词的朗读状态随立绘列表一起下发
+import { readStandingTouchLines } from './standingTouchSpeechRuntime.js';
 
 const CATEGORY = 'expression_standing';
 const busyCharacters = new Set();
@@ -55,7 +57,8 @@ export function listExpressionStandings(id) {
   const rows = getDb().prepare('SELECT * FROM character_expression_standings WHERE character_id=?').all(id);
   return {
     // 【上游 v3.9.0 合并：立绘互动】台词状态随立绘列表一起下发，立绘管理页的状态行不用再单独请求。
-    touchLines: readTouchLines(getDb(), id),
+    // 【上游 v4.0.0 合并：台词语音】改走 speech 运行时读取，顺带带上每条台词的音频状态
+    touchLines: readStandingTouchLines(getDb(), id),
     slots: standingSlots().map(s => {
       const row = rows.find(r => r.slot_id === s.id);
       const slot = { ...s, ...row, generation: JSON.parse(row?.config_json || '{}'), bounds: JSON.parse(row?.bounds_json || 'null') };
@@ -90,8 +93,13 @@ export function listStandingOverview() {
       SELECT id FROM expression_standing_jobs WHERE character_id=c.id ORDER BY created_at DESC,rowid DESC LIMIT 1
     ) ORDER BY c.id`).all().map(row => {
     const missingSlotIds = slots.filter(s => !images.get(row.id)?.has(s.id)).map(s => s.id);
-    const touch = readTouchLines(db,row.id);
-    return { ...row, hasTouchLines:hasTouchLines(touch), touchStatus:touch.status, count: slots.length - missingSlotIds.length, total: slots.length, missingSlotIds, busy: busyCharacters.has(row.id) };
+    const touch = readStandingTouchLines(db,row.id);
+    const speechLines = Object.values(touch.speech.lines).flat();
+    const touchSpeech = { enabled: touch.speech.enabled, configured: touch.speech.configured, reason: touch.speech.reason,
+      total: speechLines.length, ready: speechLines.filter(line => line.audio_url).length,
+      pending: speechLines.filter(line => ['queued', 'generating'].includes(line.status)).length,
+      failed: speechLines.filter(line => ['failed', 'cancelled'].includes(line.status)).length };
+    return { ...row, touchSpeech, hasTouchLines:hasTouchLines(touch), touchStatus:touch.status, count: slots.length - missingSlotIds.length, total: slots.length, missingSlotIds, busy: busyCharacters.has(row.id) };
   });
 }
 

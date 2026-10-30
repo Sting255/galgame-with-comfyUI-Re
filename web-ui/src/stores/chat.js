@@ -4,6 +4,9 @@ import * as api from '../api/index.js'
 import { useMessageWindow } from '../composables/useMessageWindow.js'
 import { useProactiveStore } from './notifications.js'
 import { applyAssistantReplace } from '../utils/assistantReplace.js'
+// 上游 v4.0.0 合并：语音自动播放与头像变更广播
+import { emitCharacterAvatarChanged } from '../utils/characterReactionProducers.js'
+import { chatSpeechAutoPlay } from '../utils/speechAutoPlay.js'
 
 /** D2 重写兜底：最近一次已应用的 replace_last_assistant.turn（§12.4 用它校验「替换的是本轮」，防乱序/重复投递） */
 let lastReplaceTurn = 0
@@ -150,6 +153,7 @@ export const useChatStore = defineStore('chat', () => {
           ...msg,
           content,
           type: msg.type || 'text',
+          speech_message_id: msg.id,
           sticker_images: emojiImages.map(url => ({ url, base64: null })),
         });
       }
@@ -719,6 +723,8 @@ export const useChatStore = defineStore('chat', () => {
                const m = messages.value.find(x => x.id === tempId)
                if (m) {
                  m.id = d.id
+                 m.speech_message_id = d.id
+                 m.speech_auto_token = chatSpeechAutoPlay.mark(`chat:${charId}`, d.id)
                   if (d.content !== undefined) m.content = d.content
                   if (Array.isArray(d.images) && d.images.length && !m.sticker_images?.length && !pendingStickerTimers.has(m)) {
                     scheduleSticker(m, d.images, !!d.leadingSticker)
@@ -917,6 +923,8 @@ export const useChatStore = defineStore('chat', () => {
       for (let i = 0; i < segments.length; i++) {
         messages.value.push({
           id: msgIds[i] || (i === 0 ? data.msg_id : uid()),
+          speech_message_id: msgIds[i] || (i === 0 ? data.msg_id : null),
+          speech_auto_token: chatSpeechAutoPlay.mark(`chat:${charId}`, msgIds[i] || (i === 0 ? data.msg_id : null)),
           role: 'assistant',
           type: 'text',
           content: segments[i],
@@ -990,6 +998,8 @@ export const useChatStore = defineStore('chat', () => {
           content: msg.content,
           created_at: data.created_at,
           is_delayed_reply: true,
+          speech_message_id: msg.id,
+          speech_auto_token: chatSpeechAutoPlay.mark(`chat:${charId}`, msg.id),
         })
       }
     }

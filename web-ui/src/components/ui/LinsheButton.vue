@@ -8,6 +8,7 @@
         'ls-btn--block': block,
         'ls-btn--active': active,
         'ls-btn--tone-danger': tone === 'danger',
+        'ls-btn--tone-paper': tone === 'paper',
         'ls-btn--jelly-enter': jellyPhase === 'enter',
         'ls-btn--jelly-leave': jellyPhase === 'leave',
         'ls-btn--loading': loading,
@@ -28,11 +29,15 @@
 <script setup>
 import { ref } from 'vue'
 
-defineProps({
+const props = defineProps({
   /** primary 主操作 / secondary 次要 / danger 危险 / ghost 幽灵 / icon 圆形图标钮 / chip 胶囊选择 / link 链接 */
   variant: { type: String, default: 'secondary' },
   /** sm / md / lg */
   size: { type: String, default: 'md' },
+  /** Keep the existing skin while reserving an accessible touch target. */
+  touchTarget: { type: Boolean, default: false },
+  /** 是否启用鼠标移入、移出时的果冻形变 */
+  hoverMotion: { type: Boolean, default: true },
   type: { type: String, default: 'button' },
   disabled: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
@@ -42,14 +47,14 @@ defineProps({
   block: { type: Boolean, default: false },
   /** chip 变体的选中态 */
   active: { type: Boolean, default: false },
-  /** 色调覆盖：danger 时 link/ghost 等变体转红色 */
+  /** 色调覆盖：danger 转红色；paper 为白底图标按钮 */
   tone: { type: String, default: 'default' },
 })
 
 const jellyPhase = ref('')
 
 const startJelly = (phase) => {
-  jellyPhase.value = phase
+  jellyPhase.value = props.hoverMotion ? phase : ''
 }
 
 const endJelly = (event) => {
@@ -185,6 +190,12 @@ const endJelly = (event) => {
   background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
 }
+.ls-btn--icon.ls-btn--tone-paper,
+.ls-btn--icon.ls-btn--tone-paper:hover:not(:disabled) {
+  background: var(--button-paper-bg);
+  color: var(--button-paper-ink);
+}
+.ls-btn--icon.ls-btn--tone-paper:hover:not(:disabled) { color: var(--button-paper-hover); }
 /* 尺寸档位统一为正方形：重置 lg/md 的 min-height，避免被拉成椭圆 */
 .ls-btn--icon.ls-btn--sm { width: 24px; height: 24px; min-height: 0; }
 .ls-btn--icon.ls-btn--md { width: 30px; height: 30px; min-height: 0; }

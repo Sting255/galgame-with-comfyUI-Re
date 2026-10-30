@@ -5,7 +5,7 @@
 A local-first AI character companion inspired by visual novels. Create characters and worlds whose conversations, memories, emotions, schedules, and generated images evolve together.
 
 > [!NOTE]
-> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v3.10.0, current version **v3.10.2**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
+> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v4.0.0, current version **v4.0.0**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. Upstream v4.0.0 (TTS voice synthesis, moments scheduling & tone rework, multi-profile NovelAI config) is fully merged in. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
 
 ## Project demo video (Chinese)
 

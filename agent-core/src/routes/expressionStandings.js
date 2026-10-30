@@ -7,7 +7,8 @@ import { getStandingDisplay } from '../services/standingDisplay.js';
 import { createStandingInteractionService } from '../services/standingInteractionService.js';
 import { imageUrlExists } from '../services/imagePaths.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
-import { readTouchLines, saveTouchLines, fillMissingTouchLines } from '../services/standingTouchLines.js';
+import { saveTouchLines, fillMissingTouchLines } from '../services/standingTouchLines.js';
+import { readStandingTouchLines, standingTouchSpeech } from '../services/standingTouchSpeechRuntime.js';
 import { regenerateStandingTouchLines, generateStandingTouchLines } from '../services/expressionStandingService.js';
 import { previewStandingBatches, previewCharacterStandingBatch } from '../services/expressionStandingService.js';
 
@@ -16,18 +17,23 @@ router.get('/expression-standings/overview', (_req, res) => res.json({ character
 router.post('/expression-standings/preflight', (req, res) => res.json(previewStandingBatches(req.body)));
 router.post('/expression-standings/generate', (req, res) => res.status(202).json(startAllStandingBatches(req.body)));
 router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
+router.post('/expression-standings/touch-lines/speech/fill', (_req, res) => res.status(202).json(standingTouchSpeech().fill()));
 const base = '/characters/:id/expression-standings';
 // 台词三件套（立绘管理的「反馈台词管理」用）
 router.get(`${base}/touch-lines`, (req,res)=>{
   if(!getDb().prepare('SELECT id FROM characters WHERE id=?').get(req.params.id))return res.status(404).json({error:'角色不存在'});
-  res.json(readTouchLines(getDb(),req.params.id));
+  res.json(readStandingTouchLines(getDb(),req.params.id));
 });
-router.put(`${base}/touch-lines`, (req,res)=>res.json(saveTouchLines({db:getDb(),id:Number(req.params.id),lines:req.body.lines,expectedVersion:req.body.expectedVersion,emit:broadcast})));
+router.put(`${base}/touch-lines`, (req,res)=>{
+  saveTouchLines({db:getDb(),id:Number(req.params.id),lines:req.body.lines,expectedVersion:req.body.expectedVersion,emit:broadcast});
+  res.json(readStandingTouchLines(getDb(),req.params.id));
+});
+router.post(`${base}/touch-lines/speech`, (req, res) => res.status(202).json(standingTouchSpeech().generate(req.params.id, req.body)));
 router.post(`${base}/touch-lines/generate`, (req,res)=>res.status(202).json(regenerateStandingTouchLines(req.params.id,req.body.expectedVersion)));
 // 批量补齐：给所有还没有台词的角色各起一个后台台词任务
 router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
-// 触碰配置（本地暂无前端入口，接口随服务一并合并）
-const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast });
+// 触碰配置（本地暂无前端入口，接口随服务一并合并；readLines 供立绘触摸读取台词）
+const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast, readLines: readStandingTouchLines });
 router.get('/characters/:id/standing-interaction', (req, res) => res.json(interactions().get(req.params.id)));
 router.put('/characters/:id/standing-interaction', (req, res) => res.json(interactions().save(req.params.id, req.body)));
 router.put(`${base}/:slot/interaction-regions`, (req, res) => res.json(interactions().saveRegions(req.params.id, req.params.slot, req.body)));

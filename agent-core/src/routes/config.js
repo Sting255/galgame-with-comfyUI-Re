@@ -3,13 +3,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { load as yamlLoad } from 'js-yaml';
-import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays, updateAntiRepetitionPenalty } from '../config.js';
+import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, getActiveNovelaiProfileId, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays, updateAntiRepetitionPenalty } from '../config.js';
 import { resetClient, chatSync, resetFreeEggFailureCount, testLlmConnection } from '../llm/llm-client.js';
 import { getDb, getSystemRules } from '../db/index.js';
 import { listWorldSettings, getActiveWorldSetting, getWorldSettingById, createWorldSetting, updateWorldSetting, deleteWorldSetting, activateWorldSetting } from '../db/index.js';
 import { DEFAULT_GLOBAL_RULES } from '../db/seedData.js';
 import { restartProactiveFreq } from '../services/proactiveChatScheduler.js';
 import { restartEventScheduler } from '../services/eventScheduler.js';
+import { refreshMomentFrequency } from '../services/momentScheduler.js';
 import { restartComfyClient } from '../services/comfyClient.js';
 import { triggerDisturbCheck } from '../services/disturbModeScheduler.js';
 import { shieldStatus, setShieldPrompt, DEFAULT_PROMPT as SHIELD_DEFAULT_PROMPT, shieldRulesStatus, setActiveShieldRule, getShieldTargets, setShieldTargets } from '../services/promptShield.js';
@@ -35,6 +36,27 @@ const router = Router();
 // 内置官方地址（仅 DeepSeek，其余走自定义中转站）。
 // 命中这些地址时视为官方直连：用于自动关闭「后台 LLM 任务队列」等仅自定义场景可用的开关。
 const PRESET_LLM_URLS = ['https://api.deepseek.com'];
+
+/** NovelAI 生效配置的公开视图（密钥只回 hasKey） */
+function novelaiConfigPayload() {
+  return {
+    imageProvider: config.comfyui.imageProvider,
+    novelaiApiFormat: config.comfyui.novelaiApiFormat,
+    novelaiUrl: config.comfyui.novelaiUrl,
+    novelaiProxyUrl: config.comfyui.novelaiProxyUrl,
+    novelaiModel: config.comfyui.novelaiModel,
+    novelaiArtist: config.comfyui.novelaiArtist,
+    novelaiWidth: config.comfyui.novelaiWidth,
+    novelaiHeight: config.comfyui.novelaiHeight,
+    novelaiSteps: config.comfyui.novelaiSteps,
+    novelaiSampler: config.comfyui.novelaiSampler,
+    novelaiNoiseSchedule: config.comfyui.novelaiNoiseSchedule,
+    novelaiGuidance: config.comfyui.novelaiGuidance,
+    novelaiQualityPrompt: config.comfyui.novelaiQualityPrompt,
+    novelaiNegativePrompt: config.comfyui.novelaiNegativePrompt,
+    novelaiApiKeySet: Boolean(getNovelaiApiKey()),
+  };
+}
 
 // GET/PUT /api/config/memory — 聊天记忆模型配置（Key 仅保存，不回显）
 router.get('/memory', (_req, res) => {
@@ -135,6 +157,8 @@ router.get('/', (req, res) => {
     llm: getLlmConfig(),
     llmProfiles: getLlmProfiles(),
     activeLlmProfileId: getActiveProfileId(),
+    novelaiProfiles: getNovelaiProfiles(),
+    activeNovelaiProfileId: getActiveNovelaiProfileId(),
     disturb: {
       startTime: config.disturb.startTime,
       endTime: config.disturb.endTime,
@@ -249,7 +273,35 @@ router.put('/comfy', (req, res) => {
   if (url !== undefined || tlsVerify !== undefined) {
     restartComfyClient();
   }
-  res.json({ ok: true, imageProvider: config.comfyui.imageProvider, novelaiApiFormat: config.comfyui.novelaiApiFormat, url: config.comfyui.url, novelaiUrl: config.comfyui.novelaiUrl, novelaiModel: config.comfyui.novelaiModel, novelaiArtist: config.comfyui.novelaiArtist, novelaiWidth: config.comfyui.novelaiWidth, novelaiHeight: config.comfyui.novelaiHeight, novelaiSteps: config.comfyui.novelaiSteps, novelaiSampler: config.comfyui.novelaiSampler, novelaiNoiseSchedule: config.comfyui.novelaiNoiseSchedule, novelaiGuidance: config.comfyui.novelaiGuidance, novelaiQualityPrompt: config.comfyui.novelaiQualityPrompt, novelaiNegativePrompt: config.comfyui.novelaiNegativePrompt, novelaiApiKeySet: Boolean(getNovelaiApiKey()) });
+  res.json({ ok: true, ...novelaiConfigPayload(), url: config.comfyui.url });
+});
+
+// ── NovelAI 配置 Profile 管理 ──
+
+// GET /api/config/novelai/profiles — 获取所有 NovelAI 配置（密钥只回是否已保存）
+router.get('/novelai/profiles', (_req, res) => {
+  res.json({ profiles: getNovelaiProfiles(), activeProfileId: getActiveNovelaiProfileId() });
+});
+
+// POST /api/config/novelai/profiles — 新增配置（默认复制当前生效的整套配置）
+router.post('/novelai/profiles', (req, res) => {
+  const result = addNovelaiProfile(req.body?.name);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true, profile: result.profile, profiles: getNovelaiProfiles(), activeProfileId: getActiveNovelaiProfileId() });
+});
+
+// DELETE /api/config/novelai/profiles/:id — 删除配置（最后一套不可删）
+router.delete('/novelai/profiles/:id', (req, res) => {
+  const result = deleteNovelaiProfile(req.params.id);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true, ...novelaiConfigPayload(), profiles: getNovelaiProfiles(), activeProfileId: getActiveNovelaiProfileId() });
+});
+
+// POST /api/config/novelai/profiles/:id/activate — 切换生效配置
+router.post('/novelai/profiles/:id/activate', (req, res) => {
+  const result = activateNovelaiProfile(req.params.id);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true, ...novelaiConfigPayload(), profiles: getNovelaiProfiles(), activeProfileId: getActiveNovelaiProfileId() });
 });
 
 // PUT /api/config/global-lora — 更新全局 LoRA
@@ -506,7 +558,7 @@ router.put('/event-freq', (req, res) => {
   res.json({ ok: true, eventFreq: config.features.eventFreq });
 });
 
-// PUT /api/config/moment-freq — 具体时间档 ±20%，mode 区分默认与 2 小时档
+// PUT /api/config/moment-freq — 具体时间档控制全局间隔，mode 区分默认与 2 小时档
 router.put('/moment-freq', (req, res) => {
   const { value, mode } = req.body;
   if (!Number.isFinite(value) || value < 0 || value > 24) {
@@ -515,7 +567,9 @@ router.put('/moment-freq', (req, res) => {
   if (mode !== undefined && (mode !== 'default' && mode !== 'interval' || mode === 'default' && value !== 1)) {
     return res.status(400).json({ error: 'mode must be interval, or default with value=1' });
   }
+  const previousFeatures = { ...config.features };
   updateMomentFreq(value, mode);
+  refreshMomentFrequency(previousFeatures);
   res.json({ ok: true, momentFreq: config.features.momentFreq, momentFreqMode: config.features.momentFreqMode });
 });
 

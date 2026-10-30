@@ -65,6 +65,9 @@ function _connect() {
   if (_conn && !_conn._closed) _conn.close()
 
   _conn = api.connectUnifiedStream({
+    speech_cache_cleared: d => _dispatch('speech_cache_cleared', d),
+    speech_update: d => _dispatch('speech_update', d),
+    speech_preparing: d => _dispatch('speech_preparing', d),
     connected:         () => { _dispatch('connected', {}); _stableTimer = setTimeout(_onStable, 15000) },
     // 登记：`disconnected` 由 _scheduleReconnect() 派发（连接层状态，非后端广播），
     // 这里登记名字是为了通过 sseNoDeadBroadcast 守卫（有订阅方 ⇒ 名单必须有登记）。

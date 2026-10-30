@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-view">
+  <div class="chat-view" @pointerdown.capture="onSpeechPointerDown" @pointermove.capture="onSpeechPointerMove" @pointercancel="clearSpeechBubble">
     <div v-if="!chat.activeCharId" class="empty-state">
     </div>
 
@@ -51,7 +51,7 @@
         正常 column 布局：最旧消息在顶部，最新消息在底部
         新消息到达时 JS 平滑滚底，与列表高度变化同步
       -->
-      <div ref="msgList" class="message-list" @scroll="onScroll">
+      <div ref="msgList" class="message-list" @scroll="onScroll(); clearSpeechBubble()">
         <!-- 加载指示器置于列表顶部 → 用户上滚到顶部时自动展开更早消息 -->
         <div v-if="chat.hasMoreOlder" class="load-older load-older-hint">↑ 向上滚动加载更多</div>
 
@@ -125,8 +125,18 @@
                   <circle cx="64" cy="5" r="3" class="dot dot-5" />
                 </svg>
               </div>
-              <div v-else-if="item.msg.content" class="msg-bubble">
+              <div
+                v-else-if="item.msg.content" class="msg-bubble"
+                :class="{ 'has-speech': speechEnabled && item.msg.role === 'assistant' && item.msg.speech_message_id, 'speech-revealed': touchedSpeechBubble === item.id }"
+                @pointerup="revealSpeechBubble($event, item.id)"
+              >
                 <div class="msg-text" v-html="renderContent(item.msg.content)"></div>
+                <SpeechButton
+                  v-if="item.msg.role === 'assistant' && item.msg.speech_message_id"
+                  :auto-token="item.msg.speech_auto_token"
+                  :notify-errors="immersive"
+                  :key="`${chat.activeCharId}-${item.msg.speech_message_id}`" :character-id="chat.activeCharId" :character-name="chat.activeChar?.display_name" :message-id="item.msg.speech_message_id" :touch-target="isMobile"
+                />
               </div>
             </div>
 
@@ -737,6 +747,11 @@
 </template>
 
 <script setup>
+import SpeechButton from '../components/SpeechButton.vue'
+import { useSpeechBubbleControls } from '../composables/useSpeechBubbleControls.js'
+import '../styles/speechBubble.css'
+import { loadSpeech, stopSpeech, speechEnabled } from '../stores/speech.js'
+import { useSpeechAutoPlay } from '../composables/useSpeechAutoPlay.js'
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
@@ -784,9 +799,10 @@ import { useScheduleStore } from '../stores/schedule.js'
 
 const route = useRoute()
 const router = useRouter()
-
 // ── galgame 沉浸模式（上游 v3.9.0 合并）──
 // 模式由 URL query 驱动（?mode=galgame），普通侧与舞台各自 v-show，互不销毁、消息一份不丢。
+// 上游 v4.0.0 合并：语音气泡控制（长按/点击揭示并播放本条语音）
+const { touchedSpeechBubble, clearSpeechBubble, onSpeechPointerDown, onSpeechPointerMove, revealSpeechBubble } = useSpeechBubbleControls(() => route.params.id)
 const immersive = computed(() => route.query.mode === 'galgame')
 const galgameVisited = ref(immersive.value)
 // 进场动画中（普通侧还要多留一拍，等舞台铺开再撤）
@@ -807,6 +823,8 @@ const chat = useChatStore()
 // 程序时间：进页面拉一次偏移，消息时间统一按它显示（见 composables/useProgramClock.js）
 const clock = useProgramClock()
 clock.ensureLoaded()
+// 上游 v4.0.0 合并：进入会话后自动播放本会话新到的语音
+useSpeechAutoPlay(() => `chat:${route.params.id || chat.activeCharId}`)
 // 进场前的背景预载：角色/背景一换就重新解码，并用 modeRequest 作废上一轮（快速连点时只认最后一次）
 let galgameBackgroundImage = null
 let galgameBackgroundReady = Promise.resolve()
@@ -2018,6 +2036,7 @@ function teardownResizeObserver() {
 
 onMounted(async () => {
   await Promise.all([chat.loadCharacters(), loadUserAvatar(), settings.loadComfyConfig()])
+  if (chat.activeCharId) loadSpeech(chat.activeCharId).catch(() => {})
   scheduleStore.fetchOverview(true) // silent: 获取日程概览用于 header 显示
   const targetId = route.params.id ? parseInt(route.params.id) : (chat.characters.length > 0 ? chat.characters[0].id : null)
   if (targetId && targetId !== chat.activeCharId) {
@@ -2054,6 +2073,8 @@ let pendingCharSwitch = false
 
 // 切角色：停 Observer + 隐藏容器，等消息加载完成后滚底
 watch(() => chat.activeCharId, (id, oldId) => {
+  stopSpeech()
+  if (id) loadSpeech(id).catch(() => {})
   if (id && id !== oldId) {
     const routeId = parseInt(route.params.id)
     if (id !== routeId) router.replace('/chat/' + id)
@@ -2327,6 +2348,10 @@ function renderContent(text) {
 .msg-bubble {
   max-width:75%; padding:10px 14px; border-radius:8px;
   font-size:14px; line-height:1.6; word-break:break-word;
+}
+.msg-bubble.has-speech {
+  max-width:min(75%, calc(100% - 102px));
+  margin-right:52px;
 }
 /* 赛璐璐漫画格气泡：尖角朝向说话方 + 描边 + 微硬阴影 */
 .message.user .msg-bubble {

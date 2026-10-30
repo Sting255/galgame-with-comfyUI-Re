@@ -292,7 +292,15 @@
         <span>立绘管理</span>
       </div>
 
-      <!-- 招募卡片：永远在第一格 -->
+      <!-- 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色，弹窗内收 */
+      <div key="voice-manage" class="char-card emoji-manage-card" role="button" tabindex="0" @click="showVoiceLibrary = true" @keydown.enter.prevent="showVoiceLibrary = true" @keydown.space.prevent="showVoiceLibrary = true">
+        <div class="emoji-manage-icon">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="12" y="3" width="8" height="16" rx="4"/><path d="M7 14v2a9 9 0 0 0 18 0v-2M16 25v4M11 29h10"/></svg>
+        </div>
+        <span>音色管理</span>
+      </div>
+
+      <!-- 招募卡片：管理入口之后 -->
       <div key="recruit" class="char-card recruit-card" @click="openRecruit">
         <div class="recruit-plus">+</div>
         <span>招募</span>
@@ -758,6 +766,7 @@
 
       <EmojiManagerModal v-if="showEmojiManager" :characters="sortedCharacters" @close="showEmojiManager = false" />
       <AssetGenerationModal v-if="showAssetGen" :characters="sortedCharacters" @close="showAssetGen = false" />
+      <VoiceLibraryModal v-model="showVoiceLibrary" :characters="sortedCharacters" />
 
     <CharacterFolderManager
       v-model="showFolderManager"
@@ -788,6 +797,7 @@ import BackpackModal from '../components/BackpackModal.vue'
 import NewspaperModal from '../components/NewspaperModal.vue'
 import EmojiManagerModal from '../components/EmojiManagerModal.vue'
 import AssetGenerationModal from '../components/AssetGenerationModal.vue'
+import VoiceLibraryModal from '../components/VoiceLibraryModal.vue'
 import AppearanceRefineModal from '../components/AppearanceRefineModal.vue'
 // 上游 v3.10.0 合并（2026-10-19）：立绘管理 / SillyTavern 世界书 / SillyTavern 预设
 import StandingManagerModal from '../components/StandingManagerModal.vue'
@@ -819,6 +829,8 @@ const showLorebook = ref(false)
 const showPromptPresets = ref(false)
 /** 一键后台生成全部角色资产（立绘/表情包/表情立绘） */
 const showAssetGen = ref(false)
+/** 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色库 */
+const showVoiceLibrary = ref(false)
 const mailboxUnread = computed(() => mailboxStore.unreadCount)
 const backpackChestReady = computed(() => backpackStore.chestReady)
 

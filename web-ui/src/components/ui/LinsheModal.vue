@@ -6,7 +6,7 @@
        永远解析不到宿主（遮罩退到 body），而且那套轮询把测试文件挂死过 —— 已按上游退回。 -->
   <Teleport :to="anchor || 'body'" defer>
     <Transition name="modal-fade" :duration="transitionMs">
-      <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored }" :style="transitionMs ? {'--linshe-modal-duration':`${transitionMs}ms`} : undefined" @click.self="close">
+      <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating }" :style="transitionMs ? {'--linshe-modal-duration':`${transitionMs}ms`} : undefined" @click.self="!floating && close()">
         <div class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic' }, panelClass]" @click.stop>
           <div class="modal-header">
             <h3 class="modal-title">{{ title }}</h3>
@@ -46,6 +46,7 @@ const props = defineProps({
   transitionMs: { type: Number, default: undefined },
   wide: { type: Boolean, default: false },   // 面板加宽（.modal-wide）
   full: { type: Boolean, default: false },   // 大型管理面板（.modal-full）
+  floating: { type: Boolean, default: false }, // 右下角无阻挡工具窗，复用统一面板皮肤
   panelClass: { type: [String, Array, Object], default: '' },
   bodyClass: { type: [String, Array, Object], default: '' },
   /**
@@ -118,6 +119,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 /* 宿主居中模式（传了 anchor）：遮罩被 Teleport 进宿主元素，fixed 改 absolute 铺满宿主，
    面板因此相对宿主左右居中，而不是相对视口居中。 */
 .linshe-modal-overlay.is-host-anchored { position: absolute; }
+.linshe-modal-overlay.is-floating { background:transparent; pointer-events:none; align-items:flex-end; justify-content:flex-end; }
+.linshe-modal-overlay.is-floating .modal-panel { pointer-events:auto; width:min(420px,100%); }
 /* 面板宽度上限改按宿主宽度算：基座的 94vw/96vw 是视口口径，宿主被侧栏占去一块后会顶出边界 */
 .linshe-modal-overlay.is-host-anchored .modal-panel { max-width: 100%; }
 

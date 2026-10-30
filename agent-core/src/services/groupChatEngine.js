@@ -551,7 +551,7 @@ export function buildGroupContext(group, directiveBlocks = [], { excludeTimeRang
     : '';
 
   const { transcript } = buildTranscript(db, conversationId, ranges);
-  const transcriptMessage = `<group_transcript>\n${transcript || '（群聊刚建立，还没有消息）'}\n</group_transcript>`;
+  const transcriptMessage = `<group_transcript>\n${transcript || ''}\n</group_transcript>`;
 
   const directive = directiveBlocks.filter(Boolean).join('\n');
   const worldRulePrefix = getWorldSetting()

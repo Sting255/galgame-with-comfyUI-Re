@@ -423,15 +423,15 @@ ${imagePromptInstruction}${weatherHint}${multiPersonImageNote}
   "title": "事件标题事件标题（≤8字，口语感叹。从你刚写完的事件场景里抓最戳人的那个瞬间，用角色第一反应的口吻喊出来——不要给事件'取名'，是替角色喊出ta看到/发现/意识到时脑子里蹦出来的那句话。正确：包裹在动……|谁寄来的？！|钥匙怎么还在她这里。错误：神秘包裹降临|意外来客——这些是在概括事件类型。禁止万能感叹'天哪''不是吧''怎么会'——必须带上这个事件的具体信息点）",
   "description": "场景叙述（80-150字。
 不要像讲故事，而像镜头正在发生：
-- 行动需要符合当前天气和时间，但禁止直接提及天气时间",
+- 行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及",
   "prompt": "（这里填**你写好的那一整段英文画面描述**：按上面的规范，写清场景环境、谁在做什么、道具与光线氛围；角色名写成 character(series) 并在首次出现时带外观锚点。整段连贯英文，严禁中文，严禁照抄上面的规范原文。示例：A dim dormitory room at night, a girl with long silver-grey hair in a high ponytail lies back on the bed while another girl in a blue blouse kneels beside her holding a camera, warm bedside lamp light mixed with a cool screen glow, conveying an atmosphere of intimate chaos）",
   "choiceA": "选项A（具体行动，8-15字。符合${displayName}的性格和当下处境）",
-  "choiceB": "选项B（与A形成真正的行动对比——不符合${displayName}的个性，会将事件往意料之外但符合<world_setting>的情况发展。8-15字）"
+  "choiceB": "选项B（与A在动机、策略或代价上有实际差异，同样能从${displayName}的性格与当下处境自然推出。8-15字）"
 }
 
 选项设计原则：
-- A和B必须是性质完全不同的两条路径——读者感受到它们通往不同的情绪走向
-- **但两条路径都必须能从${displayName}的性格和当下处境中自然推出**
+- A和B体现不同的动机、策略或代价，让读者能理解为什么会选择其中一条
+- 两条路径都应有${displayName}当前性格与处境下的理由，可体现同时存在的不同需要，不固定为顺从性格与违背性格；都必须可执行，并符合世界规则
 - 避免两个"本质上差不多"的选项
 - 根据场景选择最合适的对比维度：做vs不做、直面vs绕开、自己解决vs求助、立刻vs等等、坦白vs保留、介入vs旁观`;
 
@@ -477,6 +477,10 @@ ${customKeyUnderstanding}
   // [3] Director instructions — stable per character
   msgs.push({ role: 'system', content: `你正在为「${displayName}」截取今天生活中的一小段。
 
+【人物与表达】
+- 人设决定角色注意什么、如何理解眼前的事、怎么说话；保留具体反应和关系分寸，不为展示性格标签而安排台词。
+- 趣味可以来自不同的理解、小事的后果或人物态度，不必强加笑点、反差或意外。人物可以认真处理、短暂沉默或顺利完成手头的事。
+
 【人称】
 - 指代角色只用「她」「他」「ta」「${displayName}」，不使用「你」
 - 叙述始终贴着角色此刻的感知。读者看到什么、听到什么、注意到什么，都应与角色保持一致，不跳出角色视角解释世界。
@@ -499,7 +503,7 @@ ${customKeyUnderstanding}
 - 避免为制造戏剧性，直接把角色挪到另一个无关地点再触发事件
 
 ${worldPenetrationLine}
-【天气约束】description中行动需要符合当前天气和时间，但禁止直接提及天气时间` });
+【天气约束】description中行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及` });
 
   // [4] Character persona — stable per character
   msgs.push({ role: 'system', content: personaMsg });
@@ -1010,16 +1014,16 @@ ${branchImagePromptInstruction}${weatherHint}${multiPersonImageNote2}
 「Scene Setting」「Environment & Props」「Hard Rules」这类规范字样。
 
 {
-  "description": "选择后的场景叙述场景叙述，承接上一个选择的结果，展现角色此刻的即时感受和新出现的局面。场景转折要出乎意料但又在情理之中（80-150字）。
+  "description": "选择后的场景叙述，兑现上一个选择，写清实际结果和角色反应，让事情有所进展，不必每幕制造转折（80-150字）。
 
 采用紧密第三人称（她/他/ta），始终贴着角色当下的感知与动作，不解释、不总结、不评价。
 
 不要像讲故事，而像镜头正在发生：
 - 结尾停在『必须做出选择之前』，留下悬念，不提前进入结果。
-- 行动需要符合当前天气和时间，但禁止直接提及天气时间。",
+- 行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及。",
   "prompt": "（这里填**你写好的那一整段英文画面描述**：按上面的规范，写清承接这次选择之后的场景、谁在做什么、道具与光线氛围；整段连贯英文，严禁中文，严禁照抄上面的规范原文）",
   "choiceA": "新选项A（具体行动。必须符合${displayName2}的个性——是ta此刻真的会做出来的事。8-15字）",
-  "choiceB": "新选项B（与A形成真正的行动对比——不符合${displayName2}的个性，会将事件往意料之外但符合<world_setting>的情况发展。8-15字）"
+  "choiceB": "新选项B（与A在动机、策略或代价上有实际差异，同样能从${displayName2}的性格与当下处境自然推出，不为制造反差而违背人设。8-15字）"
 }`;
 
   // 只有多人模式才注入关系信息（和初始事件生成一致）
@@ -1035,8 +1039,7 @@ ${branchImagePromptInstruction}${weatherHint}${multiPersonImageNote2}
   const directorPrompt2 = `事件标题：${event.title}
 ${timeTag2}${historyText}${multiNote2}${funFromNote2}
 
-**核心要求——让分支有趣**：接下来的场景不能是"选了A所以A发生了"的平铺直叙。读者选择之后应该经历一个"没想到会这样——但仔细一想确实合理"的转折。这个转折可以来自：
-- 另一个角色的反应方式出乎意料（但符合那个人的人设）
+**核心要求——选择带来实际进展**：先兑现所选行动，写清实际结果和角色反应。顺利完成一件事、态度变化、具体发现或一段有分寸的对话都可以推进事件，不必每幕制造意外。自然出现的转折须有已有情节与人物动机的依据，符合世界规则，不能取消或改写玩家已经选择的行动。
 
 **剧情推进（必须发生）**：${choice.label}${choiceExtra}
 
@@ -1064,7 +1067,14 @@ ${timeTag2}${historyText}${multiNote2}${funFromNote2}
   msgs.push({ role: 'system', content: `你正在为「${displayName2}」的特殊事件生成下一幕——一段紧密第三人称叙事。上一幕中角色做出了选择，现在展现选择之后发生的事情，选择已经完成，描述的是选择的结果。
 
 ${worldPenetrationLine2}
-【天气约束】description中行动需要符合当前天气和时间，但禁止直接提及天气时间` });
+人设决定角色关注的细节、措辞和关系分寸，不为制造笑点或反差而突然改变性格。允许认真处理、短暂沉默和顺利完成；事情已经有结果时，给人物反应留出空间，不急着追加麻烦。选项体现不同动机、策略或代价，都要有当下的理由。
+
+【避免长线重复】
+- 对照已有历史，尤其最近三幕：本幕必须有新的实际结果，不能只换措辞、道具或人物，重复同一种行动、障碍和选项。
+- 已解决的问题和已获得的成果继续有效，不为制造意外把剧情重置到原来的困境。
+- 同一小目标若已拖延多幕，本幕给它明确结果，再提供有实际差异的后续选择，不必引入新冲突；用户明确要求重复尝试时照做并写出不同反馈。
+
+【天气约束】description中行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及` });
 
   // [4] Character persona — stable per character
   msgs.push({ role: 'system', content: personaMsg2 });

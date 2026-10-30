@@ -25,10 +25,20 @@ export function getSetting(key) {
 
 // 有意不纳入 SETTING_TO_CONFIG 的 DB-only 键（用于存储时间戳等运行时状态，不走 config 加载路径）
 const DB_ONLY_KEYS = new Set([
+  'moment_interval_schedule',
+  'tts_enabled',
+  'tts_auto_play',
+  'tts_emotion_enhancement',
+  'tts_mode',
+  'tts_local_model',
+  'tts_api_config',
+  'tts_api_key',
   'last_moments_seen_at',
   'last_events_seen_at',
   'llm_profiles',
   'active_llm_profile_id',
+  'novelai_profiles',
+  'active_novelai_profile_id',
   'memory_settings',
   'workflow_mode_auto_detected',
   'maibot_webui_url',

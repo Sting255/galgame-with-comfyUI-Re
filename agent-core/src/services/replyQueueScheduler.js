@@ -32,6 +32,8 @@ import { createTownActorRegistry } from './town/townActorRegistry.js';
 import { runProgramDayRollover } from './programDayRollover.js';
 // 上游 v3.9.0 合并：朋友圈回填自己会刷新到期日程，补发进行中时本调度器的日程刷新让位
 import { isMomentBackfillRunning } from './momentBackfill.js';
+// 上游 v4.0.0 合并：媒体内容页到点补帖与状态自愈（日报由 runProgramDayRollover 统一调度，此处不重复）
+import { maybeAutoGenerate as maybeAutoGenerateMedia, resetStaleMediaGenerating, initializeMediaAutoSchedule } from './mediaService.js';
 
 const CHECK_INTERVAL = 1 * 60 * 1000; // 1 分钟
 
@@ -43,6 +45,12 @@ let processing = false;
 export function startReplyQueueScheduler() {
   if (timer) return;
   console.log('[replyQueue] Scheduler started (interval: 1min)');
+
+  // 启动自愈：把上次进程中断时遗留的「正在生成」放回可重试。
+  // 生图队列在内存里，重启即丢，DB 状态却会停在 generating —— 不重置的话那几条
+  // 既不会被重新排队，也会被 repairMissingImages 跳过，等于永久坏掉。
+  try { resetStaleMediaGenerating(); } catch (e) { console.error('[replyQueue] media 状态自愈失败:', e.message); }
+  initializeMediaAutoSchedule();
 
   // 首次延迟 10 秒启动（等待 DB 就绪）
   timer = setTimeout(() => {
@@ -76,6 +84,10 @@ async function tick() {
     runProgramDayRollover({ reason: 'tick' }).catch(err => {
       console.warn('[rollover] tick 触发失败（已忽略）:', err?.message || err);
     });
+
+    // 0.5 媒体内容页：仅到点补一批新帖（fire-and-forget，内部节流与并发守卫）。
+    // dev 启动时已初始化等待间隔；配图只由新批次或前端按需触发。
+    maybeAutoGenerateMedia();
 
     // 1. 日程分散刷新（每次 tick 最多 1 个角色）
     await maybeRefreshOneSchedule();
