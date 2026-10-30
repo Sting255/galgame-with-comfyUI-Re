@@ -1105,6 +1105,29 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
     directiveBlocks.push(dossierBlock);
   }
 
+  // 此刻的作息（2026-10-31 用户口径：睡着的人不参与对话；但醒着的人可以叫醒她）。
+  // 特意放这里而不是群名片里：群名片是稳定前缀块，睡眠状态写进去会让前缀每轮都可能变，
+  // 前缀缓存整块失效（这条链路命中率本来就低）。
+  try {
+    const sleepState = group.members.map(m => ({
+      name: m.display_name,
+      sleeping: Boolean(isSleeping(m.id).sleeping),
+    }));
+    const sleepers = sleepState.filter(s => s.sleeping).map(s => s.name);
+    if (sleepers.length > 0) {
+      const awake = sleepState.filter(s => !s.sleeping).map(s => s.name);
+      directiveBlocks.push(
+        '【此刻的作息】\n'
+        + `- 睡着（本轮不要替她们写台词，也不要让她们接话）：${sleepers.join('、')}\n`
+        + `- 醒着：${awake.join('、') || '（都睡了）'}\n`
+        + '- 睡着的人不会主动开口。醒着的人在对话里明确去叫她（喊名字、推她、掀被子）时，她可以先给一句迷糊的回应，再接着睡或者刚醒过来。\n'
+        + '- 用户直接点名/艾特的人不受这条限制，必须回应。'
+      );
+    }
+  } catch (err) {
+    console.warn('[group] sleep state inject failed:', err.message);
+  }
+
   // 记忆召回范围：**只含本群会话**（成员私聊记忆不走 RAG，见 buildGroupRoundMemoryScope 的说明）。
   // 口径选择（本仓保留 task-36 隐私收窄）：上游 3.6.0 把这里放宽成「本群 + 全体成员各自私聊」，
   // 会把成员的私事塞进全体共享的群 prompt；本仓维持只含本群，成员私聊记忆只走各自的小节。

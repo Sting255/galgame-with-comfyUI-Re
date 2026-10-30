@@ -1036,6 +1036,30 @@ type="range" min="0" max="1" step="0.1"
           </div>
           <span class="bystander-value">{{ bystanderPercent }}%</span>
         </div>
+
+        <!-- 群聊记忆轮次（2026-10-31 用户要求可开到 30 轮）：
+             一轮＝全体成员各说一遍；轮次越大记得越久，但每次请求的 prompt 也越大。 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">群聊记忆轮次</div>
+            <div class="td">一轮＝全体成员各说一遍。调大后记得更久；30 轮时每次请求约 3~5 万 tokens，更慢也更贵</div>
+          </div>
+          <span class="bystander-value">{{ groupMemRounds }} 轮</span>
+        </div>
+        <div class="bystander-row">
+          <div class="bystander-slider">
+            <linshe-slider
+              id="group-mem-rounds"
+              v-model="groupMemRounds"
+              :min="2"
+              :max="30"
+              :step="1"
+              aria-label="群聊记忆轮次"
+              @change="saveGroupMemRounds"
+            />
+          </div>
+          <span class="bystander-value">{{ groupMemRounds }} 轮</span>
+        </div>
       </div>
 
       <!-- 生图服务连接 -->
@@ -1699,7 +1723,7 @@ import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/
 import { validateVertexServiceAccount } from '../api/index.js'
 import DeepseekSetup from '../components/DeepseekSetup.vue'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, downloadDataArchive, getDataExportInfo, importDataArchive, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, downloadDataArchive, getDataExportInfo, importDataArchive, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
@@ -3525,6 +3549,26 @@ function clampPercent(value) {
 
 const bystanderEnabled = ref(true)
 const bystanderPercent = ref(BYSTANDER_DEFAULT_PERCENT)
+
+// ── 群聊记忆轮次（2026-10-31 用户要求可开到 30 轮）──
+// 后端 PUT /api/config/group-summary-interval 接受 2~30；值落在 system_settings 里，所有群共享。
+const groupMemRounds = ref(4)
+getConfig()
+  .then(c => {
+    const n = Number(c?.groupChat?.summaryInterval ?? c?.values?.['groupChat.summaryInterval'])
+    if (Number.isFinite(n) && n >= 2) groupMemRounds.value = Math.min(30, Math.round(n))
+  })
+  .catch(() => {})
+async function saveGroupMemRounds(value) {
+  const n = Math.min(30, Math.max(2, Math.round(Number(value) || 4)))
+  groupMemRounds.value = n
+  try {
+    await updateGroupSummaryInterval(n)
+    toastFn?.(`群聊记忆已设为 ${n} 轮`, 'success')
+  } catch (err) {
+    toastFn?.('群聊记忆轮次保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
 
 // 载入 / 回滚后同步本地开关与滑块；**关闭时保留上次的百分比**，方便再打开
 watch(() => features.touchBystanderChance, (value) => {

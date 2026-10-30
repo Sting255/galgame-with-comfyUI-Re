@@ -503,10 +503,11 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     temperature: parseFloat(process.env.GROUP_CHAT_TEMPERATURE) >= 0.5 && parseFloat(process.env.GROUP_CHAT_TEMPERATURE) <= 1.2
       ? parseFloat(process.env.GROUP_CHAT_TEMPERATURE)
       : 0.7,
-    // 群聊记忆总结/滑动窗口推进轮次（2~6），所有群共享；DB system_settings 持久化，启动时覆盖默认值
+    // 群聊记忆总结/滑动窗口推进轮次（2~30），所有群共享；DB system_settings 持久化，启动时覆盖默认值
+    // 2026-10-31 用户要求把上限从 6 提到 30（要更长的对话记忆），transcript 上限随之放大
     summaryInterval: (() => {
       const n = parseInt(process.env.GROUP_CHAT_SUMMARY_INTERVAL, 10);
-      return Number.isInteger(n) ? Math.max(2, Math.min(6, n)) : 4;
+      return Number.isInteger(n) ? Math.max(2, Math.min(30, n)) : 4;
     })(),
   },
   weather: {
