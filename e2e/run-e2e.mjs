@@ -1238,12 +1238,13 @@ async function checkJailbreakRules(page) {
   record('J2b', '页面顶部「当前生效」显示规则集名', effectiveName.length > 0 ? 'PASS' : 'FAIL', '当前生效=' + effectiveName)
   await shot(page, 'J2-jailbreak-page')
 
-  // J3：列表三套 + 内置标签
+  // J3：内置预置全部带「内置」标签，且不少于三套。
+  // 本 fork 在上游三套预置之外追加了「紧凑版（默认）」，所以实际是 4 行 —— 这里不写死条数。
   const rows = page.locator('.jailbreak-page .rule-row')
   const rowCount = await rows.count()
   const builtinTags = await page.locator('.jailbreak-page .rule-row .tag.builtin').count()
-  record('J3', '规则集列表有三套预置，且内置项带「内置」标签',
-    rowCount === 3 && builtinTags >= 3 ? 'PASS' : 'FAIL',
+  record('J3', '规则集列表的内置预置齐全，且内置项带「内置」标签',
+    rowCount >= 3 && builtinTags >= rowCount ? 'PASS' : 'FAIL',
     `行数=${rowCount} 内置标签=${builtinTags}`)
   void rows
 

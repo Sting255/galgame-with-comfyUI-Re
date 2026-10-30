@@ -292,7 +292,7 @@
         <span>立绘管理</span>
       </div>
 
-      <!-- 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色，弹窗内收 */
+      <!-- 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色，弹窗内收 -->
       <div key="voice-manage" class="char-card emoji-manage-card" role="button" tabindex="0" @click="showVoiceLibrary = true" @keydown.enter.prevent="showVoiceLibrary = true" @keydown.space.prevent="showVoiceLibrary = true">
         <div class="emoji-manage-icon">
           <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="12" y="3" width="8" height="16" rx="4"/><path d="M7 14v2a9 9 0 0 0 18 0v-2M16 25v4M11 29h10"/></svg>
