@@ -386,9 +386,9 @@ class SettingsPage(QWidget):
             '<span style="color: #C9C0BB; font-size: 11px;"> · </span>'
         ))
         repo_label = QLabel(
-            '<a href="https://github.com/Sting255/galgame-with-comfyUI-"'
+            '<a href="https://github.com/Sting255/linshe-gai"'
             ' style="color: #B09890; text-decoration: none; font-size: 11px;">'
-            'github.com/Sting255/galgame-with-comfyUI-</a>'
+            'github.com/Sting255/linshe-gai</a>'
         )
         repo_label.setOpenExternalLinks(True)
         repo_row.addWidget(repo_label)

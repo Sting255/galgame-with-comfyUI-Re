@@ -82,7 +82,7 @@ The package includes portable runtimes, dependencies, and the frontend build. An
 The commands below use **Windows PowerShell**. Use **Node.js 22.18+ (22.x)**, **Python 3.12 with venv**, and **Git** to align with the packaging script.
 
 ```powershell
-git clone https://github.com/Sting255/galgame-with-comfyUI-.git
+git clone https://github.com/Sting255/linshe-gai.git
 cd galgame-with-comfyUI
 
 npm --prefix agent-core install

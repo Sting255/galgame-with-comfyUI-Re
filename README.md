@@ -155,7 +155,7 @@
 以下为 **Windows PowerShell** 步骤。环境建议与打包脚本对齐：**Node.js 22.18+（22.x）**、**Python 3.12（含 venv）**、**Git**。
 
 ```powershell
-git clone https://github.com/Sting255/galgame-with-comfyUI-.git
+git clone https://github.com/Sting255/linshe-gai.git
 cd galgame-with-comfyUI
 
 npm --prefix agent-core install

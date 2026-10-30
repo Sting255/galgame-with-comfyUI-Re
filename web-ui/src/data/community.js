@@ -20,9 +20,9 @@ export const COMMUNITY_LINKS = [
   {
     key: 'github',
     label: 'GitHub 仓库',
-    text: 'Sting255/galgame-with-comfyUI-',
-    url: 'https://github.com/Sting255/galgame-with-comfyUI-',
-    title: 'https://github.com/Sting255/galgame-with-comfyUI-',
+    text: 'Sting255/linshe-gai',
+    url: 'https://github.com/Sting255/linshe-gai',
+    title: 'https://github.com/Sting255/linshe-gai',
   },
   {
     key: 'bilibili',
