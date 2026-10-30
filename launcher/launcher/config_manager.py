@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, Signal
 
 
 DEFAULT_CONFIG = {
-    "repo_url": "https://github.com/Sting255/linshe-gai.git",
+    "repo_url": "https://github.com/Sting255/galgame-with-comfyUI-Re.git",
     "comfyui_exe": "",
     "auto_open_browser": True,
     "check_comfyui_before_start": True,
