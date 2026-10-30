@@ -1,11 +1,11 @@
 # Linshe.EXE (邻舍.EXE)
 
-[中文](./README.md) · [Download](https://github.com/icecranberry/galgame-with-comfyUI/releases)
+[中文](./README.md) · [Download](https://github.com/Sting255/galgame-with-comfyUI-Re/releases)
 
 A local-first AI character companion inspired by visual novels. Create characters and worlds whose conversations, memories, emotions, schedules, and generated images evolve together.
 
 > [!NOTE]
-> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v3.10.0, current version **v3.10.1**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
+> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v3.10.0, current version **v3.10.2**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
 
 ## Project demo video (Chinese)
 
@@ -69,7 +69,7 @@ Chats, characters, and images are stored locally. Cloud language models, image p
 
 ### Windows release package
 
-1. Download and extract `邻舍.EXE-vX.Y.Z.zip` from [Releases](https://github.com/icecranberry/galgame-with-comfyUI/releases), then run `邻舍.EXE.exe`.
+1. Download and extract `邻舍.EXE-vX.Y.Z.zip` from [Releases](https://github.com/Sting255/galgame-with-comfyUI-Re/releases), then run `邻舍.EXE.exe`.
 2. Click 「启动邻舍」 on the launcher's home page. The browser opens automatically.
 3. Configure the LLM API address, key, and model in web **Settings**. OpenAI-compatible endpoints are supported.
 4. Configure image generation as needed: ComfyUI requires the models and nodes used by the workflow (default address: `http://localhost:8188`); NovelAI requires its endpoint and key.
@@ -83,7 +83,7 @@ The commands below use **Windows PowerShell**. Use **Node.js 22.18+ (22.x)**, **
 
 ```powershell
 git clone https://github.com/Sting255/linshe-gai.git
-cd galgame-with-comfyUI
+cd galgame-with-comfyUI-Re
 
 npm --prefix agent-core install
 npm --prefix web-ui install

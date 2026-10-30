@@ -1,20 +1,15 @@
 # 邻舍.EXE
 
-[English](./README_EN.md) · [下载](https://github.com/icecranberry/galgame-with-comfyUI/releases)
+[English](./README_EN.md) · [下载](https://github.com/Sting255/galgame-with-comfyUI-Re/releases)
 
 邻舍.EXE 是一款受 Galgame 启发的 AI 角色陪伴应用。用户可以创建具有独立人格、情绪、记忆和生活节奏的角色，与她们聊天，并在朋友圈、信箱、日程、群聊和随机事件中持续互动。角色还能够根据对话和当前场景主动调用 ComfyUI 生成图片，让文字交流自然延伸成视觉体验。
 
 它想解决的问题很简单：普通 AI 聊天机器人往往只是在“回答问题”，而邻舍.EXE 希望让角色表现得更像一个持续生活着的人。
 
-> **本仓库是 [邻舍.EXE](https://github.com/icecranberry/galgame-with-comfyUI) 的个人增强 fork**：上游基线 v3.10.0（2026-10-19），当前版本 **v3.10.1**。除上游功能外，本 fork 重做了外观与体型系统、新增「地图」页（世界地理骨架）、把 84 个体位数据融进对话与生图链路，并针对本地 LLM 网关的几处缺陷加了一层兜底；上游原有的「世界/小镇」页已在本地剥离。详见下方「🧩 本 Fork 新增功能」。
-
----
-
-## 💡 一句话介绍
-
-邻舍.EXE 是一款受 Galgame 启发的 AI 角色陪伴应用。用户可以创建具有独立人格、情绪、记忆和生活节奏的角色，与她们聊天，并在朋友圈、信箱、日程、群聊和随机事件中持续互动。角色还能够根据对话和当前场景主动调用 ComfyUI 生成图片，让文字交流自然延伸成视觉体验。
-
-它想解决的问题很简单：普通 AI 聊天机器人往往只是在“回答问题”，而邻舍.EXE 希望让角色表现得更像一个持续生活着的人。
+> [!NOTE]
+> **本仓库是 [邻舍.EXE](https://github.com/icecranberry/galgame-with-comfyUI) 的个人增强 fork**：上游基线 v3.10.0，当前版本 **v3.10.2**。
+> 除上游功能外，本 fork 重做了外观与体型系统、新增「地图」页（世界地理骨架）、把 84 个体位数据融进对话与生图链路、全站修了一轮文字对比度，并针对本地 LLM 网关的几处缺陷加了兜底；上游原有的「世界 / 小镇」页已在本 fork 移除。
+> 下面先列本 fork 的改动，再是上游原有功能介绍（内容与上游保持同步，仅下载与克隆地址指向本仓库）。
 
 ## 🧩 本 Fork 新增功能
 
@@ -79,7 +74,6 @@
 
 新增 `e2e/` 浏览器端到端验收（Playwright，覆盖全部主要模块的真实流程），`docs/` 下沉淀 20+ 篇专题设计文档（小镇经济、触摸系统、催眠手机、数据备份、记忆升级等）。
 
-
 ## 项目演示视频
 
 **[🤯这一定是一个不同以往的浪漫AI小镇♪~【超自定义的素材生成】【邻舍3.5】](https://www.bilibili.com/video/BV1tKab6CEp2/)**
@@ -142,7 +136,7 @@
 
 ### Windows 整合包
 
-1. 从 [Releases](https://github.com/icecranberry/galgame-with-comfyUI/releases) 下载并解压 `邻舍.EXE-vX.Y.Z.zip`，运行 `邻舍.EXE.exe`。
+1. 从 [Releases](https://github.com/Sting255/galgame-with-comfyUI-Re/releases) 下载并解压 `邻舍.EXE-vX.Y.Z.zip`，运行 `邻舍.EXE.exe`。
 2. 在启动器首页点击「启动邻舍」，浏览器会自动打开。
 3. 在网页「设置」中配置 LLM 的 API 地址、密钥和模型，支持 OpenAI 兼容接口。
 4. 按需配置生图服务：ComfyUI 需另行准备工作流所需模型与节点（默认地址 `http://localhost:8188`）；使用 NovelAI 时配置对应接口与密钥。
@@ -155,8 +149,8 @@
 以下为 **Windows PowerShell** 步骤。环境建议与打包脚本对齐：**Node.js 22.18+（22.x）**、**Python 3.12（含 venv）**、**Git**。
 
 ```powershell
-git clone https://github.com/Sting255/linshe-gai.git
-cd galgame-with-comfyUI
+git clone https://github.com/Sting255/galgame-with-comfyUI-Re.git
+cd galgame-with-comfyUI-Re
 
 npm --prefix agent-core install
 npm --prefix web-ui install
