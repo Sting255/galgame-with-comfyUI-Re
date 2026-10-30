@@ -1,6 +1,6 @@
 # Linshe.EXE (邻舍.EXE)
 
-[中文](./README.md) · [Download](https://github.com/Sting255/galgame-with-comfyUI-Re/releases)
+[中文](./README.md) · [Download](https://github.com/Sting255/galgame-with-comfyUI-Re/releases) · [Quark](https://pan.quark.cn/s/f1f723d0d983?pwd=1ssP) (code `1ssP`)
 
 A local-first AI character companion inspired by visual novels. Create characters and worlds whose conversations, memories, emotions, schedules, and generated images evolve together.
 
