@@ -887,6 +887,8 @@ export function buildReactionPrompt({
   // 缓存口径（2026-10-31）：稳定规则在前，每轮会变的状态后置（同 intimate 那条链）。
   if (emotionText) systemParts.push('', '【当前情绪】', String(emotionText).trim());
   if (hypnosisBlock) systemParts.push('', '【当前状态】', String(hypnosisBlock).trim());
+  // 格式兜底（同 intimate 那条链）：动态状态后置后，JSON 约束必须在最后再钉一次。
+  systemParts.push('', '只输出上面「严格按下面的 JSON 格式输出」要求的那个 JSON，不要输出任何解释或额外文字。');
   const system = systemParts.join('\n');
 
   const recent = (Array.isArray(recentLines) ? recentLines : [])
@@ -1045,6 +1047,9 @@ export function buildConversationReactionPrompt({
   if (schedule) systemParts.push('', '【她此刻正在做的事】', schedule);
   if (intimate) systemParts.push('', '【亲密档案】', intimate);
   if (hypnosis) systemParts.push('', '【当前状态】', hypnosis);
+  // 格式兜底（2026-10-31）：动态状态挪到末尾后，模型容易「顺着状态继续写」而忘记只输出 JSON。
+  // 实测 prompt 挪序后出现过一次 reactionText 为空，这条把它钉回最后。
+  systemParts.push('', '只输出上面「严格按下面的 JSON 格式输出」要求的那个 JSON，不要输出任何解释或额外文字。');
   const system = systemParts.join('\n');
 
   const limit = Math.max(0, Number.parseInt(maxRecentLines, 10) || CONVERSATION_RECENT_LINES);
