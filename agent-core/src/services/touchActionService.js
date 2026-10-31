@@ -851,9 +851,6 @@ export function buildReactionPrompt({
   ];
   systemParts.push(
     '',
-    '【她对「' + action.label + '」的偏好】' + likeRatioText(likeRatio),
-    '【她此刻的耐受】' + tierText,
-    '',
     '【写作要求】',
     '- 只写她这一下的反应：1~2 句，口语化，贴人格与当前情绪；不要旁白式总结，不要推进剧情，不要替 ' + who + ' 说话。',
     '- 用体感、表情、语气词表达（例如"缩了缩脖子""耳朵有点红"），**不要报幕**（不要写"' + who + '摸了摸我的头"）。',
@@ -887,6 +884,9 @@ export function buildReactionPrompt({
   // 缓存口径（2026-10-31）：稳定规则在前，每轮会变的状态后置（同 intimate 那条链）。
   if (emotionText) systemParts.push('', '【当前情绪】', String(emotionText).trim());
   if (hypnosisBlock) systemParts.push('', '【当前状态】', String(hypnosisBlock).trim());
+  // 偏好与耐受每轮都在变（耐受值递增、偏好统计随动作更新），留在写作要求里会把稳定前缀截断：
+  // 实测同一动作第二次请求命中率从 92% 掉到 15%。挪到动态区末尾。
+  systemParts.push('', '【她对「' + action.label + '」的偏好】' + likeRatioText(likeRatio), '【她此刻的耐受】' + tierText);
   // 格式兜底（同 intimate 那条链）：动态状态后置后，JSON 约束必须在最后再钉一次。
   systemParts.push('', '只输出上面「严格按下面的 JSON 格式输出」要求的那个 JSON，不要输出任何解释或额外文字。');
   const system = systemParts.join('\n');
@@ -996,9 +996,6 @@ export function buildConversationReactionPrompt({
   ];
   systemParts.push(
     '',
-    '【她对「' + action.label + '」的偏好】' + likeRatioText(likeRatio),
-    '【她此刻的耐受】' + tierText,
-    '',
     '【写作要求】',
     '- 像回一条聊天消息一样回应：**1~4 句**，第一人称（她的口吻），可以长可以短；不要旁白式总结，不要替 ' + who + ' 说话。',
     '- **顺着当前话题接话**：如果刚才聊到一半的事、她手头正在做的事、或你们之间的往事被这一下勾起来了，就顺着说下去（可以追问、打趣、撒娇、抗议）。',
@@ -1047,6 +1044,8 @@ export function buildConversationReactionPrompt({
   if (schedule) systemParts.push('', '【她此刻正在做的事】', schedule);
   if (intimate) systemParts.push('', '【亲密档案】', intimate);
   if (hypnosis) systemParts.push('', '【当前状态】', hypnosis);
+  // 同短版：偏好与耐受每轮都在变，放这里才不会截断稳定前缀。
+  systemParts.push('', '【她对「' + action.label + '」的偏好】' + likeRatioText(likeRatio), '【她此刻的耐受】' + tierText);
   // 格式兜底（2026-10-31）：动态状态挪到末尾后，模型容易「顺着状态继续写」而忘记只输出 JSON。
   // 实测 prompt 挪序后出现过一次 reactionText 为空，这条把它钉回最后。
   systemParts.push('', '只输出上面「严格按下面的 JSON 格式输出」要求的那个 JSON，不要输出任何解释或额外文字。');
