@@ -40,9 +40,15 @@ test('① 不传 imagePromptRule ⇒ system 逐字节等于改动前；传了 �
     assert.ok(without.length > 0, `${name}：没拿到 system（actionKey 非法？）`)
 
     const withRule = build({ ...BASE, imagePromptRule: rule }).system
-    // 唯一差别就是末尾追加的空行 + 规则 ⇒ 逐字节相等。这样以后谁在 system 中间乱插东西，这条会红。
-    assert.equal(withRule, `${without}\n\n${rule.trim()}`,
-      `${name}：带规则时应当**恰好**等于"原 system + 空行 + 规则全文"（纯后缀，不许改动既有文字）`)
+    // 2026-10-31：动态状态（情绪/日程/亲密档案/偏好/耐受）与格式兜底挪到了规则之后，
+    // 所以规则不再是 system 的"纯后缀"。这里改为钉住真正要保护的两件事：
+    //   ① 规则全文一字不差地出现在 system 里；② 不带规则时不许混入规则内容。
+    assert.ok(withRule.includes(rule.trim()),
+      `${name}：带规则时 system 必须包含规则全文`)
+    assert.ok(withRule.length > without.length,
+      `${name}：带规则应当比不带更长`)
+    assert.ok(!without.includes('Every character gets a complete sentence'),
+      `${name}：不带规则时 system 里不该混入生图规范`)
 
     // 反向钉：规则真的进去了，且是原作者要的那段。
     // ⚠️ 特征词别用 `(Series)` 这种带括号的写法 —— 规则原文里是**转义形态**（`\(Series\)`），
