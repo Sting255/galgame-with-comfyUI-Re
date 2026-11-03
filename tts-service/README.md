@@ -32,7 +32,7 @@ tts-service/
       └─ checkpoints/            # 2.0 权重、hf_cache 辅助模型、完整性清单
 ```
 
-用户录音、参考片段与生成语音仍在 `agent-core/data/audio`，角色绑定和参数在应用数据库中，不进入离线包。旧布局的 `runtime/index-tts` 与 `runtime/checkpoints-2.0` 会迁移到新目录，不覆盖已有新安装。已确认的旧 2.5 权重归档到 `cache/retired-indextts-2.5`，不再读取或打包。
+用户录音、参考片段与生成语音仍在 `agent-core/data/audio`，角色绑定和参数在应用数据库中，不进入离线包。旧布局的 `runtime/index-tts` 与 `runtime/checkpoints-2.0` 会尽量迁移到新目录，不覆盖已有新安装。已确认的旧 2.5 权重归档到 `cache/retired-indextts-2.5`，旧 2.5 源码归档到 `cache/retired-indextts-2.5-source`，不再读取或打包。`setup.ps1` 与 `restart.ps1` 都会执行 best-effort 迁移；`restart.ps1` 先停止旧服务，避免旧进程锁住待迁移目录。残缺旧目录或迁移失败会保留原目录并写入 `logs/tts-deploy.log`，不会阻塞声音服务启动。
 
 ## 安装与启动（Windows）
 
@@ -70,7 +70,7 @@ tts-service/
 .\tts-service\runtime\indextts-2.0\source\.venv\Scripts\python.exe -X utf8 .\tts-service\compact_runtime.py --apply
 ```
 
-迁移到另一台电脑后会修复虚拟环境的基础 Python 路径。已兼容 Python 3.11 路径文件、Kaldi FST 与 SentencePiece 的 Windows 中文路径问题，无需移动到英文目录或修改系统区域设置。离线包应与主程序版本匹配，不能手动修改清单版本号冒充兼容。
+打包时会移除 `.venv/pyvenv.cfg`、`_editable_impl_indextts.pth` 和 `indextts-*.dist-info/direct_url.json` 里的打包机绝对路径，首次启动由 `deployment.py prepare` 按当前解压位置补全；迁移到另一台电脑后也会自动修复虚拟环境的基础 Python 路径。已兼容 Python 3.11 路径文件、Kaldi FST 与 SentencePiece 的 Windows 中文路径问题，无需移动到英文目录或修改系统区域设置。离线包应与主程序版本匹配，不能手动修改清单版本号冒充兼容。
 
 ## 服务与显存调度
 
@@ -78,7 +78,26 @@ tts-service/
 
 `GET /health` 返回固定版本、就绪状态和工作进程状态；`POST /synthesize` 接收受控相对 WAV 路径；`POST /unload` 等待推理进程退出，释放完整 CUDA 上下文。合成先写临时文件，再原子发布。缺少停止 token 会缩短分段重试，仍异常则丢弃，不发布不完整音频。
 
-邻舍 GPU FIFO 与 `comfy_guard` 协调生图和语音：语音等待生图退出后获取 lease，语音期间阻止外部标准 prompt 提交。取消任务不会提前释放仍在推理的 GPU；确认卸载后才释放 lease。工作进程空闲时自动卸载。后端进程重启后的首次本地合成，会先检查服务空闲、确认旧工作进程已卸载，再恢复 ComfyUI 中遗留的 lease，避免空队列仍一直等待显存。忙碌或无法确认退出时保留锁并报错。独立官方 WebUI 不参与调度。
+邻舍默认**只让一个模型运行**：生图前卸载语音，合成前等生图结束，不安装任何 ComfyUI 插件也能工作。只有「ComfyUI 与语音服务都在本机」且**总显存 ≥ 12288 MiB** 时，才允许两个模型同时驻留。
+
+是否并行按四象限判定，先看地址、再看显存：
+
+| ComfyUI | 语音服务（`TTS_SERVICE_URL`） | 行为 |
+|---|---|---|
+| 远端 | 远端 | 并行；本机无 GPU 竞争 |
+| 远端 | 本地 | 并行；远端 ComfyUI 不占本机显存 |
+| 本地 | 远端 | 并行；本机只跑生图 |
+| 本地 | 本地 | 总显存 ≥ 12288 MiB 且空闲足够 → 并行；否则串行 |
+
+任一侧是远端时**不读取本机显存、也不向远端 ComfyUI 发送任何显存请求**——远端 ComfyUI 绝不会被要求释放 Anima 模型。
+
+`comfy_guard` 是**可选**插件：装上后，串行模式下语音会向本机 ComfyUI 取一份互斥 lease，拦住外部直接往 ComfyUI 提交的请求；未安装时自动降级为本地串行，不报错、不提示安装。并行模式不取 lease。同机首次使用仍会尝试清理旧 lease，连接失败等异常不会被当作无锁。安装方式：把 `tts-service/comfy_guard` 复制到 `ComfyUI/custom_nodes/linshe_tts_guard` 并重启 ComfyUI。
+
+远程 `COMFYUI_URL` 默认视为另一台机器，生图地址无需改成本机。如该地址实际通过隧道指回本机，设置 `TTS_COMFYUI_URL=http://127.0.0.1:8188`，单独指定同机显存调度地址，不改变生图链路。本机回环地址、主机名及网卡 IP 自动识别为同机。
+
+可在后端环境中设置 `TTS_GPU_SHARED_MIN_MB`（允许并行的总显存下限，默认 12288）、`TTS_GPU_BUDGET_MB`（语音冷启动模型预算，默认 6144）、`TTS_GPU_RESERVE_MB`（推理余量，默认 2048）调节阈值；单位均为 MiB，非法或非正值使用默认值。它们是保守估计，不是模型峰值的精确预测：大型工作流、较长语音及其他程序都可能改变后续显存峰值，应按实测提高余量。`TTS_GPU_MODE=shared` 强制并行，`TTS_GPU_MODE=exclusive` 强制串行并取 lease（两者都跳过显存探测）。多 GPU 默认不猜设备；设置与语音服务一致的 `CUDA_VISIBLE_DEVICES`（卡序号或完整 UUID），否则回退串行，不能跨卡累加可用显存。
+
+取消任务不会提前释放仍在推理的 GPU；确认卸载后才释放 lease。语音工作进程空闲 10 分钟自动卸载。后端进程重启后的首次本地合成，会先检查服务空闲、确认旧工作进程已卸载，再恢复同机 ComfyUI 中遗留的 lease。恢复与重启操作等待当前语音任务结束；忙碌或无法确认退出时保留锁并报错。独立官方 WebUI 不参与调度。
 
 本地合成请求发现服务离线时，在 GPU FIFO 内自动启动本项目已安装的服务并等待健康检查，然后继续合成；多个请求不会重复启动。启动采用 `restart.ps1 -StartOnly`，不会杀死正在启动或无响应的现有进程。在线但缺模型或版本不匹配时明确报错，不自动下载、不重启。远程地址及非 Windows 主机需在服务所在主机启动。
 
