@@ -3343,6 +3343,9 @@ export function migrateIntimateSceneSchema(db) {
       ['auto_thrust', 'INTEGER NOT NULL DEFAULT 0'],
       ['denial', 'INTEGER NOT NULL DEFAULT 0'],
       ['auto_pace', 'INTEGER NOT NULL DEFAULT 2'],
+      // 2026-11-03 睡眠玩法：sleep_bar = 睡眠条 0~100（越高越沉），forced_sleep = 催眠「无法醒来」
+      ['sleep_bar', 'INTEGER NOT NULL DEFAULT 100'],
+      ['forced_sleep', 'INTEGER NOT NULL DEFAULT 0'],
     ]) {
       const has = db.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('character_intimate_scene') WHERE name = ?").get(col).n;
       if (!has) {

@@ -479,6 +479,8 @@ router.post('/:id/:action', async (req, res) => {
       //   `auto: true` 表示"这一下是他自动插送的"（ticker 发来的那一轮，增益走 autoTickGain）
       pace: req.body?.pace,
       autoRun: req.body?.auto === true,
+      // 她此刻是否在睡（日程判定）：睡着时每个动作都会扣睡眠条，见 SLEEP_COST_*
+      sleeping: (() => { try { return Boolean(isSleeping(id).sleeping); } catch { return false; } })(),
     });
     const brief = actionBrief(action);
     if (!planned.ok) {

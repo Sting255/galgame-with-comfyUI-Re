@@ -359,6 +359,17 @@ const str = (value, max = 0) => {
   return max > 0 ? s.slice(0, max) : s;
 };
 
+/** 睡眠条：0 = 完全醒了，100 = 睡得正沉（口径见 docs 与 buildIntimateSceneBlock） */
+export const SLEEP_BAR_MAX = 100;
+/** 推进一下扣多少（换姿势/加速同算一下） */
+export const SLEEP_COST_THRUST = 6;
+/** 触摸一下扣多少 */
+export const SLEEP_COST_TOUCH = 3;
+/** 停下来每秒恢复（按时间差惰性补偿，不依赖 ticker） */
+export const SLEEP_RECOVER_PER_SEC = 5 / 90;
+/** 将醒阈值：条 ≤ 它就开始慢慢醒 */
+export const SLEEP_WAKE_THRESHOLD = 30;
+
 /** 空闲未开始的状态（没有行 / 已经收场都是这个形状） */
 export function emptySceneState(characterId = 0) {
   return {
@@ -383,6 +394,9 @@ export function emptySceneState(characterId = 0) {
     // 两者互不覆盖（以前自动轮直接借用 pace，想把自动插送调快就只能连手动节奏一起改）。
     autoPace: DEFAULT_PACE,
     denial: 0,
+    // 2026-11-03 睡眠玩法：睡眠条越高越沉；forcedSleep = 催眠「无法醒来」（条永远留 1 点，醒不过来）
+    sleepBar: SLEEP_BAR_MAX,
+    forcedSleep: 0,
     pendingNote: '',
     startedAt: null,
     lastActionAt: null,
@@ -421,6 +435,8 @@ export function normalizeSceneState(row, characterId = 0) {
     bondage: clampInt(row.bondage, 0, 31, 0),
     autoThrust: clampInt(row.autoThrust ?? row.auto_thrust, 0, 1, 0),
     denial: clampInt(row.denial, 0, 1, 0),
+    sleepBar: clampInt(row.sleepBar ?? row.sleep_bar, 0, SLEEP_BAR_MAX, SLEEP_BAR_MAX),
+    forcedSleep: clampInt(row.forcedSleep ?? row.forced_sleep, 0, 1, 0),
     rounds: clampInt(row.rounds, 0, 999999, 0),
     actionSeq: clampInt(row.actionSeq ?? row.action_seq, 0, Number.MAX_SAFE_INTEGER, 0),
     pendingNote: str(row.pendingNote ?? row.pending_note, 200),
@@ -429,6 +445,28 @@ export function normalizeSceneState(row, characterId = 0) {
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
     idleMs: row.idleMs ?? null,
   };
+}
+
+/**
+ * 睡眠条惰性恢复：按"距离上一次动作过了多久"补回去。
+ *
+ * 为什么不用 ticker：程序关一会儿再开、或者她在后台睡了一小时，纯 ticker 会把这段时间漏掉，
+ * 条就永远卡在低位。这里按时间差算，谁读谁算，不依赖进程活着。
+ * @param {object} state 规范化后的场景状态
+ * @param {number} nowMs
+ * @returns {object} 新的状态（sleepBar 已恢复，不落库）
+ */
+export function recoverSleepBar(state, nowMs = Date.now()) {
+  if (!state || !state.active) return state;
+  const bar = Number(state.sleepBar ?? SLEEP_BAR_MAX);
+  if (bar >= SLEEP_BAR_MAX) return state;
+  const lastRaw = state.lastActionAt || state.updatedAt;
+  const last = lastRaw ? Date.parse(String(lastRaw).replace(' ', 'T') + (String(lastRaw).includes('Z') ? '' : 'Z')) : NaN;
+  if (!Number.isFinite(last)) return state;
+  const elapsedSec = Math.max(0, (nowMs - last) / 1000);
+  if (elapsedSec < 5) return state;
+  const next = Math.min(SLEEP_BAR_MAX, bar + elapsedSec * SLEEP_RECOVER_PER_SEC);
+  return { ...state, sleepBar: Math.floor(next) };
 }
 
 /** 节奏档中文名（非法值回落「正常」） */
@@ -691,7 +729,7 @@ const reject = (code, message, state) => ({ ok: false, code, message, next: stat
  *   effects.climaxed = boolean  这一下把她推过了顶点
  *   effects.entered / stopped / changedPosition  便于路由与前端做细节提示
  */
-export function planIntimateAction(state, { actionKey, positionKey = '', affinity = 0, hypnotized = false, now = 0, sensitivity = 1, pace = null, autoRun = false } = {}) {
+export function planIntimateAction(state, { actionKey, positionKey = '', affinity = 0, hypnotized = false, now = 0, sensitivity = 1, pace = null, autoRun = false, sleeping = false } = {}) {
   const current = normalizeSceneState(state, state?.characterId);
   const action = getIntimateAction(actionKey);
   if (!action) return reject('unknown_action', '没有这个动作。', current);
@@ -704,6 +742,23 @@ export function planIntimateAction(state, { actionKey, positionKey = '', affinit
     rounds: current.rounds + 1,
     actionSeq: current.actionSeq + 1,
   };
+  // ── 睡眠条（2026-11-03 新玩法）──
+  // 她睡着的时候，每推一下都会把她往"醒"的方向拽一点；被催眠锁住时就永远差一口气醒不过来。
+  // 醒着的时候不扣（条只服务睡眠玩法，醒着没有意义）。
+  if (sleeping) {
+    // 先补回"静止这段时间"该恢复的，再扣这一下的 —— 顺序反了会出现"停很久还是醒不了"
+    const recovered = recoverSleepBar(current, now || Date.now());
+    current.sleepBar = recovered.sleepBar;
+    base.sleepBar = recovered.sleepBar;
+    // 插入类（抽插/加速/进入/自动）最"折腾"；换姿势、捆绑、玩具这些轻一点。
+    // 独立的触摸系统（摸头/摸腿那套）在 touchActionService 里走同一组常量。
+    const heavy = ['enter', 'thrust', 'faster', 'auto'].includes(action.key);
+    const cost = heavy ? SLEEP_COST_THRUST : SLEEP_COST_TOUCH;
+    const floor = current.forcedSleep ? 1 : 0;
+    const nextBar = Math.max(floor, clampInt(current.sleepBar, 0, SLEEP_BAR_MAX, SLEEP_BAR_MAX) - cost);
+    base.sleepBar = nextBar;
+    base.woke = !current.forcedSleep && nextBar <= 0;
+  }
   // 累积的夹取上限：**禁高潮的时候能一路涨过满格**（用户要的"高潮值一直累加"），
   // 不禁的时候由下面"到顶自动高潮"在 100 处收口 ⇒ 两个口径互不打架。
   const accumCap = DENIAL_MAX_ACCUMULATION;
@@ -1094,7 +1149,12 @@ export function buildIntimateSceneBlock(state, { chatUserName = '', affinityText
   if (hypnotized) {
     lines.push('【状态】她在催眠控制下：身体无条件接受，不写躲开 / 推开 / 拒绝，只写身体反应与内心的不甘。');
   } else if (sleeping) {
-    lines.push('【状态】她本来在睡觉，是被弄醒的：可以迷糊、可以抱怨，但人已经醒了。');
+    // 2026-11-03 睡眠玩法：睡着也要能被继续弄，分四档写（深睡 / 将醒 / 刚醒 / 催眠锁死）
+    const bar = Number(current.sleepBar ?? SLEEP_BAR_MAX);
+    if (current.forcedSleep) lines.push('【状态】她被催眠锁在睡眠里，**醒不过来**（哪怕身体已经到顶）：眼睛睁不开、话说不清，但身体全都在反应。不要写她睁眼、坐起或成功醒来。');
+    else if (bar <= 0) lines.push('【状态】她刚醒过来。**必须先写"意识回笼"那一瞬**（迷蒙、僵住、对上他的眼睛），再按她的性格与好感分化：羞恼、嘴硬装没事、或者干脆顺势要。不许一睁眼就直接进入状态。');
+    else if (bar <= SLEEP_WAKE_THRESHOLD) lines.push('【状态】她快醒了（睡眠条快见底）：眉头动、呼吸乱、含糊地「嗯？」一声，闭着眼往他身上贴。**不要写她完全清醒，也不要写她能完整对话** —— 她还没弄明白发生了什么。');
+    else lines.push('【状态】她还在睡，没醒。身体有反应（里面会夹、腰会自己迎、被顶到会漏出半声气音），但意识没上来：**不要写她说完整的句子、不要写她睁眼或应声**，最多是梦呓式的含混单字。她并不知道自己在被弄，身体却已经在配合。');
   }
   // 四件新玩法（2026-10-02）：状态必须写进块里，否则模型看不见 = 机制不存在
   if (current.bondage > 0) {
@@ -1385,7 +1445,11 @@ export function buildIntimateActionPrompt({
   if (hypnotized) {
     systemParts.push('- 她处于催眠控制中：身体无条件接受，任何情况下都不要写她躲开 / 推开 / 阻拦，语言上可以不甘，身体不动。');
   } else if (sleeping) {
-    systemParts.push('- 她本来在睡觉、是被弄醒的：可以迷糊、可以嘟囔抱怨，但人已经醒了。');
+    const bar = Number(after.sleepBar ?? SLEEP_BAR_MAX);
+    if (after.forcedSleep) systemParts.push('- 她被催眠锁在睡眠里醒不过来：眼睛睁不开、话说不清，但身体一直在反应；不要写她睁眼或成功醒来。');
+    else if (bar <= 0) systemParts.push('- 她刚醒：先写意识回笼那一瞬（迷蒙、僵住、对上他的眼睛），再按性格分化（羞恼 / 嘴硬 / 顺势要），不许一睁眼就进入状态。');
+    else if (bar <= SLEEP_WAKE_THRESHOLD) systemParts.push('- 她快醒了：眉头动、呼吸乱、含糊「嗯？」一声，闭着眼往他身上贴；**不许写完整对话**。');
+    else systemParts.push('- 她还在深睡、没醒：身体有反应，但意识没上来；**不许写完整句子、不许写睁眼应声**，最多梦呓式含混单字。');
   }
   systemParts.push(
     '- 不要复述本提示词。',
@@ -1443,7 +1507,8 @@ export function buildIntimateActionPrompt({
 // ── 八、落库（每角色一行；服务层持有表，路由不写 SQL）─────────────────────────
 
 const SCENE_COLUMNS = `character_id, active, penetrating, position_key, act_key, pace, auto_pace, accumulation,
-  climax_count, rounds, action_seq, bondage, auto_thrust, denial, pending_note, started_at, last_action_at, updated_at`;
+  climax_count, rounds, action_seq, bondage, auto_thrust, denial, sleep_bar, forced_sleep,
+  pending_note, started_at, last_action_at, updated_at`;
 
 function rowToState(row, characterId) {
   return normalizeSceneState(row, characterId);
@@ -1478,7 +1543,7 @@ export function saveIntimateScene(characterId, state, { now = null } = {}) {
   db.prepare(
     `INSERT INTO character_intimate_scene
        (${SCENE_COLUMNS})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(character_id) DO UPDATE SET
        active = excluded.active,
        penetrating = excluded.penetrating,
@@ -1493,6 +1558,8 @@ export function saveIntimateScene(characterId, state, { now = null } = {}) {
        bondage = excluded.bondage,
        auto_thrust = excluded.auto_thrust,
        denial = excluded.denial,
+       sleep_bar = excluded.sleep_bar,
+       forced_sleep = excluded.forced_sleep,
        pending_note = excluded.pending_note,
        started_at = excluded.started_at,
        last_action_at = excluded.last_action_at,
@@ -1513,6 +1580,8 @@ export function saveIntimateScene(characterId, state, { now = null } = {}) {
     clampInt(current.bondage, 0, 31, 0),
     current.autoThrust ? 1 : 0,
     current.denial ? 1 : 0,
+    clampInt(current.sleepBar, 0, 100, 100),
+    current.forcedSleep ? 1 : 0,
     current.pendingNote,
     current.startedAt || now || null,
     current.lastActionAt || now || null,
