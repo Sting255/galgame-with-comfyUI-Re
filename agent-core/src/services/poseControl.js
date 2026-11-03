@@ -25,6 +25,9 @@ import { config } from '../config.js';
 import { getComfyLorasRoot } from './imageSkill.js';
 
 export const POSE_LORA_FILE = 'anima_pose_preview2.safetensors';
+/** 体位骨架强制竖构图时的尺寸（实测能出完整双人构图的那一档） */
+export const POSITION_POSE_PORTRAIT_WIDTH = 768;
+export const POSITION_POSE_PORTRAIT_HEIGHT = 1024;
 
 /**
  * 姿态适配器 LoRA 装没装。**定位不到 ComfyUI 根目录时一律当作装了**：
@@ -234,7 +237,7 @@ export function applyPoseControl(apiPrompt, { imageName, strength = 1 } = {}) {
  * @param {{ poseJson: string|object, strength?: number }} opts
  * @returns {{ applied: boolean, reason?: string, resolution?: number, width?: number, height?: number }}
  */
-export function applyPoseControlFromJson(apiPrompt, { poseJson, strength = 1 } = {}) {
+export function applyPoseControlFromJson(apiPrompt, { poseJson, strength = 1, portrait = false } = {}) {
   if (!apiPrompt || typeof apiPrompt !== 'object') throw new Error('工作流为空，无法接入姿势控制');
   // 先解析再动工作流：JSON 坏了就一个字节都不改，交给上层当作「无姿势」继续出图
   const parsed = parsePoseJson(poseJson);
@@ -250,8 +253,20 @@ export function applyPoseControlFromJson(apiPrompt, { poseJson, strength = 1 } =
 
   // 宽高解析口径与参考图路径一致（本仓工作流的宽高是 PrimitiveInt 连线接进来的）
   const latent = pickNode(apiPrompt, 'EmptyLatentImage');
-  const width = resolveNumberInput(apiPrompt, latent?.[1]?.inputs, 'width') ?? 768;
-  const height = resolveNumberInput(apiPrompt, latent?.[1]?.inputs, 'height') ?? 1024;
+  let width = resolveNumberInput(apiPrompt, latent?.[1]?.inputs, 'width') ?? 768;
+  let height = resolveNumberInput(apiPrompt, latent?.[1]?.inputs, 'height') ?? 1024;
+
+  // 竖构图（2026-11-03 实测）：骨架是**铺满画布**的，横图会把身体横向舒展的体位（趴跪、侧卧）
+  // 画成近景特写，竖图 768×1024 才是完整双人构图 —— 用户挑中的样张正是这个尺寸。
+  // 只改这一张图的 latent（不动用户配置），横图才改，本来就是竖图的不动。
+  if (portrait && width > height) {
+    width = POSITION_POSE_PORTRAIT_WIDTH;
+    height = POSITION_POSE_PORTRAIT_HEIGHT;
+    if (latent) {
+      latent[1].inputs.width = width;
+      latent[1].inputs.height = height;
+    }
+  }
 
   // 骨架 JSON 自带坐标系，没有「参考图宽高比」这回事，不做尺寸校正
   const detectRes = parsed.canvas;
@@ -296,7 +311,11 @@ export function maybeApplyPoseControl(apiPrompt, { poseJson } = {}) {
   if (hasPoseJson) {
     if (c.poseFromPosition === false) return { applied: false, reason: 'pose-from-position-disabled' };
     try {
-      const r = applyPoseControlFromJson(apiPrompt, { poseJson, strength: c.poseControlStrength });
+      const r = applyPoseControlFromJson(apiPrompt, {
+        poseJson,
+        strength: c.poseControlStrength,
+        portrait: c.poseFromPositionPortrait !== false,
+      });
       if (r.applied) {
         console.log(`[poseControl] 已注入体位骨架（canvas ${r.resolution}，生成 ${r.width}x${r.height}）`);
       } else {

@@ -193,6 +193,9 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     // 体位骨架（按推进面板的体位程序化生成 pose_json 直接喂给 AnimaPoseControl）。
     // 与上面的「固定参考图」是两个独立开关：调用方传了 poseJson 才生效，默认开。
     poseFromPosition: true,
+    // 体位骨架的**竖构图**（2026-11-03 实测结论）：骨架是铺满画布的，横图会把"趴跪"画成近景特写，
+    // 竖图（768×1024）才是完整双人构图 —— 用户挑的样张正是这个尺寸。关掉则沿用工作流原尺寸。
+    poseFromPositionPortrait: true,
     artist: process.env.COMFYUI_ARTIST || '@ebora',
     width: parseInt(process.env.COMFYUI_WIDTH, 10) || 768,
     height: parseInt(process.env.COMFYUI_HEIGHT, 10) || 512,
@@ -715,7 +718,7 @@ export function updateGlobalLora(loras) {
  * 姿势控制（Anima Control Pose）设置：开关 / 强度 / 参考图 / ComfyUI input 目录。
  * 只写 config + 落库，不做任何业务动作。
  */
-export function updatePoseControl({ enabled, strength, image, inputDir, aspect, poseFromPosition } = {}) {
+export function updatePoseControl({ enabled, strength, image, inputDir, aspect, poseFromPosition, poseFromPositionPortrait } = {}) {
   if (enabled !== undefined) {
     config.comfyui.poseControlEnabled = enabled === true || enabled === 'true' || enabled === 1;
     persistSettingSync('comfy_pose_enabled', config.comfyui.poseControlEnabled ? '1' : '0');
@@ -740,6 +743,7 @@ export function updatePoseControl({ enabled, strength, image, inputDir, aspect, 
     config.comfyui.poseControlAspect = Number.isFinite(n) && n > 0 ? n : 0;
   }
   if (poseFromPosition !== undefined) setPoseFromPosition(poseFromPosition);
+  if (poseFromPositionPortrait !== undefined) setPoseFromPositionPortrait(poseFromPositionPortrait);
   return {
     enabled: config.comfyui.poseControlEnabled,
     strength: config.comfyui.poseControlStrength,
@@ -758,6 +762,16 @@ export function setPoseFromPosition(enabled) {
   config.comfyui.poseFromPosition = enabled === true || enabled === 'true' || enabled === 1;
   persistSettingSync('comfy_pose_from_position', config.comfyui.poseFromPosition ? '1' : '0');
   return config.comfyui.poseFromPosition;
+}
+
+/**
+ * 体位骨架是否强制竖构图（默认开）。
+ * 横图 + 满画布骨架 ⇒ 出图变近景特写；竖图 768×1024 才有完整双人构图（实测）。
+ */
+export function setPoseFromPositionPortrait(enabled) {
+  config.comfyui.poseFromPositionPortrait = enabled === true || enabled === 'true' || enabled === 1;
+  persistSettingSync('comfy_pose_from_position_portrait', config.comfyui.poseFromPositionPortrait ? '1' : '0');
+  return config.comfyui.poseFromPositionPortrait;
 }
 
 export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } = {}) {

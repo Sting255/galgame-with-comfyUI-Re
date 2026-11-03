@@ -88,6 +88,7 @@ export const SETTING_TO_CONFIG = {
   comfy_input_dir:         { obj: 'comfyui',   key: 'inputDir',            type: 'string' },
   comfy_pose_aspect:       { obj: 'comfyui',   key: 'poseControlAspect',   type: 'float'  },
   comfy_pose_from_position: { obj: 'comfyui',  key: 'poseFromPosition',    type: 'bool'   },
+  comfy_pose_from_position_portrait: { obj: 'comfyui', key: 'poseFromPositionPortrait', type: 'bool' },
   comfy_width:             { obj: 'comfyui',   key: 'width',           type: 'int'     },
   comfy_height:            { obj: 'comfyui',   key: 'height',          type: 'int'     },
   comfy_moments_artist:    { obj: 'comfyui',   key: 'momentsArtist',   type: 'string'  },

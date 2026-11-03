@@ -12,7 +12,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 process.env.DB_PATH = ':memory:'
-const { applyPoseControlFromJson, maybeApplyPoseControl } = await import('../src/services/poseControl.js')
+const { applyPoseControlFromJson, maybeApplyPoseControl, POSITION_POSE_PORTRAIT_WIDTH, POSITION_POSE_PORTRAIT_HEIGHT } = await import('../src/services/poseControl.js')
 const { config, setPoseFromPosition } = await import('../src/config.js')
 const { getSetting, initSettingsHandle } = await import('../src/db/settings.js')
 const { getDb } = await import('../src/db/index.js')
@@ -111,4 +111,32 @@ test('comfyui.poseFromPosition 默认 true，setter 能改并持久化', () => {
 
   assert.equal(setPoseFromPosition(true), true)
   assert.equal(getSetting('comfy_pose_from_position'), '1')
+})
+
+test('★ 竖构图：横图工作流会被改成 768x1024，且骨架 scale 与 latent 同步', () => {
+  // 实测依据（2026-11-03）：骨架铺满画布，横图会把趴跪/侧卧画成近景特写；竖图才有完整双人构图。
+  const p = basePrompt()
+  p[3].inputs.width = 768
+  p[3].inputs.height = 512
+  const r = applyPoseControlFromJson(p, { poseJson: POSE_JSON, portrait: true })
+  assert.equal(r.applied, true)
+  assert.equal(p[3].inputs.width, POSITION_POSE_PORTRAIT_WIDTH)
+  assert.equal(p[3].inputs.height, POSITION_POSE_PORTRAIT_HEIGHT)
+  const scale = Object.values(p).find(n => n.class_type === 'ImageScale')
+  assert.equal(scale.inputs.width, POSITION_POSE_PORTRAIT_WIDTH, '骨架缩放尺寸必须跟 latent 一致，否则骨架被拉伸变形')
+  assert.equal(scale.inputs.height, POSITION_POSE_PORTRAIT_HEIGHT)
+})
+
+test('竖构图开关关闭时沿用工作流原尺寸；本来就是竖图时不动', () => {
+  const wide = basePrompt()
+  wide[3].inputs.width = 768
+  wide[3].inputs.height = 512
+  applyPoseControlFromJson(wide, { poseJson: POSE_JSON, portrait: false })
+  assert.equal(wide[3].inputs.width, 768, '关掉竖构图就保持原尺寸')
+  assert.equal(wide[3].inputs.height, 512)
+
+  const tall = basePrompt()   // 夹具本来就是 768x1024
+  applyPoseControlFromJson(tall, { poseJson: POSE_JSON, portrait: true })
+  assert.equal(tall[3].inputs.width, 768)
+  assert.equal(tall[3].inputs.height, 1024)
 })
