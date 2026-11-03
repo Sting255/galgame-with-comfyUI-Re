@@ -50,6 +50,12 @@ const DELIVER = process.env.DELIVER_DIR || 'C:\\3.6.2-r'
 const OUTDIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || 'C:\\Users\\Sting', 'Downloads', '输出')
 const NODE = path.join(REPO, 'runtime', 'nodejs', 'node.exe')
 const SEVENZIP = process.env.SEVENZIP_EXE || 'C:\\Program Files\\7-Zip\\7z.exe'
+// 压缩级别（2026-11-03 用户：「要最高压缩的」）：默认 3 与既有行为一致，交付时用 SEVENZIP_LEVEL=9。
+// 级别 >=7 时把 LZMA2 的 fb / 字典一起放大（低级别配大字典只是白烧内存）。
+const LEVEL = Number(process.env.SEVENZIP_LEVEL || 3) || 3
+const HIGH = LEVEL >= 7
+// 包名标签：原来是写死的 '3.6.2-r' + 写死日期 20261002，交付包名字会一直停在旧版本上。
+const PACK_LABEL = process.env.PACK_LABEL || '3.6.2-r'
 
 const args = process.argv.slice(2)
 const skipTests = args.includes('--skip-tests')
@@ -377,7 +383,16 @@ function syncDir(from, to) {
     if (e.isDirectory()) {
       // 注意：这里的跳过名单只作用于**子目录名**（`目标/` 的整份同步走下面单独的循环，
       // 不受这一行影响）。`data`/`logs`/`node_modules`/`.git` 永远不进包。
-      if (['node_modules', '.git', '目标', 'logs', 'data', '.claude'].includes(e.name)) continue
+      // ⚠️ 2026-11-03 事故：这里原来按**目录名**跳过 `data`
+      // ⇒ `agent-core/src/data/`（体位数据库 sexPositions.js / sexPositionsExtra.js /
+      //   positionPoseSkeletons.js）被一起跳过，打出来的包一启动就
+      //   `ERR_MODULE_NOT_FOUND: src/data/sexPositions.js`。只有**数据库目录**
+      //   `agent-core/data` 该跳过，其余同名目录都是源码。
+      if (['node_modules', '.git', '目标', 'logs', '.claude',
+        // `.pai/` 是项目级临时资产目录（计划/报告/工作树/临时副本），
+        // 里面还留着上游合并时的 node_modules junction —— 被当文件复制会 EPERM，且绝不该进包。
+        '.pai'].includes(e.name)) continue
+      if (path.relative(REPO, s).split(path.sep).join('/') === 'agent-core/data') continue
       syncDir(s, d)
     } else {
       // ── 文件级排除（2026-10-17 复查 §P1-2 / §P2-4；2026-10-18 补 launcher_config）──
@@ -445,6 +460,11 @@ if (incremental) {
   //   · *.tar.gz / *.apk —— 108 MB 旧备份与旧安装包（下面 7z 也排除它们）
   const SKIP_TOP = new Set([
     '.git', 'node_modules', 'data', 'logs', '目标', 'docs', '.mimosa', '完整', '.claude',
+    // 2026-11-03 事故：`.pai/` 是项目级临时资产目录（计划 / 报告 / 参考仓库 / 工作树 / 临时副本），
+    // 里面还留着上游合并时的 **node_modules junction**。顶层镜像是逐个目录直传、**不走**
+    // syncDir 的子项跳过名单 ⇒ 整个 .pai 被搬过去，而 junction 的 isDirectory() 为 false
+    // ⇒ 被当文件复制 ⇒ EPERM，打包直接崩（本轮连崩两次都是它）。
+    '.pai',
   ])
   const SKIP_FILE = /\.(tar\.gz|apk|log)$/i
   for (const e of fs.readdirSync(REPO, { withFileTypes: true })) {
@@ -496,10 +516,14 @@ log(`   已同步 ${copied} 项 + 前端产物（${fs.readdirSync(assetsTo).leng
 // `launcher_config.json` 同理（2026-10-18 补）：它住在**仓库根**，被顶层全量同步带进交付目录。
 // 里面 `comfyui_exe` 指向打包这台机器的路径，别人开了启动器会指到一个不存在的地方。
 // 直接删掉 —— `ConfigManager._load()` 在文件不存在时会自动写一份默认配置（`comfyui_exe: ""`）。
+// 2026-11-03 用户口径：「完整包，我不想看到又有报错」—— 自用测试包**必须带上 .env**，
+// 否则 LLM 全线报 "OPENAI_API_KEY is missing"（真机验证过：日程/朋友圈/事件全挂）。
+// 所以保留开关：PACK_KEEP_ENV=1 时**不删 .env**（仍然删 launcher_config.json，它指向打包机的
+// ComfyUI 路径，别人拿去反而更坑）；不设该变量时保持原有防泄露行为 —— 外发场景不要开它。
+const keepEnv = process.env.PACK_KEEP_ENV === '1'
 {
   const stale = [
-    path.join(DELIVER, 'agent-core', '.env'),
-    path.join(DELIVER, 'agent-core', '.env.local'),
+    ...(keepEnv ? [] : [path.join(DELIVER, 'agent-core', '.env'), path.join(DELIVER, 'agent-core', '.env.local')]),
     path.join(DELIVER, 'launcher_config.json'),
     path.join(DELIVER, 'agent-core', 'launcher_config.json'),
   ]
@@ -507,6 +531,7 @@ log(`   已同步 ${copied} 项 + 前端产物（${fs.readdirSync(assetsTo).leng
   for (const f of stale) {
     if (fs.existsSync(f)) { fs.rmSync(f, { force: true }); removed.push(path.relative(DELIVER, f)) }
   }
+  if (keepEnv) log('   ⚠ PACK_KEEP_ENV=1：包内保留 agent-core/.env（含你的 Key，绝不要外发这个包）')
   const example = path.join(DELIVER, 'agent-core', '.env.example')
   if (removed.length) log(`   已从交付目录清掉遗留的本机配置文件：${removed.join('、')}（.env.example 已随源码同步）`)
   else log('   交付目录无遗留 .env / launcher_config.json（本来就没有）')
@@ -533,7 +558,8 @@ const cnNum = (n) => {
   if (n < 20) return '十' + (n % 10 ? d[n % 10] : '')
   return d[Math.floor(n / 10)] + '十' + (n % 10 ? d[n % 10] : '')
 }
-const outFile = path.join(OUTDIR, `邻舍-3.6.2-r-完整可运行包-含数据-20261002-第${cnNum(round)}轮.7z`)
+const today = (() => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` })()
+const outFile = path.join(OUTDIR, `邻舍-${PACK_LABEL}-完整可运行包-含数据-${today}-第${cnNum(round)}轮.7z`)
 const cores = Number(process.env.NUMBER_OF_PROCESSORS || 0) || 8
 log('\n── 打包 ───────────────────────────────────────────')
 log(`   线程 = ${cores}（本机核心数）| 级别 -mx=3（比 -mx=5 快约一倍，体积只大一点点）`)
@@ -579,7 +605,8 @@ log(`   线程 = ${cores}（本机核心数）| 级别 -mx=3（比 -mx=5 快约�
 fs.rmSync(outFile, { force: true })
 const t0 = Date.now()
 const zip = spawnSync(SEVENZIP, [
-  'a', '-t7z', '-mx=3', `-mmt=${cores}`, `-m0=LZMA2:mt=${cores}:fb=32`, '-mf=off',
+  'a', '-t7z', `-mx=${LEVEL}`, `-mmt=${cores}`,
+  HIGH ? `-m0=LZMA2:mt=${cores}:fb=273:d=256m` : `-m0=LZMA2:mt=${cores}:fb=32`, '-mf=off',
   outFile, '3.6.2-r',
   // 2026-10-02 用户：「文档也同步吧」。原来这里有一条 `-xr!3.6.2-r\目标\*`，
   // 把整个 `目标/` 排除在包外 ⇒ 交付包里的开发文档一直是旧的、甚至缺文件（前面好几版包都这样）。
@@ -648,6 +675,28 @@ const needCollectorLogs = /collector\\logs/.test(plain)
 const needGitLogs = /\.git\\logs/.test(plain)
 log(`   collector\\logs=${needCollectorLogs} | .git\\logs=${needGitLogs}`)
 if (!needCollectorLogs || !needGitLogs) die('包内缺少 collector\\logs 或 .git\\logs（会被 .gitignore 式排除规则误伤）')
+
+// 2026-11-03 事故：打包脚本按**目录名**跳过 `data`，把 `agent-core/src/data/`（体位数据）一起跳掉了，
+// 包一启动就 ERR_MODULE_NOT_FOUND，而当时所有校验都是绿的（只查固定条目 + DB + 使用说明）。
+// 这里改成"**源码模块必须在包内**"的硬断言：这些是启动链路上真实 import 的文件，缺一个就拒绝交付。
+{
+  // ⚠️ 统一用**正斜杠**比较：7z 的 listing 用反斜杠，写成 'agent-core\src\data\x.js' 时
+  // `\s` `\d` `\n` 在 JS 字符串里是转义序列，会把反斜杠吃掉 ⇒ 断言永远找不到文件、
+  // 明明包是好的却被判死（2026-11-03 真踩：误报"包内缺少启动必需的源码"）。
+  const plainSlash = plain.split('\\').join('/')
+  const requiredSources = [
+    'agent-core/src/data/sexPositions.js',
+    'agent-core/src/data/sexPositionsExtra.js',
+    'agent-core/src/data/positionPoseSkeletons.js',
+    'agent-core/src/services/positionPose.js',
+    'agent-core/src/services/poseControl.js',
+    'agent-core/app.js',
+    'runtime/nodejs/node.exe',
+  ]
+  const missing = requiredSources.filter((f) => !plainSlash.includes(f))
+  if (missing.length) die(`包内缺少启动必需的源码/运行时（${missing.join('、')}）⇒ 解压后必然起不来，拒绝交付`)
+  log(`   启动必需文件：${requiredSources.length} 项全在包内 ✓`)
+}
 
 // 使用说明.txt：**交付目录那一份**再断言一次（2026-10-17）。
 // 为什么要在同步之后再验：③-0 生成的是仓库根那份，交付目录那份靠 ③ 的全量同步带过去。
