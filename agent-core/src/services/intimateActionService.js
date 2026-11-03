@@ -1714,3 +1714,35 @@ export function physicalHintOf(positionKey) {
   if (pos?.frozen) return `${pos.frozen}（体位：${pos.name}）`;
   return GENERIC_PHYSICAL_HINT;
 }
+
+// ── 体位 → 生图（性爱场景配图必须按当前体位画）────────────────────────────
+/**
+ * 生成「当前体位」的生图参考块。
+ *
+ * 为什么放在这里：反应描写用的是中文 frozen，而生图要的是**英文标签**
+ * （core / female / male 那套，画图模型才认）。不注入的话，配图里的姿势
+ * 全凭生图助手自由发挥，跟面板上正在用的体位对不上。
+ *
+ * 只在场景 active 且确实有体位时返回内容；否则返回空串 —— 普通聊天配图完全不受影响。
+ * @param {number} characterId
+ * @returns {string}
+ */
+export function buildPositionImageBlock(characterId) {
+  const id = Number(characterId);
+  if (!Number.isInteger(id) || id <= 0) return '';
+  let scene = null;
+  try { scene = getIntimateScene(id); } catch { return ''; }
+  if (!scene || !scene.active || !scene.positionKey) return '';
+
+  const info = describePosition(scene.positionKey);
+  const pr24Key = resolvePr24Key(scene.positionKey) || scene.positionKey;
+  const pos = getPr24Position(pr24Key);
+  const tags = pos ? [...(pos.core || []), ...(pos.female || []), ...(pos.male || [])].filter(Boolean) : [];
+  const lines = ['【当前体位 —— 画面必须按这个姿势画】'];
+  lines.push(`体位：${info.label}${info.penetrative ? '（插入式）' : '（非插入）'}`);
+  if (tags.length) lines.push(`必须体现在画面里的英文标签：${[...new Set(tags)].join(', ')}`);
+  if (pos?.frozen) lines.push(`这一格定在哪一瞬：${pos.frozen}`);
+  if (pos?.prompt) lines.push(`参考写法（可改写，但姿势与身体接触关系不能变）：${pos.prompt}`);
+  lines.push('要求：两人的身体位置、接触方式、衣物的状态必须与上面这个体位一致；不要画成别的姿势，也不要只画上半身糊弄过去。');
+  return lines.join('\n');
+}

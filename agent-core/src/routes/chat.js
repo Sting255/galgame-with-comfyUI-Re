@@ -6,6 +6,7 @@ import { chatStream, chatSync } from '../llm/llm-client.js';
 import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
+import { buildPositionImageBlock } from '../services/intimateActionService.js';
 import { isMemoryV3Enabled, getActiveSearchConfig } from '../services/memory/memoryConfig.js';
 import { activeMemorySearch, parseRecallInstruction, formatMemoryRecallBlock } from '../services/memory/activeSearch.js';
 import { curateChatMemories } from '../services/memoryExtractor.js';
@@ -2642,6 +2643,14 @@ function buildImagePromptMessages(conversationId, character, planSceneHint = '')
       role: 'system',
       content: `【画面交叉参考】以下角色/用户的身份与外观信息必须体现在生成的画面中：\n\n${crossBlocks.join('\n\n')}`
     });
+  }
+
+  // 当前体位：性爱场景里配图必须按面板上正在用的姿势画（普通聊天返回空串，不影响）
+  try {
+    const poseBlock = buildPositionImageBlock(character.id);
+    if (poseBlock) crossRefImageMsgs.push({ role: 'system', content: poseBlock });
+  } catch (err) {
+    console.warn('[chat] position image block skipped:', err.message);
   }
 
   const formatGuide = imagePromptRule?.rule_content || '';
