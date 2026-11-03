@@ -522,3 +522,15 @@ test('summary length is strictly limited to 300 characters', () => {
   assert.equal(validateSummary(JSON.stringify({ summary: '字'.repeat(300), memories: [] })).summary.length, 300);
   assert.throws(() => validateSummary(JSON.stringify({ summary: '字'.repeat(301), memories: [] })), /格式无效/);
 });
+
+test('★ 定时投递不闭包固定 runtime（库句柄重开后要跟着换，否则每 3 秒刷一条报错）', async () => {
+  // 2026-11-03 真机 bug：startGodSays 把 getGodRuntime() 的结果闭包固定在定时器里，
+  // 库句柄被关掉（getDb 自愈会换新句柄）之后，定时器还拿着旧的 repo.db
+  // ⇒ 日志每 3 秒刷一条 `[神谕投递] The database connection is not open`。
+  // 这里直接钉源码口径：定时器回调里必须是 `getGodRuntime()`，不能是外层固定变量。
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/services/godSays/runtime.js', import.meta.url), 'utf8');
+  const startFn = src.slice(src.indexOf('export function startGodSays'));
+  assert.ok(/deliveries = \(\) => getGodRuntime\(\)/.test(startFn), '投递回调必须每次重新取 runtime');
+  assert.ok(!/const runtime = getGodRuntime\(\);\s*\n\s*const deliveries/.test(startFn), '不许把 runtime 闭包固定在投递回调外层');
+});

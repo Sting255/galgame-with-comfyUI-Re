@@ -56,6 +56,10 @@ const LEVEL = Number(process.env.SEVENZIP_LEVEL || 3) || 3
 const HIGH = LEVEL >= 7
 // 包名标签：原来是写死的 '3.6.2-r' + 写死日期 20261002，交付包名字会一直停在旧版本上。
 const PACK_LABEL = process.env.PACK_LABEL || '3.6.2-r'
+// 是否把玩家数据（agent-core/data/agent.db）打进交付包。
+// 2026-11-03 用户口径：「以后不要把玩家数据一起打包 打包程序就行」⇒ **默认 false**。
+// 需要"含数据"的备份包时显式 PACK_WITH_DATA=1（那种包只能自用，里面有全部聊天记录）。
+const WITH_DATA = process.env.PACK_WITH_DATA === '1'
 
 const args = process.argv.slice(2)
 const skipTests = args.includes('--skip-tests')
@@ -559,7 +563,7 @@ const cnNum = (n) => {
   return d[Math.floor(n / 10)] + '十' + (n % 10 ? d[n % 10] : '')
 }
 const today = (() => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` })()
-const outFile = path.join(OUTDIR, `邻舍-${PACK_LABEL}-完整可运行包-含数据-${today}-第${cnNum(round)}轮.7z`)
+const outFile = path.join(OUTDIR, `邻舍-${PACK_LABEL}-完整可运行包-${WITH_DATA ? '含数据' : '不含数据'}-${today}-第${cnNum(round)}轮.7z`)
 const cores = Number(process.env.NUMBER_OF_PROCESSORS || 0) || 8
 log('\n── 打包 ───────────────────────────────────────────')
 log(`   线程 = ${cores}（本机核心数）| 级别 -mx=3（比 -mx=5 快约一倍，体积只大一点点）`)
@@ -613,6 +617,9 @@ const zip = spawnSync(SEVENZIP, [
   // 文档是交付物的一部分 ⇒ 取消这条排除；上面的同步段会整份刷 `目标/` 与 `docs/`，这里照实打进去。
   // （2026-10-13：`目标/` 已从 19 份精简为 3 份 —— 接手必读 / 历史与教训 / 编程模式，别再往里堆逐轮流水。）
   '-xr!3.6.2-r\\web-ui\\node_modules\\*', '-xr!*.log',
+  // 2026-11-03 用户：「打包程序就行，不要带玩家数据」⇒ 默认把数据库整份排除在包外。
+  // 包内仍随源码带上 `agent-core/data/` 目录本身（首次启动会自动建空库），只是不带 agent.db 及其日志。
+  ...(WITH_DATA ? [] : ['-xr!3.6.2-r\\\\agent-core\\\\data\\\\*']),
   // 2026-10-02 交付前审计发现：交付包顶层躺着一个 103 MB 的旧备份
   // （`linshe-backup-20260930-1405.tar.gz`）+ 一个 2.5 MB 的 apk ⇒ 它们**不是运行所需**，
   // 排除后包体积立省约 1/8。（用户磁盘上那两个文件不动，只是不进包。）

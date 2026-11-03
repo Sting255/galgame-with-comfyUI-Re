@@ -170,15 +170,21 @@ export function getGodRuntime() {
 let timers = [];
 export function startGodSays() {
   if (timers.length) return;
-  const runtime = getGodRuntime();
-  const deliveries = () => runtime.world.tick().catch(err => console.warn('[神谕投递]', err.message));
+  // ⚠️ 2026-11-03 真机 bug：这里原来把 `getGodRuntime()` 的结果**闭包固定**在 `runtime` 里，
+  // 于是库句柄一旦被关掉（`getDb()` 的自愈会换一个新句柄、`getGodRuntime()` 也会据此重建
+  // singleton），**定时器还拿着旧的 repo.db**，每 3 秒刷一条
+  // `[神谕投递] The database connection is not open`（用户实测刷屏）。
+  // 所以：定时器里**每次都重新取** runtime，让自愈与重建对它也生效。
+  const deliveries = () => getGodRuntime().world.tick().catch(err => console.warn('[神谕投递]', err.message));
   const maintenance = async () => {
+    const runtime = getGodRuntime();
     while (await runtime.memory.archive()) { /* 补齐离线期间积压的会话 */ }
     const session = runtime.repo.db.prepare('SELECT * FROM god_sessions WHERE day=?').get(runtime.repo.day());
     if (session) await runtime.ensureSchedule(session);
   };
   // 北京时间零点触发一次；启动时补处理离线期间错过的跨天。
   const scheduleMidnight = () => {
+    const runtime = getGodRuntime();
     const now = runtime.repo.now();
     const next = Date.parse(`${runtime.repo.day()}T00:00:00+08:00`) + 86400000;
     timers[1] = setTimeout(() => {

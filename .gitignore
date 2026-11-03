@@ -1,4 +1,10 @@
 node_modules/
+
+# 前端构建产物（2026-11-03）：`web-ui` 每次 npm run build 都会产出带内容哈希的新文件名，
+# 304 个文件被 git 跟踪了 13 次提交 —— 每轮打包都往历史里塞一堆二进制，diff 毫无意义。
+# 交付不受影响：打包脚本是**从工作区** `agent-core/public/assets` 取产物同步进交付目录
+# （scripts/发布-校验并打包.mjs 的 assetsFrom），不依赖 git。
+agent-core/public/assets/
 .env
 *.tmp.json
 *.db
