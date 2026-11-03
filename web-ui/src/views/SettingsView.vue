@@ -69,6 +69,35 @@
           </Transition>
         </div>
 
+        <!-- ── 姿势参考（Anima Control Pose）：上传一张图，出图时骨架跟着它走 ── -->
+        <div v-if="imageProvider !== 'novelai'" class="pose-ref-section">
+          <div class="pose-ref-header">
+            <span class="pose-ref-title">姿势参考</span>
+            <linshe-switch
+              v-model="poseEnabled" size="sm" on-text="已启用" off-text="已关闭"
+              aria-label="姿势参考" :disabled="poseSaving || !poseImage"
+              @change="onPoseToggle"
+            />
+          </div>
+          <div class="pose-ref-row">
+            <div class="pose-ref-copy">
+              <div class="pose-ref-desc">上传一张姿势参考图，出图时人物骨架跟着它走，外观和画风仍由角色设定决定。</div>
+              <div class="pose-ref-hint">实验性功能（官方预览版，偶尔漏姿势或手部崩）；每张约多 6 秒。当前：{{ poseImage || '未选择参考图' }}</div>
+            </div>
+            <linshe-button variant="secondary" size="sm" :loading="poseUploading" @click="pickPoseReference">
+              {{ poseImage ? '换一张' : '选择参考图' }}
+            </linshe-button>
+          </div>
+          <div v-if="!poseInputDirReady" class="pose-ref-dir">
+            <div class="pose-ref-hint">还要告诉程序 ComfyUI 的 input 目录在哪（参考图必须落在这里才能被读到）：</div>
+            <div class="pose-ref-dir-row">
+              <linshe-input v-model="poseInputDir" size="sm" placeholder="例如 D:\ComfyUI-aki-v3\ComfyUI\input" aria-label="ComfyUI input 目录" />
+              <linshe-button variant="secondary" size="sm" :loading="poseDirSaving" @click="savePoseInputDir">保存</linshe-button>
+            </div>
+          </div>
+          <input ref="poseFileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="onPoseFileChosen" />
+        </div>
+
         <div v-if="imageProvider !== 'novelai'" class="hiresfix-section">
           <div class="hiresfix-header">
             <span class="hiresfix-title">HiresFix 细化</span>
@@ -1732,7 +1761,7 @@ import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/
 import { validateVertexServiceAccount } from '../api/index.js'
 import DeepseekSetup from '../components/DeepseekSetup.vue'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, downloadDataArchive, getDataExportInfo, importDataArchive, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, downloadDataArchive, getDataExportInfo, importDataArchive, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
@@ -1915,6 +1944,77 @@ const hiresLoraCount = computed(() => (hiresLoras.value || []).filter(l => l.pat
 // ── 细化是否按 turbo 参数走（与后端 config.comfyui.hiresTurbo 一致，默认 true）──
 // 打开＝细化阶段强制 CFG 1.0 / 12 步（忽略 hiresSteps/hiresCfg）；关闭＝沿用那两个值。切换即时生效。
 const hiresTurbo = ref(true)
+
+// ── 姿势参考（Anima Control Pose）──
+// 开关打开后，所有走 ComfyUI 的生图都会带上姿势控制（后端在 comfyClient 里按 config 决定是否注入）。
+const poseEnabled = ref(false)
+const poseImage = ref('')
+const poseInputDir = ref('')
+const poseInputDirReady = ref(false)
+const poseSaving = ref(false)
+const poseUploading = ref(false)
+const poseDirSaving = ref(false)
+const poseFileInput = ref(null)
+
+async function loadPoseControl() {
+  try {
+    const d = await getPoseControl()
+    poseEnabled.value = !!d.enabled
+    poseImage.value = d.image || ''
+    poseInputDir.value = d.inputDir || ''
+    poseInputDirReady.value = !!d.inputDirReady
+  } catch { /* 读不到就保持默认（关闭），不打断设置页其它配置 */ }
+}
+
+async function onPoseToggle(v) {
+  poseSaving.value = true
+  try {
+    const d = await updatePoseControl({ enabled: !!v })
+    poseEnabled.value = !!d.enabled
+    toastFn?.(d.enabled ? '姿势参考已开启（每张约多 6 秒）' : '姿势参考已关闭', 'success')
+  } catch (e) {
+    poseEnabled.value = !v
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseSaving.value = false }
+}
+
+function pickPoseReference() { poseFileInput.value?.click() }
+
+async function onPoseFileChosen(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { toastFn?.('请选择 PNG / JPG / WEBP 图片', 'error'); return }
+  if (file.size > 12 * 1024 * 1024) { toastFn?.('图片不能超过 12MB', 'error'); return }
+  poseUploading.value = true
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(file)
+    })
+    const d = await uploadPoseReference(base64)
+    poseImage.value = d.image || d.name || ''
+    poseEnabled.value = !!d.enabled
+    toastFn?.('姿势参考图已就绪', 'success')
+  } catch (err) {
+    toastFn?.(err.message || '上传失败', 'error')
+  } finally { poseUploading.value = false }
+}
+
+async function savePoseInputDir() {
+  poseDirSaving.value = true
+  try {
+    await updatePoseControl({ inputDir: poseInputDir.value })
+    const info = await getPoseControl()
+    poseInputDir.value = info.inputDir || ''
+    poseInputDirReady.value = !!info.inputDirReady
+    toastFn?.(poseInputDirReady.value ? 'input 目录已保存' : '目录不存在或无法访问', poseInputDirReady.value ? 'success' : 'error')
+  } catch (e) {
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseDirSaving.value = false }
+}
 
 // ── 细化精度三档（D1 用户裁决：精度可选高中低，默认 8 步）──
 // 键 features.hiresQuality（high|medium|low，默认 low）；映射：高 12 步 / 中 10 步 / 低 8 步（都走 turbo CFG 1.0）。
@@ -2923,6 +3023,7 @@ async function removeProfile(id) {
 onMounted(async () => {
   // 数据备份摘要独立加载：读失败只影响这一行，不阻塞设置页其它配置
   refreshExportInfo()
+  loadPoseControl()
   try {
     const data = await getConfig()
     // 画师串口径（与后端 routes/images.js 一致）：空串 '' ＝ 用户明确要「不要画师串」，
@@ -4353,6 +4454,21 @@ function resetTestPrompts() {
   font-size: 12px; color: var(--text-secondary);
 }
 /* ── 全局细化 / HiresFix 独立层级 ── */
+/* ── 姿势参考（Anima Control Pose）── */
+.pose-ref-section {
+  margin: 8px 0 0; padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.pose-ref-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.pose-ref-title { font-size: var(--fs-md); font-weight: 600; color: var(--text-primary); }
+.pose-ref-row { display: flex; align-items: flex-start; gap: 12px; }
+.pose-ref-copy { flex: 1; min-width: 0; }
+.pose-ref-desc { font-size: var(--fs-sm); color: var(--text-secondary); margin: 0 0 4px; }
+.pose-ref-hint { font-size: var(--fs-xs); color: var(--text-secondary); opacity: .8; }
+.pose-ref-dir { margin-top: 10px; }
+.pose-ref-dir-row { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
+.pose-ref-dir-row > :first-child { flex: 1; min-width: 0; }
+
 .hiresfix-section {
   margin: 8px 0 0; padding: 16px 0;
   border-top: 1px solid var(--border);

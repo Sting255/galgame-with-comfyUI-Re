@@ -181,6 +181,15 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     novelaiQualityPrompt: process.env.NOVELAI_QUALITY_PROMPT || 'masterpiece, best quality, score_9, score_8, highres, absurdres, year 2025',
     novelaiNegativePrompt: process.env.NOVELAI_NEGATIVE_PROMPT || 'lowres, bad_anatomy, bad_hands, text, error, missing_fingers, extra_digit, fewer_digits, cropped, worst_quality, low_quality, normal_quality, jpeg_artifacts, signature, watermark, username, blurry, bad_feet, fused_fingers, too_many_fingers, long_neck, cross-eyed, mutated_hands, polar_lowres, bad_body, bad_proportions, gross_proportions, text, error, missing_fingers, missing_arms, missing_legs, extra_digit, extra_arms, extra_leg, extra_foot',
     outputDir: process.env.COMFYUI_OUTPUT_DIR || './output',
+    // 姿势参考图要落进 ComfyUI 自己的 input/ 目录（LoadImage 只认那里）。
+    // 留空 = 不启用姿势控制：猜路径会得到「静默出图没姿势」的坑，宁可显式要求配置。
+    inputDir: String(process.env.COMFYUI_INPUT_DIR || '').trim(),
+    // 姿势控制开关 / 阈值 / 当前参考图文件名（由设置页持久化，见 db/settings.js）
+    poseControlEnabled: false,
+    poseControlStrength: 1,
+    poseControlImage: '',
+    // 参考图宽高比（w/h）。姿势控制按它校正生成尺寸：横图配竖构图骨架会让模型完全不跟随。
+    poseControlAspect: 0,
     artist: process.env.COMFYUI_ARTIST || '@ebora',
     width: parseInt(process.env.COMFYUI_WIDTH, 10) || 768,
     height: parseInt(process.env.COMFYUI_HEIGHT, 10) || 512,
@@ -699,6 +708,43 @@ export function updateGlobalLora(loras) {
  * 细化 LoRA 仅作用于放大细化工作流，追加在 LoRA 链末尾；
  * 与全局/角色 LoRA 同 path 时以细化配置的权重为准
  */
+/**
+ * 姿势控制（Anima Control Pose）设置：开关 / 强度 / 参考图 / ComfyUI input 目录。
+ * 只写 config + 落库，不做任何业务动作。
+ */
+export function updatePoseControl({ enabled, strength, image, inputDir, aspect } = {}) {
+  if (enabled !== undefined) {
+    config.comfyui.poseControlEnabled = enabled === true || enabled === 'true' || enabled === 1;
+    persistSettingSync('comfy_pose_enabled', config.comfyui.poseControlEnabled ? '1' : '0');
+  }
+  if (strength !== undefined) {
+    const n = Number(strength);
+    if (Number.isFinite(n)) {
+      config.comfyui.poseControlStrength = Math.min(2, Math.max(0, n));
+      persistSettingSync('comfy_pose_strength', String(config.comfyui.poseControlStrength));
+    }
+  }
+  if (image !== undefined) {
+    config.comfyui.poseControlImage = String(image || '').trim();
+    persistSettingSync('comfy_pose_image', config.comfyui.poseControlImage);
+  }
+  if (inputDir !== undefined) {
+    config.comfyui.inputDir = String(inputDir || '').trim();
+    persistSettingSync('comfy_input_dir', config.comfyui.inputDir);
+  }
+  if (aspect !== undefined) {
+    const n = Number(aspect);
+    config.comfyui.poseControlAspect = Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  return {
+    enabled: config.comfyui.poseControlEnabled,
+    strength: config.comfyui.poseControlStrength,
+    image: config.comfyui.poseControlImage,
+    inputDir: config.comfyui.inputDir,
+    aspect: config.comfyui.poseControlAspect,
+  };
+}
+
 export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } = {}) {
   if (['basic', 'advanced'].includes(workflowMode)) {
     config.comfyui.hiresWorkflowMode = workflowMode;

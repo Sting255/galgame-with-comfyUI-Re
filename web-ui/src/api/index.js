@@ -1367,6 +1367,22 @@ export async function testStyle({ artist, width, height, mode = 'chat', prompt =
   return result
 }
 
+// ── 姿势控制（Anima Control Pose）──
+/** 读当前姿势控制设置（开关 / 强度 / 参考图文件名 / ComfyUI input 目录） */
+export function getPoseControl() {
+  return request('/images/pose-control')
+}
+
+/** 写姿势控制设置；只传要改的字段 */
+export function updatePoseControl(body) {
+  return request('/images/pose-control', { method: 'PUT', body })
+}
+
+/** 上传姿势参考图（data URL），落进 ComfyUI input 目录，返回文件名并自动启用 */
+export function uploadPoseReference(base64) {
+  return request('/images/pose-reference', { method: 'POST', body: { base64 } })
+}
+
 /** 测试细化（最近一张图，HiresFix 参数流程，不落盘，返回原图+细化图） */
 export function testHires() {
   return request(`/images/test-hires`, { method: 'POST' });

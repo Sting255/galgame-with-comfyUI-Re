@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
 import { config } from '../config.js';
+import { maybeApplyPoseControl } from './poseControl.js';
 import { withImageGpu } from './speechGpu.js';
 
 const getBase = () => config.comfyui.url.replace(/\/+$/, '');
@@ -466,6 +467,8 @@ export async function submitWorkflow(guiWorkflow, onProgress) {
 async function submitWorkflowWithGpu(guiWorkflow, onProgress) {
   const clientId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const apiPrompt = guiToApi(guiWorkflow);
+  // 姿势控制：开关关着时这里什么都不做，原有链路逐字节不变
+  maybeApplyPoseControl(apiPrompt);
 
   const body = {
     client_id: clientId,

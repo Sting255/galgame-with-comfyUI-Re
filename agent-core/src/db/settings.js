@@ -81,6 +81,12 @@ export const SETTING_TO_CONFIG = {
   novelai_quality_prompt: { obj: 'comfyui',   key: 'novelaiQualityPrompt', type: 'string' },
   novelai_negative_prompt: { obj: 'comfyui', key: 'novelaiNegativePrompt', type: 'string' },
   comfy_artist:            { obj: 'comfyui',   key: 'artist',          type: 'string'  },
+  // 姿势控制（Anima Control Pose）：开关 / 强度 / 当前参考图文件名
+  comfy_pose_enabled:      { obj: 'comfyui',   key: 'poseControlEnabled',  type: 'bool'   },
+  comfy_pose_strength:     { obj: 'comfyui',   key: 'poseControlStrength', type: 'float'  },
+  comfy_pose_image:        { obj: 'comfyui',   key: 'poseControlImage',    type: 'string' },
+  comfy_input_dir:         { obj: 'comfyui',   key: 'inputDir',            type: 'string' },
+  comfy_pose_aspect:       { obj: 'comfyui',   key: 'poseControlAspect',   type: 'float'  },
   comfy_width:             { obj: 'comfyui',   key: 'width',           type: 'int'     },
   comfy_height:            { obj: 'comfyui',   key: 'height',          type: 'int'     },
   comfy_moments_artist:    { obj: 'comfyui',   key: 'momentsArtist',   type: 'string'  },
