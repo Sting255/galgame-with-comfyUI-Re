@@ -521,6 +521,14 @@ async function submitWithRetry(rawPrompt, {
         console.warn(`[imageSkill] ComfyUI 没有姿态适配器 ${POSE_LORA_FILE}，去掉体位骨架重试`);
         activePoseJson = undefined;
       }
+      // 2026-11-03 第二道保底：目标机器没装 AnimaPoseControl 自定义节点时，
+      // ComfyUI 会回 `missing_node_type: Node 'AnimaPoseControl' not found`。
+      // 正常情况下 comfyClient 会先查节点清单跳过注入；这条兜住"清单还没取到就提交"的窗口期，
+      // 保证**任何情况下都不会因为姿势增强而生不出图**。
+      if (activePoseJson && /missing_node_type|AnimaPoseControl|AnimaControlApply/i.test(String(err.message))) {
+        console.warn('[imageSkill] 目标 ComfyUI 没有姿势控制节点，去掉体位骨架重试（出图不受影响）');
+        activePoseJson = undefined;
+      }
     }
 
     const unreachable = isComfyUnreachable(lastResult?.error);

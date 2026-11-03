@@ -14,6 +14,8 @@ const EXECUTION_TIMEOUT_MS = 60 * 60 * 1000; // 1 小时，WebSocket 与轮询�
 let objectInfoCache = null;   // 完整响应，含 input/output/meta 等，供未来扩展使用
 let widgetSlotMap = null;     // Map<nodeType, [{name, slot}]>  所有 widget 输入的位置
 let pollingTimer = null;
+/** "目标 ComfyUI 缺姿势节点"只提醒一次，避免每张图刷一行 */
+let poseNodeMissingWarned = false;
 
 /**
  * 从 ComfyUI 获取所有已注册节点的完整 input schema。
@@ -64,6 +66,22 @@ function buildWidgetSlotMap(objectInfo) {
     }
   }
   return map;
+}
+
+/**
+ * 某个节点类型在**目标 ComfyUI 上**是否已注册。
+ *
+ * 为什么需要：自定义节点（如姿势控制的 `AnimaPoseControl`）不是装在所有机器上的。
+ * 往工作流里注入一个不存在的节点，ComfyUI 会直接 400
+ * `missing_node_type: Node 'AnimaPoseControl' not found`，整张图都生不出来
+ * —— 2026-11-03 用户在没装该节点的机器上实测踩到。
+ *
+ * @param {string} nodeType 例如 'AnimaPoseControl'
+ * @returns {boolean|null} true 有 / false 没有 / **null 清单还没取到**（未知，调用方不应据此拦截）
+ */
+export function hasNodeType(nodeType) {
+  if (!objectInfoCache) return null;
+  return Object.prototype.hasOwnProperty.call(objectInfoCache, nodeType);
 }
 
 /** 启动后台轮询，直到成功获取 object_info */
@@ -468,8 +486,23 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   const clientId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const apiPrompt = guiToApi(guiWorkflow);
   // 姿势控制：options.poseJson（体位骨架）优先，其次设置里的固定参考图；
-  // 两者都没有时这里什么都不做，原有链路逐字节不变
-  maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });
+  // 两者都没有时这里什么都不做，原有链路逐字节不变。
+  //
+  // ⚠️ 2026-11-03 真机事故：**目标 ComfyUI 没装自定义节点时不能注入**。
+  // 用户换到另一台没装 `ComfyUI-anima-pose-control` 的机器，注入后 ComfyUI 直接 400
+  // `missing_node_type: Node 'AnimaPoseControl' not found`，整张图生不出来 ——
+  // 这比"没有姿势"严重得多（姿势是增强，出图是底线）。
+  // 所以先查节点清单：**明确没有**就跳过注入、照常出图；清单还没取到（null）时按原逻辑继续尝试。
+  const poseNodeOk = hasNodeType('AnimaPoseControl');
+  if (poseNodeOk === false) {
+    if (!poseNodeMissingWarned) {
+      poseNodeMissingWarned = true;
+      console.warn('[poseControl] 目标 ComfyUI 没有 AnimaPoseControl 节点（未装 ComfyUI-anima-pose-control），'
+        + '已跳过骨架注入，按无姿势出图；这条只提醒一次。要恢复体位生图请在设置里装好该节点。');
+    }
+  } else {
+    maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });
+  }
 
   const body = {
     client_id: clientId,

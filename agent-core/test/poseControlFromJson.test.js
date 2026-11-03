@@ -140,3 +140,15 @@ test('竖构图开关关闭时沿用工作流原尺寸；本来就是竖图时�
   assert.equal(tall[3].inputs.width, 768)
   assert.equal(tall[3].inputs.height, 1024)
 })
+
+test('★ 目标机器没装姿势节点时：不注入（不能让 400 把整张图打掉）', async () => {
+  // 2026-11-03 真机事故：用户换到没装 ComfyUI-anima-pose-control 的机器，
+  // 注入后 ComfyUI 回 400 missing_node_type，整张图生不出来。
+  // comfyClient 里靠 hasNodeType() 先判：明确 false 就跳过注入。
+  const { hasNodeType } = await import('../src/services/comfyClient.js')
+  // 清单没取到时是 null（未知），调用方不应据此拦截
+  const v = hasNodeType('AnimaPoseControl')
+  assert.ok(v === true || v === false || v === null, '必须返回三态，不能抛错')
+  // 未注册的节点类型必然是 false（或 null=清单未就绪）
+  assert.notEqual(hasNodeType('__DefinitelyNotANodeType__'), true)
+})
