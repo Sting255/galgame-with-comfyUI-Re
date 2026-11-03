@@ -150,6 +150,10 @@ export function normalizeIntimateState(raw) {
     rounds: Math.max(0, toInt(source.rounds, 0)),
     startedAt: source.startedAt || null,
     lastActionAt: source.lastActionAt || null,
+    // 睡眠玩法（2026-11-03）：睡着也能推进，睡眠条掉了才慢慢醒；催眠锁死时永远不醒
+    sleeping: source.sleeping === true,
+    sleepBar: clamp(source.sleepBar, 0, 100, 100),
+    forcedSleep: source.forcedSleep === true || Number(source.forcedSleep) === 1,
     edge: accumulation >= EDGE_THRESHOLD,
     overload: accumulation >= OVERLOAD_THRESHOLD,
     // 「一起到」的门槛随她自己的敏感度浮动（45~60，服务端口径见 intimateActionService.climaxThreshold）。

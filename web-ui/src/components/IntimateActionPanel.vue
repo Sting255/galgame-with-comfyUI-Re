@@ -41,6 +41,20 @@
           累积 {{ view.accumulation }}/100 · {{ view.accumulationLabel }} · 已推进 {{ view.rounds }} 下
           <span class="ia-threshold">（她到 {{ view.climaxThreshold }} 就能「一起到」）</span>
         </p>
+
+        <!-- 睡眠条（睡着时才有）：推进/触摸会把她往醒的方向拽，停手会慢慢沉回去 -->
+        <!-- ⚠ 用 div 包而不是 template 标签：守卫测试按源码里第一个模板闭合标签截断，注释里也不能出现它 -->
+        <div v-if="view.sleeping" class="ia-sleep-block">
+          <div class="ia-bar ia-bar--sleep" :class="{ 'is-locked': view.forcedSleep }" :title="sleepHint(view)">
+            <div class="ia-bar-fill" :class="'is-' + sleepTierKey(view)" :style="{ width: Math.max(0, Math.min(100, view.sleepBar)) + '%' }"></div>
+            <span class="ia-bar-edge" aria-hidden="true"></span>
+          </div>
+          <p class="ia-bar-text">
+            睡眠 {{ view.sleepBar }}/100 · {{ sleepTierLabel(view) }}
+            <span v-if="view.forcedSleep" class="ia-threshold">（催眠锁死：醒不过来）</span>
+            <span v-else-if="view.sleepBar <= 30" class="ia-threshold">（快醒了）</span>
+          </p>
+        </div>
         <p class="ia-edge-hint">{{ accumulationHint(view) }}</p>
 
         <!-- 节奏档（LinsheTabs 只作状态显示：切换由「加速抽插 / 慢下来」两个动作推进，点一下=一轮反应） -->
@@ -212,6 +226,23 @@ const sensitivity = computed(() => sensitivityView(her.value))
 const positions = computed(() => positionOptionsOf(snapshot.value || {}))
 // 体位清单：服务端现在给的是「精选 17 条 + 全量词库 84 条」，全铺出来太长，
 // 默认只显示精选（preferred === true），点「更多体位」再展开剩下的。
+// ── 睡眠条档位（与后端 SLEEP_WAKE_THRESHOLD=30 对齐）──
+function sleepTierKey(view) {
+  if (view?.forcedSleep) return 'locked'
+  const bar = Number(view?.sleepBar ?? 100)
+  if (bar <= 0) return 'awake'
+  if (bar <= 30) return 'waking'
+  return 'deep'
+}
+function sleepTierLabel(view) {
+  return { locked: '催眠锁死', awake: '已经醒了', waking: '将醒', deep: '深睡' }[sleepTierKey(view)] || ''
+}
+function sleepHint(view) {
+  const label = sleepTierLabel(view)
+  if (view?.forcedSleep) return `${label}：睡眠条被锁在 1 点，怎么弄都醒不过来`
+  return `${label}：推进与触摸会把这条拽下去，停手会慢慢沉回来`
+}
+
 const showAllPositions = ref(false)
 const visiblePositions = computed(() => {
   const list = positions.value
@@ -570,6 +601,15 @@ defineExpose({ refresh })
   background: var(--bg-sunken, rgba(0, 0, 0, 0.06));
   border: 1px solid var(--border);
 }
+/* ── 睡眠条（睡着时才出现）：越低越接近醒；催眠锁死时用另一套配色 ── */
+.ia-sleep-block { margin-top: 10px; }
+.ia-bar--sleep { height: 6px; }
+.ia-bar--sleep .ia-bar-fill.is-deep { background: var(--info, #6b8afd); }
+.ia-bar--sleep .ia-bar-fill.is-waking { background: var(--warning, #e8a33d); }
+.ia-bar--sleep .ia-bar-fill.is-awake { background: var(--danger, #d9534f); }
+.ia-bar--sleep .ia-bar-fill.is-locked { background: var(--accent); opacity: 0.75; }
+.ia-bar--sleep.is-locked { border-style: dashed; }
+
 .ia-bar-fill {
   height: 100%; border-radius: 999px;
   background: var(--accent);
