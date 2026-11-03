@@ -69,6 +69,22 @@ function resolveShieldTarget(label) {
 
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
 
+// 思考内容仅进入日志，不混入业务正文；完整打印，便于检查服务商实际返回的内容。
+// （上游 4.1.0 随「神说」的 chatAgentStream 一起引入；2026-11-03 合并时补回，否则该路径 ReferenceError）
+function logReasoning(label, reasoning) {
+  console.log(`[${providerLabel()} ← ${label} 思考链]`);
+  console.log(reasoning || '(服务商未返回思考内容)');
+}
+
+function logResponse(label, content, reasoning) {
+  logReasoning(label, reasoning);
+  console.log(`[${providerLabel()} ← ${label} 正文]`);
+  const outputText = content || '';
+  const outputLimit = outputLogLimit(label);
+  console.log(outputLimit === Infinity ? outputText : outputText.slice(0, outputLimit));
+  if (outputLimit !== Infinity && outputText.length > outputLimit) console.log(`... (${outputText.length} chars total, truncated)`);
+}
+
 /** 神说使用结构化原生工具流，不合并消息、不丢弃 tool 角色、不自动重放。 */
 export async function* chatAgentStream(messages, { tools = [], signal, label = '神说', requestId } = {}) {
   const llm = { ...config.llm, model: config.llm.freeEgg ? freeEggCandidates()[0] : config.llm.model };
