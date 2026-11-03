@@ -1644,7 +1644,30 @@ v-for="m in workflowModeOptions" :key="m.value"
           <span class="wf-mo-desc" v-html="m.desc"></span>
         </div>
       </div>
-      <div class="wf-mode-downloads">
+      <Transition name="expand">
+        <div v-if="wfModeDraft === 'custom'" class="wf-mode-custom">
+          <p class="wf-mode-hint">从 workflow 目录中选择工作流，所有生图场景统一使用</p>
+          <linshe-select
+v-model="wfCustomDraft" :options="customWorkflowOptions"
+            :disabled="customWorkflowLoading" placeholder="请选择自定义工作流"
+/>
+          <p v-if="!customWorkflowLoading && customWorkflowOptions.length === 0" class="wf-mode-custom-empty">
+            未找到可选工作流，请把 .json 文件放入 workflow 目录
+          </p>
+          <div class="wf-inject-note">
+            <div class="wf-inject-title">生图时会自动往这些节点注入内容</div>
+            <ul class="wf-inject-list">
+              <li v-for="row in workflowInjectRows" :key="row.node" class="wf-inject-row">
+                <span class="wf-inject-node">{{ row.node }}</span>
+                <span class="wf-inject-type">{{ row.type }}</span>
+                <span class="wf-inject-desc">{{ row.desc }}</span>
+              </li>
+            </ul>
+            <p class="wf-inject-tip">按节点标题匹配：工作流里节点标题与上表一致才会写入，其余节点保持原样。全局 LoRA 与角色 LoRA 不受标题限制，会自动串入 LoraLoaderModelOnly 节点链；KSampler 的 seed 为 randomize 时会自动随机。</p>
+          </div>
+        </div>
+      </Transition>
+      <div v-if="wfModeDraft !== 'custom'" class="wf-mode-downloads">
         <p class="wf-mode-dl-hint">整合包内一般只有一个模型（检查路径ComfyUI-aki-v3\ComfyUI\models\diffusion_models），如需额外下载：</p>
         <div class="wf-dl-item">
           <span class="wf-dl-label">Anima-turbo：</span>
@@ -1681,20 +1704,6 @@ base
 </linshe-button>
             </div>
           </div>
-        </div>
-      </Transition>
-      <!-- 自定义工作流（上游 v3.10.0）：仅当 workflow/ 目录里存在可选文件时出现 -->
-      <Transition name="expand">
-        <div v-if="wfModeDraft === 'custom'" class="wf-mode-custom">
-          <p class="wf-mode-hint">选择 workflow 目录下的工作流文件（角色专属工作流仍优先于它）</p>
-          <linshe-select
-            v-model="wfCustomDraft"
-            :options="customWorkflowOptions"
-            :disabled="customWorkflowLoading"
-            :placeholder="customWorkflowLoading ? '正在读取 workflow 目录…' : '选择工作流文件'"
-            aria-label="自定义工作流"
-            searchable
-          />
         </div>
       </Transition>
       <template #footer>
@@ -3898,7 +3907,7 @@ async function fetchCustomWorkflows() {
   try {
     const data = await getWorkflows()
     customWorkflowList.value = (data.workflows || [])
-      .filter(w => !NON_GENERATION_WORKFLOWS.includes(w.filename))
+      .filter(w => !NON_GENERATION_WORKFLOWS.includes(w.filename) && !w.filename.startsWith('放大细化工作流'))
   } catch {
     customWorkflowList.value = []
   } finally {
@@ -4963,10 +4972,11 @@ function resetTestPrompts() {
 
 /* ── 工作流模式弹窗 ── */
 .wf-mode-options {
-  display: flex; gap: 12px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;
 }
 .wf-mode-option {
-  flex: 1;
+  flex: 1 1 140px;
+  min-width: 0;
   background: var(--bg-secondary);
   border: 2px solid var(--border);
   border-radius: 12px;
@@ -4991,6 +5001,9 @@ function resetTestPrompts() {
 .wf-mo-desc:deep(.wf-mo-highlight) {
   color: var(--accent); font-weight: 700;
 }
+@media (max-width: 640px) {
+  .wf-mode-option { flex: 1 1 calc(50% - 6px); }
+}
 .wf-mode-downloads {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
@@ -5011,6 +5024,65 @@ function resetTestPrompts() {
 .wf-mode-hint {
   font-size: 12px; color: var(--text-secondary);
   margin-bottom: 10px; text-align: center;
+}
+.wf-mode-custom {
+  background: rgba(var(--accent-rgb), 0.04);
+  border: 1px solid rgba(var(--accent-rgb), 0.12);
+  border-radius: 8px; padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.wf-mode-custom-empty {
+  font-size: 12px; color: var(--text-secondary);
+  margin: 8px 0 0; text-align: center;
+}
+.wf-inject-note {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed rgba(var(--accent-rgb), 0.2);
+}
+.wf-inject-title {
+  font-size: 12px; font-weight: 600; color: var(--text-bright);
+  margin-bottom: 8px;
+}
+.wf-inject-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.wf-inject-row {
+  display: grid;
+  grid-template-columns: 84px 112px 1fr;
+  align-items: baseline;
+  column-gap: 8px;
+  font-size: 12px; line-height: 1.5;
+}
+.wf-inject-node {
+  justify-self: start;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.22);
+  color: var(--accent); font-weight: 600; white-space: nowrap;
+}
+.wf-inject-type {
+  justify-self: start;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(var(--accent-rgb), 0.06);
+  border: 1px solid rgba(var(--accent-rgb), 0.14);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px; line-height: 16px; white-space: nowrap;
+}
+.wf-inject-desc {
+  min-width: 0;
+  color: var(--text-secondary);
+}
+@media (max-width: 640px) {
+  .wf-inject-row { grid-template-columns: auto auto; }
+  .wf-inject-desc { grid-column: 1 / -1; }
+}
+.wf-inject-tip {
+  margin: 10px 0 0; font-size: 11px; line-height: 1.5;
+  color: var(--text-secondary); opacity: 0.85;
 }
 .wf-mode-scenes {
   background: rgba(var(--accent-rgb), 0.04);

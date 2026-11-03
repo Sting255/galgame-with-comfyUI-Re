@@ -433,7 +433,11 @@ export function asPersonaOutfits(sceneOutfit) {
  * @returns {string|null}
  */
 export function buildOutfitAnnotateLayer(characterId) {
-  const outfits = listSceneOutfits(characterId);
+  return buildOutfitAnnotation(listSceneOutfits(characterId));
+}
+
+/** 系统角色可显式提供独立衣柜，复用同一日程着装规范。 */
+export function buildOutfitAnnotation(outfits) {
   if (outfits.length < 2) return null;   // 只有一套就没什么可分配的
 
   // 清单里给的是「组合后的自包含文本」—— 模型要照着这个判断"哪一套像什么场合"，

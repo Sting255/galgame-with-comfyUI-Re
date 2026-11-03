@@ -188,6 +188,13 @@ async function extractInto(zip, target) {
  * 构建 APK。成功返回 APK 绝对路径，失败返回 null（只 warn 不抛异常）。
  */
 export async function buildApk() {
+  // 逃生口：APK 壳是「非刚需」，但它的工具链（JDK 17 / Gradle / Android SDK）
+  // 要现场下载几百 MB。网络差的时候一个 URL 能挂几十分钟，会把整个 release 卡死 ——
+  // 设 SKIP_APK=1 直接跳过，release 继续往下组装（包里就不含 APK）。
+  if (process.env.SKIP_APK === "1") {
+    warn("SKIP_APK=1，跳过 APK 构建");
+    return null;
+  }
   if (!existsSync(resolve(ANDROID_DIR, "settings.gradle.kts"))) {
     warn("未找到 android-shell/ 项目，跳过 APK 构建");
     return null;

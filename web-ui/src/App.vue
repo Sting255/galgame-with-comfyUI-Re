@@ -5,10 +5,7 @@
     <span class="banner-text">尚未配置 API Key，请前往设置页面填写 DeepSeek（或其他兼容）API Key</span>
     <router-link to="/settings" class="banner-link">前往设置 →</router-link>
   </div>
-  <!-- 上游 v3.10.0：app-layout 新增两者的 class
-       · sidebar-collapsed —— 桌面端侧栏收纳（移动端走抽屉，不参与）
-       · immersive-chat    —— galgame 模式隐藏导航/侧栏，手机端沉浸体验 -->
-  <div class="app-layout" :class="{ 'is-mobile': isMobile, 'sidebar-collapsed': !isMobile && sidebarCollapsed, 'immersive-chat': route.path.startsWith('/chat') && route.query.mode === 'galgame' }">
+  <div class="app-layout" :class="{ 'is-mobile': isMobile, 'sidebar-collapsed': !isMobile && (sidebarCollapsed || route.path === '/god-says'), 'immersive-chat': route.path.startsWith('/chat') && route.query.mode === 'galgame' }">
     <!-- 移动端遮罩层：Sidebar 拉出时覆盖聊天区域 -->
     <Transition name="scrim-fade">
       <div v-if="isMobile && mobileSidebarOpen" class="mobile-scrim" @click="closeMobileSidebar"></div>
@@ -24,7 +21,7 @@
         />
         <!-- 桌面端：贴侧栏右缘的收纳手柄，点一下把侧栏向左收起（移动端用抽屉，不显示） -->
         <div
-          v-if="!isMobile"
+          v-if="!isMobile && route.path !== '/god-says'"
           class="sidebar-handle"
           role="button"
           tabindex="0"

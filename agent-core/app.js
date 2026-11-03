@@ -1,4 +1,5 @@
 import './src/envCheck.js'; // 必须最先执行：Node ABI 预检，防 better-sqlite3 加载崩溃
+import './src/logCapture.js'; // 尽早安装 console 捕获到内存环形缓冲（幂等）
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -32,6 +33,9 @@ import lorebookRoutes from './src/routes/lorebooks.js';
 import presetRoutes from './src/routes/presets.js';
 import momentsRoutes from './src/routes/moments.js';
 import worldMapRoutes from './src/routes/worldMap.js';
+import godSaysRoutes from './src/routes/godSays.js';   // 上游 4.1.0：神说（godSays）
+import logRoutes from './src/routes/logs.js';          // 上游 4.1.0：内存日志面板
+import { startGodSays, stopGodSays } from './src/services/godSays/runtime.js';
 import relationshipsRoutes from './src/routes/relationships.js';
 import userRelationshipsRoutes from './src/routes/userRelationships.js';
 import portraitsRoutes from './src/routes/portraits.js';
@@ -209,6 +213,8 @@ app.use('/api/config', wrapRouterAsync(configRoutes));
 // —— 上游 v3.10.0 合并时文件到了、mount 漏了（2026-10-19 浏览器 E2E 抓到 404）
 app.use('/api/config', wrapRouterAsync(lorebookRoutes));
 app.use('/api/presets', wrapRouterAsync(presetRoutes));
+app.use('/api/god-says', wrapRouterAsync(godSaysRoutes));
+app.use('/api/logs', wrapRouterAsync(logRoutes));
 app.use('/api/moments', wrapRouterAsync(momentsRoutes));
 // 地图页（世界地图骨架 = 叙事地理）；与小镇的网格图接口刻意分开
 app.use('/api/worldmap', wrapRouterAsync(worldMapRoutes));
@@ -409,6 +415,7 @@ const server = app.listen(config.port, config.host, () => {
 });
 // 缩短 keep-alive 空闲超时，避免 Vite 代理在进程重启后复用到已死连接
 server.keepAliveTimeout = 5000;
+startGodSays();
 
 // 异步检查向量服务（不阻塞启动）
 (async () => {
@@ -476,6 +483,7 @@ const shutdown = () => {
   // 2. 先关 HTTP 服务（拒绝新连接），再清理资源
   server.close(async () => {
     // 日志文件先收尾（把缓冲区刷盘、还原 console），再关库退出
+    try { stopGodSays(); } catch { /* 旁路，不影响退出 */ }
     try { await getFileLogging()?.close(); } catch { /* 旁路，不影响退出 */ }
     closeDb();
     process.exit(0);

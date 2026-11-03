@@ -355,6 +355,24 @@ export function pickFeaturedCharacter(db) {
   `).get() || null;
 }
 
+// 变身日概率（世界状态日内，变身 vs 服装 = 50% vs 50%；本地口径保留五五开，上游是 0.4）
+export const WORLD_TRANSFORM_CHANCE = 0.5;
+
+/**
+ * 变身日预设形态池：抽中变身日后从这里均匀锁定一种，全镇当天统一变成这同一种。
+ * 每种形态的 theme 写死器官组合（外观注入与立绘生成都以它为准），不再让 LLM 自由发挥——
+ * 自由发挥会让报纸写出「各家长了不同器官」的五花八门场面，与全镇统一临时外观的注入机制冲突。
+ */
+export const WORLD_TRANSFORM_FORMS = [
+  { name: '猫娘', theme: '猫娘化：头顶一对毛绒猫耳，身后一条细长的猫尾巴，瞳孔变成略扁的竖椭圆；除此之外不多出任何其他器官' },
+  { name: '龙娘', theme: '龙娘化：头顶一对小巧的龙角，身后一条覆着细鳞的龙尾巴；不长翅膀，除此之外不多出任何其他器官' },
+  { name: '狐娘', theme: '狐娘化：头顶一对尖尖的狐耳，身后一条蓬松的大狐狸尾巴；除此之外不多出任何其他器官' },
+  { name: '犬娘', theme: '犬娘化：头顶一对耷拉的狗耳朵，身后一条摇摆的狗尾巴；除此之外不多出任何其他器官' },
+  { name: '兔娘', theme: '兔娘化：头顶一对长长的竖立兔耳，身后一个绒球似的短兔尾；除此之外不多出任何其他器官' },
+  { name: '精灵耳', theme: '精灵化：只把耳朵变成一对向外伸展的细长精灵耳；不长尾巴、不长角，除此之外不多出任何其他器官' },
+  { name: '猪猪', theme: '猪猪化：鼻尖变成可爱的圆猪鼻子，头顶一对小猪耳朵，身后一条卷卷的小猪尾巴；除此之外不多出任何其他器官' },
+];
+
 /**
  * 世界影响抽取：服装 / 变身五五开；服装内部与开箱 rollEffectKey 同口径——
  * 40% 命中世界观服装（WORLD_OUTFIT_CHANCE，需世界观存在，否则回落固定款），
@@ -363,10 +381,12 @@ export function pickFeaturedCharacter(db) {
  */
 export function pickWorldLoot(hasWorldSetting = false) {
   const all = Object.entries(ITEM_EFFECTS);
-  const byKind = kind => all.filter(([, e]) => e.kind === kind);
-  const pool = Math.random() < 0.5
-    ? byKind('transform')
-    : (hasWorldSetting && Math.random() < WORLD_OUTFIT_CHANCE ? byKind('world_outfit') : byKind('outfit'));
+  const byKind = kind => all.filter(([, e]) => !e.injectionOnly && e.kind === kind);
+  if (Math.random() < WORLD_TRANSFORM_CHANCE) {
+    const form = WORLD_TRANSFORM_FORMS[Math.floor(Math.random() * WORLD_TRANSFORM_FORMS.length)];
+    return { key: 'transform', kind: 'transform', name: form.name, theme: form.theme };
+  }
+  const pool = hasWorldSetting && Math.random() < WORLD_OUTFIT_CHANCE ? byKind('world_outfit') : byKind('outfit');
   const [key, effect] = pool[Math.floor(Math.random() * pool.length)];
   return { key, kind: effect.kind, name: effect.name, theme: effect.theme };
 }

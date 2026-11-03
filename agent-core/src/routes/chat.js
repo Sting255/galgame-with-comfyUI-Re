@@ -66,7 +66,9 @@ import { saveBase64Image } from '../services/imagePaths.js';
 import { parseEmojiText, buildEmojiNote, getCharacterEmojiMap } from '../services/emojiService.js';
 // galgame 转录（上游 v3.9.0 合并）：读完整源消息 + 分句图片挂载，服务层纯函数。
 import { readDialogueTranscript } from '../services/dialogueTranscript.js';
+import { withGalgameEmojiPreference } from '../services/chatModePrompt.js';
 import { getReplyDelay, formatScheduleContext, getCurrentActivity, isTempWoken, extendTempWake, isSleeping } from '../services/scheduleManager.js';
+import { getGodWorldContext } from '../services/godSays/worldContext.js';
 import { detectAndApplyAppointment } from '../services/appointmentDetector.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
 import { getStandingDisplay, publishStandingKeys } from '../services/standingDisplay.js';
@@ -114,7 +116,6 @@ import {
 } from '../services/replyPlanner.js';
 // galgame 模式（上游 v3.9.0 合并）：请求级偏好，只拼在本轮 user 头部。
 // galgame_mode 非 true / 无表情包时原样返回消息数组，普通聊天路径零改动。
-import { withGalgameEmojiPreference } from '../services/chatModePrompt.js';
 // SLG 动作系统（触摸互动）：本轮待反应的动作 → <touch_action> 叙事块（服务层纯函数，零 LLM）。
 // 开关 features.touch 关闭 / 没有待反应动作时一个块都不注入，与加功能前逐字节一致。
 import { buildTouchActionBlock } from '../services/touchActionService.js';
@@ -1000,6 +1001,8 @@ ${coreRules}
 
     // 4. 日程上下文（当前在做什么 / 睡醒等）
     const scheduleCtx = (config.features.schedule !== false) ? formatScheduleContext(characterId) : null;
+    const godWorldContext = getGodWorldContext([Number(characterId)]);
+    if (godWorldContext) dynamicBlocks.push(godWorldContext);
     if (scheduleCtx) {
       dynamicBlocks.push(`<schedule_context>\n${scheduleCtx}\n</schedule_context>`);
     }

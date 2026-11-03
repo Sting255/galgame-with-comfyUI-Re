@@ -21,6 +21,7 @@ import {
   isGroupMemoryLinkEnabled, listCharacterGroupConversationIds,
   isGroupSourcedMemory, groupOriginPrefix, loadGroupNameMap,
 } from './groupMemoryLink.js';
+import { speakLetter } from './speechService.js';
 
 const CHECK_INTERVAL = 60 * 1000;
 
@@ -194,6 +195,18 @@ async function processReply(db, letter) {
       handwriting_font: fullLetter.handwriting_font || handwritingFont || '',
       is_read: 0,
     });
+
+    // 自动阅读：写信时勾选了「自动阅读」，回信生成后立即检测角色声音并开始合成 TTS
+    if (letter.auto_read) {
+      try {
+        speakLetter(letterId);
+        console.log(`[mailboxScheduler] letter #${letterId} auto-read speech queued`);
+      } catch (err) {
+        if (err?.code !== 'VOICE_NOT_CONFIGURED') {
+          console.warn(`[mailboxScheduler] letter #${letterId} speech failed:`, err?.message || err);
+        }
+      }
+    }
 
   } catch (err) {
     console.error(`[mailboxScheduler] letter #${letterId} failed:`, err.message);
@@ -484,7 +497,18 @@ export async function buildMailboxMemorySection(charId, userContent, { search = 
 //  JSON 解析 + fallback
 // ══════════════════════════════════════════════════════════════
 
-function parseReplyJSON(raw, userContent) {
+/** JSON 不可用时的默认配图提示词（截断兜底与整段兜底共用一份）。 */
+const FALLBACK_REPLY_PROMPTS = {
+  paperPrompt: 'decorative letter paper, elegant stationery, floral border, soft cream tones, large blank center area',
+  portraitPrompt: 'close-up portrait, sitting at a desk writing a letter, warm candlelight, contemplative expression',
+  illustrationPrompt: 'dreamy illustration, warm colors, ethereal atmosphere, storybook style',
+};
+
+/**
+ * 把回信模型的原始输出解析成 { text, paperPrompt, portraitPrompt, illustrationPrompt }。
+ * 导出供单测直接钉住「JSON 被上游截断」这条兜底路径。
+ */
+export function parseReplyJSON(raw, userContent) {
   if (!raw) return null;
   const clean = raw.trim();
 
@@ -503,6 +527,20 @@ function parseReplyJSON(raw, userContent) {
     try { const p = JSON.parse(obj[0]); return validate(p); } catch {}
   }
 
+  // 3.5) **JSON 被截断**（上游提前停流，实测 deepseek-v4.1-flash 会在 500 多 token 就断，
+  //      末尾的 illustrationPrompt 只剩半句、缺闭合括号）⇒ 整块 parse 必然失败。
+  //      这时正则单独抽出 text 字段，回信正文仍然是干净的，不会把整坨 JSON 印到信纸上。
+  const textHit = clean.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (textHit) {
+    let text = '';
+    try { text = JSON.parse(`"${textHit[1]}"`); } catch { text = textHit[1]; }
+    text = String(text || '').trim();
+    if (text && !isRefusal(text)) {
+      console.log('[mailboxScheduler] JSON truncated, recovered text field only');
+      return { text: text.slice(0, 600), ...FALLBACK_REPLY_PROMPTS };
+    }
+  }
+
   // 4) fallback: 把整段当 text，用默认 prompt
   //    但拒答不能当回信正文（2026-10-22）：返回 null，上层按「LLM reply generation returned empty」
   //    抛错并重试，而不是把「我无法提供相关内容」写进信件并印在信纸上。
@@ -510,9 +548,7 @@ function parseReplyJSON(raw, userContent) {
   console.log('[mailboxScheduler] JSON parse failed, using raw text fallback');
   return {
     text: clean.slice(0, 600),
-    paperPrompt: 'decorative letter paper, elegant stationery, floral border, soft cream tones, large blank center area',
-    portraitPrompt: 'close-up portrait, sitting at a desk writing a letter, warm candlelight, contemplative expression',
-    illustrationPrompt: 'dreamy illustration, warm colors, ethereal atmosphere, storybook style',
+    ...FALLBACK_REPLY_PROMPTS,
   };
 }
 

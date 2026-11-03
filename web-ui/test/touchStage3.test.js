@@ -38,7 +38,8 @@ const panel = parseSfc(panelFile).descriptor
 const panelTemplate = panel.template.content
 const panelScript = panel.scriptSetup.content
 
-const detailFile = readFileSync(new URL('../src/components/CharacterDetailModal.vue', import.meta.url), 'utf8')
+// 上游 4.1.0 把详情卡主体拆到 ResidentCharacterDetailModal.vue（CharacterDetailModal 只剩 13 行路由壳）
+const detailFile = readFileSync(new URL('../src/components/ResidentCharacterDetailModal.vue', import.meta.url), 'utf8')
 const chatScript = parseSfc(readFileSync(new URL('../src/views/ChatView.vue', import.meta.url), 'utf8')).descriptor.scriptSetup.content
 
 function fnSource(nodes, name) {
@@ -211,7 +212,8 @@ test('统计面板：空态 / 加载态齐备，且已挂进角色详情弹窗',
   assert.ok(panelTemplate.includes('读取中'), '要有加载态')
   assert.ok(panelTemplate.includes('v-if="stats.hasData"'))
   assert.ok(detailFile.includes("import TouchStatsPanel from './TouchStatsPanel.vue'"))
-  assert.ok(detailFile.includes('<TouchStatsPanel :character="character" />'), '挂在角色详情弹窗')
+  // 允许带 v-if（天使/居民共用详情卡后，触摸统计只对居民角色出现）
+  assert.match(detailFile, /<TouchStatsPanel[^>]*:character="character"/, '挂在角色详情弹窗')
   assert.ok(detailFile.includes('触摸互动'), '小节标题')
 })
 
