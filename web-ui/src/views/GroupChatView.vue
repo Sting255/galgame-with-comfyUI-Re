@@ -578,7 +578,7 @@ import { useSpeechBubbleControls } from '../composables/useSpeechBubbleControls.
 import '../styles/speechBubble.css'
 
 const route = useRoute()
-useSpeechAutoPlay(() => `group:${route.params.id}`)
+useSpeechAutoPlay(() => route.path.startsWith('/group/') ? `group:${route.params.id}` : null)
 const router = useRouter()
 const store = useGroupsStore()
 // 程序时间：群聊时间分隔符与私聊同口径

@@ -201,10 +201,19 @@
             </div>
           </div>
           <div class="compose-actions">
-            <linshe-button variant="secondary" @click="cancelWrite">取消</linshe-button>
-            <linshe-button variant="primary" :disabled="!composeContent.trim() || sending" :loading="sending" @click="doSend">
-              {{ sending ? '寄送中...' : '寄出' }}
-            </linshe-button>
+            <linshe-switch
+              v-if="ttsEnabled"
+              v-model="autoRead"
+              size="sm"
+              on-text="自动阅读"
+              class="compose-auto-read"
+            />
+            <div class="compose-actions-btns">
+              <linshe-button variant="secondary" @click="cancelWrite">取消</linshe-button>
+              <linshe-button variant="primary" :disabled="!composeContent.trim() || sending" :loading="sending" @click="doSend">
+                {{ sending ? '寄送中...' : '寄出' }}
+              </linshe-button>
+            </div>
           </div>
         </div>
       </Transition>
@@ -243,6 +252,9 @@ import LetterViewer from '../components/LetterViewer.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
+import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
+import { ttsApi } from '../api/tts.js'
+import { emitLetterReopened } from '../utils/characterReactionProducers.js'
 
 const router = useRouter()
 const chatStore = useChatStore()
@@ -293,6 +305,8 @@ const writing = ref(false)
 const composeContent = ref('')
 const sending = ref(false)
 const composeTextareaRef = ref(null)
+const ttsEnabled = ref(false)
+const autoRead = ref(false)
 const keyboardHeight = ref(0)
 const composePanelStyle = computed(() => {
   if (keyboardHeight.value > 0) {
@@ -329,7 +343,17 @@ function onComposeBlur() {
   }
 }
 
+async function loadTtsEnabled() {
+  try {
+    const settings = await ttsApi('/settings')
+    ttsEnabled.value = !!settings?.enabled
+  } catch {
+    ttsEnabled.value = false
+  }
+}
+
 function startWrite() {
+  loadTtsEnabled()
   showCharPicker.value = true
 }
 
@@ -338,6 +362,7 @@ function pickCharacter(char) {
   showCharPicker.value = false
   writing.value = true
   composeContent.value = ''
+  autoRead.value = false
   nextTick(() => composeTextareaRef.value?.focus())
 }
 
@@ -346,6 +371,7 @@ function cancelWrite() {
   writing.value = false
   selectedChar.value = null
   composeContent.value = ''
+  autoRead.value = false
 }
 
 async function doSend() {
@@ -353,10 +379,13 @@ async function doSend() {
   if (!text || sending.value) return
   sending.value = true
   try {
-    await store.sendLetter(selectedChar.value.id, '', text)
+    await store.sendLetter(selectedChar.value.id, '', text, {
+      auto_read: ttsEnabled.value && autoRead.value,
+    })
     writing.value = false
     selectedChar.value = null
     composeContent.value = ''
+    autoRead.value = false
     await store.fetchLetters()
   } catch (err) {
     console.error('[MailboxView] send error:', err)
@@ -516,6 +545,7 @@ function estimateReply(letter) {
 onMounted(() => {
   store.startPolling()
   if (store.letters.length === 0) store.fetchLetters()
+  loadTtsEnabled()
 })
 
 onUnmounted(() => {
@@ -900,12 +930,15 @@ onUnmounted(() => {
 .paper-textarea::placeholder { color: #baaa9a; }
 
 .compose-actions {
-  display: flex; justify-content: flex-end; gap: 10px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px;
   padding: 10px 12px; flex-shrink: 0;
   border-top: 1px solid rgba(0,0,0,0.04);
   background: #FCFAF7;
   padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
+.compose-actions-btns { display: flex; gap: 10px; }
+.compose-auto-read { flex-shrink: 0; }
+.compose-auto-read :deep(.ls-switch__text) { font-size: 13px; }
 
 /* ═══════════════════════════════════════
    Transitions

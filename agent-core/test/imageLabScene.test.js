@@ -28,6 +28,9 @@ function loadHandler(route, dependencies) {
     path,
     lastStyleTest: null,
     config: { comfyui: {} },
+    // 路由里会先算尺寸（studioDimensions 是模块级 import，VM 沙箱里没有）——
+    // 这几条用例只关心画师串/场景，给个恒等桩即可，否则会被 try/catch 吞成 HTTP 400。
+    studioDimensions: () => ({ width: 768, height: 512 }),
     RAG_TIMEOUT_FAST_MS: 100,
     ...dependencies,
   });

@@ -217,7 +217,11 @@ test('outfit design never overwrites edits made while the model was running and 
   const b = buildAngelOutfitDesignRequest(h.repo.ensureAngel(), { baseAppearance: '浅蓝短袍', scenes: ['casual'] }, env);
   assert.deepEqual(a.messages.slice(0, a.lorebook.cacheBoundary.index + 1), b.messages.slice(0, b.lorebook.cacheBoundary.index + 1));
   assert.equal(a.messages.filter(message => message.role === 'user').length, 1);
-  assert.match(a.messages[2].content, /\"outfits\"[\s\S]*\"scene\"[\s\S]*\"description\"/);
+  // 本地 fork 的衣柜提示词是「body + description 分层」的五态版本，字段比上游多一个 body，
+  // 且规矩放在自己那一层 system 里 —— 断言按「存在哪条消息」找，不钉死下标。
+  const schemaMsg = a.messages.find(message => message.content.includes('"outfits"'));
+  assert.ok(schemaMsg, '提示词里要给出 outfits 的 JSON 示例');
+  assert.match(schemaMsg.content, /"scene"[\s\S]*"description"/);
   assert.match(a.messages.at(-1).content, /sleep/);
 });
 

@@ -79,6 +79,7 @@
         <div v-if="ctl.funcOpen" class="standing-func">
           <div class="standing-func-input-row">
             <div
+              v-if="ctl.toggleMode"
               class="standing-mode-badge"
               role="button"
               tabindex="0"

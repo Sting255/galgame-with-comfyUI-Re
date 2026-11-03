@@ -119,6 +119,10 @@ test('legacy migration retains owners and unused recordings without allowing sha
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'linshe-tts-test-'));
 process.env.DB_PATH = ':memory:';
 process.env.TTS_AUDIO_DIR = root;
+// Handoff assertions below deliberately cover the legacy exclusive contract;
+// auto/shared admission has deterministic injected coverage in speechGpu.test.
+const previousGpuMode = process.env.TTS_GPU_MODE;
+process.env.TTS_GPU_MODE = 'exclusive';
 const originalFetch = globalThis.fetch;
 let inferCount = 0, acquireCount = 0, failInference = false, offline = false, fetchFailure = null;
 let modelLoaded = false;
@@ -152,7 +156,14 @@ const { getDb, closeDb } = await import('../src/db/index.js');
 const service = await import('../src/services/speechService.js');
 const assets = await import('../src/services/voiceAssets.js');
 const gpu = await import('../src/services/speechGpu.js');
-after(async () => { await gpu.recoverSpeechGpu(); globalThis.fetch = originalFetch; closeDb(); await fs.rm(root, { recursive: true, force: true }); });
+after(async () => {
+  try { await gpu.recoverSpeechGpu(); }
+  finally {
+    if (previousGpuMode === undefined) delete process.env.TTS_GPU_MODE;
+    else process.env.TTS_GPU_MODE = previousGpuMode;
+    globalThis.fetch = originalFetch; closeDb(); await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 async function terminal(id) {
   for (let i = 0; i < 200; i++) {
@@ -257,6 +268,35 @@ test('saved bubble identity, dedup, history, cache invalidation, retry and offli
   assert.equal((await terminal(cancelled.id)).status, 'cancelled');
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(service.getSpeechJob(cancelled.id).status, 'cancelled');
+  const fetchBeforeCancel = globalThis.fetch;
+  let started, endInference, didCancel;
+  const start = new Promise(resolve => { started = resolve; });
+  const end = new Promise(resolve => { endInference = resolve; });
+  const cancellation = new Promise(resolve => { didCancel = resolve; });
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith('/synthesize')) {
+      const body = JSON.parse(options.body);
+      started(body);
+      await end;
+      return Response.json({ error: '任务已取消' }, { status: 400 });
+    }
+    if (String(url).endsWith('/cancel')) {
+      didCancel(JSON.parse(options.body));
+      return Response.json({ cancelled: true });
+    }
+    return fetchBeforeCancel(url, options);
+  };
+  try {
+    const running = service.requestSpeech({ characterId: char, voiceId: 'tts-v', text: '中断正在进行的本地合成' });
+    assert.equal((await start).job_id, running.id);
+    service.cancelSpeech(running.id);
+    assert.deepEqual(await cancellation, { job_id: running.id });
+    assert.equal(service.getSpeechJob(running.id).status, 'cancelled');
+    endInference();
+    // The lease is released only after the targeted worker has actually exited.
+    await gpu.withImageGpu(async () => {});
+    assert.equal(service.getSpeechJob(running.id).status, 'cancelled');
+  } finally { endInference(); globalThis.fetch = fetchBeforeCancel; }
 });
 
 test('group speech uses the saved speaker, rejects cross-conversation access and checks local voice configuration', async () => {

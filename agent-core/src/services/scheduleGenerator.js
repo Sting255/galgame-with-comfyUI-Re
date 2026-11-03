@@ -12,7 +12,6 @@
 
 import { getDb, getWorldSetting, getSystemRules } from '../db/index.js';
 // 场景服装（2026-10-13 合并上游 + PR #24）：日程生成时拼「着装标注」层 + 生成后校验修复
-import { buildOutfitAnnotateLayer, ensureOutfitAnnotations } from './outfitScene.js';
 import { chatSync } from './lorebook/runtime.js';
 import { config } from '../config.js';
 import { getProgramDateKey, toSqlUtc } from './programTime.js';
@@ -20,6 +19,7 @@ import { getWorldIntegrationRule } from '../builtinRules.js';
 // 奇遇时长预留（上游 v3.9.0）：写完当天日程快照后，把进行中的事件开场活动重新钉回去。
 // 本地从 v3.6.2 起漏了这条接线（2026-10-14 补）。
 import { reapplyActiveEventSchedule } from './eventSchedule.js';
+import { buildOutfitAnnotateLayer, buildOutfitAnnotation, ensureOutfitAnnotations } from './outfitScene.js';
 
 /**
  * 截取角色人格 prompt：从开头到 "##你的外观" 之前
@@ -49,7 +49,9 @@ function normalizeTags(tags) {
  * @param {object} character - { id, display_name, base_prompt }
  * @returns {Promise<{schedule_json: string, version: number}>}
  */
-export async function generateSchedule(character, direction) {
+// 上游 4.1.0：神说（天使）需要「只出日程不落库」的旁路生成，并自带独立衣柜与思考串。
+// 本地版没有 pendingSchedules 去重（我们把它去掉了），只补 options 参数，不动本地的去重策略。
+export async function generateSchedule(character, direction, options = {}) {
   const db = getDb();
   const worldSetting = getWorldSetting();
   const persona = cropPersonaForSchedule(character.base_prompt);
@@ -149,7 +151,11 @@ ${direction}**
   // 只有该角色配了场景服装（≥2 套）时才拼；没配的角色日程生成保持原样（零影响）。
   // 这段要求模型为「换装的那一刻」额外输出 outfit 字段，供 outfitScene.getSceneOutfitForNow 按日程选装。
   // ⚠ 必须在 triggerContent 声明**之后**再用它（TDZ：本仓踩过"引用后声明变量整块静默全废"）。
-  const outfitLayer = buildOutfitAnnotateLayer(character.id);
+  // options.outfits：系统角色（天使）自带衣柜，直接用传入的那几套；
+  // options.persist === false：旁路生成不落库，也就不需要按角色查库里的场景服装。
+  const outfitLayer = Array.isArray(options.outfits)
+    ? buildOutfitAnnotation(options.outfits.filter(outfit => outfit.description))
+    : options.persist === false ? null : buildOutfitAnnotateLayer(character.id);
 
   // ── 组装多层 system（前三层为跨角色共享前缀，提高 LLM 缓存命中率）──
   const msgs = [];
@@ -194,6 +200,8 @@ ${SCHEDULE_FORMAT_TAIL}`;
         max_tokens: 4096,
         response_format: { type: 'json_object' },
         label: `schedule-gen:${character.display_name}`,
+        ...(options.thinking ? { thinking: options.thinking } : {}),
+        lorebook:{personaTexts:[personaMsg],staticTexts:[scheduleInst],characterName:character.display_name},
       });
 
       let schedule = parseAndValidateSchedule(rawResult, character.display_name);
@@ -210,6 +218,8 @@ ${SCHEDULE_FORMAT_TAIL}`;
           }
         }
         const json = JSON.stringify(schedule);
+        // 系统角色（天使）复用生成与校验，但由自己的存储负责，不混入普通居民表。
+        if (options.persist === false) return { schedule_json: json, version: 1 };
         const existing = db.prepare('SELECT id, version FROM schedule_templates WHERE character_id = ?').get(character.id);
 
         if (existing) {

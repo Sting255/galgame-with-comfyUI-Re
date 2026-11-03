@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const SRC = readFileSync(new URL('../src/components/CharacterDetailModal.vue', import.meta.url), 'utf8')
+const SRC = readFileSync(new URL('../src/components/ResidentCharacterDetailModal.vue', import.meta.url), 'utf8')
 
 test('外观加载失败要落到错误态，而不是只清空数组', () => {
   assert.match(SRC, /detail\.sceneOutfitsError\s*=\s*err\?\.message/, 'catch 里必须写入错误原因')
@@ -58,10 +58,12 @@ test('兜底场景 key 必须与后端 outfitScene.js 一致（casual/home/sleep
 })
 
 test('打开角色卡必须真的去拉场景服装（否则面板永远停在「加载中…」）', () => {
-  const initBody = SRC.slice(SRC.indexOf('function init(c)'), SRC.indexOf('async function removeOath()'))
+  const initStart = SRC.indexOf('function init(c)')
+  assert.ok(initStart > 0, '要能找到 init(c)')
+  const initBody = SRC.slice(initStart, initStart + 2000)
   assert.match(initBody, /loadSceneOutfits\(c\.id/, 'init 里要触发加载')
   assert.match(SRC, /function splitPersona\(/, '要有整卡拆分函数')
-  assert.match(initBody, /splitPersona\(c\.base_prompt\)/, 'init 要用 splitPersona 拆整卡')
+  assert.match(initBody, /splitPersona\(c\.base_prompt/, 'init 要用 splitPersona 拆整卡')
   assert.match(initBody, /detail\.editPersona\s*=\s*split\.persona/, '人设框要拿到拆分后的人设')
   assert.match(initBody, /detail\.originalAppearance\s*=\s*split\.appearance/, '要记住原外观做兜底')
   assert.match(initBody, /detail\.appearanceTail\s*=\s*split\.tail/, '尾部要保留，否则保存会丢掉外观段之后的内容')

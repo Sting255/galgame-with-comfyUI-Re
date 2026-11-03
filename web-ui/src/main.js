@@ -36,12 +36,15 @@ import JailbreakSettingsView from './views/JailbreakSettingsView.vue'   // 破�
 import MaibotBridgeView from './views/MaibotBridgeView.vue'
 import GroupChatView from './views/GroupChatView.vue'
 import MediaView from './views/MediaView.vue'   // 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体）
+import GodSaysView from './views/GodSaysView.vue'   // 上游 v4.1.0：神说（godSays）
 // 小镇（世界页）已于 2026-10-20 从产品里彻底剥离：页面、子组件、渲染器、store 全部删除。
+// 上游 4.1.0 的 TownView 一并拒绝：路由与页面都不再注册（保留删除，不随上游回退）。
 
 const routes = [
   { path: '/standing-display', component: StandingDisplayView, meta: { standingDisplay: true } },
   { path: '/', redirect: '/chat' },
   { path: '/chat', component: ChatView },
+  { path: '/god-says', component: GodSaysView },
   { path: '/chat/:id', component: ChatView },
   { path: '/group/:id', component: GroupChatView },
   { path: '/moments', component: MomentsView },

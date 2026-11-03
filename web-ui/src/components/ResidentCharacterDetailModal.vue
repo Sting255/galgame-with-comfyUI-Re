@@ -3,7 +3,7 @@
   <Teleport to="body">
     <!-- ── 角色详情弹窗 ── -->
     <Transition name="modal-fade" :duration="300">
-      <div v-if="visible && !showLoraModal && !showOutfitModal && !showRefineModal && !showClothingLibrary && !showVoiceModal" class="modal-overlay" :class="{ 'detail-inline': inlineLayout }" @mousedown="onOverlayMouseDown" @click.self="onOverlayClick">
+      <div v-if="visible && !showLoraModal && !showOutfitModal && !showRefineModal && !showIntimateModal && !showClothingLibrary && !showVoiceModal" class="modal-overlay" :class="{ 'detail-inline': inlineLayout }" @mousedown="onOverlayMouseDown" @click.self="onOverlayClick">
         <div class="modal-panel modal-wide detail-panel">
           <div class="modal-header">
             <div class="detail-title-row">
@@ -150,13 +150,13 @@
                         <div class="scene-block-head">
                           <p class="split-hint">默认造型作为常态外观，其余服装随日程切换。</p>
                           <linshe-button
-                            v-if="detail.sceneOutfits.length > 1" variant="secondary" size="sm"
+                            v-if="detail.sceneOutfits.length || detail.sceneOutfitsError" variant="secondary" size="sm"
                             :disabled="outfitGenerating || outfitBatchRunning || standingBusy || !workOutfitText" :loading="outfitGenerating"
-                            :title="workOutfitText ? '以默认外观为基准，只换衣服、保留身体特征' : '先填写默认外观，才能生成其余服装'"
+                            :title="workOutfitText ? '以默认外观为基准，一次生成其余三套并自动保存' : '先填写默认外观，才能生成其余服装'"
                             @click="generateOtherSceneOutfits"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 16 11-11a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4ZM13 7l3 3M19 13v6m-3-3h6M6 2v6M3 5h6" /></svg>
-                            按默认生成其余三套
+                            一键生成整套系列
                           </linshe-button>
                         </div>
                         <linshe-tabs v-model="detail.sceneTab" :options="sceneTabOptions" size="sm" aria-label="外观服装分类" />
@@ -170,6 +170,10 @@
                               :placeholder="activeSceneOutfit.scene === 'work' ? '常态外观描述（中英混合），生图时作为基础外观' : '这套服装的外观描述（中英混合）'"
                               @input="detail.dirty = true"
                             />
+                          </div>
+                          <div v-else-if="detail.sceneOutfitsError" class="scene-edit-empty is-error">
+                            <p>外观加载失败：{{ detail.sceneOutfitsError }}</p>
+                            <linshe-button variant="secondary" size="sm" :loading="detail.sceneOutfitsLoading" @click="retryLoadSceneOutfits">重试</linshe-button>
                           </div>
                           <div v-else class="scene-edit-empty">加载中…</div>
                         </Transition>
@@ -210,6 +214,10 @@
                 <span v-if="hasLoraSetup" class="toolbar-badge active">已配置</span>
                 <span v-else class="toolbar-badge">未配置</span>
               </div>
+              <div class="toolbar-item toolbar-item-btn" role="button" tabindex="0" @click="openIntimateModal" @keydown.enter.prevent="openIntimateModal" @keydown.space.prevent="openIntimateModal">
+                <span>亲密信息</span>
+                <span class="toolbar-badge">看板</span>
+              </div>
               <!-- 外观 / 形态入口暂时隐藏：角色外观系统数据层与注入已就绪，待开放时取消注释即可 -->
               <!-- <div class="toolbar-item toolbar-item-btn" @click="openOutfitModal">
                 <span>外观 / 形态</span>
@@ -217,6 +225,9 @@
                 <span v-else class="toolbar-badge">未启用</span>
               </div> -->
             </div>
+
+            <!-- SLG 动作系统 · 阶段三：触摸互动统计小节 -->
+            <TouchStatsPanel v-if="!profileAdapter" :character="character" />
 
             <!-- 角色立绘：窄视口收在正文末尾，宽视口是主面板左侧悬浮窗 -->
             <CharacterStandingPanel v-if="inlineLayout" inline :character="character" :ctl="displayStandingPanel" />
@@ -271,6 +282,10 @@
                 <span class="float-label">设置 Lora</span>
                 <span v-if="hasLoraSetup" class="float-badge active">已配置</span>
                 <span v-else class="float-badge">未配置</span>
+              </div>
+              <div class="float-row float-row-action" role="button" tabindex="0" @click="openIntimateModal" @keydown.enter.prevent="openIntimateModal" @keydown.space.prevent="openIntimateModal">
+                <span class="float-label">亲密信息</span>
+                <span class="float-badge">看板</span>
               </div>
               <!-- 外观 / 形态入口暂时隐藏：角色外观系统数据层与注入已就绪，待开放时取消注释即可 -->
               <!-- <div class="float-row float-row-action" @click="openOutfitModal">
@@ -511,6 +526,13 @@
       @applied="onAppearanceRefined"
     />
 
+    <linshe-modal v-model="showIntimateModal" :title="`亲密信息 — ${character?.display_name || ''}`" full>
+      <IntimatePanel v-if="character" :character="character" />
+      <template #footer>
+        <linshe-button variant="secondary" @click="showIntimateModal = false">关闭</linshe-button>
+      </template>
+    </linshe-modal>
+
     <ClothingLibraryModal
       :generate-handler="profileAdapter?.clothingDraft"
       v-model="showClothingLibrary" :character-id="character?.id" :display-name="detail.editName"
@@ -538,6 +560,8 @@ import ImageLightbox from './ImageLightbox.vue'
 import CharacterStandingPanel from './CharacterStandingPanel.vue'
 import AppearanceRefineModal from './AppearanceRefineModal.vue'
 import ClothingLibraryModal from './ClothingLibraryModal.vue'
+import IntimatePanel from './character/IntimatePanel.vue'
+import TouchStatsPanel from './TouchStatsPanel.vue'
 import { bustUrlIfOverwritten, overwriteBustTick } from '../utils/imageUrlRefresh.js'
 import { useImageEditTasksStore } from '../stores/imageEditTasks.js'
 import { emitCharacterDisplayNameChanged } from '../utils/characterReactionProducers.js'
@@ -599,7 +623,11 @@ const detail = reactive({
   appearanceTail: '',     // 外观段之后的内容（罕见；保留以免重组时丢段）
   originalAppearance: '', // 打开时的原外观段：工装被误清空时用它兜底，避免生图链路失去外观
   sceneOutfits: [],       // 四套场景服装 [{ scene, sceneLabel, name, description }]
-  sceneTab: 0,            // 外观服装当前编辑第几套（标签页）
+  // 用**场景 key**（work/casual/home/sleep）而不是数组索引：
+  // 重新加载/接口失败后数组长度会变，索引会指错项甚至落空
+  sceneTab: 'work',
+  sceneOutfitsLoading: false,
+  sceneOutfitsError: '',
   relOpen: false,         // 角色关系列表是否展开（折叠后把人设编辑区让出来）
   relationships: [],
   relationshipsLoading: false,
@@ -649,7 +677,7 @@ function workOutfitDesc() {
 
 /** 外观服装当前编辑的那一套（标签页选中的）。返回的是 detail.sceneOutfits 里的同一对象引用，
  *  所以 v-model 直接写它的字段即可回写原数组。 */
-const activeSceneOutfit = computed(() => detail.sceneOutfits[detail.sceneTab] || null)
+const activeSceneOutfit = computed(() => detail.sceneOutfits.find(o => o.scene === detail.sceneTab) || null)
 const showClothingLibrary = ref(false)
 const clothingLibraryScene = ref('work')
 const clothingLibrarySceneLabel = computed(() => clothingLibraryScene.value === 'work' ? '默认' : detail.sceneOutfits.find(outfit => outfit.scene === clothingLibraryScene.value)?.sceneLabel || '外观')
@@ -681,8 +709,8 @@ function selectEditorSection(key) {
   if (editorSection.value === key) return
   editorSection.value = key
 }
-const sceneTabOptions = computed(() => detail.sceneOutfits.map((outfit, index) => ({
-  value: index,
+const sceneTabOptions = computed(() => detail.sceneOutfits.map(outfit => ({
+  value: outfit.scene,
   label: outfit.scene === 'work' ? '默认' : outfit.sceneLabel,
   title: outfit.description.trim() ? '已填写外观描述' : '尚未填写外观描述',
 })))
@@ -693,7 +721,9 @@ const fullPrompt = computed(() => composePersona(detail.editPersona, effectiveAp
 const workOutfitText = computed(() => effectiveAppearance())
 
 async function loadSceneOutfits(characterId, fallbackWorkDesc = '') {
-  if (!characterId) { detail.sceneOutfits = []; return }
+  if (!characterId) { detail.sceneOutfits = []; detail.sceneOutfitsError = ''; return }
+  detail.sceneOutfitsLoading = true
+  detail.sceneOutfitsError = ''
   try {
     const d = await api.listSceneOutfits(characterId)
     const scenes = d.scenes || []
@@ -718,6 +748,21 @@ async function loadSceneOutfits(characterId, fallbackWorkDesc = '') {
   } catch (err) {
     console.error('loadSceneOutfits failed:', err)
     detail.sceneOutfits = []
+    // 关键：只清空数组会让模板固定渲染「加载中…」，用户永远等不到结果。
+    // 把原因写进错误态，模板给「重试」，接口 404/500/超时都能自救。
+    detail.sceneOutfitsError = err?.message || '外观加载失败'
+  } finally {
+    detail.sceneOutfitsLoading = false
+  }
+}
+
+/** 外观加载失败后的重试（不关弹窗，直接重拉） */
+async function retryLoadSceneOutfits() {
+  const c = props.character
+  if (!c) return
+  await loadSceneOutfits(c.id, detail.originalAppearance)
+  if (!detail.sceneOutfitsError && !detail.sceneOutfits.length) {
+    detail.sceneOutfitsError = '后端没有返回任何服装场景'
   }
 }
 
@@ -758,7 +803,13 @@ async function generateOtherSceneOutfits() {
   if (!c || outfitGenerating.value || outfitBatchRunning.value || standingBusy.value) return
   const base = workOutfitText.value
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
-  const targets = detail.sceneOutfits.filter(o => o.scene !== 'work').map(o => o.scene)
+  // 场景列表没加载出来（接口失败）时用后端 OUTFIT_SCENES 里除默认外的三套 key 兜底，
+  // 保证按钮仍然可用。⚠ key 必须与 agent-core/src/services/outfitScene.js 一致：
+  // work / casual / home / sleep —— 写错（如 private）后端会按 SCENE_KEYS 过滤掉，那一套永远不生成。
+  const FALLBACK_SCENE_KEYS = ['casual', 'home', 'sleep']
+  const targets = detail.sceneOutfits.length
+    ? detail.sceneOutfits.filter(o => o.scene !== 'work').map(o => o.scene)
+    : FALLBACK_SCENE_KEYS
   if (!targets.length) return
   outfitGenerating.value = true
   try {
@@ -788,6 +839,13 @@ const activeLoraFileIdx = ref(null)
 const loraDropdownIdx = ref(-1)
 const loraSuggestions = ref([])
 const loraFetching = ref(false)
+
+// ── 亲密信息看板 ──
+const showIntimateModal = ref(false)
+function openIntimateModal() {
+  if (!props.character) return
+  showIntimateModal.value = true
+}
 
 // ── 外观/形态设置状态 ──
 const showOutfitModal = ref(false)
@@ -855,6 +913,8 @@ function _parseCharLoras(raw) {
 // ═══════════════════════════════════════
 
 watch(() => [props.visible, props.character], ([v, c], previous) => {
+  // 详情卡收起时一并收起亲密信息子窗，避免留下孤儿弹窗（也复位 flag，否则卡片再也打不开）
+  if (!v) showIntimateModal.value = false
   if (!v || !c) return
   // 后台头像 / 形象完成不能覆盖正在编辑的系统角色草稿。
   if (props.profileAdapter && previous?.[0] && previous[1]?.id === c.id && detail.dirty) {
@@ -913,7 +973,10 @@ function init(c) {
   detail.editPersona = split.persona
   detail.appearanceTail = split.tail
   detail.originalAppearance = split.appearance
-  detail.sceneTab = 0          // 每次打开都停在「工装」（用户最常改的那套）
+  detail.sceneTab = 'work'     // 每次打开都停在「常服/默认」（用户最常改的那套）
+  detail.sceneOutfits = []     // 换角色先清空，避免上一个角色的服装串到面板上
+  detail.sceneOutfitsError = ''
+  detail.sceneOutfitsLoading = false
   detail.relOpen = false       // 关系列表默认折叠，把纵向空间让给人设与外观
   if (props.profileAdapter) {
     detail.sceneOutfits = ['work', 'casual', 'home', 'sleep'].map((scene, index) => ({
@@ -1349,8 +1412,9 @@ watch(() => props.visible, visible => { if (!visible) showRefineModal.value = fa
 // 打开时记下场景索引（弹窗期间主弹窗关闭、标签页切不了，取快照即可）；
 // 传给弹窗的是「人设 + 该场景描述放在外观段位置」的整卡，
 // 于是后端重写出来的外观段就是这一套，应用时写回同一套。
-const refineSceneIdx = ref(0)
-const refineSceneOutfit = computed(() => detail.sceneOutfits[refineSceneIdx.value] || null)
+// 用场景 key 定位要修正的那一套（与 sceneTab 同口径，避免数组下标在重载后指错）
+const refineSceneKey = ref('work')
+const refineSceneOutfit = computed(() => detail.sceneOutfits.find(o => o.scene === refineSceneKey.value) || null)
 const refineSceneLabel = computed(() => refineSceneOutfit.value?.scene === 'work' ? '默认' : (refineSceneOutfit.value?.sceneLabel || '外观'))
 const refineBasePrompt = computed(() => {
   const desc = String(refineSceneOutfit.value?.description || '').trim()
@@ -1360,14 +1424,14 @@ const refineBasePrompt = computed(() => {
 
 function openRefineModal() {
   if (!props.character || profileSaving.value || outfitBatchRunning.value) return
-  refineSceneIdx.value = detail.sceneTab
+  refineSceneKey.value = detail.sceneTab
   showRefineModal.value = true
 }
 
 async function onAppearanceRefined({ basePrompt }) {
   // 弹窗返回整卡：只取外观段，写回打开时那一套场景（人设框不动）
   const split = splitPersona(basePrompt)
-  const target = detail.sceneOutfits[refineSceneIdx.value]
+  const target = detail.sceneOutfits.find(o => o.scene === refineSceneKey.value)
   if (target) {
     target.description = split.appearance
     // 非工装场景原本没名字时补一个，否则保存链路会因「名称必填」跳过它
@@ -1982,6 +2046,8 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .scene-edit > .ls-input { flex: 1; }
 .clothing-library-trigger { margin-bottom: 8px; }
 .scene-edit-empty { font-size: var(--fs-xs); color: var(--text-secondary); padding: 12px 0; }
+.scene-edit-empty.is-error { color: var(--danger); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.scene-edit-empty.is-error p { margin: 0; }
 .persona-fold-enter-active, .persona-fold-leave-active { transition: opacity 0.3s ease, transform 0.3s ease; }
 .persona-fold-enter-from, .persona-fold-leave-to { opacity: 0; transform: translateY(-4px); }
 @media (prefers-reduced-motion: reduce) {

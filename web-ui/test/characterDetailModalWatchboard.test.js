@@ -17,7 +17,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const SRC = readFileSync(new URL('../src/components/CharacterDetailModal.vue', import.meta.url), 'utf8')
+const SRC = readFileSync(new URL('../src/components/ResidentCharacterDetailModal.vue', import.meta.url), 'utf8')
 
 test('看板 entry 必须落地成一个真实弹窗，而不是只置 flag', () => {
   assert.match(SRC, /import IntimatePanel from '\.\/character\/IntimatePanel\.vue'/, 'IntimatePanel 要引入')

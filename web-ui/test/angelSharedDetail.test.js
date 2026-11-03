@@ -113,11 +113,11 @@ test('angel uses all four outfit editors, its own batch generator and clothing-l
   h.props.profileAdapter.generateOutfits = async (...args) => { batches.push(args); return { id: 'outfit-job' } }
   await h.state.generateOtherSceneOutfits()
   assert.deepEqual(batches, [['白色羽翼', ['casual', 'home', 'sleep']]])
-  h.state.detail.sceneTab = 3
+  h.state.detail.sceneTab = 'sleep'
   h.state.openClothingLibrary()
   assert.equal(h.state.showClothingLibrary.value, true)
   h.state.applyClothingLibrary({ characterId: 'god:angel', scene: 'sleep', appearance: 'Angel wearing a soft blue nightdress, barefoot.' })
-  assert.equal(h.state.detail.sceneOutfits[3].description, 'Angel wearing a soft blue nightdress, barefoot.')
+  assert.equal(h.state.detail.sceneOutfits.find(o => o.scene === 'sleep').description, 'Angel wearing a soft blue nightdress, barefoot.')
   assert.equal(h.state.detail.dirty, true)
   h.props.profileAdapter.batchRunning = true
   await h.state.saveCharDetail()
@@ -135,26 +135,26 @@ test('completed batch fills untouched outfit slots while preserving a separately
   ] }
   await Vue.nextTick()
   assert.equal(h.state.detail.sceneOutfits[1].description, '新生成的私服')
-  assert.equal(h.state.detail.sceneOutfits[3].description, '用户尚未保存的睡衣')
+  assert.equal(h.state.detail.sceneOutfits.find(o => o.scene === 'sleep').description, '用户尚未保存的睡衣')
   assert.equal(h.state.detail.dirty, true)
 })
 
 test('media and wardrobe refreshes preserve the currently open outfit editor and selected scene', async t => {
   const h = fixture(t)
   h.state.editorSection.value = 'outfits'
-  h.state.detail.sceneTab = 3
+  h.state.detail.sceneTab = 'sleep'
   h.props.character = { ...h.props.character, outfits: [{ scene: 'sleep', name: '睡衣', description: 'fresh pajamas' }] }
   await Vue.nextTick()
   assert.equal(h.state.editorSection.value, 'outfits')
-  assert.equal(h.state.detail.sceneTab, 3)
-  assert.equal(h.state.detail.sceneOutfits[3].description, 'fresh pajamas')
+  assert.equal(h.state.detail.sceneTab, 'sleep')
+  assert.equal(h.state.detail.sceneOutfits.find(o => o.scene === 'sleep').description, 'fresh pajamas')
 })
 
 
 test('angel appearance correction targets the selected outfit and retains the draft when automatic save fails', async t => {
   const saved = []; let fail = true
   const h = fixture(t, async payload => { saved.push(payload); if (fail) throw new Error('offline'); return payload })
-  h.state.detail.sceneTab = 3
+  h.state.detail.sceneTab = 'sleep'
   h.state.detail.sceneOutfits[3].description = 'original pajamas'
   h.state.openRefineModal()
   assert.equal(h.state.showRefineModal.value, true)

@@ -45,6 +45,7 @@ import { createMediaTables, migrateMediaSchema } from './mediaSchema.js';
 import { migrateTownBuildingFeatureSchema } from './townBuildingFeatureSchema.js';
 // 上游 v4.0.0 合并：语音合成任务表与中断回收（见 services/speechService.js）
 import { migrateTtsSchema, recoverSpeechJobs } from './ttsSchema.js';
+import { migrateGodSaysSchema } from './godSaysSchema.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -735,7 +736,9 @@ function initSchema(db) {
       illustration_path TEXT DEFAULT '',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       replied_at DATETIME,
-      is_read INTEGER NOT NULL DEFAULT 0
+      is_read INTEGER NOT NULL DEFAULT 0,
+      auto_read INTEGER NOT NULL DEFAULT 0,
+      speech_job_id TEXT DEFAULT ''
     );
 
     -- 逐小时天气缓存表（仅保留 24 条，weather_time 为 HH:00）
@@ -1325,6 +1328,7 @@ function initSchema(db) {
   migrateEmojiSetsSchema(db);
   // 迁移: 语音合成任务表（tts_speech_jobs / character_api_voices 等，幂等）
   migrateTtsSchema(db);
+  migrateGodSaysSchema(db);
 
   // 种子: 奇遇事件类型库 + 朋友圈话题库（INSERT OR IGNORE，仅插入缺失的系统条目，不覆盖用户编辑）
   seedEventLibraries(db);
@@ -2852,6 +2856,15 @@ function migrateMailboxSchema(db) {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_mailbox_character_id ON mailbox_letters(character_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_mailbox_status ON mailbox_letters(status)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_mailbox_reply_at ON mailbox_letters(reply_at)`);
+    const cols = db.prepare(`PRAGMA table_info(mailbox_letters)`).all();
+    if (!cols.find(c => c.name === 'auto_read')) {
+      db.exec(`ALTER TABLE mailbox_letters ADD COLUMN auto_read INTEGER NOT NULL DEFAULT 0`);
+      console.log('[db] Added mailbox_letters.auto_read column');
+    }
+    if (!cols.find(c => c.name === 'speech_job_id')) {
+      db.exec(`ALTER TABLE mailbox_letters ADD COLUMN speech_job_id TEXT DEFAULT ''`);
+      console.log('[db] Added mailbox_letters.speech_job_id column');
+    }
     console.log('[db] mailbox indexes ensured');
   } catch (err) {
     console.log('[db] migrateMailboxSchema error:', err.message);

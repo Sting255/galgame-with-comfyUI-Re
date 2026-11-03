@@ -73,7 +73,12 @@ test('HTTP native-tool loop streams, reconnects, and deduplicates without contac
   assert.equal(personaRequests.length, 1);
   assert.ok(personaRequests[0].messages.some(m => m.content.includes('角色人格设计师')));
   assert.match(personaRequests[0].messages[0].content, /<world_setting>[\s\S]*世界由浮岛组成/);
-  assert.match(personaRequests[0].messages[1].content, /<world_integration[\s\S]*人格卡的身份经历/);
+  // 本地破限词会额外插在 system1（上游那套保 system0），所以世界观强化块的位置会被顶后一格。
+  // 断言口径按「存在 + 在任务之前」而不是死钉下标。
+  const personaMsgs = personaRequests[0].messages;
+  const worldRuleIdx = personaMsgs.findIndex(m => /<world_integration[\s\S]*人格卡的身份经历/.test(m.content));
+  assert.ok(worldRuleIdx > 0, '要有世界穿透规则（人格卡 scope）');
+  assert.ok(personaMsgs.findIndex(m => m.content.includes('角色人格设计师')) > worldRuleIdx, '世界穿透规则要排在创作规范之前');
   assert.match(personaRequests[0].messages.at(-1).content, /严格遵循 <world_setting> 的设定/);
   assert.doesNotMatch(JSON.stringify(personaRequests[0].messages), /VAD|valence|arousal|dominance|第一手素材/);
   assert.equal(personaRequests[0].messages.filter(m => m.role === 'user').length, 1);

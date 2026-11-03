@@ -158,6 +158,8 @@ function _connect() {
     item_gift_progress:        d => _dispatch('item_gift_progress', d),
     // 宝箱 / 道具出图完成：backpack store 有订阅，2026-10-02 补进白名单
     item_ready:                d => _dispatch('item_ready', d),
+    // 神说世界事件 / 工作卡实时更新
+    god_world_event:           d => _dispatch('god_world_event', d),
   }, {
     onClose: _scheduleReconnect,
   })
