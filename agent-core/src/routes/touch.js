@@ -81,7 +81,7 @@ import { reactionImageUpdate } from '../services/reactionImageUpdate.js';
 import { isSleeping, tempWake, formatScheduleContext } from '../services/scheduleManager.js';
 // 2026-11-03 睡眠锁（催眠手机「无法醒来」）：锁着时触摸弄不醒她，但照样扣睡眠条
 import { isSleepLocked } from '../services/sleepLock.js';
-import { drainSleepBarByTouch } from '../services/intimateActionService.js';
+import { drainSleepBarByTouch, buildPositionPoseJson } from '../services/intimateActionService.js';
 // 敏感度倍率：与推进面板同一个来源（角色持久值），触摸扣睡眠条沿用同一口径
 import { getSensitivity } from '../services/sensitivityService.js';
 // task-30 新喂料块：复用聊天轮/群聊轮的既有 builder，一行不重写
@@ -169,6 +169,13 @@ async function defaultTouchImageGenerator(character, prompt, { scene = 'chat' } 
   if (character.custom_workflow) opts.customWorkflow = character.custom_workflow;
   const artist = charArtistOverride(character);
   if (artist !== null) opts.artist = artist;
+  // 2026-11-03 体位骨架：摸她一下出的图也要按当前体位摆姿势（没有进行中场景时是 null）
+  try {
+    const poseRef = buildPositionPoseJson(character.id);
+    if (poseRef) opts.poseJson = poseRef.json;
+  } catch (err) {
+    console.warn('[touch] 体位骨架跳过:', err?.message || err);
+  }
   const result = await generateImage(prompt, { scene, ...opts });
   if (!result?.success || !result.images?.length) {
     return { urls: [], promptRefined: result?.promptRefined || prompt, error: result?.error || 'no images' };

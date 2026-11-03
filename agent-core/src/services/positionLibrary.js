@@ -165,6 +165,17 @@ const POSTURE_RULES = [
   { key: 'paizuri', label: '乳交', re: /paizuri|titjob|breast sex/i },
   { key: 'oral', label: '口部', re: /blowjob|fellatio|deepthroat|cunnilingus|69|oral/i },
   { key: 'hand', label: '手交', re: /handjob|fingering/i },
+  // 2026-11-03：侧躺/侧卧自成一类。原来这 6 条（含 on side / lying）全落 other，
+  // 而 other 的骨架是四足支撑 —— 画出来和"两人侧躺"差得最远，是骨架系统里最大的失真点。
+  // 只认"躺着的侧向"：必须和 lying 同时出现，否则会误吞"侧坐"（gP055 的标签里就混了 on side，
+  // 但它其实是 sitting on lap 的侧坐，骨架该给坐位而不是侧躺）。
+  { key: 'onside', label: '侧卧', re: /spooning|side-by-side|lying[\s,|]*on side|on side[\s,|]*lying/i },
+  // 2026-11-03：**精确**的站立规则，放在后入之前。
+  // 为什么不能靠最后那条宽的 `standing`：它放在末尾是为了不吞掉骑乘（历史踩坑：37/84 全归站立），
+  // 于是 "standing sex, doggystyle" 这类**站立后入**一直被归进后入 ⇒ 骨架给成趴跪，
+  // 与 prompt 里的 standing sex 直接打架（自查 gP061 时发现）。这里只认明确的站立语汇，
+  // 命中 5 条（4 条站立后入 + 1 条抱起摇篮式），不会误伤骑乘。
+  { key: 'standing', label: '站立', re: /standing sex|standing position|pinned against wall|against the wall|wall slam|carried/i },
   { key: 'frombehind', label: '后入', re: /doggystyle|from behind|on all fours|prone bone|spitroast/i },
   { key: 'onstomach', label: '俯卧', re: /on stomach|prone|face down/i },
   { key: 'onback', label: '仰躺', re: /on back|missionary|mating press|piledriver|legs up|full nelson/i },
@@ -173,11 +184,26 @@ const POSTURE_RULES = [
   { key: 'standing', label: '站立', re: /standing|against the wall|carried/i },
 ];
 
-/** 大类清单（顺序即面板展示顺序） */
-export const POSTURE_GROUPS = [
-  ...POSTURE_RULES.map(r => ({ key: r.key, label: r.label })),
-  { key: 'other', label: '其他' },
+/**
+ * 大类清单（顺序即面板展示顺序）。
+ *
+ * ⚠️ 不能用 `POSTURE_RULES.map()` 直接取：规则表为了判定优先级会重复出现同一个 key
+ * （2026-11-03 给"站立后入"补了一条**精确**的 standing 规则放在后入之前，
+ * 于是 map 出来两个"站立"，面板上会多一个空按钮）。这里用**固定顺序**去重，
+ * 面板顺序与规则表的判定顺序彻底解耦，以后加规则也不会挪动按钮位置。
+ */
+const GROUP_ORDER = [
+  'riding', 'frombehind', 'onback', 'onside', 'standing',
+  'kneeling', 'sitting', 'oral', 'paizuri', 'hand', 'onstomach',
 ];
+
+export const POSTURE_GROUPS = Object.freeze([
+  ...GROUP_ORDER.map(key => {
+    const rule = POSTURE_RULES.find(r => r.key === key);
+    return rule ? { key, label: rule.label } : null;
+  }).filter(Boolean),
+  { key: 'other', label: '其他' },
+]);
 
 /** 按一段文本（打包 tag / 中文名）判形态大类；精选 17 条用的是打包 tag，走这条 */
 export function postureOfText(text) {

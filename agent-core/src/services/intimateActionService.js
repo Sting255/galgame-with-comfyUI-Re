@@ -46,6 +46,9 @@ import { SENSITIVITY_TIERS } from './sensitivityService.js';
 // 2026-11-03 催眠手机的「无法醒来」（角色级睡眠锁）：并进场景的 forcedSleep，见 applySleepLock。
 // 依赖方向安全：sleepLock 只 import db / programTime / scheduleEditor / scheduleManager。
 import { isSleepLocked } from './sleepLock.js';
+// 2026-11-03 体位骨架（生图跟着体位走）：按形态大类生成 AnimaPoseControl 吃的骨架 JSON
+import { config } from '../config.js';
+import { poseJsonForPositionKey } from './positionPose.js';
 // 84 条全量体位词库（PR#24 融合）：physicalHintOf 在精选表未命中时用它兜底
 import { POSITIONS as PR24_POSITIONS, POSTURE_GROUPS, postureOf, postureOfText, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
 
@@ -1896,9 +1899,51 @@ export function buildPositionImageTags(characterId) {
   try { scene = getIntimateScene(id); } catch { return ''; }
   if (!scene || !scene.active || !scene.positionKey) return '';
   const pr24Key = resolvePr24Key(scene.positionKey) || scene.positionKey;
-  const pos = getPr24Position(pr24Key);
-  if (!pos) return '';
+  const pos = getPr24Position(pr24Key) || getPr24Position(scene.positionKey);
+  if (!pos) {
+    // 词库查不到时的兜底：精选表的 key 本身就是英文打包串（`missionary` / `doggystyle`…），
+    // 直接当标签用 —— 否则默认体位 `missionary` 会连标签都没有（骨架有、标签空，口径不一致）。
+    const tags = String(scene.positionKey || '')
+      .split(',')
+      .map(t => t.trim())
+      .filter(t => /^[a-z][a-z0-9 \-'/()]*$/i.test(t));
+    return tags.length ? [...new Set(tags)].join(', ') : '';
+  }
   return [...new Set([...(pos.core || []), ...(pos.female || []), ...(pos.male || [])].filter(Boolean))].join(', ');
+}
+
+/**
+ * 当前体位的**骨架 JSON**（给 `AnimaPoseControl.pose_json`），让出图真的摆成面板上那个体位。
+ *
+ * 为什么不用参考图：`AnimaPoseControl` 的 `detect()` 写死取 `kp_all[0]`（只支持单人），
+ * 双人贴身的线稿检测出来是残缺骨架 + 噪点，出图完全不跟随（2026-11-03 两轮实测）。
+ * 直接喂 133 点坐标跳过检测则完全可控 —— 代价是男方不入骨架，只靠英文标签表达。
+ *
+ * 只在满足全部条件时返回内容，否则 null（普通聊天 / 朋友圈 / 立绘 / 日程配图完全不受影响）：
+ *   · 总开关 `config.comfyui.poseFromPosition` 开着（设置 → 生图 → 体位骨架）
+ *   · 该角色有进行中的亲密场景，且体位能被词库解析
+ *
+ * @param {number} characterId
+ * @returns {{json:string, group:string, groupLabel:string, view:string, note:string}|null}
+ */
+export function buildPositionPoseJson(characterId) {
+  const id = Number(characterId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  let enabled = true;
+  try { enabled = config.comfyui?.poseFromPosition !== false; } catch { enabled = true; }
+  if (!enabled) return null;
+  let scene = null;
+  try { scene = getIntimateScene(id); } catch { return null; }
+  if (!scene || !scene.active || !scene.positionKey) return null;
+  // ⚠️ 必须走 `poseJsonForPositionKey`（它自己会做词库 → 精选表 → 文本判类的三级解析），
+  // 不能在这里只用 getPr24Position：新开一场亲密场景的默认体位是 `missionary`（精选表英文 key），
+  // 词库里查不到 ⇒ 以前这里返回 null，等于**默认体位永远没有骨架**（2026-11-03 审查抓到）。
+  try {
+    return poseJsonForPositionKey(scene.positionKey);
+  } catch (err) {
+    console.warn('[intimate-action] 体位骨架生成失败（按无骨架出图）:', err?.message || err);
+    return null;
+  }
 }
 
 export function buildPositionImageBlock(characterId) {

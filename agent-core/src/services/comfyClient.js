@@ -460,15 +460,16 @@ function formatComfyUIError(errText, status) {
   return `ComfyUI returned ${status}: ${errText.slice(0, 300)}`;
 }
 
-export async function submitWorkflow(guiWorkflow, onProgress) {
-  return withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress));
+export async function submitWorkflow(guiWorkflow, onProgress, options = {}) {
+  return withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress, options));
 }
 
-async function submitWorkflowWithGpu(guiWorkflow, onProgress) {
+async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   const clientId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const apiPrompt = guiToApi(guiWorkflow);
-  // 姿势控制：开关关着时这里什么都不做，原有链路逐字节不变
-  maybeApplyPoseControl(apiPrompt);
+  // 姿势控制：options.poseJson（体位骨架）优先，其次设置里的固定参考图；
+  // 两者都没有时这里什么都不做，原有链路逐字节不变
+  maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });
 
   const body = {
     client_id: clientId,

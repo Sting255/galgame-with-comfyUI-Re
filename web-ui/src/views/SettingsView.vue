@@ -88,6 +88,23 @@
               {{ poseImage ? '换一张' : '选择参考图' }}
             </linshe-button>
           </div>
+          <!-- 体位骨架（2026-11-03）：亲密场景出图按推进面板当前体位摆姿势。
+               它不是参考图，是现算骨架 ⇒ 有进行中场景时优先于上面的参考图。 -->
+          <div class="pose-ref-row pose-ref-row--body">
+            <div class="pose-ref-copy">
+              <div class="pose-ref-desc">体位骨架：亲密场景出图时，按推进面板当前的体位摆姿势（骑乘就跨坐、后入就趴跪）。</div>
+              <div class="pose-ref-hint">不依赖参考图，按体位现算骨架；有进行中的亲密场景时优先于上面的参考图。普通聊天、立绘、朋友圈配图不受影响。</div>
+            </div>
+            <linshe-switch
+              v-model="poseFromPosition"
+              size="sm"
+              on-text="已启用"
+              off-text="已关闭"
+              aria-label="体位骨架"
+              :disabled="poseSaving"
+              @change="onPoseFromPositionToggle"
+            />
+          </div>
           <div v-if="!poseInputDirReady" class="pose-ref-dir">
             <div class="pose-ref-hint">还要告诉程序 ComfyUI 的 input 目录在哪（参考图必须落在这里才能被读到）：</div>
             <div class="pose-ref-dir-row">
@@ -1948,6 +1965,8 @@ const hiresTurbo = ref(true)
 // ── 姿势参考（Anima Control Pose）──
 // 开关打开后，所有走 ComfyUI 的生图都会带上姿势控制（后端在 comfyClient 里按 config 决定是否注入）。
 const poseEnabled = ref(false)
+// 体位骨架（2026-11-03）：默认开 —— "生图跟着体位走"的主开关；后端字段缺失时按开显示（与 config.js 默认 true 一致）
+const poseFromPosition = ref(true)
 const poseImage = ref('')
 const poseInputDir = ref('')
 const poseInputDirReady = ref(false)
@@ -1960,6 +1979,7 @@ async function loadPoseControl() {
   try {
     const d = await getPoseControl()
     poseEnabled.value = !!d.enabled
+    poseFromPosition.value = d.poseFromPosition !== false
     poseImage.value = d.image || ''
     poseInputDir.value = d.inputDir || ''
     poseInputDirReady.value = !!d.inputDirReady
@@ -1974,6 +1994,19 @@ async function onPoseToggle(v) {
     toastFn?.(d.enabled ? '姿势参考已开启（每张约多 6 秒）' : '姿势参考已关闭', 'success')
   } catch (e) {
     poseEnabled.value = !v
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseSaving.value = false }
+}
+
+/** 体位骨架开关：与固定参考图是两件事，各自保存 */
+async function onPoseFromPositionToggle(v) {
+  poseSaving.value = true
+  try {
+    const d = await updatePoseControl({ poseFromPosition: !!v })
+    poseFromPosition.value = d.poseFromPosition !== false
+    toastFn?.(poseFromPosition.value ? '体位骨架已开启：出图跟着体位走' : '体位骨架已关闭', 'success')
+  } catch (e) {
+    poseFromPosition.value = !v
     toastFn?.(e.message || '保存失败', 'error')
   } finally { poseSaving.value = false }
 }
@@ -4455,6 +4488,12 @@ function resetTestPrompts() {
 }
 /* ── 全局细化 / HiresFix 独立层级 ── */
 /* ── 姿势参考（Anima Control Pose）── */
+/* 体位骨架那一行：与上面参考图行同构，用虚线分隔表示"另一种方式"，别被看成同一个开关 */
+.pose-ref-row--body {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
 .pose-ref-section {
   margin: 8px 0 0; padding: 14px 0;
   border-top: 1px solid var(--border);

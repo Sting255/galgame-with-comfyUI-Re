@@ -6,7 +6,7 @@ import { chatStream, chatSync } from '../llm/llm-client.js';
 import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
-import { buildPositionImageBlock, buildPositionImageTags } from '../services/intimateActionService.js';
+import { buildPositionImageBlock, buildPositionImageTags, buildPositionPoseJson } from '../services/intimateActionService.js';
 import { isMemoryV3Enabled, getActiveSearchConfig } from '../services/memory/memoryConfig.js';
 import { activeMemorySearch, parseRecallInstruction, formatMemoryRecallBlock } from '../services/memory/activeSearch.js';
 import { curateChatMemories } from '../services/memoryExtractor.js';
@@ -2532,9 +2532,31 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
     }
   }
 
+  // 体位兜底（2026-11-03 修 P0）：**在这里**解析，而不是在调用方 ——
+  // `triggerImageGeneration` 有 7+ 个调用点（路径 A/B/C/D/D'/E + planner 预生成），
+  // 之前把变量算在 handleNeedImageFlow 里、用在这里，等于引用一个不存在的标识符：
+  // 参数对象求值时就 ReferenceError，被外层 try 吞掉 ⇒ **所有聊天配图**（不只亲密场景）都失败。
+  // 现在统一在此解析：标签只在 prompt 里没有时补（避免与调用方重复拼接），骨架有才传。
+  let poseJsonForImage;
+  let promptForImage = prompt;
   try {
-    const result = await generateImage(prompt, {
+    const poseCharId = parseInt(String(conversationId).replace(/^char_/, ''), 10);
+    if (Number.isInteger(poseCharId) && poseCharId > 0) {
+      const poseTags = buildPositionImageTags(poseCharId);
+      if (poseTags && !String(promptForImage).includes(poseTags.split(',')[0].trim())) {
+        promptForImage = promptForImage ? `${promptForImage}, ${poseTags}` : poseTags;
+      }
+      poseJsonForImage = buildPositionPoseJson(poseCharId)?.json;
+    }
+  } catch (err) {
+    console.warn('[chat] position fallback skipped:', err?.message || err);
+  }
+
+  try {
+    const result = await generateImage(promptForImage, {
       scene: 'chat',
+      // 体位骨架：有进行中的亲密场景时按当前体位摆姿势（undefined = 不注入，行为与改动前一致）
+      poseJson: poseJsonForImage || undefined,
       // 上游 v3.10.0：把「触发这次生图的最后一轮对话」透传给图片 RAG，
       // 让知识库召回贴住当下语境（而不是只靠英文 prompt）。
       ragQuery,
@@ -2897,6 +2919,7 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
   let prompt = extractImagePromptResponse(fullContent);
   // 体位兜底：无论 prompt 由谁生成（含 planner 预生成那条路），当前体位的英文标签都要进画面。
   // 没有进行中的亲密场景时这里是空串，普通配图完全不受影响。
+  // 体位标签兜底（既有逻辑）：骨架在 triggerImageGeneration 里统一取，这里只管 prompt 文本。
   try {
     const poseTags = buildPositionImageTags(character.id);
     if (poseTags) {

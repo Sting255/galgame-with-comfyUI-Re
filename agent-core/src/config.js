@@ -190,6 +190,9 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     poseControlImage: '',
     // 参考图宽高比（w/h）。姿势控制按它校正生成尺寸：横图配竖构图骨架会让模型完全不跟随。
     poseControlAspect: 0,
+    // 体位骨架（按推进面板的体位程序化生成 pose_json 直接喂给 AnimaPoseControl）。
+    // 与上面的「固定参考图」是两个独立开关：调用方传了 poseJson 才生效，默认开。
+    poseFromPosition: true,
     artist: process.env.COMFYUI_ARTIST || '@ebora',
     width: parseInt(process.env.COMFYUI_WIDTH, 10) || 768,
     height: parseInt(process.env.COMFYUI_HEIGHT, 10) || 512,
@@ -712,7 +715,7 @@ export function updateGlobalLora(loras) {
  * 姿势控制（Anima Control Pose）设置：开关 / 强度 / 参考图 / ComfyUI input 目录。
  * 只写 config + 落库，不做任何业务动作。
  */
-export function updatePoseControl({ enabled, strength, image, inputDir, aspect } = {}) {
+export function updatePoseControl({ enabled, strength, image, inputDir, aspect, poseFromPosition } = {}) {
   if (enabled !== undefined) {
     config.comfyui.poseControlEnabled = enabled === true || enabled === 'true' || enabled === 1;
     persistSettingSync('comfy_pose_enabled', config.comfyui.poseControlEnabled ? '1' : '0');
@@ -736,13 +739,25 @@ export function updatePoseControl({ enabled, strength, image, inputDir, aspect }
     const n = Number(aspect);
     config.comfyui.poseControlAspect = Number.isFinite(n) && n > 0 ? n : 0;
   }
+  if (poseFromPosition !== undefined) setPoseFromPosition(poseFromPosition);
   return {
     enabled: config.comfyui.poseControlEnabled,
     strength: config.comfyui.poseControlStrength,
     image: config.comfyui.poseControlImage,
     inputDir: config.comfyui.inputDir,
     aspect: config.comfyui.poseControlAspect,
+    poseFromPosition: config.comfyui.poseFromPosition,
   };
+}
+
+/**
+ * 体位骨架开关：调用方传了 poseJson 时是否真的注入姿势控制。
+ * 与「固定参考图」开关（poseControlEnabled）互相独立。
+ */
+export function setPoseFromPosition(enabled) {
+  config.comfyui.poseFromPosition = enabled === true || enabled === 'true' || enabled === 1;
+  persistSettingSync('comfy_pose_from_position', config.comfyui.poseFromPosition ? '1' : '0');
+  return config.comfyui.poseFromPosition;
 }
 
 export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } = {}) {

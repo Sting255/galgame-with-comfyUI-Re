@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { submitWorkflow, apiToGui } from './comfyClient.js';
+import { POSE_LORA_FILE } from './poseControl.js';
 import { config, getNovelaiApiKey } from '../config.js';
 import { generateNovelaiImage } from './novelaiClient.js';
 import { acquireSlot, releaseSlot } from './llmConcurrency.js';
@@ -451,11 +452,13 @@ const MAX_SUBMIT_RETRIES = 2;
  * @param {number}   [opts.height]
  * @param {function} [opts.onProgress]
  * @param {number}   [opts.submitRetries=2]
+ * @param {string|object} [opts.poseJson]        - 体位骨架 JSON（{canvas, points}）；传了就跳过姿势检测直接喂坐标
  * @returns {Promise<{success, images, source, promptId}>}
  */
 async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
   loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
+  poseJson,
 } = {}) {
   if (config.comfyui.imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
@@ -487,6 +490,9 @@ async function submitWithRetry(rawPrompt, {
   const baseRetries = submitRetries;
   const unreachableRetries = Math.max(submitRetries, 3);
   let warnedUnreachable = false;
+  // 服务端没有姿态适配器时会校验失败（错误文本里带文件名）：此时去掉骨架再提一次，
+  // 保证「没装骨架也能出图」，而不是整条配图跟着失败。
+  let activePoseJson = poseJson;
 
   for (let attempt = 0; ; attempt++) {
     if (attempt > 0) {
@@ -502,7 +508,7 @@ async function submitWithRetry(rawPrompt, {
     try {
       const result = await submitWorkflow(wf, (p) => {
         if (onProgress) onProgress({ stage: 'generating', ...p });
-      });
+      }, { poseJson: activePoseJson });
       if (result.images.length > 0) {
         console.log(`\n🎨 [imageSkill] 图片生成完成: ${result.images.length} 张 (workflow: ${wfMode}, promptId: ${result.promptId})`);
         return { success: true, images: result.images, source: 'api', promptId: result.promptId, wfMode };
@@ -511,6 +517,10 @@ async function submitWithRetry(rawPrompt, {
     } catch (err) {
       console.error(`[imageSkill] ComfyUI attempt ${attempt + 1} failed:`, err.message);
       lastResult = { success: false, images: [], source: null, error: err.message };
+      if (activePoseJson && String(err.message).includes(POSE_LORA_FILE)) {
+        console.warn(`[imageSkill] ComfyUI 没有姿态适配器 ${POSE_LORA_FILE}，去掉体位骨架重试`);
+        activePoseJson = undefined;
+      }
     }
 
     const unreachable = isComfyUnreachable(lastResult?.error);
@@ -707,7 +717,7 @@ export async function generateImageRaw(rawPrompt, opts = {}) {
   markLastHighTime();
   return _execute(rawPrompt, opts);
 }
-function getComfyLorasRoot() {
+export function getComfyLorasRoot() {
   try {
     const projectRoot = path.resolve(__dirname, '..', '..', '..');
     const launcherConfigPath = path.resolve(projectRoot, '..', 'launcher_config.json');
