@@ -42,20 +42,24 @@
           <span class="ia-threshold">（她到 {{ view.climaxThreshold }} 就能「一起到」）</span>
         </p>
 
-        <!-- 睡眠条（睡着时才有）：推进/触摸会把她往醒的方向拽，停手会慢慢沉回去 -->
+        <!-- 累积条的注解紧跟在累积条下面（2026-11-03 复查：
+             它原来排在睡眠条之后，读起来像是睡眠条的注解 —— "句子开始断"其实是累积满了的表现） -->
+        <p class="ia-edge-hint">{{ accumulationHint(view) }}</p>
+
+        <!-- 睡眠条（睡着时才有）：推进/触摸会把她往醒的方向拽，停手会慢慢沉回去。
+             它是**另一个维度**（她有多沉）而不是累积的延续 ⇒ 单独一区，带小标题与分隔线。 -->
         <!-- ⚠ 用 div 包而不是 template 标签：守卫测试按源码里第一个模板闭合标签截断，注释里也不能出现它 -->
         <div v-if="view.sleeping" class="ia-sleep-block">
-          <div class="ia-bar ia-bar--sleep" :class="{ 'is-locked': view.forcedSleep }" :title="sleepHint(view)">
+          <p class="ia-sleep-cap">她还在睡</p>
+          <div class="ia-bar ia-bar--sleep" :class="'is-' + sleepTierKey(view)" :title="sleepHint(view)">
             <div class="ia-bar-fill" :class="'is-' + sleepTierKey(view)" :style="{ width: Math.max(0, Math.min(100, view.sleepBar)) + '%' }"></div>
             <span class="ia-bar-edge" aria-hidden="true"></span>
           </div>
           <p class="ia-bar-text">
             睡眠 {{ view.sleepBar }}/100 · {{ sleepTierLabel(view) }}
-            <span v-if="view.forcedSleep" class="ia-threshold">（催眠锁死：醒不过来）</span>
-            <span v-else-if="view.sleepBar <= 30" class="ia-threshold">（快醒了）</span>
+            <span class="ia-sleep-tip">（{{ sleepTip(view) }}）</span>
           </p>
         </div>
-        <p class="ia-edge-hint">{{ accumulationHint(view) }}</p>
 
         <!-- 节奏档（LinsheTabs 只作状态显示：切换由「加速抽插 / 慢下来」两个动作推进，点一下=一轮反应） -->
         <div class="ia-row">
@@ -237,10 +241,21 @@ function sleepTierKey(view) {
 function sleepTierLabel(view) {
   return { locked: '催眠锁死', awake: '已经醒了', waking: '将醒', deep: '深睡' }[sleepTierKey(view)] || ''
 }
+/** 括号里的那句人话（每个档位只给一个面向，不再重复档位名） */
+function sleepTip(view) {
+  return {
+    locked: '怎么弄都醒不过来',
+    awake: '已经醒了',
+    waking: '快醒了',
+    deep: '停手会慢慢沉回去',
+  }[sleepTierKey(view)] || ''
+}
+/** 悬停说明：把整条规则一次说清（面板上只放档位提示，避免每行都长） */
 function sleepHint(view) {
-  const label = sleepTierLabel(view)
-  if (view?.forcedSleep) return `${label}：睡眠条被锁在 1 点，怎么弄都醒不过来`
-  return `${label}：推进与触摸会把这条拽下去，停手会慢慢沉回来`
+  const tail = sleepTierKey(view) === 'locked'
+    ? '睡眠条被催眠锁在 1 点，怎么弄都醒不过来'
+    : '推进与触摸会把这条拽下去，停手会慢慢沉回去'
+  return `${sleepTierLabel(view)}：${tail}`
 }
 
 const showAllPositions = ref(false)
@@ -601,14 +616,33 @@ defineExpose({ refresh })
   background: var(--bg-sunken, rgba(0, 0, 0, 0.06));
   border: 1px solid var(--border);
 }
-/* ── 睡眠条（睡着时才出现）：越低越接近醒；催眠锁死时用另一套配色 ── */
-.ia-sleep-block { margin-top: 10px; }
-.ia-bar--sleep { height: 6px; }
-.ia-bar--sleep .ia-bar-fill.is-deep { background: var(--info, #6b8afd); }
-.ia-bar--sleep .ia-bar-fill.is-waking { background: var(--warning, #e8a33d); }
-.ia-bar--sleep .ia-bar-fill.is-awake { background: var(--danger, #d9534f); }
-.ia-bar--sleep .ia-bar-fill.is-locked { background: var(--accent); opacity: 0.75; }
-.ia-bar--sleep.is-locked { border-style: dashed; }
+/* ── 睡眠条（睡着时才出现）：越低越接近醒。
+   2026-11-03 复查过一版：原来是 6px 细条 + 和累积条挤在一起、注解还挂在它下面，
+   读起来像"累积的第三行"。现在独立成区（分隔线 + 小标题），条 7px，锁死档实心淡紫。 ── */
+.ia-sleep-block {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border);
+}
+.ia-sleep-cap {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+.ia-bar--sleep { height: 7px; }
+.ia-bar--sleep .ia-bar-fill.is-deep { background: var(--fun-blue); }
+.ia-bar--sleep .ia-bar-fill.is-waking { background: var(--fun-gold); }
+.ia-bar--sleep .ia-bar-fill.is-awake { background: var(--accent-text); }
+/* 锁死：实心淡紫 + 虚线描边（原来只靠 75% 透明的 accent，暖纸底上几乎看不见） */
+.ia-bar--sleep.is-locked {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--fun-violet) 55%, var(--border));
+  background: color-mix(in srgb, var(--fun-violet) 12%, var(--bg-sunken, transparent));
+}
+.ia-bar--sleep .ia-bar-fill.is-locked { background: var(--fun-violet); }
+/* 括号里的档位提示：与累积条的门槛提示同款弱化，但换行时对齐日期那种小字 */
+.ia-sleep-tip { opacity: 0.8; }
 
 .ia-bar-fill {
   height: 100%; border-radius: 999px;
