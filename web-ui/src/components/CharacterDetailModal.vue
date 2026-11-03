@@ -563,6 +563,17 @@
       </div>
     </Transition>
 
+    <!-- ── 亲密信息看板：与聊天页「亲密信息」直达入口是同一个组件、同一套标题与底部操作 ──
+         必须自带一个真实弹窗：以前只把 showIntimateModal 置 true，而主面板的 v-if 里正好排除了它
+         ⇒ 详情卡整体消失、又没有东西顶上来，且这个 flag 没有任何界面能复位
+         （只有 visible 变 false 才清），于是详情卡再也打不开，只能刷新页面。 -->
+    <linshe-modal v-model="showIntimateModal" :title="`亲密信息 — ${character?.display_name || ''}`" full>
+      <IntimatePanel v-if="character" :character="character" />
+      <template #footer>
+        <linshe-button variant="secondary" @click="showIntimateModal = false">关闭</linshe-button>
+      </template>
+    </linshe-modal>
+
     <!-- ── 修正外观弹窗（共享组件）：上传 / 粘贴 / 拖拽参考图，邻舍分析后重写「## 你的外观」── -->
     <AppearanceRefineModal
       v-model="showRefineModal"
@@ -658,6 +669,10 @@ const inlineLayout = computed(() => isMobile.value || !hasSideRoom.value)
 const detail = reactive({
   editCharName: '',
   editName: '',
+  // 人格 / 外观拆分后的三段：editPersona（人设）+ 工装外观 + appearanceTail（外观段之后的原文尾巴）
+  // ⚠ 三个都必须在这里声明初始值：模板在 init() 之前就会求值，缺键会让框子空着且整卡重组时丢内容
+  editPersona: '',
+  appearanceTail: '',
   editPrompt: '',
   relationships: [],
   relationshipsLoading: false,
@@ -842,8 +857,10 @@ async function generateOtherSceneOutfits() {
   if (!c || outfitGenerating.value || outfitBatchRunning.value || standingBusy.value) return
   const base = workOutfitText.value
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
-  // 场景列表没加载出来（接口失败）时用后端固定四套的 key，保证按钮仍然可用
-  const FALLBACK_SCENE_KEYS = ['home', 'private', 'sleep']
+  // 场景列表没加载出来（接口失败）时用后端 OUTFIT_SCENES 里除默认外的三套 key 兜底，
+  // 保证按钮仍然可用。⚠ key 必须与 agent-core/src/services/outfitScene.js 一致：
+  // work / casual / home / sleep —— 写错（如 private）后端会按 SCENE_KEYS 过滤掉，那一套永远不生成。
+  const FALLBACK_SCENE_KEYS = ['casual', 'home', 'sleep']
   const targets = detail.sceneOutfits.length
     ? detail.sceneOutfits.filter(o => o.scene !== 'work').map(o => o.scene)
     : FALLBACK_SCENE_KEYS
@@ -973,8 +990,14 @@ function refreshRelationships() {
 defineExpose({ refreshRelationships })
 
 function init(c) {
+  // 整卡拆三段：人设进「人设提示词」框，外观段进「外观服装 · 默认」，尾部原样保留待重组。
+  // ⚠ 这三行是面板能出内容的唯一来源 —— 少任何一行，人设框空白、保存时 base_prompt 会被清掉。
+  const split = splitPersona(c.base_prompt)
   detail.editCharName = c.name || ''
   detail.editName = c.display_name || ''
+  detail.editPersona = split.persona
+  detail.originalAppearance = split.appearance
+  detail.appearanceTail = split.tail
   detail.editPrompt = c.base_prompt || ''
   detail.momentsDisabled = !!c.moments_disabled
   detail.proactiveDisabled = !!c.proactive_disabled
@@ -985,6 +1008,11 @@ function init(c) {
   standingFuncOpen.value = false
   standingRequirement.value = ''
   standingPrompt.value = ''
+  // 换角色时先清空，别让上一个角色的服装留在面板上；随后立刻拉本角色的
+  detail.sceneOutfits = []
+  detail.sceneOutfitsError = ''
+  detail.sceneTab = 'work'
+  loadSceneOutfits(c.id, split.appearance)
   fetchOutfits()
   api.getRelationships(c.id).then(res => {
     detail.relationships = res.relationships || []
@@ -1031,6 +1059,9 @@ async function saveCharDetail() {
   })
   c.name = detail.editCharName
   c.display_name = detail.editName
+  // 整卡已经重组过，同步回角色对象与 editPrompt，否则「修正外观」弹窗会拿到保存前的旧卡
+  c.base_prompt = composed
+  detail.editPrompt = composed
   detail.dirty = false
   emit('saved', c)
 }
@@ -1436,7 +1467,15 @@ function openRefineModal() {
 }
 
 async function onAppearanceRefined({ basePrompt }) {
+  // 修正外观返回的是**整卡**，得重新拆回三段，否则人设框会停在新卡的全文、外观段重复一遍
+  const split = splitPersona(basePrompt)
+  detail.editPersona = split.persona
+  detail.originalAppearance = split.appearance
+  detail.appearanceTail = split.tail
   detail.editPrompt = basePrompt
+  // 工装就是「默认」那套外观，整卡外观段变了，面板同步（加载失败时没有工装行，靠 originalAppearance 兜底）
+  const work = detail.sceneOutfits.find(o => o.scene === 'work')
+  if (work) work.description = split.appearance
   detail.dirty = true
   // 复用详情卡的保存链路（PUT /:id 会同步重裁 short_prompt、标记日程重生成）
   try {
