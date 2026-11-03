@@ -960,6 +960,8 @@ export function buildConversationReactionPrompt({
   scene = 'chat',
   groupPeek = false,
   sleeping = false,
+  // 2026-11-03 睡眠锁（催眠手机「无法醒来」）：睡着但醒不过来 —— 与 buildReactionPrompt 同口径
+  sleepLocked = false,
   hypnosisBlock = '',
   affinityBlock = '',
   scheduleBlock = '',

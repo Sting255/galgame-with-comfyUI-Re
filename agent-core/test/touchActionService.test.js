@@ -837,3 +837,25 @@ test('§4.1② 催眠时耐受行降级：refusing 的「必须拍开手」被�
     assert.ok(!normal.system.includes('催眠中：耐受无效'), '非催眠轮不受影响');
   }
 });
+
+test('★ 睡眠锁：两个 builder 都要真的认 sleepLocked（曾经只有一个加了参数，另一个直接 ReferenceError）', () => {
+  // 真机踩到：buildConversationReactionPrompt 里用了 sleepLocked 却没有这个参数
+  // ⇒ sleeping=true 时抛 "sleepLocked is not defined"，即时反应静默回落成隐式注入。
+  for (const build of [buildConversationReactionPrompt, buildReactionPrompt]) {
+    assert.doesNotThrow(
+      () => build({ actionKey: 'touch_thigh', sleeping: true, sleepLocked: true }),
+      '睡着 + 锁着时不能抛错（参数必须声明）',
+    );
+    const locked = build({ actionKey: 'touch_thigh', sleeping: true, sleepLocked: true });
+    assert.match(locked.system, /醒不过来|不会醒/, '锁着时要明说醒不过来');
+    const woken = build({ actionKey: 'touch_thigh', sleeping: true, sleepLocked: false });
+    assert.match(woken.system, /弄醒/, '没锁时保持旧的"被弄醒"口径');
+    assert.notEqual(locked.system, woken.system, '锁与不锁的文案必须不同');
+  }
+
+  // 动作块（隐式注入那条路）同口径
+  const block = buildTouchActionBlock({ actionKey: 'touch_thigh', sleeping: true, sleepLocked: true });
+  assert.match(block, /醒不过来/, '动作块也要说明她醒不过来');
+  const plain = buildTouchActionBlock({ actionKey: 'touch_thigh', sleeping: true });
+  assert.match(plain, /弄醒/, '没锁时保持旧文案');
+});

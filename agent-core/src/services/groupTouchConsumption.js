@@ -21,6 +21,8 @@ import { isSleeping } from './scheduleManager.js';
 import { isBodyControlled } from './hypnosisService.js';
 import { buildSubjectScopeLine } from './hypnosisPrompt.js';
 import { TOUCH_MODES, buildTouchActionBlock, getTouchAction, touchEventCutoff } from './touchActionService.js';
+// 2026-11-03 睡眠锁（催眠手机「无法醒来」）：群聊触摸也要按锁着算
+import { isSleepLocked } from './sleepLock.js';
 
 /** 围观插话的默认概率（task-22）：30%。`config.features.touchBystanderChance` 可覆盖；null / false = 关闭概率模型。 */
 export const DEFAULT_TOUCH_BYSTANDER_CHANCE = 0.3;
@@ -183,6 +185,8 @@ export function collectTouchActionBlocks(group, { now = Date.now(), bystanderCha
         likeRatio: Number(row.like_ratio) || 1,
         hypnotized: isBodyControlled(member.id),
         sleeping: Boolean(isSleeping(member.id).sleeping),
+        // 2026-11-03 睡眠锁：群聊里也是同一个口径（锁着 = 弄了也醒不过来）
+        sleepLocked: isSleepLocked(member.id),
         scopeLine: buildSubjectScopeLine(name),
       });
       // 消费即完成（与私聊链一致）：先把状态推到 injected，再交给调用方拼 prompt

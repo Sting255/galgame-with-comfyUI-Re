@@ -120,6 +120,8 @@ import {
 // SLG 动作系统（触摸互动）：本轮待反应的动作 → <touch_action> 叙事块（服务层纯函数，零 LLM）。
 // 开关 features.touch 关闭 / 没有待反应动作时一个块都不注入，与加功能前逐字节一致。
 import { buildTouchActionBlock } from '../services/touchActionService.js';
+// 2026-11-03 睡眠锁（催眠手机「无法醒来」）：睡着且锁着时触摸块要换口径
+import { isSleepLocked } from '../services/sleepLock.js';
 // 事件的读取 / 消费 / 过期清扫统一在服务层 `services/touchEventStore.js`（task-24 P2-2 搬家）：
 // 搬进服务层后**不再反向 import 路由**（此前是 `chat.js ← routes/touch.js`，层次颠倒）。
 import { markTouchEventInjected, takePendingTouchEvent } from '../services/touchEventStore.js';
@@ -1136,6 +1138,8 @@ ${coreRules}
             likeRatio: pendingTouch.likeRatio,
             hypnotized: isBodyControlled(characterId),
             sleeping: Boolean(isSleeping(characterId).sleeping),
+            // 2026-11-03 睡眠锁：锁着时这一下弄不醒她（反应只能写身体与梦呓）
+            sleepLocked: isSleepLocked(characterId),
             hypnosisBlock: '',
           });
           if (touchBlock) {
