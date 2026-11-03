@@ -20,7 +20,8 @@ function seededDb() {
   const count = db.prepare(
     "SELECT COUNT(1) AS c FROM image_prompt_knowledge WHERE knowledge_id LIKE 'pose.pr24.%' AND is_active = 1"
   ).get();
-  assert.equal(count.c, 84, '库里应有 84 条体位知识');
+  // 2026-11-03：并入图库体位后总数会变多，只保证「不少于原始 84 条」
+  assert.ok(count.c >= 84, `库里至少应有 84 条体位知识，实际 ${count.c}`);
   return db;
 }
 

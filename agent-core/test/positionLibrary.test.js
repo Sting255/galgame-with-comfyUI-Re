@@ -16,11 +16,13 @@ import {
 } from '../src/services/positionLibrary.js';
 
 test('84 条全量，key 唯一，knowledgeId 前缀 pose.pr24.', () => {
-  assert.equal(POSITIONS.length, 84, '源数据就是 84 条');
+  // 2026-11-03：并入图库 41 条后总数会变多，只保证「不少于原始 84 条」
+  assert.ok(POSITIONS.length >= 84, `至少 84 条，实际 ${POSITIONS.length}`);
   const keys = new Set(POSITIONS.map(p => p.key));
-  assert.equal(keys.size, 84, 'key 必须唯一');
+  assert.equal(keys.size, POSITIONS.length, 'key 必须唯一');
   for (const p of POSITIONS) {
-    assert.match(p.key, /^pr24\.\d{3}\.[a-z]+$/, `key 形状不对: ${p.key}`);
+    // 图库条目编号带 g 前缀（pr24.gP001.xxx），数字条目仍是三位数
+    assert.match(p.key, /^pr24\.[A-Za-z0-9]+\.[a-z]+$/, `key 形状不对: ${p.key}`);
     assert.ok(p.knowledgeId.startsWith('pose.pr24.'), `knowledgeId 前缀不对: ${p.knowledgeId}`);
     assert.ok(p.name, `${p.key} 缺中文名`);
   }
@@ -31,7 +33,7 @@ test('行为分类覆盖主要类别', () => {
   for (const act of ['vaginal', 'anal', 'oral', 'paizuri', 'handjob', 'tribadism']) {
     assert.ok(byAct[act] > 0, `分类 ${act} 一条都没有`);
   }
-  assert.equal(Object.values(POSITION_ACTIONS).flat().length, 84, '分类不丢条目');
+  assert.equal(Object.values(POSITION_ACTIONS).flat().length, POSITIONS.length, '分类不丢条目');
 });
 
 test('非插入类不被误判，插入类必须判成插入', () => {

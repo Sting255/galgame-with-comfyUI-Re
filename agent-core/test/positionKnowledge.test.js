@@ -16,7 +16,8 @@ import { getDb, seedImagePromptKnowledge } from '../src/db/index.js';
 const ALL_SCENES = ['chat', 'moments', 'events', 'schedule', 'mailbox', 'avatar', 'gift', 'proactive', 'standalone'];
 
 test('84 条体位全部生成知识条目，前缀 pose.pr24.', () => {
-  assert.equal(POSITION_KNOWLEDGE.length, 84);
+  // 2026-11-03：图库补了 41 条 → 不再固定 84，改为「不少于原始条数」
+  assert.ok(POSITION_KNOWLEDGE.length >= 84, `至少 84 条，实际 ${POSITION_KNOWLEDGE.length}`);
   assert.equal(POSITION_KNOWLEDGE.length, POSITIONS.length);
   for (const k of POSITION_KNOWLEDGE) {
     assert.ok(k.knowledgeId.startsWith('pose.pr24.'), k.knowledgeId);
@@ -44,7 +45,7 @@ test('seed：写库后 84 条 is_active=1，且可重复执行（幂等）', () 
   const rows = db.prepare(
     `SELECT knowledge_id, is_active, version FROM image_prompt_knowledge WHERE knowledge_id LIKE 'pose.pr24.%'`
   ).all();
-  assert.equal(rows.length, 84, `库里应有 84 条，实际 ${rows.length}`);
+  assert.ok(rows.length >= 84, `库里至少应有 84 条，实际 ${rows.length}`);
   assert.ok(rows.every(r => r.is_active === 1), '全部应处于激活态');
   assert.ok(rows.every(r => r.version === POSITION_KNOWLEDGE_VERSION));
 

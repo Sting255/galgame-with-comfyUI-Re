@@ -15,6 +15,7 @@
  */
 
 import { SEX_POSITIONS } from '../data/sexPositions.js';
+import { SEX_POSITIONS_EXTRA } from '../data/sexPositionsExtra.js';
 
 /** 明确「插进去」的标签词（宁可多认：这是玩法门控） */
 const PENETRATIVE_TAGS = [
@@ -70,7 +71,10 @@ function isPenetrative(pos, actKey) {
  *   female:string[],frames:string[],negative:string[],prompt:string,frozen:string,conflicts:string,
  *   girls?:number,boys?:number,solo?:boolean}>}
  */
-export const POSITIONS = Object.freeze(SEX_POSITIONS.map(pos => {
+/** 图库补全的体位：编号加 `g` 前缀，避免与现有三位数字编号撞 key（`pr24.gP001.xxx`） */
+const GALLERY_POSITIONS = SEX_POSITIONS_EXTRA.map(pos => ({ ...pos, no: `g${pos.no}` }));
+
+export const POSITIONS = Object.freeze([...SEX_POSITIONS, ...GALLERY_POSITIONS].map(pos => {
   const actKey = pickActKey(pos);
   const key = `pr24.${pos.no}.${slugOf(pos, actKey)}`;
   return Object.freeze({

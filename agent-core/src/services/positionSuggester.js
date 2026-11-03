@@ -64,6 +64,11 @@ export async function suggestPosition({ character, state, candidates, excludeKey
   const pace = state?.pace?.label || state?.pace?.key || '未定';
   const load = Number.isFinite(Number(state?.accumulation)) ? Number(state.accumulation) : 0;
   const sens = state?.sensitivity?.tierLabel ? `${state.sensitivity.tierLabel}（${state.sensitivity.value ?? ''}）` : '未知';
+  // 玩法状态也一起喂进去：插没插、来过几次、有没有被绑着/玩具 —— 这些直接决定"她现在适合什么姿势"
+  const penetrating = state?.penetrating ? '已经插在里面' : '现在没有插入';
+  const climaxed = Number(state?.climaxCount) || 0;
+  const toys = Array.isArray(state?.wornToys) && state.wornToys.length ? `身上还戴着 ${state.wornToys.map(t => t?.label || t?.name || '').filter(Boolean).join('、')}` : '没有额外道具';
+  const bound = state?.bondage?.active ? '她被绑着（动不了，换姿势要由他动手）' : '行动自如';
 
   // 最近用过的体位不再给模型挑（用户原话：「同一个姿势很无聊」）。
   // 排除后如果空了就放开 —— 宁可能重复，也不能没法换。
@@ -80,9 +85,12 @@ export async function suggestPosition({ character, state, candidates, excludeKey
 
 【她此刻的状态】
 当前体位：${cur}
+插入状态：${penetrating}
 节奏：${pace}
 累积程度：${load}
 敏感度：${sens}
+这一场已经高潮：${climaxed} 次
+道具与束缚：${toys}；${bound}
 
 【候选体位】（格式：key | 中文名 | 补充）
 ${lines}
@@ -94,6 +102,11 @@ ${recentLabel ? `
 2. key 必须**逐字符**等于候选里的某一个 key，不许自创。
 3. reason 用一句中文写她为什么选这个（≤30 字，第三人称，写她的心思，不要写成旁白解说）。
 4. 结合她的性格与体能：冷淡/骄傲的角色不会主动选过于示弱的姿势；已经累积很高时优先能让她喘口气的姿势；体力弱的不适合太费力的。
+5. 结合玩法状态，这是硬要求：
+   - 已经被插着时，换到她能承受、又不至于立刻到顶的姿势；已经高潮过 1 次以上就避开最费腰的。
+   - 她被绑着时只能选「不需要她自己动」的姿势（仰躺、侧卧、跪伏等），不要选骑乘这类要她自己使劲的。
+   - 累积很高时不要选会把她推过去的姿势，除非她的性格就是爱逞强。
+   - 不要选和当前一模一样的姿势（换姿势的意义就是换）。
 
 输出格式（严格按此）：
 {"key":"候选里的 key","reason":"一句中文理由"}`;
