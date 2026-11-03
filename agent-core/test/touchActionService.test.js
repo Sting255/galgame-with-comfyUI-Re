@@ -171,10 +171,12 @@ test('C. Lv3：好感 60 与亲密授权**两条都要**，缺哪条报哪条', 
   assert.equal(getTouchGate({ actionKey: 'touch_breast', affinity: 0, isOath: true }).code, 'intimate_not_authorized', '誓约顶不掉授权');
 });
 
-test('C. Lv3 + 睡着 → 拦截（催眠中才豁免）；群聊 Lv3 默认拦截，显式开才放行', () => {
+test('C. Lv3 + 睡着 → **放行**（睡眠玩法：睡着也能摸）；群聊 Lv3 默认拦截，显式开才放行', () => {
+  // 2026-11-03 用户：「睡觉的时候触摸系统的门控也还在 无法使用」
+  // 睡眠玩法本身就是"睡着被摸/被推进"，所以睡着不再是拦截条件。
   const asleep = getTouchGate({ actionKey: 'touch_butt', affinity: 90, sleeping: true, ...withIntimate });
-  assert.equal(asleep.code, 'sleeping_blocked');
-  assert.match(asleep.message, /睡得很沉/);
+  assert.equal(asleep.code, 'ok', '睡着不再拦成人向触摸');
+  assert.equal(asleep.allowed, true);
 
   const inGroup = getTouchGate({ actionKey: 'touch_butt', affinity: 90, scene: 'group', ...withIntimate });
   assert.equal(inGroup.code, 'group_adult_blocked');
@@ -760,9 +762,9 @@ test('§10.1+§一③ Lv4 门控矩阵：80 门槛 / 睡拦 / 群聊吃开关 / 
   assert.equal(getTouchGate({ ...base, affinity: 80 }).allowed, true);
   // ③ 誓约豁免门槛
   assert.equal(getTouchGate({ ...base, affinity: 0, isOath: true }).allowed, true);
-  // ④ 睡着拦（与 Lv3 同款文案）
+  // ④ 睡着也放行（与 Lv3 同口径：睡眠玩法允许睡着被摸）
   g = getTouchGate({ ...base, affinity: 90, sleeping: true });
-  assert.equal(g.code, 'sleeping_blocked');
+  assert.equal(g.code, 'ok', '睡着不再拦 Lv4');
   // ⑤ 群聊：§一③（三期）起**与 Lv3 同口径** —— 吃 `touchGroupAdult` 开关（关着仍拦）
   g = getTouchGate({ ...base, affinity: 90, scene: 'group', allowGroupAdult: false });
   assert.equal(g.code, 'group_adult_blocked', '开关关着照样拦');

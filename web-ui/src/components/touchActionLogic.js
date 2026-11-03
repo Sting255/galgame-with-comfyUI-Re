@@ -267,7 +267,7 @@ export function findTouchAction(actionKey) {
  * 顺序（先到先拦，决定 code / 文案）：
  *   1. 催眠中 → 无条件放行（排在睡眠前：睡着的她在催眠里也能做）
  *   2. Lv1 → 无门控
- *   3. 睡着 + Lv3 → sleeping_blocked
+ *   3. 睡着不再拦（睡眠玩法；反应交给 sleeping / sleepLocked 分支写）
  *   4. 群聊 + Lv3 + 未开群聊成人 → group_adult_blocked（阶段二生效，口径先对齐）
  *   5. 好感 < 门槛 且 未誓约 → affinity_low
  *   6. Lv3 还要过亲密看板授权 → intimate_not_authorized
@@ -299,7 +299,8 @@ export function resolveActionGate(action, {
 
   if (hypnotized === true) return allow({ exempt: 'hypnosis' })
   if (level === 1) return allow()
-  if (sleeping === true && level === 3) return block('sleeping_blocked')
+  // 2026-11-03 用户：「睡觉的时候触摸系统的门控也还在 无法使用」——
+  // 睡着不再拦成人向触摸（睡眠玩法就是"睡着也能摸/被推进"），与后端 getTouchGate 同一口径。
   if (scene === 'group' && level === 3 && allowGroupAdult !== true) return block('group_adult_blocked')
 
   const need = level === 3 ? limit.lv3Affinity : limit.lv2Affinity

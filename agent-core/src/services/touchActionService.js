@@ -327,15 +327,12 @@ export function getTouchGate({
   const explicit = action.level === TOUCH_LEVELS.EXPLICIT;
   const adult = sensitive || explicit;
 
-  if (sleeping && adult) {
-    // 群聊口径（2026-10-31 用户）：睡着的人在群里被摸不该硬拦——就当这一下把她弄醒了，
-    // 先迷糊一句再继续（touchReaction 侧已按 sleeping 注入「被这一下弄醒」的写法）。
-    // 私聊保持原状：睡着就是睡着，消息排队、可以去看她做梦。
-    if (scene !== 'group') {
-      return { ...base, code: 'sleeping_blocked', reason: 'sleeping_blocked', message: GATE_MESSAGES.sleeping_blocked };
-    }
-    return allow('ok', { wakesSleeping: true, wokenByTouch: true });
-  }
+  // 2026-11-03 用户：「睡觉的时候触摸系统的门控也还在 无法使用」——
+  // **睡着不再拦成人向触摸**。这正是睡眠玩法的入口：她能睡着被摸、被推进，
+  // 身体在反应而意识没上来（反应文案由 sleepLocked 分支给，睡眠条由 touch.js 扣）。
+  // 原来这里私聊直接 `sleeping_blocked`，是睡眠玩法上线前的旧口径，与玩法直接打架。
+  // 仍然保留的只有：群聊成人开关、好感门槛、亲密授权 —— 与醒着时同一套。
+  const wokenByTouch = Boolean(action.wakes && sleeping);
   // 群聊成人内容：**Lv3 与 Lv4 同一口径** —— 吃 `touchGroupAdult` 开关（关着照样拦，文案不变）。
   // §一③（三期 2026-09-30）：用户期望变了（要群聊里也能用私密动作、还要有旁观者参与），
   // 原 §10.1 的「Lv4 群聊无条件拦」裁决由用户作废。
@@ -350,7 +347,7 @@ export function getTouchGate({
   if (adult && intimateAuthorized !== true) {
     return { ...base, code: 'intimate_not_authorized', reason: 'intimate_not_authorized', message: GATE_MESSAGES.intimate_not_authorized };
   }
-  return allow('ok', { wakesSleeping: Boolean(action.wakes && sleeping) });
+  return allow('ok', { wakesSleeping: wokenByTouch, wokenByTouch });
 }
 
 

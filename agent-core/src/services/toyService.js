@@ -29,6 +29,8 @@ import { getTouchGate, TOUCH_LEVELS, DEFAULT_TOUCH_THRESHOLDS } from './touchAct
 // 立绘表情取值要求（唯一来源；2026-10-21 见该文件顶部注释）
 import { facialExpressionChoiceText } from './emojiExpressionMatch.js';
 import { generateImage } from './imageSkill.js';
+// 体位绑定生图（2026-11-03）：玩具/亲密面板反应图也要按当前体位摆姿势
+import { buildPositionImageTags, buildPositionPoseJson } from './intimateActionService.js';
 import { saveBase64Image } from './imagePaths.js';
 import { buildCharacterAppearanceSection, buildCharacterPersona } from './characterPersona.js';
 import { charArtistOverride } from './characterImageOpts.js';
@@ -1069,9 +1071,30 @@ export async function generateToyImageForReaction({ character, imagePrompt = '',
     const nameTag = String(charObj.display_name || '').trim();
     const prompt = [desc, nameTag, appearance].filter(Boolean).join(', ');
     const runner = typeof options.generateImage === 'function' ? options.generateImage : generateImage;
-    const result = await runner(prompt, {
+    // 2026-11-03 用户：「动作基本都是死板的 根本就对不上」——
+    // 玩具/亲密面板的反应图原来**不带任何体位信息**（既没标签也没骨架），出图纯靠模型自由发挥，
+    // 所以面板上写着后入、图画出来是侧躺。这里补上两条：
+    //   ① 体位英文标签进 prompt（与 chat/touch 同源）；
+    //   ② 体位骨架进 ControlNet（出图真的摆成那个姿势）。
+    // 没有进行中的亲密场景时两者都是空，普通玩具/装饰图完全不受影响。
+    let poseJsonForToy;
+    let promptWithPosition = prompt;
+    try {
+      const cid = Number(charObj.id) || 0;
+      if (cid > 0) {
+        const tags = buildPositionImageTags(cid);
+        if (tags && !prompt.includes(tags.split(',')[0].trim())) {
+          promptWithPosition = `${prompt}, ${tags}`;
+        }
+        poseJsonForToy = buildPositionPoseJson(cid)?.json;
+      }
+    } catch (err) {
+      console.warn('[toys] 体位信息注入失败（不影响出图）:', err?.message || err);
+    }
+    const result = await runner(promptWithPosition, {
       scene: 'chat', workflowScene: 'chat', promptScene: 'chat',
       artist: charArtistOverride(character || {}),
+      ...(poseJsonForToy ? { poseJson: poseJsonForToy } : {}),
       ...(options.imageOptions || {}),
     });
     if (!result?.success || !Array.isArray(result.images) || result.images.length === 0) {

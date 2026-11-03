@@ -401,8 +401,10 @@ test('POST：催眠中豁免门控（Lv3 + 好感 0 也放行，exempt=hypnosis�
   assert.equal(actions.json.gate.touch_breast.exempt, 'hypnosis');
 });
 
-test('POST：睡着时重动作（挠痒痒）放行并临时唤醒；睡着时 Lv3 拦截', async () => {
-  const id = seedCharacter({ scheduled: true });
+test('POST：睡着时重动作（挠痒痒）放行并临时唤醒；睡着不再拦 Lv3', async () => {
+  // 好感给足：本用例要证明的是"睡着不影响门控"，不是好感门槛（原来的 sleeping_blocked
+  // 排在好感判定之前，所以夹具用默认好感也能过；现在睡着放行后会落到好感判定，必须给足）。
+  const id = seedCharacter({ scheduled: true, affinity: 90 });
   makeSleeping(id);
   stubReaction();
 
@@ -415,11 +417,11 @@ test('POST：睡着时重动作（挠痒痒）放行并临时唤醒；睡着时 
   assert.ok(charRow.temporary_wake_until, '必须写入临时唤醒窗口');
   assert.equal(charRow.wake_mode, 'phone');
 
+  // 2026-11-03：睡着不再拦成人向触摸（睡眠玩法），改为放行并把她记为"睡着被摸"
   makeSleeping(id);
   const lv3 = await api('POST', `/api/characters/${id}/touch/touch_breast`, {});
-  assert.equal(lv3.json.allowed, false);
-  assert.equal(lv3.json.code, 'sleeping_blocked');
-  assert.match(lv3.json.message, /睡得很沉/);
+  assert.equal(lv3.json.allowed, true, '睡着也能摸');
+  assert.equal(lv3.json.code, 'ok');
 });
 
 test('POST：非法动作 400、群聊缺 groupId 400、角色不存在 404', async () => {
