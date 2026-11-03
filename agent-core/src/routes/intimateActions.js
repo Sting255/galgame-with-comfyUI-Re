@@ -50,6 +50,7 @@ import {
   saveIntimateScene,
   patchIntimateScene,
   listPositionOptions,
+  listPositionCategories,
 } from '../services/intimateActionService.js';
 import { suggestPosition } from '../services/positionSuggester.js';
 // 输出解析**直接复用触摸反应那一套**（字段与容错口径逐字同形：json 代码块包裹 / 前后夹话都能吃）
@@ -352,6 +353,7 @@ router.get('/:id/state', (req, res) => {
       features: { intimateActions: config.features?.intimateActions, instant: isInstantEnabled() },
       // 独立每日配额：面板据此显示"今天还能点几下"、并在耗尽时提示（不哑玩法，只是不调模型）
       quota: getIntimateActionQuotaStatus(),
+      positionCategories: listPositionCategories(),
       ...snapshot,
     });
   } catch (err) {
@@ -363,6 +365,16 @@ router.get('/:id/state', (req, res) => {
 // ── GET /:id/suggest-position ───────────────────────────────────────────────
 // 「让她自己决定」：模型按角色性格 + 此刻状态从面板候选里挑一个体位。
 // 只返回建议（key/label/reason），真正换姿势仍走 POST /:id/position，服务端校验口径不变。
+// 每角色最近用过的体位（内存即可：重启后"新鲜感"重新计，不影响正确性）
+const recentByCharacter = new Map();
+const RECENT_LIMIT = 5;
+function noteRecentPosition(id, key) {
+  if (!key) return;
+  const list = recentByCharacter.get(id) || [];
+  const next = [key, ...list.filter(k => k !== key)].slice(0, RECENT_LIMIT);
+  recentByCharacter.set(id, next);
+}
+
 router.get('/:id/suggest-position', async (req, res) => {
   const id = parseCharacterId(req);
   if (!id) return res.status(400).json({ error: 'invalid character id' });
@@ -375,10 +387,21 @@ router.get('/:id/suggest-position', async (req, res) => {
     expireIdleScene(id);
     const state = getIntimateScene(id);
     const snapshot = snapshotFor(id, state, { character });
-    const candidates = listPositionOptions();
-    if (!candidates.length) return res.status(409).json({ error: '没有可选的体位' });
-    const picked = await suggestPosition({ character, state: snapshot.state, candidates });
-    return res.json({ characterId: id, ...picked });
+    const all = listPositionOptions();
+    if (!all.length) return res.status(409).json({ error: '没有可选的体位' });
+    // 大类过滤：「选大类 → 让她在这类里挑」。不传则全量。
+    const category = String(req.query?.category || '').trim();
+    const candidates = category ? all.filter(item => (item.posture || 'other') === category) : all;
+    if (!candidates.length) return res.status(409).json({ error: '这个大类下暂时没有可选体位' });
+    const picked = await suggestPosition({
+      character,
+      state: snapshot.state,
+      candidates,
+      category,
+      excludeKeys: recentByCharacter.get(id) || [],
+    });
+    noteRecentPosition(id, picked.key);
+    return res.json({ characterId: id, category: category || null, ...picked });
   } catch (err) {
     console.error('[intimate-action] suggest-position error:', err?.message || err);
     return res.status(500).json({ error: err?.message || '体位建议失败' });

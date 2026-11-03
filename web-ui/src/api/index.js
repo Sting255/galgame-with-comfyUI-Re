@@ -2714,8 +2714,11 @@ export function fetchIntimateActionState(characterId, { scene = 'chat', groupId 
  * 让她自己决定体位：模型按角色性格 + 当下状态从面板候选里挑一个。
  * 只返回建议（key / label / reason），换姿势仍走 postIntimateAction('position')。
  */
-export function suggestIntimatePosition(characterId, { scene = 'chat', groupId = null } = {}) {
-  const query = scene === 'group' && groupId ? `?scene=group&groupId=${encodeURIComponent(groupId)}` : ''
+export function suggestIntimatePosition(characterId, { scene = 'chat', groupId = null, category = '' } = {}) {
+  const params = new URLSearchParams()
+  if (scene === 'group' && groupId) { params.set('scene', 'group'); params.set('groupId', String(groupId)) }
+  if (category) params.set('category', String(category))
+  const query = params.toString() ? `?${params.toString()}` : ''
   return request(`/intimate-actions/${encodeURIComponent(characterId)}/suggest-position${query}`)
 }
 

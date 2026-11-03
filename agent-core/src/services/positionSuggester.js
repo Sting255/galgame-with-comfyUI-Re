@@ -52,7 +52,7 @@ function fallbackPick(candidates) {
  * @param {Array<{key:string,label:string,actKey?:string,penetrative?:boolean}>} opts.candidates
  * @returns {Promise<{key:string,label:string,reason:string,fallback?:boolean}>}
  */
-export async function suggestPosition({ character, state, candidates }) {
+export async function suggestPosition({ character, state, candidates, excludeKeys = [], category = '' }) {
   if (!character) throw new Error('缺少角色');
   if (!Array.isArray(candidates) || candidates.length === 0) throw new Error('没有可选的体位');
 
@@ -65,7 +65,14 @@ export async function suggestPosition({ character, state, candidates }) {
   const load = Number.isFinite(Number(state?.accumulation)) ? Number(state.accumulation) : 0;
   const sens = state?.sensitivity?.tierLabel ? `${state.sensitivity.tierLabel}（${state.sensitivity.value ?? ''}）` : '未知';
 
-  const lines = candidates
+  // 最近用过的体位不再给模型挑（用户原话：「同一个姿势很无聊」）。
+  // 排除后如果空了就放开 —— 宁可能重复，也不能没法换。
+  const exclude = new Set((excludeKeys || []).filter(k => keySet.has(k)));
+  let pool = candidates.filter(c => !exclude.has(c.key));
+  if (pool.length === 0) pool = candidates;
+  const recentLabel = candidates.filter(c => exclude.has(c.key)).map(c => c.label).join('、');
+
+  const lines = pool
     .map(c => `- ${c.key} | ${c.label}${c.penetrative ? ' | 插入式' : ''}${c.actKey ? ` | ${c.actKey}` : ''}`)
     .join('\n');
 
@@ -79,6 +86,8 @@ export async function suggestPosition({ character, state, candidates }) {
 
 【候选体位】（格式：key | 中文名 | 补充）
 ${lines}
+${recentLabel ? `
+【最近已经用过，这次不要选】${recentLabel}` : ''}
 
 要求：
 1. 只输出一个 JSON 对象，不要解释、不要代码块。
@@ -101,10 +110,11 @@ ${lines}
     return { ...fb, label: byKey.get(fb.key)?.label || fb.key };
   }
 
-  const parsed = parseSuggestion(raw, keySet);
+  const poolKeys = new Set(pool.map(c => c.key));
+  const parsed = parseSuggestion(raw, poolKeys);
   if (!parsed) {
     console.warn('[poseSuggest] 模型没给出合法体位，回退随机：', String(raw).slice(0, 120));
-    const fb = fallbackPick(candidates);
+    const fb = fallbackPick(pool);
     return { ...fb, label: byKey.get(fb.key)?.label || fb.key };
   }
   return { key: parsed.key, label: byKey.get(parsed.key)?.label || parsed.key, reason: parsed.reason };

@@ -147,3 +147,45 @@ export function positionStats() {
   }
   return { total: POSITIONS.length, penetrative, byAct };
 }
+
+// ── 姿势形态大类（面板"选大类 → 让她在这类里挑"用）─────────────────────────
+/**
+ * 按**身体形态**分组（不是按行为）。用户在第一层看到的是「怎么摆」，
+ * 点进去再让她挑具体体位 —— 84 条平铺太长，先分大类才好选。
+ * 顺序敏感：骑乘要先于后入判（cowgirl 常带 doggystyle 标签），站立要先于仰卧判。
+ */
+const POSTURE_RULES = [
+  // ⚠ 顺序是从「特征最具体」到「最宽泛」：cowgirl 常同时带 doggystyle/standing 标签，
+  //   站立放前面会把一大半姿势都吞成"站立"（实测 37/84 全归站立，骑乘只剩 2 条）。
+  { key: 'riding', label: '骑乘', re: /cowgirl|straddle|riding|reverse cowgirl/i },
+  { key: 'paizuri', label: '乳交', re: /paizuri|titjob|breast sex/i },
+  { key: 'oral', label: '口部', re: /blowjob|fellatio|deepthroat|cunnilingus|69|oral/i },
+  { key: 'hand', label: '手交', re: /handjob|fingering/i },
+  { key: 'frombehind', label: '后入', re: /doggystyle|from behind|on all fours|prone bone|spitroast/i },
+  { key: 'onstomach', label: '俯卧', re: /on stomach|prone|face down/i },
+  { key: 'onback', label: '仰躺', re: /on back|missionary|mating press|piledriver|legs up|full nelson/i },
+  { key: 'kneeling', label: '跪姿', re: /kneel|seiza/i },
+  { key: 'sitting', label: '坐位', re: /sitting|seated|chair|lap/i },
+  { key: 'standing', label: '站立', re: /standing|against the wall|carried/i },
+];
+
+/** 大类清单（顺序即面板展示顺序） */
+export const POSTURE_GROUPS = [
+  ...POSTURE_RULES.map(r => ({ key: r.key, label: r.label })),
+  { key: 'other', label: '其他' },
+];
+
+/** 按一段文本（打包 tag / 中文名）判形态大类；精选 17 条用的是打包 tag，走这条 */
+export function postureOfText(text) {
+  const hay = String(text || '');
+  if (!hay) return 'other';
+  for (const rule of POSTURE_RULES) if (rule.re.test(hay)) return rule.key;
+  return 'other';
+}
+
+/** 一条体位属于哪个形态大类 */
+export function postureOf(pos) {
+  const hay = [...(pos.core || []), ...(pos.male || []), ...(pos.female || []), pos.name || ''].join(' | ');
+  for (const rule of POSTURE_RULES) if (rule.re.test(hay)) return rule.key;
+  return 'other';
+}

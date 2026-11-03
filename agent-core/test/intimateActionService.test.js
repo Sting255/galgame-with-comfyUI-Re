@@ -264,14 +264,22 @@ test('换到非插入体位（口交）：插入状态必须落回未插入，�
 
 // ── 5. 体位词表真实存在（防"钉错 key"） ──
 
-test('面板体位清单：每一条都真实存在于 adult_pose_vocabulary，且拿得到中文名', () => {
+test('面板体位清单：每一条都能被服务端解析并执行（词表 ∪ 全量体位词库）', () => {
   const options = svc.listPositionOptions();
   assert.ok(options.length >= 10, '精选体位至少 10 条（实际 ' + options.length + '）');
   const map = intimate.getPositionVocabularyMap();
+  // ⚠ 2026-11-03 口径变更：面板不再只给词表里的 17 条精选，而是「词表 ∪ 全量体位词库（84 条）」。
+  //   原来钉的是"必须命中 adult_pose_vocabulary"，但按钮点不动与否的真正判据是
+  //   **服务端能不能解析并执行**，所以这里改成对 resolveTargetPosition 逐条验证 ——
+  //   这比绑词表更严：词表里没有但词库认的体位同样合法，词表词库都不认的照样会被抓出来。
   for (const option of options) {
-    assert.ok(map.has(option.key), `体位 key 必须真的在词表里：${option.key}`);
+    const resolved = svc.resolveTargetPosition(option.key);
+    assert.ok(resolved, `体位 key 必须能被服务端解析（词表或全量体位词库）：${option.key}`);
     assert.ok(option.label && option.label !== option.key, `必须有中文名：${option.key}`);
     assert.ok(typeof option.penetrative === 'boolean');
+    if (!map.has(option.key)) {
+      assert.ok(option.key.startsWith('pr24.'), `不在词表里的只允许是 pr24 全量词库体位：${option.key}`);
+    }
   }
   const keys = options.map(o => o.key);
   assert.ok(keys.includes('missionary'));

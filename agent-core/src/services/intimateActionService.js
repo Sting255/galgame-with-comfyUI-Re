@@ -44,7 +44,7 @@ import { formatFacialExpressionRule } from './emojiExpressionMatch.js';
 // 敏感度分档表（climaxStrength 要把"她的倍率"落回档位）—— sensitivityService 只依赖 db，不成环。
 import { SENSITIVITY_TIERS } from './sensitivityService.js';
 // 84 条全量体位词库（PR#24 融合）：physicalHintOf 在精选表未命中时用它兜底
-import { POSITIONS as PR24_POSITIONS, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
+import { POSITIONS as PR24_POSITIONS, POSTURE_GROUPS, postureOf, postureOfText, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
 
 // ── 一、常量（档位 / 阈值 / 词表）────────────────────────────────────────────
 
@@ -496,7 +496,9 @@ export function actKeyForPosition(positionKey) {
  * @returns {{key:string, label:string, actKey:string, penetrative:boolean}|null}
  */
 export function resolveTargetPosition(positionKey) {
-  const key = resolvePositionKey(positionKey);
+  // 数据库词表优先（老口径）；词表里没有时再看全量体位词库（pr24.*）——
+  // 后者是「大类 → 让她挑」引入的候选，不认它会出现"按钮点得动、服务端 400"。
+  const key = resolvePositionKey(positionKey) || resolvePr24Key(positionKey);
   if (!key) return null;
   const actKey = actKeyForPosition(key);
   return {
@@ -504,22 +506,43 @@ export function resolveTargetPosition(positionKey) {
     label: positionLabel(key) || key,
     actKey,
     penetrative: isPenetrativeAct(actKey),
+    posture: postureOfText(key),
   };
 }
 
 /** 当前体位的展示信息（状态里存的 key 已合法；词表变动时回落 key 本身，不做二次猜测） */
 export function describePosition(positionKey) {
   const key = str(positionKey, 120) || DEFAULT_POSITION_KEY;
+  const pr24 = getPr24Position(key);
+  if (pr24) {
+    return {
+      key,
+      label: pr24.name || key,
+      actKey: pr24.actKey,
+      penetrative: pr24.penetrative,
+      posture: postureOf(pr24),
+    };
+  }
   const actKey = actKeyForPosition(key);
   return {
     key,
     label: positionLabel(key) || key,
     actKey,
     penetrative: isPenetrativeAct(actKey),
+    posture: postureOfText(key),
   };
 }
 
-/** 面板体位清单：精选 key ∩ 当前词表（词表里没有的直接不出现，前端就不会给一个点不动的按钮） */
+/**
+ * 面板体位清单。
+ *
+ * 两段拼起来：
+ *   ① 精选 17 条（PREFERRED_POSITION_KEYS）—— 最常用的，位置固定；
+ *   ② 全量体位词库（positionLibrary 的 84 条）里剩下的，带 `posture` 大类。
+ * 前端按大类分组：「选大类 → 让她在这类里挑」，不用一次铺 84 个按钮。
+ *
+ * 词表与词库都没有的 key 直接不出现，前端就不会给一个点不动的按钮。
+ */
 export function listPositionOptions() {
   let map = null;
   try {
@@ -527,13 +550,33 @@ export function listPositionOptions() {
   } catch {
     map = null;
   }
-  if (!map || typeof map.has !== 'function') return [];
   const out = [];
-  for (const key of PREFERRED_POSITION_KEYS) {
-    if (!map.has(key)) continue;
-    out.push(describePosition(key));
+  const seen = new Set();
+  if (map && typeof map.has === 'function') {
+    for (const key of PREFERRED_POSITION_KEYS) {
+      if (!map.has(key) || seen.has(key)) continue;
+      out.push({ ...describePosition(key), preferred: true });
+      seen.add(key);
+    }
+  }
+  for (const pos of PR24_POSITIONS) {
+    if (seen.has(pos.key)) continue;
+    seen.add(pos.key);
+    out.push({ ...describePosition(pos.key), preferred: false });
   }
   return out;
+}
+
+/** 大类清单（只返回当前候选里真实有货的类，空类不出现） */
+export function listPositionCategories() {
+  const counts = new Map();
+  for (const item of listPositionOptions()) {
+    const key = item.posture || 'other';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return POSTURE_GROUPS
+    .filter(g => counts.get(g.key) > 0)
+    .map(g => ({ key: g.key, label: g.label, count: counts.get(g.key) }));
 }
 
 // ── 五、状态机（纯函数：给状态 + 动作，出下一个状态 / 拒绝理由）────────────────

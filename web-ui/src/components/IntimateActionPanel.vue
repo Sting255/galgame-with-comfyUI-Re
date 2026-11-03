@@ -65,6 +65,22 @@
           <span class="ia-auto-hint">{{ view.autoThrust ? `他每 ${(view.autoIntervalMs / 1000).toFixed(1)} 秒一下` : '先开「自动插入」' }}</span>
         </div>
 
+        <!-- 大类：点一下就让她在这一类里自己挑（84 条平铺太长，先选大类再让她决定） -->
+        <div v-if="categories.length" class="ia-row ia-row--block">
+          <span class="ia-label">换个花样（点大类，让她自己挑）</span>
+          <div class="ia-positions">
+            <linshe-button
+              v-for="cat in categories"
+              :key="cat.key"
+              variant="chip"
+              size="sm"
+              :disabled="busy || loading || !enabled || suggesting"
+              :title="`${cat.label}类共 ${cat.count} 个，让她在里面挑一个`"
+              @click="suggestByCategory(cat)"
+            >{{ cat.label }}<span class="ia-cat-count">{{ cat.count }}</span></linshe-button>
+          </div>
+        </div>
+
         <!-- 体位：点一下＝立刻换过去（含开场：还没开始时点体位＝把她摆成那个姿势） -->
         <div class="ia-row ia-row--block">
           <span class="ia-label">体位（点一下立刻换过去）</span>
@@ -411,25 +427,42 @@ async function run(action, extra = {}) {  if (busy.value || !action?.key) return
 }
 
 /** 点体位胶囊 = 换姿势（也是开场入口：还没开始时点它＝把她摆成那个姿势） */
+// ── 大类清单（后端按姿势形态分：骑乘/后入/仰躺/口部…）──
+const categories = computed(() => (snapshot.value?.positionCategories || []).filter(c => c && c.count > 0))
+
+/** 点大类：让她在这一类里挑一个（并避开最近用过的） */
+async function suggestByCategory(cat) {
+  if (suggesting.value || !cat?.key) return
+  await pickForHer({ category: cat.key, categoryLabel: cat.label })
+}
+
 // ── 让她决定体位（模型按性格 + 当下状态从候选里挑）──
 const suggesting = ref(false)
-async function suggestPositionForHer() {
+
+/**
+ * 让她挑一个：`category` 为空 = 全量候选里挑；传了就先按大类过滤。
+ * 服务端已经做了"最近用过的不要"的排除，这里只负责发请求与上屏提示。
+ */
+async function pickForHer({ category = '', categoryLabel = '' } = {}) {
   if (suggesting.value) return
   const id = props.characterId
   if (!id) return
   suggesting.value = true
   try {
-    const picked = await suggestIntimatePosition(id, { scene: props.scene, groupId: props.groupId })
+    const picked = await suggestIntimatePosition(id, { scene: props.scene, groupId: props.groupId, category })
     if (!picked?.key) throw new Error('没拿到建议体位')
-    // 走和手动点一样的那条链路：服务端照旧校验合法性
     await run({ key: 'position', label: '换姿势', hint: '', tone: '', available: true, reason: '', positionKey: picked.key })
-    if (picked.reason) toast?.(`她换成了「${picked.label}」：${picked.reason}`, 'success')
-    else toast?.(`她换成了「${picked.label}」`, 'success')
+    const prefix = categoryLabel ? `她换了个${categoryLabel}的姿势：「${picked.label}」` : `她换成了「${picked.label}」`
+    toast?.(picked.reason ? `${prefix}：${picked.reason}` : prefix, 'success')
   } catch (err) {
     toast?.(err?.message || '她这次没拿定主意', 'error')
   } finally {
     suggesting.value = false
   }
+}
+
+function suggestPositionForHer() {
+  return pickForHer({})
 }
 
 function changePosition(item) {
