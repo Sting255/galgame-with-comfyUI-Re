@@ -91,3 +91,16 @@ test('四档提示词：深睡 / 将醒 / 刚醒 / 催眠锁死各不相同', ()
   assert.match(locked, /醒不过来|催眠锁在睡眠/, '禁醒档')
   assert.notEqual(deep, locked, '禁醒档与深睡档文案不能一样')
 })
+
+test('★ 敏感度参与唤醒：越敏感，同样的动作扣得越多（越快被弄醒）', () => {
+  const cost = (sens) => {
+    const st = base({ sleepBar: 100 })
+    const r = svc.planIntimateAction(st, { actionKey: 'thrust', sleeping: true, now: Date.now(), sensitivity: sens })
+    return 100 - r.next.sleepBar
+  }
+  assert.equal(cost(1), svc.SLEEP_COST_THRUST, '基准倍率就是原始消耗')
+  assert.ok(cost(1.5) > cost(1), '敏感度 1.5 倍时应当扣得更多')
+  assert.ok(cost(2) > cost(1.5), '更敏感扣得更多')
+  // 下限保护：再迟钝也不会"一点都弄不醒"
+  assert.ok(cost(0.1) >= 1, '消耗不会被压到 0')
+})

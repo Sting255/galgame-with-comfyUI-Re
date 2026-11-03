@@ -753,7 +753,10 @@ export function planIntimateAction(state, { actionKey, positionKey = '', affinit
     // 插入类（抽插/加速/进入/自动）最"折腾"；换姿势、捆绑、玩具这些轻一点。
     // 独立的触摸系统（摸头/摸腿那套）在 touchActionService 里走同一组常量。
     const heavy = ['enter', 'thrust', 'faster', 'auto'].includes(action.key);
-    const cost = heavy ? SLEEP_COST_THRUST : SLEEP_COST_TOUCH;
+    // 敏感度（角色持久值，0~100 折算成 multiplier）直接参与消耗：
+    // 她越敏感，同样的动作把她从睡里拽出来得越快 —— 冷淡的新人可能怎么弄都还在深睡。
+    const sensFactor = Math.max(0.5, Math.min(2, Number(sensitivity) || 1));
+    const cost = Math.max(1, Math.round((heavy ? SLEEP_COST_THRUST : SLEEP_COST_TOUCH) * sensFactor));
     const floor = current.forcedSleep ? 1 : 0;
     const nextBar = Math.max(floor, clampInt(current.sleepBar, 0, SLEEP_BAR_MAX, SLEEP_BAR_MAX) - cost);
     base.sleepBar = nextBar;
