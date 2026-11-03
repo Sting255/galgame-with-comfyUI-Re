@@ -36,6 +36,9 @@ import { recordIntimateActs } from './intimateService.js';
 import { grantHypnosisPhone as grantPhoneToBackpack } from './itemService.js';
 import { getSleepStatus, isSleeping, isTempWoken, tempWake } from './scheduleManager.js';
 import { forceSleepNow, forceWakeNow } from './scheduleEditor.js';
+// 2026-11-03 睡眠锁（「无法醒来」）：催眠手机的开关，开着她怎么都醒不过来。
+// 依赖方向安全：sleepLock 只 import db / programTime / scheduleEditor / scheduleManager。
+import { isSleepLocked } from './sleepLock.js';
 // 2026-10-01：force_toy 指令要**真的把玩具戴上去**（用户原话「催眠状态也不能强制让角色用上玩具」）。
 // 依赖方向安全：toyService 不 import 本模块（它的门控把 hypnotized 当参数收），无循环。
 import { getToy, equipToy, setToyMode, setToyCurve, listWornToys } from './toyService.js';
@@ -1040,6 +1043,9 @@ export function wakeFromSleep(characterId) {
   const id = requireId(characterId);
   ensureCharacter(id);
   ensureEnabled();
+  // 2026-11-03 睡眠锁：「无法醒来」开着时**叫不醒**（这正是那个开关的全部意义）。
+  // 想放开她就去关掉开关（routes POST /sleep-lock），那里走 forceWakeNow 直接唤醒。
+  if (isSleepLocked(id)) throw fail('cannot wake', 'CANNOT_WAKE', { reason: 'sleep_locked' });
   // 唤醒前的睡眠结论：含小憩；临时唤醒窗口内 isSleeping() 直接给 false（那种情况本来就在醒着）
   const wasSleeping = Boolean(isSleeping(id).sleeping);
   const result = forceWakeNow(id);
@@ -1069,6 +1075,8 @@ export function wakeForForcedTrigger(characterId) {
   if (!id) return { woken: false, minutes: 0, reason: 'invalid_id' };
   try {
     if (isTempWoken(id)) return { woken: false, minutes: 0, reason: 'already_temp_woken' };
+    // 睡眠锁开着 → 连"临时唤醒"也不给（否则指令会把锁着的她拉醒，与「无法醒来」自相矛盾）
+    if (isSleepLocked(id)) return { woken: false, minutes: 0, reason: 'sleep_locked' };
     if (!isSleeping(id).sleeping) return { woken: false, minutes: 0, reason: 'awake' };
     const result = tempWake(id, { mode: 'hypnosis', minutes: FORCED_TRIGGER_TEMP_WAKE_MINUTES, force: true });
     return { woken: Boolean(result.ok), minutes: result.minutes, reason: result.reason };

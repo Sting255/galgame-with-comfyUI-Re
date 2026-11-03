@@ -151,3 +151,24 @@ export function wakeFromSleepCharacter(characterId) {
   return request(`${charPath(characterId)}/wake`, { method: 'POST', body: {} })
 }
 
+// ── 「无法醒来」睡眠锁（2026-11-03）──
+//
+// 开 ⇒ 立刻入睡 + 锁住（叫不醒、推进也推不醒）；关 ⇒ 解锁并立刻唤醒。
+// 与上面的"睡眠控制"是两层：上面管"这次让她睡/醒"，这里管"她能不能醒过来"。
+
+/** 读锁状态 → { characterId, locked, until, untilText, hours } */
+export function getSleepLock(characterId, { signal } = {}) {
+  return request(`${charPath(characterId)}/sleep-lock`, { signal })
+}
+
+/**
+ * 开关锁。
+ * @param {boolean} on
+ * @param {{minutes?:number}} [options] 仅"开"时有意义（1~1440，默认 1440＝24 小时）
+ */
+export function setSleepLock(characterId, on, { minutes } = {}) {
+  const body = { on: Boolean(on) }
+  if (on && Number.isFinite(Number(minutes)) && Number(minutes) > 0) body.minutes = Number(minutes)
+  return request(`${charPath(characterId)}/sleep-lock`, { method: 'POST', body })
+}
+

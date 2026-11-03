@@ -3615,6 +3615,8 @@ export function migrateHypnosisSchema(db) {
         active_until DATETIME,
         started_at DATETIME,
         session_start_raw_id INTEGER NOT NULL DEFAULT 0,
+        sleep_lock INTEGER NOT NULL DEFAULT 0,
+        sleep_lock_until DATETIME,
         pending_directive TEXT NOT NULL DEFAULT '',
         pending_at DATETIME,
         command_count INTEGER NOT NULL DEFAULT 0,
@@ -3643,6 +3645,17 @@ export function migrateHypnosisSchema(db) {
     if (!exists) {
       db.exec(`ALTER TABLE character_hypnosis ADD COLUMN session_start_raw_id INTEGER NOT NULL DEFAULT 0`);
       console.log('[db] Added character_hypnosis.session_start_raw_id column');
+    }
+
+    // 2026-11-03 催眠手机「无法醒来」：睡眠锁（角色级，跨亲密场景存活）
+    const lockCols = db.prepare('PRAGMA table_info(character_hypnosis)').all().map(c => c.name);
+    if (!lockCols.includes('sleep_lock')) {
+      db.exec(`ALTER TABLE character_hypnosis ADD COLUMN sleep_lock INTEGER NOT NULL DEFAULT 0`);
+      console.log('[db] Added character_hypnosis.sleep_lock column');
+    }
+    if (!lockCols.includes('sleep_lock_until')) {
+      db.exec(`ALTER TABLE character_hypnosis ADD COLUMN sleep_lock_until DATETIME`);
+      console.log('[db] Added character_hypnosis.sleep_lock_until column');
     }
   } catch (err) {
     console.log('[db] migrateHypnosisSchema error:', err.message);

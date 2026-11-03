@@ -70,6 +70,26 @@
           </linshe-button>
         </div>
         <p class="hp-note">{{ SLEEP_SECTION_NOTE }}</p>
+
+        <!-- 「无法醒来」（2026-11-03 用户：「控制角色无法醒来 持续睡眠」）：
+             开 ⇒ 立刻入睡并锁住（叫不醒、推进也推不醒）；关 ⇒ 解锁并立刻唤醒。
+             与上面的睡觉/唤醒是两层：那两个管"这一次"，这个管"她还能不能醒"。 -->
+        <div class="hp-lock-row">
+          <div class="hp-lock-main">
+            <linshe-switch
+              v-model="sleepLockOn"
+              size="sm"
+              on-text="醒不过来"
+              off-text="能醒"
+              :disabled="actionBusy || !!sleepLockBusy"
+              aria-label="无法醒来（持续睡眠）"
+              @change="onToggleSleepLock"
+            />
+            <span class="hp-lock-title">无法醒来 · 持续睡眠</span>
+          </div>
+          <span v-if="sleepLockView.note" class="hp-sleep-note">{{ sleepLockView.note }}</span>
+        </div>
+        <p class="hp-note">{{ SLEEP_LOCK_NOTE }}</p>
       </section>
 
       <!-- ── ③ 自定义时长 ── -->
@@ -286,6 +306,8 @@ import {
   listForgottenWindows,
   restoreForgottenWindow,
   setHeatMode,
+  getSleepLock,
+  setSleepLock,
   sleepCharacter,
   wakeCharacter,
   wakeFromSleepCharacter,
@@ -297,6 +319,7 @@ import {
   MIN_MINUTES,
   RESTORE_TOAST_TEXT,
   SLEEP_ACTIONS,
+  SLEEP_LOCK_NOTE,
   SLEEP_SECTION_NOTE,
   SLEEP_TOAST,
   WAKE_MIND_NOTICE,
@@ -312,6 +335,7 @@ import {
   normalizeHeat,
   resolveSleep,
   restoreResultText,
+  sleepLockViewModel,
   sleepViewModel,
 } from './hypnosisLogic.js'
 
@@ -426,6 +450,8 @@ async function onToggleHeat(next) {
 }
 onMounted(refreshHeat)
 watch(() => props.character?.id, refreshHeat)
+onMounted(refreshSleepLock)
+watch(() => props.character?.id, refreshSleepLock)
 
 let tickTimer = null
 let pollTimer = null
@@ -696,6 +722,49 @@ async function onGrantPhone() {
   }
 }
 
+// ── 「无法醒来」睡眠锁（2026-11-03）──
+// 与上面两个按钮是两层：睡觉/唤醒管"这一次"，这一颗管"她还能不能醒"。
+// 开关状态**以服务端返回为准**（不乐观更新）：开着时唤醒会被后端拒绝，
+// 本地先翻会让她看起来"明明锁着却显示能醒"。
+const sleepLockRaw = ref(null)
+const sleepLockBusy = ref('')
+const sleepLockOn = ref(false)
+const sleepLockView = computed(() => sleepLockViewModel(sleepLockRaw.value, sleepView.value))
+
+async function refreshSleepLock() {
+  const cid = Number(props.character?.id)
+  if (!cid) return
+  try {
+    const payload = await getSleepLock(cid)
+    sleepLockRaw.value = payload
+    sleepLockOn.value = sleepLockViewModel(payload).locked
+  } catch { /* 读不到就按"能醒"显示：接口没上线不该在面板上假报"锁着" */ }
+}
+
+async function onToggleSleepLock(next) {
+  const cid = Number(props.character?.id)
+  if (!cid || sleepLockBusy.value) return
+  sleepLockBusy.value = 'sleepLock'
+  try {
+    const payload = await setSleepLock(cid, next === true)
+    sleepLockRaw.value = payload
+    sleepLockOn.value = sleepLockViewModel(payload).locked
+    // 开锁会让她的睡眠状态跟着变（立刻入睡 / 立刻醒来），睡眠区必须一起刷新
+    refreshSleepFrom([payload])
+    notice.value = sleepLockOn.value
+      ? '她已经睡过去，而且醒不过来了：叫不醒，推进也推不醒。'
+      : '睡眠锁已解开，她被放开了。'
+    await refreshState({ silent: true })
+  } catch (err) {
+    sleepLockOn.value = sleepLockViewModel(sleepLockRaw.value).locked
+    const message = err?.message || '操作失败'
+    notice.value = message
+    notify(message, 'error')
+  } finally {
+    sleepLockBusy.value = ''
+  }
+}
+
 // ── 睡眠控制（独立于催眠指令） ──
 /** 睡觉 / 唤醒：返回形状与催眠状态无关，直接用它刷新睡眠区（并顺手刷新催眠状态，两边互不影响） */
 async function onSleepAction(key) {
@@ -885,6 +954,19 @@ onUnmounted(() => {
 .hp-sleep-badge.is-sleeping { background: color-mix(in srgb, var(--fun-blue) 20%, transparent); color: var(--fun-blue); }
 .hp-sleep-badge.is-awake { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
 .hp-sleep-note { font-size: var(--fs-xs); color: var(--text-secondary); }
+
+/* 「无法醒来」睡眠锁：与上面的睡觉/唤醒按钮拉开一点层级，别被当成第三个按钮 */
+.hp-lock-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-subtle, var(--border));
+}
+.hp-lock-main { display: flex; align-items: center; gap: 8px; }
+.hp-lock-title { font-size: var(--fs-sm); color: var(--text-primary); }
 
 /* ── ③ 时长 ── */
 .hp-duration { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

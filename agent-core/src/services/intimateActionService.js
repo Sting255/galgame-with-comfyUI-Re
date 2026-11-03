@@ -43,6 +43,9 @@ import { buildImagePromptRuleBlock } from '../builtinRules.js';
 import { formatFacialExpressionRule } from './emojiExpressionMatch.js';
 // 敏感度分档表（climaxStrength 要把"她的倍率"落回档位）—— sensitivityService 只依赖 db，不成环。
 import { SENSITIVITY_TIERS } from './sensitivityService.js';
+// 2026-11-03 催眠手机的「无法醒来」（角色级睡眠锁）：并进场景的 forcedSleep，见 applySleepLock。
+// 依赖方向安全：sleepLock 只 import db / programTime / scheduleEditor / scheduleManager。
+import { isSleepLocked } from './sleepLock.js';
 // 84 条全量体位词库（PR#24 融合）：physicalHintOf 在精选表未命中时用它兜底
 import { POSITIONS as PR24_POSITIONS, POSTURE_GROUPS, postureOf, postureOfText, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
 
@@ -469,9 +472,66 @@ export function recoverSleepBar(state, nowMs = Date.now()) {
   return { ...state, sleepBar: Math.floor(next) };
 }
 
+/**
+ * **触摸把睡眠条往下拽**（2026-11-03 用户：「就是那种触摸或者推进会减少一部分睡眠条」）。
+ *
+ * 独立的触摸系统（摸头/摸腿/拍…）不走 `planIntimateAction`，但"被摸也会把她往醒的方向推"
+ * 是同一个玩法口径 ⇒ 共用同一组常量（SLEEP_COST_TOUCH / SLEEP_COST_THRUST）与同一个敏感倍率。
+ *
+ * 只在**有进行中场景**时才动睡眠条：没有场景就没有条可掉（也就没有"快醒了"可言）。
+ * 写完顺手把 `last_action_at` 推到当下 —— 惰性恢复是按它算时间差的，不推的话下一次读
+ * 会按"很久以前"补算一大截，等于这一下白扣。
+ *
+ * @param {number} characterId
+ * @param {{heavy?:boolean, sensitivity?:number, now?:number}} [options]
+ *        heavy ＝ 重动作（按插入类那一档算），sensitivity ＝ 角色敏感倍率（0.5~2）
+ * @returns {{sleepBar:number, cost:number, woke:boolean, forced:boolean}|null} 没有场景/未开始 → null
+ */
+export function drainSleepBarByTouch(characterId, { heavy = false, sensitivity = 1, now = Date.now() } = {}) {
+  const id = Number(characterId) || 0;
+  if (id <= 0) return null;
+  try {
+    const row = getDb().prepare(
+      `SELECT ${SCENE_COLUMNS} FROM character_intimate_scene WHERE character_id = ?`
+    ).get(id);
+    if (!row) return null;
+    const state = normalizeSceneState(row, id);
+    if (!state.active) return null;
+    // 锁着就封底 1 点：摸多少下都醒不过来
+    const forced = state.forcedSleep || isSleepLocked(id) ? 1 : 0;
+    const recovered = recoverSleepBar(state, now);
+    const sensFactor = Math.max(0.5, Math.min(2, Number(sensitivity) || 1));
+    const cost = Math.max(1, Math.round((heavy ? SLEEP_COST_THRUST : SLEEP_COST_TOUCH) * sensFactor));
+    const floor = forced ? 1 : 0;
+    const nextBar = Math.max(floor, clampInt(recovered.sleepBar, 0, SLEEP_BAR_MAX, SLEEP_BAR_MAX) - cost);
+    const woke = !forced && nextBar <= 0;
+    getDb().prepare(
+      `UPDATE character_intimate_scene
+          SET sleep_bar = ?, forced_sleep = ?, last_action_at = datetime('now'), updated_at = datetime('now')
+        WHERE character_id = ?`
+    ).run(nextBar, forced, id);
+    return { sleepBar: nextBar, cost, woke, forced: Boolean(forced) };
+  } catch (err) {
+    // 睡眠条是玩法增强项：读不出来不能把触摸接口打 500
+    console.warn('[intimate-action] 触摸扣睡眠条失败:', err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * 睡眠条档位（后端口径，面板与提示词共用一份）：
+ *   locked 催眠锁死 · awake 已醒 · waking 将醒（阈值 30）· deep 深睡
+ */
+export function sleepBarTier(sleepBar, forcedSleep = false) {
+  if (forcedSleep) return 'locked';
+  const bar = clampInt(sleepBar, 0, SLEEP_BAR_MAX, SLEEP_BAR_MAX);
+  if (bar <= 0) return 'awake';
+  if (bar <= SLEEP_WAKE_THRESHOLD) return 'waking';
+  return 'deep';
+}
+
 /** 节奏档中文名（非法值回落「正常」） */
-export function paceLabelOf(pace) {
-  const level = clampInt(pace, PACE_MIN, PACE_MAX, DEFAULT_PACE);
+export function paceLabelOf(pace) {  const level = clampInt(pace, PACE_MIN, PACE_MAX, DEFAULT_PACE);
   return PACE_LEVELS.find(p => p.value === level)?.label || '正常';
 }
 
@@ -1528,11 +1588,27 @@ export function getIntimateScene(characterId) {
     const row = getDb().prepare(
       `SELECT ${SCENE_COLUMNS} FROM character_intimate_scene WHERE character_id = ?`
     ).get(id);
-    return rowToState(row, id);
+    const state = rowToState(row, id);
+    return applySleepLock(state, id);
   } catch (err) {
     console.warn('[intimate-action] 读取进行中状态失败（按未开始处理）:', err?.message || err);
-    return emptySceneState(id);
+    return applySleepLock(emptySceneState(id), id);
   }
+}
+
+/**
+ * 把催眠手机的「无法醒来」（角色级睡眠锁）并进场景状态。
+ *
+ * 场景行上的 `forced_sleep` 只代表"这个场景里她被锁着"，而睡眠锁是角色级设定：
+ * 锁可能是场景建好之后才开的，也可能场景行被别的入口清过 —— 只要锁开着就一律按锁着算，
+ * 于是睡眠条封底、反应文案、配图提示词这些下游全都不需要各自再查一次。
+ */
+function applySleepLock(state, characterId) {
+  if (!state || state.forcedSleep) return state;
+  try {
+    if (isSleepLocked(characterId)) state.forcedSleep = 1;
+  } catch { /* 锁查不出来就当没锁：不能因为一个玩法开关把读状态打挂 */ }
+  return state;
 }
 
 /**
@@ -1731,6 +1807,13 @@ export function buildPanelSnapshot(state, { affinity = 0, affinityText = '', emo
       denialPeak: current.denial === 1 ? current.accumulation : 0,
       // 她这一场「一起到」的门槛（随敏感度浮动：45~60）—— 面板据此显示"还差多少"，别写死 60
       climaxThreshold: climaxThreshold(sens),
+      // 睡眠玩法（2026-11-03）：**必须投影出去**，否则面板永远拿不到睡眠条
+      // （第一次就是这样：逻辑层单测全绿，真机上"睡眠条根本不存在"—— 字段根本没下发）。
+      // sleeping 用调用方读到的真实睡眠状态（与门控同源），forcedSleep 用并过睡眠锁之后的值。
+      sleeping: sleeping === true,
+      sleepBar: current.sleepBar,
+      sleepBarTier: sleepBarTier(current.sleepBar, current.forcedSleep === 1),
+      forcedSleep: current.forcedSleep === 1,
       startedAt: current.startedAt,
       lastActionAt: current.lastActionAt,
     },

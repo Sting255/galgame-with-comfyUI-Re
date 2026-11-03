@@ -316,6 +316,50 @@ export const SLEEP_TOAST = Object.freeze({
   wakeUp: '她醒过来了',
 })
 
+// ── 「无法醒来」睡眠锁（2026-11-03 用户原话：「再在催眠手机里加入一个选项 控制角色无法醒来
+//    持续睡眠 这又是一种全新的玩法」）──
+//
+// 它跟上面的「睡觉 / 唤醒」是**两层**：那两个管"这一次让她睡/醒"，
+// 这一个管"她还能不能醒过来"——开着时连唤醒按钮都会被后端拒绝（409 cannot wake），
+// 亲密推进也推不醒（睡眠条封底 1 点）。所以面板上必须把"开着"这件事说清楚，
+// 不能让用户点了唤醒以为坏了。
+
+/** 睡眠锁的说明文案 */
+export const SLEEP_LOCK_NOTE = '打开后她会一直睡下去：叫不醒、推进也推不醒，只会在梦里对身体有反应。关掉就等于放开她（会立刻醒来）。最长 24 小时会自动解开，免得忘了关。'
+
+/**
+ * 睡眠锁状态归一化：认 `{ locked, until, untilText, hours }`，
+ * 也认后端可能的 `sleepLock` / `sleep_lock` 两种写法（老接口拼写差异）。
+ */
+export function normalizeSleepLock(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  const nested = source.sleepLock && typeof source.sleepLock === 'object' ? source.sleepLock : source
+  const locked = nested.locked === true || nested.sleepLock === true || Number(nested.sleep_lock) === 1
+  const until = nested.until || nested.sleep_lock_until || null
+  return {
+    locked,
+    until,
+    // 到期时刻直接给"直到 XX:XX"，比一堆 ISO 串好读
+    untilText: locked && until ? `锁到 ${formatWindowTime(until)}` : '',
+    hours: Math.max(1, Math.round(Number(nested.hours) || 24)),
+  }
+}
+
+/**
+ * 睡眠锁视图：把"锁着"翻译成面板上的一句话。
+ * 锁着但没在睡（比如日程被清空、睡块没写成）时要说清楚——否则用户会以为开关没生效。
+ */
+export function sleepLockViewModel(raw, sleep = null) {
+  const lock = normalizeSleepLock(raw)
+  const sleeping = sleep && typeof sleep === 'object' ? Boolean(sleep.isSleeping) : null
+  let note = ''
+  if (lock.locked) {
+    note = lock.untilText || ''
+    if (sleeping === false) note = `锁已开启，但她这会儿没在睡（日程里没有睡眠时段可写）${lock.untilText ? ` · ${lock.untilText}` : ''}`
+  }
+  return { ...lock, note, onText: '锁着', offText: '能醒' }
+}
+
 // ── 发情模式（2026-10-02 用户原话「然后再在催眠手机里加一个选项 叫发情模式
 //    角色的敏感度就会直接拉满」）──
 //

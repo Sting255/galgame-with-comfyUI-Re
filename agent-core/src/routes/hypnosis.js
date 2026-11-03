@@ -30,6 +30,8 @@ import {
   wakeFromSleep,
   wakeForForcedTrigger,
 } from '../services/hypnosisService.js';
+// 2026-11-03 催眠手机「无法醒来」（角色级睡眠锁）
+import { getSleepLockState, setSleepLock } from '../services/sleepLock.js';
 import { forceProactiveNow } from '../services/proactiveChatScheduler.js';
 
 const router = Router();
@@ -171,6 +173,30 @@ router.post('/:id/hypnosis/sleep', (req, res) => {
   if (!id) return res.status(400).json({ error: 'invalid character id' });
   try {
     res.json(sleepNow(id, { until: req.body?.until }));
+  } catch (err) {
+    handle(res, err);
+  }
+});
+
+// 2026-11-03 「无法醒来」（睡眠锁）：GET 读状态、POST `{ on }` 开关。
+// 开 ⇒ 立刻入睡 + 锁住（叫不醒、推进也推不醒，睡眠条封底 1）；关 ⇒ 解锁并立刻唤醒。
+// 挂催眠手机下的理由：它是"控制她身体"的总入口（与发情模式同一层）。
+router.get('/:id/hypnosis/sleep-lock', (req, res) => {
+  const id = parseCharacterId(req);
+  if (!id) return res.status(400).json({ error: 'invalid character id' });
+  try {
+    res.json({ characterId: id, ...getSleepLockState(id) });
+  } catch (err) {
+    handle(res, err);
+  }
+});
+
+router.post('/:id/hypnosis/sleep-lock', (req, res) => {
+  const id = parseCharacterId(req);
+  if (!id) return res.status(400).json({ error: 'invalid character id' });
+  const on = req.body?.on === true || Number(req.body?.on) === 1 || req.body?.on === 'true';
+  try {
+    res.json(setSleepLock(id, on, { minutes: req.body?.minutes }));
   } catch (err) {
     handle(res, err);
   }

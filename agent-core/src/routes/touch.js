@@ -79,6 +79,11 @@ import { isBodyControlled, attachWakeReaction, getHypnosisState } from '../servi
 // 「图好了补挂到那条气泡上」的事件名与载荷口径（群聊/私聊两套 store 各认一条 —— 见模块头）
 import { reactionImageUpdate } from '../services/reactionImageUpdate.js';
 import { isSleeping, tempWake, formatScheduleContext } from '../services/scheduleManager.js';
+// 2026-11-03 睡眠锁（催眠手机「无法醒来」）：锁着时触摸弄不醒她，但照样扣睡眠条
+import { isSleepLocked } from '../services/sleepLock.js';
+import { drainSleepBarByTouch } from '../services/intimateActionService.js';
+// 敏感度倍率：与推进面板同一个来源（角色持久值），触摸扣睡眠条沿用同一口径
+import { getSensitivity } from '../services/sensitivityService.js';
 // task-30 新喂料块：复用聊天轮/群聊轮的既有 builder，一行不重写
 import { buildHypnosisStateBlock } from '../services/hypnosisPrompt.js';
 import { buildIntimateProfileBlock } from '../services/intimatePrompt.js';
@@ -1127,7 +1132,12 @@ router.post('/:id/touch/:action', async (req, res) => {
     //    只写 pending_directive，不碰任何催眠状态列）——她下一轮聊天会演出「惊醒/恍惚」。
     let preWake = null;
     let wakeReaction = false;
-    if (gate.wakesSleeping) {
+    // 睡眠锁开着时**一律不唤醒**：门控已经把"睡着 + 重动作"放行（她躲不开），
+    // 但「无法醒来」是更高的约束 —— 这一下只让她在梦里反应，人流不出来（见 prompt 的 sleepLocked 分支）。
+    const sleepLocked = Boolean(inputs.sleeping) && isSleepLocked(id);
+    if (gate.wakesSleeping && sleepLocked) {
+      preWake = { woken: false, minutes: 0, reason: 'sleep_locked' };
+    } else if (gate.wakesSleeping) {
       try {
         const woken = tempWake(id, { mode: 'phone', minutes: TOUCH_WAKE_MINUTES });
         preWake = { woken: Boolean(woken.ok), minutes: woken.minutes, reason: woken.reason || '' };
@@ -1140,6 +1150,18 @@ router.post('/:id/touch/:action', async (req, res) => {
       } catch (err) {
         console.warn('[touch] 挂唤醒反应失败:', err?.message || err);
       }
+    }
+
+    // ②.5 触摸把睡眠条往下拽（2026-11-03 用户：「触摸或者推进会减少一部分睡眠条」）：
+    // 独立的触摸链不走 planIntimateAction，但"被摸也会把她往醒的方向推"是同一个玩法口径
+    // ⇒ 共用同一组常量与同一个敏感倍率。只在有进行中场景时才掉（没场景就没有条）。
+    // 重动作（Lv3）按插入类那一档算，轻动作按轻那一档。
+    let sleepBarAfterTouch = null;
+    if (inputs.sleeping) {
+      sleepBarAfterTouch = drainSleepBarByTouch(id, {
+        heavy: Number(action.level) >= 3,
+        sensitivity: Number(getSensitivity(id)?.multiplier) || 1,
+      });
     }
 
     // ③ 走即时还是隐式（配额 / "省额度模式"开关都在纯函数里判）
@@ -1198,7 +1220,11 @@ router.post('/:id/touch/:action', async (req, res) => {
         gain: annoyanceResult.gain,
       },
       likeRatio,
-      wakesSleeping: Boolean(gate.wakesSleeping),
+      // 睡眠锁开着时 wakesSleeping 归零：前端不该提示"把她弄醒了"
+      wakesSleeping: Boolean(gate.wakesSleeping) && !sleepLocked,
+      sleepLocked,
+      // 触摸扣睡眠条的结果（{sleepBar, cost, woke, forced}；没有进行中场景时为 null）
+      sleepBarAfterTouch,
       preWake,
       wakeReaction,
       quota: quotaBefore,
@@ -1277,6 +1303,8 @@ router.post('/:id/touch/:action', async (req, res) => {
         scene: normalized.scene,
         groupPeek: false,
         sleeping: Boolean(inputs.sleeping),
+        // 睡眠锁：睡着且醒不过来 ⇒ 反应只能是身体反应 + 梦呓，不能写她睁眼
+        sleepLocked,
         // §4.1②：催眠轮把耐受行换成降级文案（prompt 自相打架是真机「还能反抗」的真根因）
         hypnotized: Boolean(inputs.hypnotized),
         // §一③：有旁观者时，要求她在 reaction_text 末尾另起一行写一句（`[名字]: 台词`）

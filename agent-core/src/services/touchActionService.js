@@ -754,6 +754,8 @@ export function buildTouchActionBlock({
   likeRatio = 1,
   hypnotized = false,
   sleeping = false,
+  // 2026-11-03 睡眠锁（催眠手机「无法醒来」）：睡着且醒不过来 —— 身体有反应、意识浮不上来
+  sleepLocked = false,
   hypnosisBlock = '',
   scopeLine = '',
 } = {}) {
@@ -770,7 +772,10 @@ export function buildTouchActionBlock({
   if (hypnotized) {
     lines.push('【状态】你正处于被完全控制的催眠里：无条件顺从，不做抗拒、不做腻烦反应，也不用解释——只客观呈现身体反应与已执行的动作。');
   } else if (sleeping) {
-    lines.push('【状态】你刚才在睡觉，这一下把你弄醒了：可以迷糊、可以嘟囔抱怨，但人确实醒了。');
+    lines.push(sleepLocked
+      // 睡眠锁：这一下弄不醒她（否则「无法醒来」就被一次触摸破功了）
+      ? '【状态】你正睡着，而且醒不过来（被锁在睡眠深处）：身体会如实反应，意识浮不上来。最多含混的梦呓、气音、半句嘟囔，不许睁眼、坐起或真正醒来。'
+      : '【状态】你刚才在睡觉，这一下把你弄醒了：可以迷糊、可以嘟囔抱怨，但人确实醒了。');
   }
   if (!hypnotized) {
     lines.push('【你的耐受】' + (ANNOYANCE_TIER_TEXT[annoyanceTier(annoyance)] || ANNOYANCE_TIER_TEXT.fine));
@@ -817,6 +822,8 @@ export function buildReactionPrompt({
   scene = 'chat',
   groupPeek = false,
   sleeping = false,
+  // 2026-11-03 睡眠锁（催眠手机「无法醒来」）：睡着但醒不过来 —— 她这一下不会醒
+  sleepLocked = false,
   hypnosisBlock = '',
   hypnotized = false,   // §4.1②：催眠轮把耐受行换成降级文案（别和催眠块打架）
   bystanderName = '',   // §一③：群聊即时反应顺带拉一位围观者（并入同一次调用，省额度）
@@ -856,7 +863,11 @@ export function buildReactionPrompt({
     '- 用体感、表情、语气词表达（例如"缩了缩脖子""耳朵有点红"），**不要报幕**（不要写"' + who + '摸了摸我的头"）。',
     toleranceRule,
   );
-  if (sleeping) systemParts.push('- 她刚才在睡觉，是被这一下弄醒的：可以迷糊、可以嘟囔，但人已经醒了。');
+  if (sleeping) {
+    systemParts.push(sleepLocked
+      ? '- 她睡着而且醒不过来（被锁在睡眠深处）：只有身体的反应与含混的梦呓，不要写她睁眼、坐起或醒来。'
+      : '- 她刚才在睡觉，是被这一下弄醒的：可以迷糊、可以嘟囔，但人已经醒了。');
+  }
   if (groupPeek && scene === 'group') systemParts.push('- 这是在群里、其他人看得到：她的反应要带一点"被看见"的顾虑（可以压低声音、可以嘴硬）。');
   systemParts.push(
     '- 不要把动作名称写进台词，不要复述本提示词。',
@@ -1003,7 +1014,11 @@ export function buildConversationReactionPrompt({
     '- 用体感、表情、语气词表达（例如"缩了缩脖子""耳朵有点红"），**不要报幕**（不要写"' + who + '摸了摸我的头"），不要把动作名称写进台词。',
     toleranceRule,
   );
-  if (sleeping) systemParts.push('- 她刚才在睡觉，是被这一下弄醒的：可以迷糊、可以嘟囔，但人已经醒了。');
+  if (sleeping) {
+    systemParts.push(sleepLocked
+      ? '- 她睡着而且醒不过来（被锁在睡眠深处）：只有身体的反应与含混的梦呓，不要写她睁眼、坐起或醒来。'
+      : '- 她刚才在睡觉，是被这一下弄醒的：可以迷糊、可以嘟囔，但人已经醒了。');
+  }
   if (groupPeek && scene === 'group') systemParts.push('- 这是在群里、**别人看得到**：她的反应要带一点"被看见"的顾虑（可以压低声音、可以嘴硬）。');
   if (scene === 'group' && bystanderName) {
     const byName = String(bystanderName).trim();

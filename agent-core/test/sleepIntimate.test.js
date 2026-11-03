@@ -104,3 +104,24 @@ test('★ 敏感度参与唤醒：越敏感，同样的动作扣得越多（越�
   // 下限保护：再迟钝也不会"一点都弄不醒"
   assert.ok(cost(0.1) >= 1, '消耗不会被压到 0')
 })
+
+test('★ 面板快照必须投影睡眠字段（否则前端拿不到条，逻辑单测全绿也白搭）', () => {
+  const snap = svc.buildPanelSnapshot(base({ sleepBar: 42, forcedSleep: 0 }), { sleeping: true })
+  assert.equal(snap.state.sleeping, true, 'sleeping 要下发')
+  assert.equal(snap.state.sleepBar, 42, 'sleepBar 要下发')
+  assert.equal(snap.state.forcedSleep, false)
+  assert.equal(snap.state.sleepBarTier, 'deep')
+
+  const locked = svc.buildPanelSnapshot(base({ sleepBar: 5, forcedSleep: 1 }), { sleeping: true })
+  assert.equal(locked.state.forcedSleep, true)
+  assert.equal(locked.state.sleepBarTier, 'locked', '催眠锁死要有自己的档位（面板画虚线）')
+})
+
+test('sleepBarTier：四档口径（锁死 > 已醒 > 将醒 30 > 深睡）', () => {
+  assert.equal(svc.sleepBarTier(100), 'deep')
+  assert.equal(svc.sleepBarTier(31), 'deep')
+  assert.equal(svc.sleepBarTier(30), 'waking')
+  assert.equal(svc.sleepBarTier(1), 'waking')
+  assert.equal(svc.sleepBarTier(0), 'awake')
+  assert.equal(svc.sleepBarTier(0, true), 'locked')
+})
