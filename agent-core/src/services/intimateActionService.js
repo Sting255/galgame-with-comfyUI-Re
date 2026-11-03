@@ -44,7 +44,7 @@ import { formatFacialExpressionRule } from './emojiExpressionMatch.js';
 // 敏感度分档表（climaxStrength 要把"她的倍率"落回档位）—— sensitivityService 只依赖 db，不成环。
 import { SENSITIVITY_TIERS } from './sensitivityService.js';
 // 84 条全量体位词库（PR#24 融合）：physicalHintOf 在精选表未命中时用它兜底
-import { getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
+import { POSITIONS as PR24_POSITIONS, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
 
 // ── 一、常量（档位 / 阈值 / 词表）────────────────────────────────────────────
 

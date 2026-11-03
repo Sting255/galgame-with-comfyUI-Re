@@ -70,7 +70,7 @@
           <span class="ia-label">体位（点一下立刻换过去）</span>
           <div class="ia-positions">
             <linshe-button
-              v-for="item in positions"
+              v-for="item in visiblePositions"
               :key="item.key"
               variant="chip"
               size="sm"
@@ -79,6 +79,19 @@
               :title="positionTitle(item, view)"
               @click="changePosition(item)"
             >{{ item.label }}</linshe-button>
+            <linshe-button
+              v-if="!showAllPositions && hiddenPositionCount > 0"
+              variant="link"
+              size="sm"
+              :disabled="busy || loading || !enabled"
+              @click="showAllPositions = true"
+            >更多体位（+{{ hiddenPositionCount }}）</linshe-button>
+            <linshe-button
+              v-else-if="showAllPositions && hiddenPositionCount > 0"
+              variant="link"
+              size="sm"
+              @click="showAllPositions = false"
+            >收起</linshe-button>
           </div>
         </div>
 
@@ -171,6 +184,17 @@ const view = computed(() => normalizeIntimateState(snapshot.value?.state || {}))
 const her = computed(() => snapshot.value?.her || {})// 她的敏感度（2026-10-02）：HUD 上一个 chip —— 数值系统必须可见，否则玩家不知道"为什么这次这么快"
 const sensitivity = computed(() => sensitivityView(her.value))
 const positions = computed(() => positionOptionsOf(snapshot.value || {}))
+// 体位清单：服务端现在给的是「精选 17 条 + 全量词库 84 条」，全铺出来太长，
+// 默认只显示精选（preferred === true），点「更多体位」再展开剩下的。
+const showAllPositions = ref(false)
+const visiblePositions = computed(() => {
+  const list = positions.value
+  if (showAllPositions.value) return list
+  const preferred = list.filter(item => item.preferred !== false)
+  // 服务端没带 preferred 标记（老后端）时按原样全显示，别把选项藏没了
+  return preferred.length ? preferred : list
+})
+const hiddenPositionCount = computed(() => positions.value.filter(item => item.preferred === false).length)
 const actions = computed(() => actionButtonsOf(snapshot.value || {}))
 const paces = computed(() => paceOptions())
 
