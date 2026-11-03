@@ -70,6 +70,15 @@
           <span class="ia-label">体位（点一下立刻换过去）</span>
           <div class="ia-positions">
             <linshe-button
+              variant="chip"
+              size="sm"
+              class="ia-pos-auto"
+              :disabled="busy || loading || !enabled || suggesting"
+              :loading="suggesting"
+              title="让她按自己的性子挑一个"
+              @click="suggestPositionForHer"
+            >✨ 让她决定</linshe-button>
+            <linshe-button
               v-for="item in visiblePositions"
               :key="item.key"
               variant="chip"
@@ -152,6 +161,7 @@ import {
   summaryText,
 } from './intimateActionLogic.js'
 import { fetchIntimateActionState, postIntimateAction } from '../api/index.js'
+import { suggestIntimatePosition } from '../api/index.js'
 
 const props = defineProps({
   /** 受控显隐（父组件持有 showIntimatePanel） */
@@ -401,6 +411,27 @@ async function run(action, extra = {}) {  if (busy.value || !action?.key) return
 }
 
 /** 点体位胶囊 = 换姿势（也是开场入口：还没开始时点它＝把她摆成那个姿势） */
+// ── 让她决定体位（模型按性格 + 当下状态从候选里挑）──
+const suggesting = ref(false)
+async function suggestPositionForHer() {
+  if (suggesting.value) return
+  const id = props.characterId
+  if (!id) return
+  suggesting.value = true
+  try {
+    const picked = await suggestIntimatePosition(id, { scene: props.scene, groupId: props.groupId })
+    if (!picked?.key) throw new Error('没拿到建议体位')
+    // 走和手动点一样的那条链路：服务端照旧校验合法性
+    await run({ key: 'position', label: '换姿势', hint: '', tone: '', available: true, reason: '', positionKey: picked.key })
+    if (picked.reason) toast?.(`她换成了「${picked.label}」：${picked.reason}`, 'success')
+    else toast?.(`她换成了「${picked.label}」`, 'success')
+  } catch (err) {
+    toast?.(err?.message || '她这次没拿定主意', 'error')
+  } finally {
+    suggesting.value = false
+  }
+}
+
 function changePosition(item) {
   if (!item?.key) return
   return run({ key: 'position', label: '换姿势', hint: '', tone: '', available: true, reason: '', positionKey: item.key })

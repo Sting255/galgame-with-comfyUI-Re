@@ -2710,6 +2710,15 @@ export function fetchIntimateActionState(characterId, { scene = 'chat', groupId 
  * @param {{positionKey?:string, scene?:'chat'|'group', groupId?:number|string}} [payload]
  *        换姿势必带目标体位 key；**群聊场景必须带** `scene:'group'` + `groupId`（否则她的反应会落到私聊）
  */
+/**
+ * 让她自己决定体位：模型按角色性格 + 当下状态从面板候选里挑一个。
+ * 只返回建议（key / label / reason），换姿势仍走 postIntimateAction('position')。
+ */
+export function suggestIntimatePosition(characterId, { scene = 'chat', groupId = null } = {}) {
+  const query = scene === 'group' && groupId ? `?scene=group&groupId=${encodeURIComponent(groupId)}` : ''
+  return request(`/intimate-actions/${encodeURIComponent(characterId)}/suggest-position${query}`)
+}
+
 export function postIntimateAction(characterId, actionKey, payload = {}) {
   return request(`/intimate-actions/${encodeURIComponent(characterId)}/${encodeURIComponent(actionKey)}`, {
     method: 'POST',

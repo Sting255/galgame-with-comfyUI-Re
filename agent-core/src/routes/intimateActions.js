@@ -49,7 +49,9 @@ import {
   resolveTargetPosition,
   saveIntimateScene,
   patchIntimateScene,
+  listPositionOptions,
 } from '../services/intimateActionService.js';
+import { suggestPosition } from '../services/positionSuggester.js';
 // 输出解析**直接复用触摸反应那一套**（字段与容错口径逐字同形：json 代码块包裹 / 前后夹话都能吃）
 import { parseReactionOutput } from '../services/touchActionService.js';
 import {
@@ -355,6 +357,31 @@ router.get('/:id/state', (req, res) => {
   } catch (err) {
     console.error('[intimate-action] state error:', err?.message || err);
     return res.status(500).json({ error: err?.message || 'intimate action state failed' });
+  }
+});
+
+// ── GET /:id/suggest-position ───────────────────────────────────────────────
+// 「让她自己决定」：模型按角色性格 + 此刻状态从面板候选里挑一个体位。
+// 只返回建议（key/label/reason），真正换姿势仍走 POST /:id/position，服务端校验口径不变。
+router.get('/:id/suggest-position', async (req, res) => {
+  const id = parseCharacterId(req);
+  if (!id) return res.status(400).json({ error: 'invalid character id' });
+  if (!isIntimateActionEnabled()) {
+    return res.status(409).json({ error: 'intimate actions feature disabled' });
+  }
+  try {
+    const character = getCharacterRow(id);
+    if (!character) return res.status(404).json({ error: 'character not found' });
+    expireIdleScene(id);
+    const state = getIntimateScene(id);
+    const snapshot = snapshotFor(id, state, { character });
+    const candidates = listPositionOptions();
+    if (!candidates.length) return res.status(409).json({ error: '没有可选的体位' });
+    const picked = await suggestPosition({ character, state: snapshot.state, candidates });
+    return res.json({ characterId: id, ...picked });
+  } catch (err) {
+    console.error('[intimate-action] suggest-position error:', err?.message || err);
+    return res.status(500).json({ error: err?.message || '体位建议失败' });
   }
 });
 
