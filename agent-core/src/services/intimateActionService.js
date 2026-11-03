@@ -1727,6 +1727,25 @@ export function physicalHintOf(positionKey) {
  * @param {number} characterId
  * @returns {string}
  */
+/**
+ * 当前体位的**纯英文标签串**（逗号分隔），用于直接拼进生图 prompt。
+ *
+ * 为什么不只靠 LLM 理解上下文：实测 planner 那条链路会并行预生成画面描述，
+ * 生图助手不一定看得到体位块，最终 prompt 可能还是"躺着睡觉"。这里做一道兜底，
+ * 保证体位标签一定出现在提交给 ComfyUI 的 prompt 里。
+ */
+export function buildPositionImageTags(characterId) {
+  const id = Number(characterId);
+  if (!Number.isInteger(id) || id <= 0) return '';
+  let scene = null;
+  try { scene = getIntimateScene(id); } catch { return ''; }
+  if (!scene || !scene.active || !scene.positionKey) return '';
+  const pr24Key = resolvePr24Key(scene.positionKey) || scene.positionKey;
+  const pos = getPr24Position(pr24Key);
+  if (!pos) return '';
+  return [...new Set([...(pos.core || []), ...(pos.female || []), ...(pos.male || [])].filter(Boolean))].join(', ');
+}
+
 export function buildPositionImageBlock(characterId) {
   const id = Number(characterId);
   if (!Number.isInteger(id) || id <= 0) return '';

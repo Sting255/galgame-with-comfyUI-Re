@@ -6,7 +6,7 @@ import { chatStream, chatSync } from '../llm/llm-client.js';
 import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
-import { buildPositionImageBlock } from '../services/intimateActionService.js';
+import { buildPositionImageBlock, buildPositionImageTags } from '../services/intimateActionService.js';
 import { isMemoryV3Enabled, getActiveSearchConfig } from '../services/memory/memoryConfig.js';
 import { activeMemorySearch, parseRecallInstruction, formatMemoryRecallBlock } from '../services/memory/activeSearch.js';
 import { curateChatMemories } from '../services/memoryExtractor.js';
@@ -2890,7 +2890,18 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
   }
 
   // 4. 先验证 prompt，再写入 raw_messages/messages，避免空 assistant 消息。
-  const prompt = extractImagePromptResponse(fullContent);
+  let prompt = extractImagePromptResponse(fullContent);
+  // 体位兜底：无论 prompt 由谁生成（含 planner 预生成那条路），当前体位的英文标签都要进画面。
+  // 没有进行中的亲密场景时这里是空串，普通配图完全不受影响。
+  try {
+    const poseTags = buildPositionImageTags(character.id);
+    if (poseTags) {
+      prompt = prompt ? `${prompt}, ${poseTags}` : poseTags;
+      console.log('[chat] position tags appended to image prompt:', poseTags.slice(0, 80));
+    }
+  } catch (err) {
+    console.warn('[chat] position tags skipped:', err.message);
+  }
   if (!prompt) {
     console.warn('[chat] needImage: failed to extract prompt, raw:', fullContent.slice(0, 120));
     failPreparingTask(preExistingTaskId, '模型未返回图像描述');
