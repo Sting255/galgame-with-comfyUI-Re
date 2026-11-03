@@ -55,12 +55,14 @@ router.get('/pose-control', (req, res) => {
     inputDirReady: Boolean(resolvePoseInputDir()),
     // 2026-11-03 体位骨架：亲密场景按当前体位现算骨架（与上面的固定参考图是两件事）
     poseFromPosition: config.comfyui.poseFromPosition !== false,
+    // 2026-11-04：体位骨架是否强制竖构图（横图会把满画布骨架画成近景特写）
+    poseFromPositionPortrait: config.comfyui.poseFromPositionPortrait !== false,
   });
 });
 
 router.put('/pose-control', (req, res) => {
-  const { enabled, strength, image, inputDir, poseFromPosition } = req.body || {};
-  res.json(updatePoseControl({ enabled, strength, image, inputDir, poseFromPosition }));
+  const { enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait } = req.body || {};
+  res.json(updatePoseControl({ enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait }));
 });
 
 // 上传姿势参考图：body = { base64: 'data:image/png;base64,...' }

@@ -105,6 +105,22 @@
               @change="onPoseFromPositionToggle"
             />
           </div>
+          <!-- 竖构图（2026-11-04）：体位骨架是铺满整张画布的，横图会被画成近景特写、竖图才有完整双人构图 -->
+          <div class="pose-ref-row pose-ref-row--body">
+            <div class="pose-ref-copy">
+              <div class="pose-ref-desc">体位场景用竖构图出图</div>
+              <div class="pose-ref-hint">骨架铺满整块画布：横图容易被画成贴脸特写，竖图（768×1024）才是完整双人构图。只影响带体位骨架的那张图，其它场景尺寸不变。</div>
+            </div>
+            <linshe-switch
+              v-model="poseFromPositionPortrait"
+              size="sm"
+              on-text="竖构图"
+              off-text="跟随设置"
+              aria-label="体位场景用竖构图"
+              :disabled="poseSaving"
+              @change="onPosePortraitToggle"
+            />
+          </div>
           <div v-if="!poseInputDirReady" class="pose-ref-dir">
             <div class="pose-ref-hint">还要告诉程序 ComfyUI 的 input 目录在哪（参考图必须落在这里才能被读到）：</div>
             <div class="pose-ref-dir-row">
@@ -1967,6 +1983,8 @@ const hiresTurbo = ref(true)
 const poseEnabled = ref(false)
 // 体位骨架（2026-11-03）：默认开 —— "生图跟着体位走"的主开关；后端字段缺失时按开显示（与 config.js 默认 true 一致）
 const poseFromPosition = ref(true)
+// 体位骨架竖构图（2026-11-04）：默认开 —— 横图会把满画布骨架画成近景特写
+const poseFromPositionPortrait = ref(true)
 const poseImage = ref('')
 const poseInputDir = ref('')
 const poseInputDirReady = ref(false)
@@ -1980,6 +1998,7 @@ async function loadPoseControl() {
     const d = await getPoseControl()
     poseEnabled.value = !!d.enabled
     poseFromPosition.value = d.poseFromPosition !== false
+    poseFromPositionPortrait.value = d.poseFromPositionPortrait !== false
     poseImage.value = d.image || ''
     poseInputDir.value = d.inputDir || ''
     poseInputDirReady.value = !!d.inputDirReady
@@ -2007,6 +2026,18 @@ async function onPoseFromPositionToggle(v) {
     toastFn?.(poseFromPosition.value ? '体位骨架已开启：出图跟着体位走' : '体位骨架已关闭', 'success')
   } catch (e) {
     poseFromPosition.value = !v
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseSaving.value = false }
+}
+
+async function onPosePortraitToggle(v) {
+  poseSaving.value = true
+  try {
+    const d = await updatePoseControl({ poseFromPositionPortrait: !!v })
+    poseFromPositionPortrait.value = d.poseFromPositionPortrait !== false
+    toastFn?.(poseFromPositionPortrait.value ? '体位场景改用竖构图出图' : '体位场景跟随你的尺寸设置', 'success')
+  } catch (e) {
+    poseFromPositionPortrait.value = !v
     toastFn?.(e.message || '保存失败', 'error')
   } finally { poseSaving.value = false }
 }

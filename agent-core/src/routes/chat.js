@@ -1003,7 +1003,24 @@ ${coreRules}
     if (recentMomentsBlock) dynamicBlocks.push(recentMomentsBlock);
 
     // 4. 日程上下文（当前在做什么 / 睡醒等）
-    const scheduleCtx = (config.features.schedule !== false) ? formatScheduleContext(characterId) : null;
+    let scheduleCtx = (config.features.schedule !== false) ? formatScheduleContext(characterId) : null;
+    // 2026-11-04 修「动作死板、对不上」：日程块和亲密块会**互相矛盾** ——
+    // 日程说「你正在学院食堂早餐与晨检」，后面的 intimate_scene 说「你和 Sting 正在做爱」。
+    // 模型拿到两段冲突的事实只能折中，表现就是动作写得含糊、和当前体位对不上。
+    // 这里在有进行中亲密场景时，明确告诉它「日常日程只是今天的计划，此刻不在那里」。
+    try {
+      const sceneNow = Number.isInteger(Number(characterId)) ? getIntimateScene(Number(characterId)) : null;
+      if (scheduleCtx && sceneNow && sceneNow.active) {
+        scheduleCtx = `【与亲密场景冲突时以此为准】你此刻并不在上面这个日常活动里：`
+          + `你和${chatUserName}正在进行中的亲密场景才是当下的真实处境（地点、姿势、身体状态以下面的亲密场景为准）。`
+          + `日常日程只是今天原本的计划，不要拿它当现在发生的事，也不要因为它而拒绝或迟疑。
+
+`
+          + scheduleCtx;
+      }
+    } catch (err) {
+      console.warn('[chat] 亲密场景覆盖日程失败（不影响本轮）:', err?.message || err);
+    }
     const godWorldContext = getGodWorldContext([Number(characterId)]);
     if (godWorldContext) dynamicBlocks.push(godWorldContext);
     if (scheduleCtx) {
