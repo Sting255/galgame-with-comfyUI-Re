@@ -232,8 +232,9 @@ export function listSceneStandings(characterId) {
   return request(`/characters/${characterId}/standings`)
 }
 
-export function generateSceneStanding(characterId, scene) {
-  return request(`/characters/${characterId}/standings/generate`, { method: 'POST', body: { scene } })
+/** 生成场景立绘；已有图时返回 task_id，后台出图并在对比确认后落库。传 prompt 时复用提示词。 */
+export function generateSceneStanding(characterId, scene, requirement = '', prompt = '') {
+  return request(`/characters/${characterId}/standings/generate`, { method: 'POST', body: { scene, requirement, prompt } })
 }
 
 /** 上传某场景的立绘：base64 必须是 data:image/…;base64, 形式 */

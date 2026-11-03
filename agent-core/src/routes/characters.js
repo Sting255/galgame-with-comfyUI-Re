@@ -1508,6 +1508,165 @@ router.delete('/:id/standing', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── 场景立绘（工装/私服/居家/睡衣四套形象，详情页左右切换查看）──
+// 与上面的 standing_url 并存：standing_url 是「默认形象」（全库各处引用它，本组不碰），
+// 本组是四套场景形象，存 character_standings 表。工装槽没图时以 standing_url 兜底。
+// 路由顺序：POST /:id/standings/generate 与 DELETE /:id/standings/:scene 同为 3 段，
+// 靠 HTTP 方法区分（前者 POST、后者 DELETE），不会互吃；仍把语义路径放前面便于排查。
+
+/** 场景立绘出图：复用立绘出图口径（1:2 竖幅 / 角色 LoRA / 画师串），落 character_standings */
+async function renderSceneStandingImage(char, promptText, scene) {
+  const stageBase = path.join(getPendingDir(), `standing-${char.id}-${scene}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  fs.mkdirSync(path.dirname(stageBase), { recursive: true });
+  const staged = await runStandingGeneration(char, promptText, { stageBase });
+  return commitSceneStandingImage(char.id, scene, promptText, path.join(getPendingDir(), staged.filename), staged.sourceFilename);
+}
+
+function commitSceneStandingImage(characterId, scene, promptText, pendingPath, sourceFilename) {
+  if (!getDb().prepare('SELECT id FROM characters WHERE id = ?').get(characterId)) {
+    throw new Error('角色已不存在，无法替换形象');
+  }
+  // 该场景原本**显式**存的图（兜底的默认立绘不算 —— 那是 standing_url，不能动）
+  const oldRow = getSceneStandingRow(characterId, scene);
+
+  const filename = `standing_${characterId}_${scene}_${Date.now()}_${sourceFilename || 'comfy.png'}`;
+  const destPath = path.join(getImageDir('standing'), filename);
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.renameSync(pendingPath, destPath);
+  const url = buildImageUrl('standing', filename);
+
+  upsertSceneStanding(characterId, scene, { imageUrl: url, promptText });
+  if (oldRow?.image_url) { try { deleteImageFileByUrl(oldRow.image_url); } catch {} }
+  invalidateGalleryCache();
+  return url;
+}
+
+function startSceneStandingTask(char, scene, promptText, beforeUrl) {
+  let sourceFilename;
+  return startEditTask({
+    action: 'standing',
+    url: beforeUrl,
+    meta: { characterId: char.id, characterName: char.display_name, scene, promptText },
+    run: async ({ stageBase, onProgress }) => {
+      const staged = await runStandingGeneration(char, promptText, { stageBase, onProgress });
+      sourceFilename = staged.sourceFilename;
+      return staged;
+    },
+    finalize: task => commitSceneStandingImage(char.id, scene, promptText, task.pendingPath, sourceFilename),
+    restart: () => startSceneStandingTask(char, scene, promptText, beforeUrl),
+  });
+}
+
+// GET /api/characters/:id/standings — 四套场景立绘（work 槽用 standing_url 兜底）
+router.get('/:id/standings', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  res.json({ scenes: OUTFIT_SCENES, standings: listSceneStandings(char.id) });
+});
+
+async function generateSceneStandingPrompt(char, scene, requirement, mode, prompt = '') {
+  // 复用已有提示词（「再次 Roll 图」）：跳过 LLM，直接出图
+  let promptText = typeof prompt === 'string' ? prompt.trim() : '';
+  if (promptText.length < 10) {
+    const model = config.llm.model || 'deepseek-chat';
+    console.log(`[scene-standing] generating "${scene}" standing for "${char.display_name}"...`);
+    const llmResult = await chatSync(buildStandingMessages(char, requirement, mode, scene), {
+      model,
+      temperature: 0.7,
+      label: '生成角色形象',
+    });
+    promptText = llmResult.trim()
+      .replace(/^```(?:[a-z]+)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .trim();
+    if (!promptText || promptText.length < 10) {
+      throw new Error('LLM 生成的提示词不完整，请重试');
+    }
+  }
+
+  return promptText;
+}
+
+
+// POST /api/characters/:id/standings/generate — 生成指定场景立绘 Body: { scene, requirement? }
+router.post('/:id/standings/generate', async (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+
+  const scene = String(req.body?.scene || '').trim();
+  if (!STANDING_SCENE_KEYS.includes(scene)) {
+    return res.status(400).json({ error: '无效的场景，可选：' + STANDING_SCENE_KEYS.join(' / ') });
+  }
+  const requirement = typeof req.body?.requirement === 'string' ? req.body.requirement.trim().slice(0, 500) : '';
+  const mode = getSetting(STANDING_MODE_KEY) === 'dynamic' ? 'dynamic' : 'normal';
+
+  try {
+    const promptText = await generateSceneStandingPrompt(char, scene, requirement, mode, req.body?.prompt);
+    const beforeUrl = listSceneStandings(char.id).find(item => item.scene === scene)?.image_url;
+    if (beforeUrl) {
+      const task = startSceneStandingTask(char, scene, promptText, beforeUrl);
+      return res.json({ ok: true, task_id: task.id, scene });
+    }
+    const url = await renderSceneStandingImage(char, promptText, scene);
+    res.json({ ok: true, scene, image_url: url, prompt_text: promptText, standings: listSceneStandings(char.id) });
+  } catch (err) {
+    console.error('[scene-standing] error:', err.message);
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : '生成失败: ' + err.message });
+  }
+});
+
+// POST /api/characters/:id/standings/upload — 上传某场景立绘 Body: { scene, base64 }
+router.post('/:id/standings/upload', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+
+  const scene = String(req.body?.scene || '').trim();
+  if (!STANDING_SCENE_KEYS.includes(scene)) {
+    return res.status(400).json({ error: '无效的场景，可选：' + STANDING_SCENE_KEYS.join(' / ') });
+  }
+  const { base64 } = req.body || {};
+  const mimeMatch = typeof base64 === 'string' && base64.match(/^data:image\/(png|jpeg|webp);base64,/i);
+  if (!mimeMatch) return res.status(400).json({ error: '请上传 PNG / JPG / WEBP 图片' });
+  if (base64.length > 8 * 1024 * 1024) {
+    return res.status(400).json({ error: '图片过大，请压缩后再上传（不超过 6MB）' });
+  }
+
+  try {
+    const oldRow = getSceneStandingRow(char.id, scene);
+    const ext = mimeMatch[1].toLowerCase() === 'jpeg' ? 'jpg' : mimeMatch[1].toLowerCase();
+    const url = saveBase64Image('standing', `standing_${char.id}_${scene}_${Date.now()}_upload.${ext}`, base64);
+    upsertSceneStanding(char.id, scene, { imageUrl: url, promptText: oldRow?.prompt_text || '' });
+    if (oldRow?.image_url) { try { deleteImageFileByUrl(oldRow.image_url); } catch {} }
+    invalidateGalleryCache();
+    res.json({ ok: true, scene, image_url: url, standings: listSceneStandings(char.id) });
+  } catch (err) {
+    console.error('[scene-standing-upload] error:', err.message);
+    res.status(500).json({ error: '保存立绘失败: ' + err.message });
+  }
+});
+
+// DELETE /api/characters/:id/standings/:scene — 清掉某场景的**显式**立绘
+// 注意：work 槽若正回落到 characters.standing_url，这里只清显式记录，那张默认立绘不受影响
+// （要删默认形象走 DELETE /:id/standing）。
+router.delete('/:id/standings/:scene', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const scene = String(req.params.scene || '').trim();
+  if (!STANDING_SCENE_KEYS.includes(scene)) {
+    return res.status(400).json({ error: '无效的场景' });
+  }
+  const row = getSceneStandingRow(char.id, scene);
+  if (row?.image_url) { try { deleteImageFileByUrl(row.image_url); } catch {} }
+  deleteSceneStanding(char.id, scene);
+  invalidateGalleryCache();
+  res.json({ ok: true, scene, standings: listSceneStandings(char.id) });
+});
+
 // ── 修正外观（视觉 LLM 分析参考图 → 重写「## 你的外观」）──
 // 只做分析不改库：返回新外观段与重组后的整卡 base_prompt，由前端回填人格卡文本框走既有保存链路
 
@@ -1839,35 +1998,6 @@ router.get('/:id/standings', (req, res) => {
   respondStandingList(res, char.id);
 });
 
-/** 生成场景立绘（规范路径与旧路径共用） */
-async function generateSceneStanding(req, res) {
-  const db = getDb();
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  if (!char) return res.status(404).json({ error: 'Character not found' });
-  const scene = normalizeStandingScene(req.body?.scene ?? req.params?.scene);
-  if (!scene) return res.status(400).json({ error: '无效的场景，可选：' + STANDING_SCENE_KEYS.join(' / ') });
-  const hit = listSceneOutfits(char.id).find(o => o.scene === scene);
-  // 没配该套服装时仍允许出图（用角色卡原外观），但 nude 必须有显式配置才允许
-  if (scene === 'nude' && !hit) return res.status(400).json({ error: '还没配置「裸体」这套外观' });
-  // prompt 给全了就直接出图（「再次 Roll 图」），否则用该场景的组合文本
-  const explicitPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
-  try {
-    const url = await renderSceneStanding(char, scene, hit?.text || '', explicitPrompt);
-    res.json({
-      ok: true,
-      scene,
-      image_url: url,
-      prompt_text: explicitPrompt,
-      standings: listSceneStandings(char.id),
-    });
-  } catch (err) {
-    console.error('[scene-standing] error:', err.message);
-    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : '生成失败: ' + err.message });
-  }
-}
-
-// POST /api/characters/:id/standings/generate
-router.post('/:id/standings/generate', generateSceneStanding);
 
 // POST /api/characters/:id/standings/upload — 上传某场景立绘 Body: { scene, base64 }
 router.post('/:id/standings/upload', (req, res) => {

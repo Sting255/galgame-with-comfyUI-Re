@@ -70,6 +70,7 @@ import { startReplyQueueScheduler } from './src/services/replyQueueScheduler.js'
 // 2026-10-01：世界翻篇（程序日切换）——启动补一次，覆盖"关机跨天"
 import { runProgramDayRollover } from './src/services/programDayRollover.js';
 import { initialize as initScheduleManager } from './src/services/scheduleManager.js';
+import { ensurePoseControlAssetsOnBoot } from './src/services/poseControlInstall.js';
 import { startScheduler as startImageCompressor } from './src/services/imageCompressor.js';
 import { startMailboxScheduler } from './src/services/mailboxScheduler.js';
 import { startWeatherScheduler } from './src/services/weatherService.js';
@@ -416,6 +417,11 @@ const server = app.listen(config.port, config.host, () => {
 // 缩短 keep-alive 空闲超时，避免 Vite 代理在进程重启后复用到已死连接
 server.keepAliveTimeout = 5000;
 startGodSays();
+
+// 体位骨架所需的 ComfyUI 侧资产（自定义节点 / 姿态 LoRA / 检测模型）随包自带，
+// 启动时幂等装进目标 ComfyUI —— 用户换机器不用再单独装一遍（2026-11-03 用户要求）。
+// 找不到 ComfyUI 就什么都不做；失败只 warn，绝不影响出图主链路。
+ensurePoseControlAssetsOnBoot();
 
 // 异步检查向量服务（不阻塞启动）
 (async () => {

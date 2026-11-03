@@ -5,6 +5,10 @@ import { chatAgentStream, chatSync } from '../../llm/llm-client.js';
 import { prepareNarrativePrompt } from '../presets/narrative.js';
 import { getLocalDateKey } from '../../utils/localDate.js';
 import { getTodaySchedule, getCurrentActivity } from '../scheduleManager.js';
+// 2026-11-03 修：神说的时间/日程活动必须吃**程序时间**（世界钟），不能用真实时钟 ——
+// 用户把世界钟拨快 33 小时后，天使拿到的时间块与「当前活动」还停在真实时间，
+// 与角色、日程、朋友圈全部对不上（用户报「角色时间感知又有问题了」）。
+import { toProgramTime } from '../programTime.js';
 import { applyScheduleChange, queueScheduleChange } from '../scheduleEditor.js';
 import { generateSchedule } from '../scheduleGenerator.js';
 import { generateEvent } from '../eventGenerator.js';
@@ -133,7 +137,10 @@ export function getGodRuntime() {
       systemRules: getSystemRules({ roleplay: false }), worldSetting,
       worldIntegrationRule: worldSetting ? getWorldIntegrationRule('interaction') : '', agentRules: AGENT_RULES,
       angel, user: config.user, history, recall: memory.pastSummaries(session.day), schedule,
-      scheduleEnabled: config.features.schedule !== false, now: new Date(run.created_at), timeZone: repo.timeZone,
+      scheduleEnabled: config.features.schedule !== false,
+      // run.created_at 是**真实瞬间**（落库口径）⇒ 换算成程序时间再喂给提示词，
+      // 这样 time_context 与 angelActivity 都用世界钟，和角色/日程同一口钟。
+      now: toProgramTime(new Date(run.created_at)), timeZone: repo.timeZone,
       worldContext: worldEventContext(repo.db), work: world.list(null, session.id),
       images: run.imageDataUris || [],
     });

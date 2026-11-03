@@ -5,6 +5,11 @@ node_modules/
 # 交付不受影响：打包脚本是**从工作区** `agent-core/public/assets` 取产物同步进交付目录
 # （scripts/发布-校验并打包.mjs 的 assetsFrom），不依赖 git。
 agent-core/public/assets/
+
+# 姿势控制随包资产（自定义节点 + 姿态 LoRA + 检测模型，约 405MB 二进制）
+# 2026-11-03：这些是"用户换机器不用单独装"的随包文件，但没必要进 git 历史。
+# 交付包仍会带上它们 —— 打包脚本是从**工作区**同步的，不看 git。
+assets/pose-control/
 .env
 *.tmp.json
 *.db

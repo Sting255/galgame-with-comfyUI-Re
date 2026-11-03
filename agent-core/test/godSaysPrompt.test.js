@@ -149,4 +149,27 @@ test('current angel wardrobe stays in dynamic context and sleep follows pajamas 
   const boundary = dressed.lorebookOptions.cacheBoundary;
   assert.deepEqual(dressed.messages.slice(0, boundary.index + 1), base.messages.slice(0, boundary.index + 1));
   assert.match(dressed.messages.at(-1).content, /<angel_wardrobe>[\s\S]*云朵睡衣[\s\S]*a blue nightdress, barefoot/);
+  const disabled = build({ angel: { ...angel, outfits, scene_outfits_json: JSON.stringify(outfits) }, scheduleEnabled: false });
+  assert.match(disabled.messages.at(-1).content, /当前穿着：[\s\S]*沿用天使人设中的默认外观/);
+  assert.doesNotMatch(disabled.messages.at(-1).content, /当前按日程穿着|a blue nightdress/);
+});
+
+test('★ 神说的时间块与当前活动都吃**程序时间**（世界钟拨快后不能还报真实时间）', () => {
+  // 2026-11-03 用户报「角色时间感知又有问题了」：世界钟被拨快 33 小时后，
+  // 天使的 time_context 与「当前活动」仍按真实时钟算 ⇒ 与角色/日程/朋友圈全部对不上。
+  // 口径：runtime 传进 promptBuilder 的 now 必须是程序时间（toProgramTime(created_at)）。
+  // 这里直接验证 promptBuilder 侧：喂程序时间就按程序时间显示、按程序时间选活动。
+  const programNow = new Date('2026-11-05T08:20:00+08:00'); // 世界钟的「早上八点二十」
+  const built = buildGodChatContext({
+    systemRules: '规则', worldSetting: world,
+    angel, user: { nickname: 'Sting' }, history: { messages: [{ role: 'user', content: '早' }] },
+    recall: {}, schedule, scheduleEnabled: true, now: programNow, timeZone: 'Asia/Shanghai',
+  });
+  const text = built.messages.map(m => m.content).join('\n');
+  assert.ok(text.includes('08:20'), '时间块必须显示世界钟的钟点（08:20）');
+  // 08:20 落在「05:30–07:00 整理星图」之后、下一条开始之前 ⇒ 该时段没有匹配的活动时不应乱选
+  assert.equal(angelActivity(schedule, programNow, 'Asia/Shanghai'), null, '世界钟 08:20 不在任何日程块里');
+  // 换成 06:10 应命中「整理星图」
+  const six = angelActivity(schedule, new Date('2026-11-05T06:10:00+08:00'), 'Asia/Shanghai');
+  assert.equal(six?.activity, '整理星图', '世界钟 06:10 应命中整理星图');
 });
