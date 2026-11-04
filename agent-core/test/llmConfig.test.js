@@ -39,6 +39,7 @@ const configUrl = new URL('../src/config.js', import.meta.url);
 const imports = {
   dotenv: stub('export default { config() {} };'), fs: fsUrl,
   './db/settings.js': settingsUrl,
+  './utils/servicePort.js': stub('export const resolveServicePort = () => 3099;'),
   './services/weatherSource.js': stub('export const notifyWeatherSourceChange = () => {};'),
   './services/novelaiClient.js': new URL('../src/services/novelaiClient.js', import.meta.url).href,
   './llm/modelCapabilities.js': new URL('../src/llm/modelCapabilities.js', import.meta.url).href,
@@ -90,9 +91,10 @@ test('LLM save route forwards Vertex fields, returns only public config and reje
   const { runtime } = await loadRuntime();
   const routes = readFileSync(new URL('../src/routes/config.js', import.meta.url), 'utf8');
   const route = routes.slice(routes.indexOf("router.put('/llm',"), routes.indexOf('// PUT /api/config/llm/free-egg'));
-  let handler, resets = 0, syncs = 0;
-  new Function('router', 'updateLlmConfig', 'resetClient', 'config', 'PRESET_LLM_URLS', 'updateFeatureFlag', 'syncActiveLlmProfile', 'getLlmConfig', route)(
-    { put(_path, fn) { handler = fn; } }, runtime.updateLlmConfig, () => resets++, runtime.config, [], () => {}, () => syncs++, runtime.getLlmConfig,
+  let handler, resets = 0, syncs = 0, concurrencyUpdates = 0;
+  new Function('router', 'updateLlmConfig', 'resetClient', 'config', 'PRESET_LLM_URLS', 'updateFeatureFlag', 'syncActiveLlmProfile', 'getLlmConfig', 'applyFromConfig', route)(
+    { put(_path, fn) { handler = fn; } }, runtime.updateLlmConfig, () => resets++, runtime.config, ['https://preset.invalid/v1'],
+    (key, value) => { runtime.config.features[key] = value; }, () => syncs++, runtime.getLlmConfig, () => concurrencyUpdates++,
   );
   const response = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
   handler({ body: { connectionType: 'vertexai', vertexRegion: 'global' } }, response);
@@ -106,6 +108,15 @@ test('LLM save route forwards Vertex fields, returns only public config and reje
   assert.equal(resets, 1);
   assert.equal(syncs, 1);
   runtime.config.llm.connectionType = 'openai';
+  const previousBaseURL = runtime.config.llm.baseURL;
+  runtime.config.features.serializeBackgroundLLM = true;
+  response.statusCode = 200;
+  await handler({ body: { baseURL: 'https://preset.invalid/v1' } }, response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(runtime.config.features.serializeBackgroundLLM, false);
+  assert.equal(concurrencyUpdates, 1, '自动关闭开关时必须同时更新运行中的限制器');
+  runtime.updateLlmConfig({ baseURL: previousBaseURL });
 });
 
 test('Vertex credentials persist privately, survive free mode and stay isolated across profiles', async () => {

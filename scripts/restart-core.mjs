@@ -13,9 +13,12 @@ import { spawn } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanupProjectProcesses, AGENT_CORE_KEYWORDS } from "./lib/projectProcesses.mjs";
+import { resolveServicePort, isLinsheService, shutdownLinshe } from '../agent-core/src/utils/servicePort.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
+const API_PORT = resolveServicePort();
+const API_URL = `http://localhost:${API_PORT}`;
 
 const C = {
   reset: "\x1b[0m",
@@ -38,7 +41,7 @@ async function waitFor(url, child, timeoutSec = 15) {
     if (child && child.exitCode !== null) return false;
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      if (resp.ok) return true;
+      if (resp.ok && await isLinsheService(API_URL)) return true;
     } catch { /* not ready */ }
     await new Promise(r => setTimeout(r, 1000));
   }
@@ -58,16 +61,13 @@ async function main() {
 
   // 先尝试优雅退出（占着 3099 的那个进程），避免硬杀导致 SQLite WAL 未落盘
   try {
-    await fetch("http://localhost:3099/api/shutdown", {
-      method: "POST",
-      signal: AbortSignal.timeout(2000),
-    });
+    await shutdownLinshe(API_URL);
   } catch { /* 已经挂了，无视 */ }
   await new Promise(r => setTimeout(r, 1500));
 
   cleanupProjectProcesses({
     keywords: AGENT_CORE_KEYWORDS,
-    ports: [3099],
+    ports: [API_PORT],
     excludePatterns: ["restart-core.mjs"],
     prefix: "        ",
   });
@@ -76,7 +76,7 @@ async function main() {
   await new Promise(r => setTimeout(r, 1000));
 
   // 2. 拉起 agent-core
-  console.log(`\n  [2/3] 启动 agent-core (:3099)...`);
+  console.log(`\n  [2/3] 启动 agent-core (:${API_PORT})...`);
   const cwd = resolve(ROOT, "agent-core");
   const child = spawn("node", ["--watch", "app.js"], {
     cwd,
@@ -96,7 +96,7 @@ async function main() {
 
   // 3. 等待就绪
   console.log(`\n  [3/3] 等待服务就绪...`);
-  const ok = await waitFor("http://localhost:3099/api/health", child);
+  const ok = await waitFor(`${API_URL}/api/health`, child);
   if (ok) {
     console.log(`  ${C.green}[OK] agent-core 已就绪${C.reset}\n`);
   } else {

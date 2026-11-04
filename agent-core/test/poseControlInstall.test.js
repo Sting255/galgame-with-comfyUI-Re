@@ -13,7 +13,7 @@
  * 静默终止整个进程（连 try/catch 都拦不住）。所以实现改成了手写递归复制，
  * 这里也顺带保证「走的是 copyFileSync 那条路」——用真实临时目录跑一遍即可。
  */
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -22,9 +22,13 @@ import os from 'node:os'
 process.env.DB_PATH = ':memory:'
 const mod = await import('../src/services/poseControlInstall.js')
 
+const temporaryDirs = []
 function tmpdir(tag) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `pose-install-${tag}-`))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pose-install-${tag}-`))
+  temporaryDirs.push(dir)
+  return dir
 }
+after(() => { for (const dir of temporaryDirs) fs.rmSync(dir, { recursive: true, force: true }) })
 
 test('找不到 ComfyUI 路径：安静返回，不抛错', () => {
   const r = mod.ensurePoseControlAssets({ comfyRoot: null, bundledDir: 'D:/definitely-not-here' })
@@ -75,4 +79,32 @@ test('dryRun 只探测不写盘', () => {
   const r = mod.ensurePoseControlAssets({ comfyRoot, bundledDir: bundle, dryRun: true })
   assert.deepEqual(r.copied, [])
   assert.equal(fs.readdirSync(comfyRoot).length, 0, 'dryRun 不能写任何东西')
+})
+
+test('用户已有不同大小的模型与部分节点文件均保留，只补缺少的文件', () => {
+  const root = tmpdir('preserve')
+  const bundle = path.join(root, 'bundle'), comfy = path.join(root, 'comfy'), cache = path.join(root, 'cache')
+  const node = 'custom_nodes/ComfyUI-anima-pose-control'
+  const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text) }
+  write(path.join(bundle, node, 'node.py'), '# bundled node')
+  write(path.join(bundle, node, '__init__.py'), '# bundled init')
+  write(path.join(comfy, node, '__init__.py'), '# user modified init must survive')
+  const lora = 'models/loras/anima_pose_preview2.safetensors'
+  write(path.join(bundle, lora), 'old')
+  write(path.join(comfy, lora), 'user upgraded model')
+  write(path.join(bundle, 'detectors', 'detector.onnx'), 'old detector')
+  write(path.join(cache, 'detector.onnx'), 'user detector with different bytes')
+  const result = mod.ensurePoseControlAssets({ comfyRoot: comfy, bundledDir: bundle, rtmlibDir: cache })
+  assert.equal(result.ok, true)
+  assert.equal(fs.readFileSync(path.join(comfy, lora), 'utf8'), 'user upgraded model')
+  assert.equal(fs.readFileSync(path.join(cache, 'detector.onnx'), 'utf8'), 'user detector with different bytes')
+  assert.equal(fs.readFileSync(path.join(comfy, node, '__init__.py'), 'utf8'), '# user modified init must survive')
+  assert.equal(fs.readFileSync(path.join(comfy, node, 'node.py'), 'utf8'), '# bundled node')
+})
+
+test('缺失必须的随包资产不报告安装成功', () => {
+  const bundle = tmpdir('incomplete'), comfy = tmpdir('target')
+  const result = mod.ensurePoseControlAssets({ comfyRoot: comfy, bundledDir: bundle, rtmlibDir: path.join(comfy, 'cache') })
+  assert.equal(result.ok, false)
+  assert.ok(result.skipped.some(item => item.includes('自定义节点')))
 })

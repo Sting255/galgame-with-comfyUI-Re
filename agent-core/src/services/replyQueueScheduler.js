@@ -14,6 +14,7 @@ import { chatSync } from '../llm/llm-client.js';
 import { prepareNarrativePrompt } from './presets/narrative.js';
 import { buildConversationLorebookContext } from './lorebook/conversationContext.js';
 import { config } from '../config.js';
+import { parseSqlUtc } from './programTime.js';
 import { getCurrentActivity, syncSleepingState } from './scheduleManager.js';
 import { getTimeLight } from './timeLight.js';
 import { generateSchedule, assignNextRefreshTime, snapshotTodaySchedule } from './scheduleGenerator.js';
@@ -145,7 +146,7 @@ async function maybeRefreshOneSchedule() {
 
 // ── 回复队列处理 ──
 
-async function processReplyQueue() {
+export async function processReplyQueue() {
   const db = getDb();
 
   // 取最早到期的一个角色（只取第一条来确定角色，然后拉该角色所有 waiting）
@@ -163,23 +164,16 @@ async function processReplyQueue() {
 
   // 拉取该角色所有 waiting 消息
   const allPending = db.prepare(`
-    SELECT * FROM reply_queue
+    UPDATE reply_queue SET status = 'processing'
     WHERE character_id = ? AND status = 'waiting'
-    ORDER BY created_at ASC
-  `).all(entry.character_id);
+    RETURNING *
+  `).all(entry.character_id).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
 
   if (allPending.length === 0) return;
 
   const ids = allPending.map(e => e.id);
 
-  // 原子性标记 processing（AND status='waiting' 确保与 wakeService 互斥）
   const placeholders = ids.map(() => '?').join(',');
-  const claimResult = db.prepare(`UPDATE reply_queue SET status = 'processing' WHERE id IN (${placeholders}) AND status = 'waiting'`).run(...ids);
-
-  if (claimResult.changes === 0) {
-    console.log(`[replyQueue] Entries for ${entry.display_name} already claimed by another process, skipping`);
-    return;
-  }
 
   const isSleepWakeup = entry.delay_minutes === -1;
 
@@ -212,6 +206,8 @@ async function processReplyQueue() {
     // 分句
     const segments = splitText(fullReply);
 
+    const msgIds = [];
+    db.transaction(() => {
     // 写入 raw_messages
     const rawResult = db.prepare(`
       INSERT INTO raw_messages (conversation_id, role, content)
@@ -220,7 +216,6 @@ async function processReplyQueue() {
     lorebookTurn.commit();
 
     // 写入 messages（分句展示）
-    const msgIds = [];
     for (let i = 0; i < segments.length; i++) {
       const seq = i; // 使用递增序号
       const msgResult = db.prepare(`
@@ -230,7 +225,7 @@ async function processReplyQueue() {
       msgIds.push(msgResult.lastInsertRowid);
     }
 
-    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders}) AND status = 'processing'`).run(...ids);
 
     // 睡觉醒来：更新角色状态，重置叫醒列
     if (isSleepWakeup) {
@@ -238,6 +233,7 @@ async function processReplyQueue() {
         .run(characterId);
       console.log(`[replyQueue] ${entry.display_name} woke up, sleep state cleared`);
     }
+    })();
 
     // 清除所有 waiting 状态的其他消息（同一批次已合并处理）
     // 不需要——它们已经在 allPending 里并标记为 processing→done
@@ -285,7 +281,7 @@ async function processReplyQueue() {
  * 为延迟回复构建 LLM 上下文
  * 复用 chat.js 的关键消息层结构，但不走流式
  */
-function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null) {
+export function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null) {
   const db = getDb();
   const characterId = entry.character_id;
   const conversationId = entry.conversation_id;
@@ -349,7 +345,7 @@ function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null
   // ── 计算延迟时长 ──
   const now = new Date();
   const firstCreatedAt = entry.created_at
-    ? new Date(entry.created_at.replace(' ', 'T'))
+    ? parseSqlUtc(entry.created_at)
     : null;
   const delayMinutes = firstCreatedAt
     ? Math.round((now.getTime() - firstCreatedAt.getTime()) / 60000)
@@ -368,7 +364,7 @@ function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null
   if (isSleepWakeup) {
     // 计算距预定起床时间过了多久（处理系统重启后延迟处理的情况）
     const scheduledAt = entry.scheduled_reply_at
-      ? new Date(entry.scheduled_reply_at.replace(' ', 'T'))
+      ? parseSqlUtc(entry.scheduled_reply_at)
       : null;
     const minutesSinceWakeup = scheduledAt
       ? (now.getTime() - scheduledAt.getTime()) / 60000

@@ -77,20 +77,13 @@ export async function processWakeUp(characterId, mode, attempts = null) {
   const msgs = buildWakeContext(char, conversationId, userName, mode, attempts, dream);
 
   // ── 原子性抢占 reply_queue 中的积压消息 ──
-  // 使用 UPDATE + AND status='waiting' 确保与 replyQueueScheduler 互斥
-  const claimResult = db.prepare(`
+  // RETURNING 只返回本次认领的行，不能接管调度器已持有的 processing 条目。
+  const pendingEntries = db.prepare(`
     UPDATE reply_queue SET status = 'processing'
     WHERE character_id = ? AND status = 'waiting'
-  `).run(characterId);
-
-  const hasBacklog = claimResult.changes > 0;
-
-  // 抢占成功后读取已标记的条目（用于后续删除 + 统计）
-  const pendingEntries = hasBacklog ? db.prepare(`
-    SELECT * FROM reply_queue
-    WHERE character_id = ? AND status = 'processing'
-    ORDER BY created_at ASC
-  `).all(characterId) : [];
+    RETURNING *
+  `).all(characterId);
+  const hasBacklog = pendingEntries.length > 0;
 
   if (!hasBacklog) {
     // 检查是否有 reply_queue 条目（被 replyQueueScheduler 抢先处理了）
@@ -107,6 +100,8 @@ export async function processWakeUp(characterId, mode, attempts = null) {
   // ── 调用 LLM 生成回复 ──
   let fullReply;
   let lorebookTurn;
+  let segments;
+  const msgIds = [];
   try {
     lorebookTurn = await prepareNarrativePrompt(msgs, {
       ...buildConversationLorebookContext(db, {conversationId, character:char, kind:`wake:${mode}`, userName}), maxOutputTokens:512,
@@ -115,43 +110,35 @@ export async function processWakeUp(characterId, mode, attempts = null) {
       temperature: 0.7,
       label: `wake-up:${char.display_name}:${mode}`,
     });
+
+    if (!fullReply || !fullReply.trim()) throw new Error('Empty reply from LLM');
+    segments = splitText(fullReply);
+    // 正文、气泡、世界书使用记录和队列完成一起提交；写库失败不留下半条回复。
+    db.transaction(() => {
+      const rawResult = db.prepare(`
+        INSERT INTO raw_messages (conversation_id, role, content)
+        VALUES (?, 'assistant', ?)
+      `).run(conversationId, fullReply);
+      for (let i = 0; i < segments.length; i++) {
+        const result = db.prepare(`
+          INSERT INTO messages (conversation_id, raw_id, role, content, seq)
+          VALUES (?, ?, 'assistant', ?, ?)
+        `).run(conversationId, rawResult.lastInsertRowid, segments[i], i);
+        msgIds.push(result.lastInsertRowid);
+      }
+      lorebookTurn.commit();
+      const remove = db.prepare("DELETE FROM reply_queue WHERE id = ? AND status = 'processing'");
+      for (const entry of pendingEntries) remove.run(entry.id);
+    })();
   } catch (err) {
-    // LLM 调用失败，恢复 reply_queue 条目状态
+    // 包括空正文和写库失败；只恢复本次认领的条目。
     // 角色已被叫醒，不能再等原 sleep_until —— 改为 3 分钟后由 replyQueueScheduler 接手
     if (hasBacklog && pendingEntries.length > 0) {
       const ids = pendingEntries.map(e => e.id);
       const placeholders = ids.map(() => '?').join(',');
-      db.prepare(`UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+3 minutes') WHERE id IN (${placeholders})`).run(...ids);
+      db.prepare(`UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+3 minutes') WHERE id IN (${placeholders}) AND status = 'processing'`).run(...ids);
     }
     throw err;
-  }
-
-  if (!fullReply || fullReply.trim().length === 0) {
-    throw new Error('Empty reply from LLM');
-  }
-
-  // ── 分句 → 写入 raw_messages + messages ──
-  const segments = splitText(fullReply);
-
-  const rawResult = db.prepare(`
-    INSERT INTO raw_messages (conversation_id, role, content)
-    VALUES (?, 'assistant', ?)
-  `).run(conversationId, fullReply);
-  lorebookTurn.commit();
-
-  const msgIds = [];
-  for (let i = 0; i < segments.length; i++) {
-    const msgResult = db.prepare(`
-      INSERT INTO messages (conversation_id, raw_id, role, content, seq)
-      VALUES (?, ?, 'assistant', ?, ?)
-    `).run(conversationId, rawResult.lastInsertRowid, segments[i], i);
-    msgIds.push(msgResult.lastInsertRowid);
-  }
-
-  if (pendingEntries.length > 0) {
-    const ids = pendingEntries.map(e => e.id);
-    const placeholders = ids.map(() => '?').join(',');
-    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders})`).run(...ids);
   }
 
   // 临时唤醒到期定时器已由 wake 端点在写库后立即注册（不依赖本函数成功）

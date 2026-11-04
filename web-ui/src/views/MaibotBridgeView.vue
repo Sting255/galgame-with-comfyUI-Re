@@ -200,7 +200,8 @@ const showWebuiToken = ref(false)
 const savingSettings = ref(false)
 
 // ── 插件配置 ──
-const baseUrl = ref('http://127.0.0.1:3099')
+const defaultBaseUrl = ref(window.location.origin)
+const baseUrl = ref(defaultBaseUrl.value)
 const characterName = ref('')
 const memoryCuration = ref(false)
 const permanentConfigWrite = ref(false)
@@ -254,12 +255,14 @@ function renderSavedStyles() {
 }
 
 async function loadConfig() {
+  const health = await fetch('/api/health').then(res => res.json())
+  if (health.application === 'linshe' && health.port) defaultBaseUrl.value = `http://127.0.0.1:${health.port}`
   const data = await maibotGetPluginConfig()
   const pluginConfig = data.config || {}
   const bridge = pluginConfig.bridge || {}
   const memory = pluginConfig.memory || {}
   const image = pluginConfig.image || {}
-  baseUrl.value = bridge.base_url || 'http://127.0.0.1:3099'
+  baseUrl.value = bridge.base_url || defaultBaseUrl.value
   const charName = bridge.character_name || ''
   if (charName) {
     const byCharacter = characters.value.find(c => c.name === charName || c.display_name === charName)
@@ -338,7 +341,7 @@ function buildPluginConfigBody() {
     config: {
       plugin: { enabled: true },
       bridge: {
-        base_url: baseUrl.value.trim() || 'http://127.0.0.1:3099',
+        base_url: baseUrl.value.trim() || defaultBaseUrl.value,
         character_name: characterName.value,
         permanent_config_write: permanentConfigWrite.value,
       },

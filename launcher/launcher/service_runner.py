@@ -8,10 +8,12 @@
 """
 import os
 import sys
+import json
 from PySide6.QtCore import QObject, Signal, QProcess, QTimer, QUrl, QByteArray, QThread
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from .process_env import ensure_system_env
+from .service_config import service_port, belongs_to_project
 
 
 # ── 捆绑运行时发现 ──
@@ -136,12 +138,16 @@ class PortCleaner(QObject):
     output = Signal(str, str)  # (service_name, text)
     finished = Signal()
 
+    def __init__(self, project_path):
+        super().__init__()
+        self._project_path = project_path
+
     def run(self):
         """在后台线程中执行（由 QThread.started 触发）。"""
         try:
             import psutil
 
-            ports = [3099, 8765]
+            ports = [service_port(self._project_path), 8765]
             keywords = [
                 "agent-core", "vector-service", "web-ui",
                 "app.js", "server:app", "uvicorn", "nodemon",
@@ -153,7 +159,7 @@ class PortCleaner(QObject):
                         name = proc.name().lower()
                         if name in ("node.exe", "python.exe"):
                             cmdline = " ".join(proc.cmdline()).lower()
-                            if any(kw.lower() in cmdline for kw in keywords):
+                            if belongs_to_project(proc, self._project_path) and any(kw.lower() in cmdline for kw in keywords):
                                 proc.kill()
                                 self.output.emit(
                                     "system",
@@ -182,7 +188,9 @@ class ServiceWorker(QObject):
 
     def __init__(self, svc_def: dict, project_path: str, parent=None):
         super().__init__(parent)
-        self._def = svc_def
+        self._def = dict(svc_def)
+        if self._def["name"] == "agent_core":
+            self._def["port"] = service_port(project_path)
         self._project_path = project_path
         self._proc: QProcess | None = None
         self._status = self.STATUS_STOPPED
@@ -238,6 +246,8 @@ class ServiceWorker(QObject):
         env = self._proc.processEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("NODE_ENV", "production")
+        if self.name == "agent_core":
+            env.insert("PORT", str(self.port))
         # 服务定义中的额外环境变量（如 MaiBot 的 PYTHONUTF8）
         for _key, _value in self._def.get("env", {}).items():
             env.insert(_key, _value)
@@ -292,7 +302,14 @@ class ServiceWorker(QObject):
         self._health_reply = None
         if self._status not in (self.STATUS_STARTING,):
             return
-        if reply.error() == QNetworkReply.NoError:
+        healthy = reply.error() == QNetworkReply.NoError
+        if healthy and self.name == "agent_core":
+            try:
+                body = json.loads(bytes(reply.readAll()).decode("utf-8"))
+                healthy = body.get("application") == "linshe" and body.get("pid") == self._pid
+            except (ValueError, TypeError):
+                healthy = False
+        if healthy:
             self._set_status(self.STATUS_RUNNING)
             self.health_changed.emit(self.name, True)
             self.output.emit(self.name, f"[{self.display}] ✓ :{self.port} healthy")
@@ -432,7 +449,7 @@ class ServiceRunner(QObject):
 
         # 在后台线程中执行 psutil 端口清理，避免阻塞 GUI
         self._cleaner_thread = QThread(self)
-        self._cleaner_worker = PortCleaner()
+        self._cleaner_worker = PortCleaner(self._project_path)
         self._cleaner_worker.moveToThread(self._cleaner_thread)
         self._cleaner_worker.output.connect(self.output)
         self._cleaner_thread.started.connect(self._cleaner_worker.run)
@@ -550,7 +567,7 @@ class ServiceRunner(QObject):
         try:
             import psutil
 
-            ports = [SERVICES[s]["port"] for s in SERVICES]
+            ports = [w.port for w in self._workers.values()]
             keywords = [
                 "agent-core", "vector-service", "web-ui",
                 "app.js", "server:app", "uvicorn", "nodemon",
@@ -562,7 +579,7 @@ class ServiceRunner(QObject):
                         name = proc.name().lower()
                         if name in ("node.exe", "python.exe"):
                             cmdline = " ".join(proc.cmdline()).lower()
-                            if any(kw.lower() in cmdline for kw in keywords):
+                            if belongs_to_project(proc, self._project_path) and any(kw.lower() in cmdline for kw in keywords):
                                 proc.kill()
                                 killed = True
                                 self.output.emit(
@@ -587,7 +604,7 @@ class ServiceRunner(QObject):
             import psutil
         except Exception:
             return
-        ports = {SERVICES[s]["port"] for s in SERVICES}
+        ports = {w.port for w in self._workers.values()}
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:

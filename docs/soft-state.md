@@ -2,7 +2,7 @@
 
 > **这份文件管什么**：那些"挂在进程里、重启就丢"的小状态，如何统一落库。
 > 制定日期：2026-10-15。落点：`agent-core/src/services/softStateStore.js`。
-> 相关背景：`git show HEAD:目标/接手必读.md` §6.3-11「软状态还在进程内（`lastHighTime` / `imageJudgeCounters` / `guessCooldowns` 等，重启即丢）」。
+> 相关背景：旧文档「软状态还在进程内（`lastHighTime` / `imageJudgeCounters` / `guessCooldowns` 等，重启即丢）」（原 `目标/接手必读.md` §6.3-11，该目录已删，可用 `git show` 从旧提交取回）。
 
 ---
 

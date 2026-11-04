@@ -261,6 +261,9 @@ app.get('/api/health', asyncHandler(async (req, res) => {
   const vectorOk = await vectorHealth();
   res.json({
     status: 'ok',
+    application: 'linshe',
+    pid: process.pid,
+    port: config.port,
     vector_service: vectorOk ? 'ok' : 'down',
     timestamp: new Date().toISOString(),
   });
@@ -413,6 +416,12 @@ startItemScheduler();
 const server = app.listen(config.port, config.host, () => {
   console.log(`[agent-core] http://localhost:${config.port}`);
   console.log('============================================');
+});
+server.on('error', error => {
+  console.error(`[agent-core] 无法监听端口 ${config.port}: ${error.message}`);
+  // 监听失败必须退出，避免全局异常处理吞掉错误后留下后台调度器。
+  closeDb();
+  process.exit(1);
 });
 // 缩短 keep-alive 空闲超时，避免 Vite 代理在进程重启后复用到已死连接
 server.keepAliveTimeout = 5000;

@@ -21,7 +21,8 @@ const TMP_IMAGES = path.join(os.tmpdir(), `linshe-standing-test-${process.pid}`)
 process.env.IMAGES_DIR = TMP_IMAGES
 
 const { getDb, closeDb } = await import('../src/db/index.js')
-const charactersRouter = (await import('../src/routes/characters.js')).default
+const { default: charactersRouter, buildStandingMessages } = await import('../src/routes/characters.js')
+const { upsertSceneOutfits } = await import('../src/services/outfitScene.js')
 const imagesRouter = (await import('../src/routes/images.js')).default
 const { getImageDir } = await import('../src/services/imagePaths.js')
 
@@ -55,6 +56,28 @@ async function jsonFetch(url, options) {
 }
 
 const postJson = (url, body) => jsonFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+test('场景立绘按指定服装生成，并保留身体描述和用户要求', () => {
+  const id = seedCharacter()
+  const char = { id, display_name: '测试角色', short_prompt: '测试角色喜欢散步。', base_prompt: '## 你的外观\n黑色长发。' }
+  upsertSceneOutfits(id, [
+    { scene: 'sleep', name: '睡衣', description: 'blue striped pajamas', body: 'silver earrings' },
+    { scene: 'casual', name: '私服', description: 'green travel jacket', body: 'silver earrings' },
+  ])
+  const sleep = buildStandingMessages(char, '站在中央', 'normal', 'sleep')
+  const casual = buildStandingMessages(char, '', 'normal', 'casual')
+  const sleepText = sleep.map(m => m.content).join('\n')
+  const casualText = casual.map(m => m.content).join('\n')
+  assert.match(sleepText, /blue striped pajamas/)
+  assert.match(sleepText, /silver earrings/)
+  assert.doesNotMatch(sleepText, /green travel jacket/)
+  assert.match(casualText, /green travel jacket/)
+  assert.doesNotMatch(casualText, /blue striped pajamas/)
+  assert.match(sleep.at(-1).content, /站在中央/)
+  const missing = buildStandingMessages(char, '', 'normal', 'home').map(m => m.content).join('\n')
+  assert.doesNotMatch(missing, /blue striped pajamas|green travel jacket/)
+  assert.match(missing, /黑色长发/)
+})
 
 test('GET /:id/standings 返回五套场景清单，旧别名同样可用', async () => {
   const id = seedCharacter()

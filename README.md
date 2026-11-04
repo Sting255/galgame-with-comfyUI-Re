@@ -7,9 +7,9 @@
 它想解决的问题很简单：普通 AI 聊天机器人往往只是在“回答问题”，而邻舍.EXE 希望让角色表现得更像一个持续生活着的人。
 
 > [!NOTE]
-> **本仓库是 [邻舍.EXE](https://github.com/icecranberry/galgame-with-comfyUI) 的个人增强 fork**：上游基线 v4.0.0，当前版本 **v4.0.0**。
+> **本仓库是 [邻舍.EXE](https://github.com/icecranberry/galgame-with-comfyUI) 的个人增强 fork**：上游基线 v4.1.1，当前版本 **v4.1.1**。
 > 除上游功能外，本 fork 重做了外观与体型系统、新增「地图」页（世界地理骨架）、把 84 个体位数据融进对话与生图链路、全站修了一轮文字对比度，并针对本地 LLM 网关的几处缺陷加了兜底；上游原有的「世界 / 小镇」页已在本 fork 移除。
-> **本版已完整跟进上游 v4.0.0**：语音合成（本地 IndexTTS 2.0 / API 音色克隆）、朋友圈频率与文风优化、NovelAI 多配置、手机端表情包适配等，均已并入。
+> **本版已完整跟进上游 v4.1.1**：语音合成（本地 IndexTTS 2.0 / API 音色克隆）、朋友圈频率与文风优化、NovelAI 多配置、手机端表情包适配等，均已并入。
 > 下面先列本 fork 的改动，再是上游原有功能介绍（内容与上游保持同步，仅下载与克隆地址指向本仓库）。
 
 ## 🧩 本 Fork 新增功能
@@ -220,7 +220,7 @@ Remove-Item Env:DB_PATH
 | `launcher/` / `android-shell/` | PySide6 启动器 / Android WebView 客户端 |
 | `scripts/` | 开发、构建与发布脚本 |
 
-开发前阅读 [协作约定](./AGENTS.md)；UI 修改遵循 [设计系统](./docs/design-system.md)。其他说明：[测试](./docs/testing.md) · [小镇互动](./docs/town-interactions.md) · [小镇经济](./docs/town-economy.md) · [放大细化](./docs/hires-workflow.md)。
+开发前阅读 [协作约定](./AGENTS.md)；接手第一站是 [项目现状](./docs/项目现状.md)，UI 修改遵循 [设计系统](./docs/design-system.md)。其他说明：[测试](./docs/testing.md) · [放大细化](./docs/hiresfix.md)。
 
 ## License
 

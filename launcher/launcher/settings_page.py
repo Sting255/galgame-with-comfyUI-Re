@@ -258,7 +258,7 @@ class SettingsPage(QWidget):
         layout.addWidget(_separator())
 
         # --- 开关 ---
-        self.auto_browser_check = Switch("启动后自动打开浏览器 (http://localhost:3099)")
+        self.auto_browser_check = Switch("启动后自动打开邻舍网页")
         layout.addWidget(self.auto_browser_check)
 
         self.toast_check = Switch("启动前提示确认 ComfyUI 已运行")

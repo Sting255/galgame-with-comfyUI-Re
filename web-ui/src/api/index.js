@@ -1374,6 +1374,10 @@ export function getPoseControl() {
   return request('/images/pose-control')
 }
 
+export function getImageTaskStatus(taskId, { signal } = {}) {
+  return request(`/images/tasks/${encodeURIComponent(taskId)}/status`, { signal })
+}
+
 /** 写姿势控制设置；只传要改的字段 */
 export function updatePoseControl(body) {
   return request('/images/pose-control', { method: 'PUT', body })
@@ -2675,8 +2679,8 @@ export async function getTimePerception({ signal } = {}) {
     return await request('/time/perception', { signal })
   } catch (err) {
     const text = String(err?.message || '')
-    if (/disabled/i.test(text)) throw new Error('程序时间功能当前已关闭')
-    if (/not found|Cannot GET|请求失败 \(404\)/i.test(text)) throw new Error('后端还没有时间感知接口（等更新）')
+    if (/disabled/i.test(text)) throw new Error('程序时间功能当前已关闭', { cause: err })
+    if (/not found|Cannot GET|请求失败 \(404\)/i.test(text)) throw new Error('后端还没有时间感知接口（等更新）', { cause: err })
     throw err
   }
 }

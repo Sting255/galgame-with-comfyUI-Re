@@ -134,7 +134,7 @@ Remove-Item Env:DB_PATH
 | `launcher/` / `android-shell/` | PySide6 launcher / Android WebView client |
 | `scripts/` | Development, build, and release scripts |
 
-Read the [contribution conventions](./AGENTS.md) before making changes; UI changes follow the [design system](./docs/design-system.md). Further guides (Chinese): [Testing](./docs/testing.md) · [Town interactions](./docs/town-interactions.md) · [Town economy](./docs/town-economy.md) · [Upscaling](./docs/hires-workflow.md).
+Read the [contribution conventions](./AGENTS.md) before making changes; start from [project status](./docs/项目现状.md); UI changes follow the [design system](./docs/design-system.md). Further guides (Chinese): [Testing](./docs/testing.md) · [Upscaling](./docs/hiresfix.md).
 
 ## License
 

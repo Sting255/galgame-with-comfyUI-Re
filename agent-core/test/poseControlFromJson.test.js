@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 
 process.env.DB_PATH = ':memory:'
 const { applyPoseControlFromJson, maybeApplyPoseControl, POSITION_POSE_PORTRAIT_WIDTH, POSITION_POSE_PORTRAIT_HEIGHT } = await import('../src/services/poseControl.js')
-const { config, setPoseFromPosition } = await import('../src/config.js')
+const { config, setPoseFromPosition, updatePoseControl } = await import('../src/config.js')
 const { getSetting, initSettingsHandle } = await import('../src/db/settings.js')
 const { getDb } = await import('../src/db/index.js')
 initSettingsHandle(getDb())
@@ -139,6 +139,16 @@ test('竖构图开关关闭时沿用工作流原尺寸；本来就是竖图时�
   applyPoseControlFromJson(tall, { poseJson: POSE_JSON, portrait: true })
   assert.equal(tall[3].inputs.width, 768)
   assert.equal(tall[3].inputs.height, 1024)
+})
+
+test('竖构图设置响应、持久化与前端回填一致', () => {
+  for (const enabled of [false, true]) {
+    const response = updatePoseControl({ poseFromPositionPortrait: enabled })
+    assert.equal(response.poseFromPositionPortrait, enabled)
+    assert.equal(response.poseFromPositionPortrait !== false, enabled, '前端回填不得把关闭翻成开启')
+    assert.equal(config.comfyui.poseFromPositionPortrait, enabled)
+    assert.equal(getSetting('comfy_pose_from_position_portrait'), enabled ? '1' : '0')
+  }
 })
 
 test('★ 目标机器没装姿势节点时：不注入（不能让 400 把整张图打掉）', async () => {

@@ -145,11 +145,9 @@
            语义：归催眠域（**在催眠中即可下**，未满足时按钮随 `matrix.forceToy` 置灰）；
            ⚠️ 这里曾经写成 `matrix.body_control`——矩阵里没有这个键 ⇒ 永远置灰、点不了（真机 bug）。
            点下去服务端**当场真的把玩具戴上**并立刻替她触发一轮，所以点完马上就能看到反应与配图。 -->
-      <Transition name="hp-fade">
         <!-- 高潮控制（2026-10-02 用户要求加在催眠手机里，且**不需要催眠也能点**）：
          与催眠无关 ⇒ 刻意不挂 actionMatrix 门控；只有"这一场还没开始"时才置灰并说明怎么开始。
-         ⚠️ 别在这里再套一层 Transition：上面那层就是给它用的，多开一层会让 SFC 标签不配平
-         （构建直接报 "Element is missing end tag"；源码守卫测试测不出这种错）。 -->
+         常驻区块随父弹窗过渡，不单独包 Transition。 -->
     <section class="hp-sec hp-sec-denial">
       <h3 class="hp-sec-title">高潮控制</h3>
       <p class="hp-note">
@@ -166,15 +164,11 @@
       >{{ denialView.label }}</linshe-button>
       <p v-if="!denialView.active" class="hp-note">这一场还没开始：先在私聊里点「❤ 推进」→「进入她」。</p>
     </section>
-    </Transition>
 
     <!-- ── ⑥ 发情模式（2026-10-02 用户原话「然后再在催眠手机里加一个选项 叫发情模式
            角色的敏感度就会直接拉满」）────────────────────────────────────────────
          它管的是"她这个人现在有多敏感"，与催眠状态**无关** ⇒ 同样刻意不挂 actionMatrix 门控。
-         拨开 ⇒ 服务端把敏感度直接写成 100（默认 2 小时后自然回落）；拨回去 ⇒ 回落到常态上沿。
-         ⚠️ 与「高潮控制」是**兄弟** Transition（不是同一层里的第二个孩子）：Vue 的 <Transition>
-           只接受一个孩子，塞两个进去会变成 dev 警告 + 干脆不过渡。 -->
-    <Transition name="hp-fade">
+         拨开 ⇒ 服务端把敏感度直接写成 100（默认 2 小时后自然回落）；拨回去 ⇒ 回落到常态上沿。 -->
     <section class="hp-sec hp-sec-heat">
       <header class="hp-sec-head">
         <h4 class="hp-sec-title">发情模式</h4>
@@ -193,7 +187,6 @@
       </p>
       <p class="hp-note">{{ heatView.note }}</p>
     </section>
-    </Transition>
 
     <Transition name="hp-fade">
     <section v-if="toysView.visible" class="hp-sec hp-sec-toys">

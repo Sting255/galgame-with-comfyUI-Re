@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import * as api from '../api/index.js'
 import { useMessageWindow } from '../composables/useMessageWindow.js'
 import { useProactiveStore } from './notifications.js'
@@ -7,6 +7,7 @@ import { applyAssistantReplace } from '../utils/assistantReplace.js'
 // 上游 v4.0.0 合并：语音自动播放与头像变更广播
 import { emitCharacterAvatarChanged } from '../utils/characterReactionProducers.js'
 import { chatSpeechAutoPlay } from '../utils/speechAutoPlay.js'
+import { createImageTaskRecovery } from '../utils/imageTaskRecovery.js'
 
 /** D2 重写兜底：最近一次已应用的 replace_last_assistant.turn（§12.4 用它校验「替换的是本轮」，防乱序/重复投递） */
 let lastReplaceTurn = 0
@@ -53,6 +54,23 @@ export const useChatStore = defineStore('chat', () => {
   const realtimeAffinity = ref(null)  // { affinity, affinityDelta, lastReason } — SSE affinity_update 推送
   const affinityKey = ref(0)          // 仅 SSE 推送时递增，驱动 roll 动画；初始加载/切角色时不递增
   const sidebarScrollSignal = ref(0)  // 主动消息到达时递增，驱动 Sidebar 滚动到顶部
+  const imageRecovery = createImageTaskRecovery({
+    fetchTask: api.getImageTaskStatus,
+    isCurrent: (id, context) => activeCharId.value === context.charId
+      && findGenMsg(id) === context.message
+      && !['done', 'error'].includes(context.message.genStatus),
+    onDone: (id, images, { message }) => {
+      message.images = images
+      message.genStatus = 'done'
+      dialogueRevision.value++
+    },
+    onError: (id, error, { message }) => {
+      message.genStatus = 'error'
+      message.genError = error
+    },
+  })
+  watch(activeCharId, () => imageRecovery.stopAll(), { flush: 'sync' })
+  onScopeDispose(() => imageRecovery.stopAll())
   const activeChar = computed(() => characters.value.find(c => c.id === activeCharId.value))
 
   // 客户端渲染窗口：messages 已全量加载，窗口策略统一由 useMessageWindow 提供
@@ -192,6 +210,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function selectChar(charId) {
+    imageRecovery.stopAll()
     clearTouchPlaceholder()
     const selection = ++selectionSeq
     if (activeStream) {
@@ -229,6 +248,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function clearActiveMessages() {
+    imageRecovery.stopAll()
     clearTouchPlaceholder()
     const id = activeCharId.value
     if (!id) return
@@ -315,6 +335,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function deleteActiveCharacter() {
+    imageRecovery.stopAll()
     const id = activeCharId.value
     const char = characters.value.find(c => c.id === id)
     if (!id || char?.name === 'default') return
@@ -859,6 +880,12 @@ export const useChatStore = defineStore('chat', () => {
 
     clearSafetyTimer()
     if (isCurrentStream(sessionId)) {
+      // 流因等待预算或连接中断结束后，仍按任务 id 接回迟到结果。
+      for (const message of messages.value) {
+        if (message.type === 'image_gen' && message.genId != null && !['done', 'error'].includes(message.genStatus)) {
+          imageRecovery.start(message.genId, { charId, message })
+        }
+      }
       streaming.value = false; streamingContent.value = ''; showTypingDots.value = false
       activeStream = null
       if (!admissionError) await loadCharacters()

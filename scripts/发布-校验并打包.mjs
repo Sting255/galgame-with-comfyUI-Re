@@ -39,6 +39,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 // 使用说明.txt 的正文正源（2026-10-17 从 build-release.mjs 抽出；两份脚本共用这一份，见 ③-0）
 import { buildUsageGuideText } from './usage-guide.mjs'
+import { syncReleaseEnv, inspectReleaseEnv } from './lib/releaseLocalConfig.mjs'
 
 // 本文件在 <repo>/scripts/ 下 ⇒ 仓库根是它的上一层
 const REPO = path.resolve(import.meta.dirname, '..')
@@ -522,23 +523,23 @@ log(`   已同步 ${copied} 项 + 前端产物（${fs.readdirSync(assetsTo).leng
 // 直接删掉 —— `ConfigManager._load()` 在文件不存在时会自动写一份默认配置（`comfyui_exe: ""`）。
 // 2026-11-03 用户口径：「完整包，我不想看到又有报错」—— 自用测试包**必须带上 .env**，
 // 否则 LLM 全线报 "OPENAI_API_KEY is missing"（真机验证过：日程/朋友圈/事件全挂）。
-// 所以保留开关：PACK_KEEP_ENV=1 时**不删 .env**（仍然删 launcher_config.json，它指向打包机的
+// 所以保留开关：PACK_KEEP_ENV=1 时同步当前 .env（仍然删 launcher_config.json，它指向打包机的
 // ComfyUI 路径，别人拿去反而更坑）；不设该变量时保持原有防泄露行为 —— 外发场景不要开它。
 const keepEnv = process.env.PACK_KEEP_ENV === '1'
 {
+  const envSync = syncReleaseEnv(SRC, path.join(DELIVER, 'agent-core'), keepEnv)
   const stale = [
-    ...(keepEnv ? [] : [path.join(DELIVER, 'agent-core', '.env'), path.join(DELIVER, 'agent-core', '.env.local')]),
     path.join(DELIVER, 'launcher_config.json'),
     path.join(DELIVER, 'agent-core', 'launcher_config.json'),
   ]
-  const removed = []
+  const removed = envSync.removed.map(name => `agent-core/${name}`)
   for (const f of stale) {
     if (fs.existsSync(f)) { fs.rmSync(f, { force: true }); removed.push(path.relative(DELIVER, f)) }
   }
-  if (keepEnv) log('   ⚠ PACK_KEEP_ENV=1：包内保留 agent-core/.env（含你的 Key，绝不要外发这个包）')
+  if (keepEnv) log(`   ⚠ PACK_KEEP_ENV=1：已同步当前配置 ${envSync.copied.join('、') || '（源目录无配置）'}，含 Key 的自用包不要外发`)
   const example = path.join(DELIVER, 'agent-core', '.env.example')
   if (removed.length) log(`   已从交付目录清掉遗留的本机配置文件：${removed.join('、')}（.env.example 已随源码同步）`)
-  else log('   交付目录无遗留 .env / launcher_config.json（本来就没有）')
+  else log('   无需清理遗留本机配置')
   if (!fs.existsSync(example)) log('   ⚠️ 交付目录缺 .env.example —— ⑤ 会把它当缺失项报出来')
 }
 
@@ -722,10 +723,21 @@ if (!needCollectorLogs || !needGitLogs) die('包内缺少 collector\\logs 或 .g
 // **包里确实没有**。历史上正是这类"排除了但实际还在"的缝出的问题（发布门禁三处先例）。
 // ⚠️ 用 `l` 的清单匹配：包内没这项 ⇒ 清单里搜不到 `agent-core\.env`（要连 `.env.example` 一起排除干扰）。
 {
-  const envInPkg = /3\.6\.2-r\\agent-core\\\.env(\s|$)/m.test(plain) || /3\.6\.2-r\\agent-core\\\.env\.local/m.test(plain)
-  const exampleInPkg = /3\.6\.2-r\\agent-core\\\.env\.example/m.test(plain)
-  if (envInPkg) die('包内含 agent-core\\.env（真实 API Key）⇒ 交付链剥离失败，拒绝交付')
-  log(`   agent-core\\.env 不在包内 ✓（.env.example 在包内=${exampleInPkg}）`)
+  let envCheck
+  try { envCheck = inspectReleaseEnv(plain, keepEnv) } catch (error) { die(error.message) }
+  const { envInPkg, exampleInPkg } = envCheck
+  if (envInPkg) {
+    // 2026-11-04：PACK_KEEP_ENV=1 是**明确的"我要带 Key 的自用包"**，此时不该中止 ——
+    // 不带 .env 的话 LLM 全线报 OPENAI_API_KEY is missing，那才是用户说的"又有报错"。
+    // 但仍要**大声警告**：这种包绝不能外发。
+    if (keepEnv) {
+      log('   ⚠️ 包内含 agent-core\\.env（真实 API Key）—— PACK_KEEP_ENV=1 的自用包，**不要外发**')
+    } else {
+      die('包内含 agent-core\\.env（真实 API Key）⇒ 交付链剥离失败，拒绝交付')
+    }
+  } else {
+    log(`   agent-core\\.env 不在包内 ✓（.env.example 在包内=${exampleInPkg}）`)
+  }
   if (!exampleInPkg) log('   ⚠️ 包内没有 .env.example —— 换机器的人没有配置模板可参考（不阻断，建议补）')
 
   // `launcher_config.json`（2026-10-18 补）：它是启动器的本机用户配置，`comfyui_exe` 指向

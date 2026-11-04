@@ -17,6 +17,7 @@
  */
 
 import { cleanupProjectProcesses, label } from './lib/projectProcesses.mjs';
+import { resolveServicePort, shutdownLinshe } from '../agent-core/src/utils/servicePort.js';
 
 const DRY = process.argv.includes('--dry') || process.argv.includes('--dry-run');
 // 绝不自杀：stop.mjs 自身进程、`npm run stop` 包装进程
@@ -28,11 +29,8 @@ if (DRY) {
 } else {
   console.log('请求 agent-core 优雅退出…');
   try {
-    const resp = await fetch('http://localhost:3099/api/shutdown', {
-      method: 'POST',
-      signal: AbortSignal.timeout(3000),
-    });
-    console.log(resp.ok ? '  已请求，等待 WAL 落盘…' : `  返回 ${resp.status}，继续`);
+    const stopped = await shutdownLinshe(`http://localhost:${resolveServicePort()}`);
+    console.log(stopped ? '  已请求，等待 WAL 落盘…' : '  未确认邻舍服务身份，跳过关闭请求');
     await new Promise((r) => setTimeout(r, 4000));
   } catch {
     console.log('  无法连接（可能未运行），继续');

@@ -6,7 +6,11 @@
 - 前端：`npm --prefix web-ui test`，收集 `web-ui/test/*.test.js`。
 - 单文件：在对应子项目目录执行 `node --test test/文件名.test.js`。
 
-后端检查应使用内存数据库。PowerShell 中可先执行 `$env:DB_PATH = ':memory:'` 再运行后端测试；测试中的外部服务优先使用本地模拟。
+完整回归优先在仓库根目录执行 `runtime/nodejs/node.exe scripts/test-all.mjs`，它串行运行前后端、固定内存库，并加载后端隔离入口。单跑后端也必须带 `--import ./test/setup.mjs --test-concurrency=1 --test-force-exit --test-timeout=90000`，设置 `DB_PATH=:memory:` 和 `LOG_TO_FILE=false`。不要并发运行两套全量测试。
+
+报告必须包含 tests / pass / fail / skipped / cancelled；`cancelled > 0`、子进程退出码非零或启动异常均判失败。根入口会输出最多 10 个 TAP 失败块，便于直接定位原因（2026-11-04 补）。
+
+跨模块修复回归（2026-11-04）：`llmConcurrency.test.js` 与 `llmConcurrencyClient.test.js` 验证开关切换、凭证释放和取消排队；`replyQueueRecovery.test.js` 用内存库和本机 HTTP 模型桩验证叫醒/延迟回复的批次归属、写库回滚和 UTC 上下文；`imageWorkflowOwnership.test.js` 通过真实角色 HTTP 路由验证延后确认立绘的工作流归因；`servicePort.test.js` 验证端口解析、应用身份和进程归属。启动器基础测试使用 `python -m unittest discover -s launcher/test -v`，不启动真实库。
 
 ## 保留范围
 
@@ -15,9 +19,8 @@
 | 角色人格、外观与生图 | `agent-core/test/characterPersona.test.js`、`globalLoraScene.test.js`、`llmImageInput.test.js`、`hiresTransparentBackground.test.js` | 人格组装兼容性、身份和外观段编辑、图像输入及透明背景回归 |
 | 聊天、记忆与数据迁移 | `agent-core/test/consolidation.test.js`、`memoryV3Migration.test.js`、`contextBudget.test.js`、`sseDisconnectAbort.test.js` | 记忆检索与归并、存量数据升级、上下文预算、流式请求断开 |
 | 朋友圈与日程 | `agent-core/test/momentUserPostFlow.test.js`、`momentScheduler.test.js`、`scheduleEditor.test.js` | 发帖、配图、调度和日程编辑的真实执行路径 |
-| 小镇核心流程 | `agent-core/test/townTravel.test.js`、`townMapReset.test.js`、`townInteractionRuntime.test.js`、`townNpcServiceRuntime.test.js`、`townNpcStock.test.js` | 地图隔离、重置范围、邀请与奇遇、交易及状态恢复 |
-| 前端状态与交互 | `web-ui/test/townInteractions.test.js`、`townTravel.test.js`、`townServiceManagerScope.test.js`、`groupLastSeen.test.js`、`githubUpdate.test.js` | 重复提交、迟到响应、地图切换、筛选排序、未读和升级状态 |
-| 图像处理与渲染 | `web-ui/test/whiteGapDetection.test.js`、`townImageEditor.test.js`、`townTileUv.test.js`、`townRendererChunkStability.test.js` | 留白误删、编辑回退、UV 稳定性和构建分包依赖 |
+| 前端状态与交互 | `web-ui/test/imageTaskRecovery.test.js`、`groupLastSeen.test.js`、`githubUpdate.test.js` | 聊天迟到图片补取、取消与错误终态、未读和升级状态 |
+| 图像处理与渲染 | `web-ui/test/whiteGapDetection.test.js`、`standingGeometry.test.js`、`standingInteractionGeometry.test.js` | 留白检测、立绘布局和交互区域 |
 | 破限规则集与思考开关 | `agent-core/test/jailbreakRules.test.js`、`promptShield.test.js`、`llmReasoningEffort.test.js`、`web-ui/test/jailbreakSettings.test.js` | 多套底稿 CRUD/激活/投递范围、破限词注入顺序（上游保 system0）、默认关思考的两条路、编辑器纯逻辑与 Linshe 接线 |
 
 表中是代表性入口，其余覆盖不同边界条件的正式测试继续保留。前后端同名测试可能验证不同实现，不能仅凭文件名去重。
@@ -37,10 +40,8 @@
 
 ## 浏览器回归样例
 
-以下是持续维护的浏览器样例，依赖 Canvas / WebGL 或真实 Vue 组件，不由 `node --test` 收集。启动 `npm --prefix web-ui run dev` 后，在其开发服务器地址打开：
+小镇已于 2026-10-20 剥离，原有 town 测试与浏览器样例不再作为验收入口。以下 HTML 样例需要手动打开，不由 `node --test` 收集。启动 `npm --prefix web-ui run dev` 后，在其开发服务器地址打开：
 
-- `/test/fixtures/townSpriteColor.html`：角色肤色、昼夜、画质档位与色彩输出，页面显示 PASS / FAIL。
-- `/test/fixtures/townObjectColor.html`：建筑、道具、灯具的材质与色彩输出，页面显示 PASS / FAIL。
 - `/test/fixtures/whiteGaps.html`：图像编辑器的留白预览、恢复与保存失败交互，使用合成图片和模拟保存接口。
 - `/test/fixtures/intimatePanel.html`：亲密看板（双主题 / 兼容 360px 窄屏 / 组件级漂移自检）。页面直接挂载真实 `IntimatePanel.vue`，用 `fetch` 打桩后端接口（离线可跑，不连本地服务），加 `?theme=dark` 可以暗夜主题打开。
 - `/test/fixtures/intimatePanelLive.html`：亲密看板 live 端到端（真实组件 + 真实后端数据，需先起 agent-core 与 vite；与上面的 stub 版互补，不做 fetch 打桩）。
@@ -48,6 +49,8 @@
 两者分工：`intimatePanel.html` 离线可跑，覆盖组件结构漂移与暖色 / 暗夜双主题、360px 窄屏；`intimatePanelLive.html` 依赖真实服务，验证真实数据读数与真实写路径。
 
 浏览器样例及其 HTML / SVG 配套资源共同保留；算法单测不能替代 GPU 和画布交互检查。修改相关渲染或编辑功能后应额外运行这些样例。
+
+自动浏览器测试：在 `web-ui` 下设置 `$env:PLAYWRIGHT_MODULE='D:\邻舍改\e2e\node_modules\playwright'`，再用 bundled Node 执行 `--test --test-concurrency=1 test/repairAcceptance.browser.test.js`。该用例自行启动隔离 Vite 服务与模拟接口，点击真实 Vue 组件，验证场景外观参数和工作流注入说明，并覆盖桌面暖色与手机暗夜。`standingLayout.browser.test.js`、`standingSpeech.browser.test.js` 同样可显式启用；未设置变量时跳过，不代表已通过浏览器验收。
 
 写这类"读计算样式"或"驱动真实页面"的自检时注意三点：① 切换主题后立刻读 `getComputedStyle` 会拿到过渡起点而不是最终色（面板、开关、`body` 都带 0.3s 过渡），必须先冻结 `transition` 并 `cancel()` 掉已在跑的动画再断言；② `Page.navigate` 到同一个 hash URL 不等于重载（同文档导航），验证"页面是否跟随后端"必须用 `Page.reload{ignoreCache:true}`，否则会得到假阴性；③ 新库首次打开设置页会弹出「更新说明」模态遮罩、吃掉 CDP 鼠标点击的坐标，自动化点击前先发 Escape 关掉它。用 CDP 驱动时若后端端口被队友占用，另开端口 + 在 `%TEMP%` 放一份 import 真实 `vite.config.js` 并只覆盖 proxy target 的临时配置，比改仓库文件再还原更稳。
 

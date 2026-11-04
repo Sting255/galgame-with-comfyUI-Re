@@ -29,7 +29,7 @@ import { getProgramDateKey, getProgramState, formatHhmm } from '../services/prog
 import timeRoutes from './time.js';
 import { generateSchedule, assignNextRefreshTime, snapshotTodaySchedule } from '../services/scheduleGenerator.js';
 import { updateScheduleActivity } from '../services/scheduleEditor.js';
-import { generateImage, getLastWorkflowMode } from '../services/imageSkill.js';
+import { generateImage } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
@@ -425,7 +425,7 @@ router.post('/:characterId/peek/retake', async (req, res) => {
         if (imageUrl) {
           db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
             VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-            .run(`char_${character.id}_schedule_peek_retake`, prompt, result.promptRefined || prompt, JSON.stringify([imageUrl]), getLastWorkflowMode());
+            .run(`char_${character.id}_schedule_peek_retake`, prompt, result.promptRefined || prompt, JSON.stringify([imageUrl]), result.wfMode ?? null);
         }
         broadcast('schedule_peek_ready', {
           character_id: character.id,
@@ -676,7 +676,7 @@ router.post('/:characterId/peek', async (req, res) => {
         if (imageUrl) {
           db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
             VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-            .run(`char_${character.id}_schedule_peek`, generatedPrompt, result.promptRefined || generatedPrompt, JSON.stringify([imageUrl]), getLastWorkflowMode());
+            .run(`char_${character.id}_schedule_peek`, generatedPrompt, result.promptRefined || generatedPrompt, JSON.stringify([imageUrl]), result.wfMode ?? null);
         }
         broadcast('schedule_peek_ready', {
           character_id: character.id,

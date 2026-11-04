@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from .log_widget import LogWidget
 from .network import get_local_ip
+from .service_config import service_port
 
 
 class ServiceIndicator(QWidget):
@@ -65,8 +66,9 @@ class LogPage(QWidget):
     stop_all_clicked = Signal()
     start_clicked = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, project_path, parent=None):
         super().__init__(parent)
+        self._port = service_port(project_path)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -80,7 +82,7 @@ class LogPage(QWidget):
         status_layout = QHBoxLayout()
 
         self.vector_indicator = ServiceIndicator("向量服务", 8765)
-        self.agent_indicator = ServiceIndicator("主控后端", 3099)
+        self.agent_indicator = ServiceIndicator("主控后端", self._port)
 
         status_layout.addWidget(self.vector_indicator)
         status_layout.addWidget(self.agent_indicator)
@@ -168,7 +170,7 @@ class LogPage(QWidget):
             self._cached_ip = get_local_ip()
         if self._cached_ip:
             self._mobile_banner.setText(
-                f'手机网页访问 http://{self._cached_ip}:3099'
+                f'手机网页访问 http://{self._cached_ip}:{self._port}'
             )
             self._mobile_banner.show()
         else:

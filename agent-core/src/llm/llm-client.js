@@ -591,18 +591,12 @@ function resolveAntiRepetitionPenalties(presencePenalty, frequencyPenalty) {
 
 async function acquireSyncSlot(signal) {
   throwIfSyncAborted(signal);
-  let acquired = false, abandoned = false;
-  const pending = acquireSlot().then(() => {
-    // The existing semaphore cannot remove queued waiters. Return a cancelled waiter's slot immediately.
-    if (abandoned) releaseSlot();
-    else acquired = true;
-  });
+  const slot = await acquireSlot({ signal });
   try {
-    await awaitSyncSignal(pending, signal);
     throwIfSyncAborted(signal);
+    return slot;
   } catch (error) {
-    abandoned = true;
-    if (acquired) releaseSlot();
+    releaseSlot(slot);
     throw error;
   }
 }
@@ -697,7 +691,7 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
   throwIfSyncAborted(signal);
   if (config.features.mergeMessages) messages = mergeConsecutiveRoles(messages);
   const limited = _limitEnabled();
-  if (limited) await acquireSyncSlot(signal);
+  const slot = limited ? await acquireSyncSlot(signal) : null;
   try {
   throwIfSyncAborted(signal);
   const requestOptions = {};
@@ -832,7 +826,7 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
   }
   throw lastError;
   } finally {
-    if (limited) releaseSlot();
+    releaseSlot(slot);
   }
 }
 
@@ -930,10 +924,11 @@ async function* _chatStreamInner(messages, {
   signal, // AbortSignal：客户端断开时中止上游请求，避免空烧 token
 } = {}) {
   if (config.features.mergeMessages) messages = mergeConsecutiveRoles(messages);
-  if (_limitEnabled()) await acquireSlot();
+  let slot;
   let total = '';
 
   try {
+    if (_limitEnabled()) slot = await acquireSyncSlot(signal);
     console.log(`\n══════════ [${providerLabel()} → ${label}] ══════════`);
     // 压缩 ANIMA3 等超长模板的日志输出
     const logMsgs = compressLogMessages(messages);
@@ -1012,7 +1007,7 @@ async function* _chatStreamInner(messages, {
     recordLlmCall(label, null, { failed: true });
     throw err;
   } finally {
-    if (_limitEnabled()) releaseSlot();
+    releaseSlot(slot);
   }
 }
 

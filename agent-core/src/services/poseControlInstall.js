@@ -14,7 +14,7 @@
  *
  * ## 设计取舍
  * · 资产放仓库 `assets/pose-control/`（**不进 git**，405MB 二进制；但会随交付包同步过去）。
- * · 安装是**幂等**的：目标已存在且大小一致就跳过，绝不覆盖用户自己装的版本。
+ * · 安装是**幂等**的：目标已存在就保留，绝不覆盖用户自己装的版本。
  * · 找不到 ComfyUI 路径就**什么都不做**（不能猜路径乱写人家磁盘）。
  * · 任何失败只 warn：装不上只意味着"没有体位姿势"，绝不能影响出图主链路。
  */
@@ -49,18 +49,16 @@ export function resolveComfyRoot() {
   return path.resolve(loras, '..', '..');
 }
 
-function sameSize(a, b) {
-  try { return fs.statSync(a).size === fs.statSync(b).size; } catch { return false; }
-}
-
 function copyIfMissing(from, to, label, report) {
+  if (fs.existsSync(to)) return;
   if (!fs.existsSync(from)) { report.skipped.push(`${label}（包里没有该资产）`); return; }
-  if (sameSize(from, to)) return; // 已装好
   try {
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(from, to);
+    // 2026-11-04：检查后另一个进程也可能写入，排他复制守住不覆盖的边界。
+    fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
     report.copied.push(label);
   } catch (err) {
+    if (err.code === 'EEXIST') return;
     report.failed.push(`${label}：${err.message}`);
   }
 }
@@ -83,15 +81,18 @@ function copyTree(from, to, report, label) {
       const s = path.join(src, entry.name);
       const d = path.join(dst, entry.name);
       if (entry.isDirectory()) stack.push([s, d]);
-      else if (entry.isFile()) { fs.copyFileSync(s, d); files += 1; }
+      else if (entry.isFile()) {
+        try { fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL); files += 1; }
+        catch (err) { if (err.code !== 'EEXIST') throw err; }
+      }
     }
   }
   report.copied.push(`${label}（${files} 个文件）`);
 }
 
 function copyDirIfMissing(from, to, label, report) {
-  if (!fs.existsSync(from)) { report.skipped.push(`${label}（包里没有该资产）`); return; }
   if (fs.existsSync(path.join(to, 'node.py'))) return; // 已经装过
+  if (!fs.existsSync(from)) { report.skipped.push(`${label}（包里没有该资产）`); return; }
   try {
     fs.mkdirSync(path.dirname(to), { recursive: true });
     copyTree(from, to, report, label);
@@ -147,7 +148,7 @@ export function ensurePoseControlAssets({ comfyRoot, bundledDir, rtmlibDir, dryR
     }
   }
 
-  report.ok = report.failed.length === 0;
+  report.ok = report.failed.length === 0 && report.skipped.length === 0;
   return report;
 }
 

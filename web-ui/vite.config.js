@@ -1,5 +1,8 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { resolveServicePort } from '../agent-core/src/utils/servicePort.js'
+
+const backendTarget = `http://localhost:${resolveServicePort()}`
 
 export default defineConfig({
   plugins: [vue()],
@@ -8,23 +11,23 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
         // SSE 长连接在生图期间可能长时间无数据，禁用代理层超时
         timeout: 0,
         proxyTimeout: 0,
       },
       '/images': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
       },
       '/avatars': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
       },
       // 小镇像素素材（data/town/assets，由 agent-core 静态服务）
       '/town-assets': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
       },
     },

@@ -12,7 +12,8 @@ function fixture(t, file, initial, dependencies = {}) {
   const component = new Function('Vue', ...bindings, code)(Vue, ...bindings.map(name => dependencies[name] || {}))
   const previous = Object.fromEntries(['window', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   for (const key of ['window', 'document']) Object.defineProperty(globalThis, key, { configurable: true, value: { addEventListener() {}, removeEventListener() {} } })
-  const props = Vue.reactive(initial), events = [], notices = []
+  // 与 Vue 正式挂载一致：未声明的属性是 attrs，不能悄悄作为 props 注入 setup。
+  const props = Vue.reactive(Object.fromEntries(Object.entries(initial).filter(([key]) => key in component.props))), events = [], notices = []
   let state
   const renderer = Vue.createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode() {}, nextSibling() {} })
   const app = renderer.createApp({ setup() {

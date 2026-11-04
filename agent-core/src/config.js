@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { resolveServicePort } from './utils/servicePort.js';
 // 设置读写走独立的 db/settings 模块（不经过 db/index.js，避免形成 config ↔ db 循环依赖）
 import { setSetting, getSetting } from './db/settings.js';
 import { notifyWeatherSourceChange } from './services/weatherSource.js';
@@ -51,7 +52,7 @@ export const HIRES_QUALITY_DEFAULT = 'low';
 export const config = {
   // 开发环境检测：生产启动（launcher / PM2）会注入 NODE_ENV=production；npm run dev 等开发启动不设置
   isDev: process.env.NODE_ENV !== 'production',
-  port: parseInt(process.env.PORT, 10) || 3099,
+  port: resolveServicePort(),
   // 监听地址（2026-10-18 补）。**默认不传 = 监听全部接口**，与历史行为逐字节一致。
   //
   // 为什么默认是全接口而不是 127.0.0.1：手机端（Android WebView 壳）访问 PC 上的服务是刚需，
@@ -751,6 +752,7 @@ export function updatePoseControl({ enabled, strength, image, inputDir, aspect, 
     inputDir: config.comfyui.inputDir,
     aspect: config.comfyui.poseControlAspect,
     poseFromPosition: config.comfyui.poseFromPosition,
+    poseFromPositionPortrait: config.comfyui.poseFromPositionPortrait,
   };
 }
 

@@ -658,8 +658,7 @@ async function _execute(rawPrompt, opts) {
       ragTimeoutMs: opts.ragTimeoutMs,
     });
     if (_limitEnabled()) {
-      await acquireSlot();
-      slotAcquired = true;
+      slotAcquired = await acquireSlot();
     }
     const result = await submitWithRetry(preparation.promptRefined, opts);
     return {
@@ -675,7 +674,7 @@ async function _execute(rawPrompt, opts) {
   } finally {
     activeTaskCount--;
     if (activeTaskCount === 0) processLowQueue();
-    if (slotAcquired) releaseSlot();
+    releaseSlot(slotAcquired);
   }
 }
 

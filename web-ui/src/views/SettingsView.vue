@@ -4053,6 +4053,16 @@ const wfResetting = ref(false)
 const wfSaving = ref(false)
 const showWfModeDialog = ref(false)
 
+const workflowInjectRows = [
+  { node: '画面描述', type: 'PrimitiveString', desc: '替换为本次生成的画面描述（优先替换标题节点里含「请输入画面描述」占位符的输入）' },
+  { node: '画师串', type: 'PrimitiveString', desc: '当前画师串（角色 / 场景 / 全局设置）' },
+  { node: '图片的宽', type: 'PrimitiveInt', desc: '目标图片宽度' },
+  { node: '图片的长', type: 'PrimitiveInt', desc: '目标图片高度' },
+  { node: '质量提示词', type: 'PrimitiveString', desc: '质量提示词；留空时保留工作流里自带的默认值' },
+  { node: '负面提示词', type: 'CLIPTextEncode', desc: '负面提示词；留空时保留默认值，缺少该标题时自动写入 KSampler 负面输入来源的文本节点' },
+  { node: 'lora触发词', type: 'PrimitiveString', desc: '所有已启用 LoRA 的触发词拼接' },
+]
+
 const workflowModeOptions = computed(() => customWorkflowList.value.length > 0
   ? [...BASE_WORKFLOW_MODE_OPTIONS, CUSTOM_WORKFLOW_MODE_OPTION]
   : BASE_WORKFLOW_MODE_OPTIONS)

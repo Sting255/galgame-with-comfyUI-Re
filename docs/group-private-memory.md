@@ -143,7 +143,7 @@ effective = min(GROUP_PRIVATE_MEMORY_TOTAL_CHARS, 人数 × (GROUP_PRIVATE_MEMOR
    代价明显大于收益，且只要该群存在遗忘窗口就每轮都付这个代价。
 3. **想干净地做**需要给 `rolling_summaries` 加"被污染"标记并沿摘要链传递（新列 + 迁移 + 生成/读取两侧改造），
    超出"低优先、顺手做"的量级。
-4. 设计文档本来就把这条写成**刻意不修**的边界：`docs/hypnosis-acceptance-report.md:106`
+4. 设计文档本来就把这条写成**刻意不修**的边界（原催眠功能验收报告，已随 2026-11-04 文档清理删除，可用 `git log --diff-filter=D -- docs/hypnosis-acceptance-report.md` 取回）
    「滚动摘要不受遗忘屏蔽：设计文档 §10 既定边界（重写摘要要再调一次 LLM），刻意不修。」
 
 **结论**：本轮**不做**，把边界写清楚留档：

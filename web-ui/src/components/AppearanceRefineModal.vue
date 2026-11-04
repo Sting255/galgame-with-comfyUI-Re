@@ -101,6 +101,8 @@ const props = defineProps({
   displayName: { type: String, default: '' },
   /** 当前整卡文本（待重写「## 你的外观」的草稿/编辑中人格卡） */
   basePrompt: { type: String, default: '' },
+  /** 当前编辑的服装场景；同时用于标题与分析请求。 */
+  sceneLabel: { type: String, default: '' },
   /** 应用按钮文案 / 底部提示（草稿卡场景父级可改写） */
   applyText: { type: String, default: '应用并保存' },
   applyHint: { type: String, default: '应用到人格卡后会自动保存' },

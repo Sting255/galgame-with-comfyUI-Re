@@ -36,7 +36,10 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { syncReleaseEnv, inspectReleaseEnv } from '../../scripts/lib/releaseLocalConfig.mjs'
 
 const src = readFileSync(new URL('../../scripts/发布-校验并打包.mjs', import.meta.url), 'utf8')
 
@@ -68,8 +71,47 @@ test('③ 打包后要从包内清单断言"没有它"，且断言会 die', () =
 
 test('④ 原有的 .env 剥离仍在（别改回只判目录名的老写法）', () => {
   assert.match(code, /e\.name\s*===\s*'\.env'[\s\S]{0,80}?continue/, 'syncDir 仍要跳过 .env')
-  assert.match(code, /envInPkg\)\s*die\(/, '⑤ 段 .env 的断言仍在且会 die')
+  assert.match(code, /inspectReleaseEnv\(plain, keepEnv\)/, '包内清单要按自用开关验证')
+  assert.match(code, /catch \(error\) \{ die\(error\.message\) \}/, '验证失败要阻断打包')
+  assert.match(code, /syncReleaseEnv\(SRC, path\.join\(DELIVER, 'agent-core'\), keepEnv\)/)
   assert.match(code, /e\.name\s*===\s*'settings\.local\.json'/, 'settings.local.json 的排除也还在')
+})
+
+test('自用包同步最新配置，源文件移除后清理旧配置，公开包清空凭据', t => {
+  const root = mkdtempSync(join(tmpdir(), 'linshe-release-env-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const source = join(root, 'source')
+  const target = join(root, 'target')
+  mkdirSync(source)
+  writeFileSync(join(source, '.env'), 'TEST_KEY=current')
+  syncReleaseEnv(source, target, true)
+  assert.equal(readFileSync(join(target, '.env'), 'utf8'), 'TEST_KEY=current')
+  writeFileSync(join(target, '.env'), 'TEST_KEY=stale')
+  writeFileSync(join(target, '.env.local'), 'TEST_KEY=stale-local')
+  syncReleaseEnv(source, target, true)
+  assert.equal(readFileSync(join(target, '.env'), 'utf8'), 'TEST_KEY=current')
+  assert.equal(existsSync(join(target, '.env.local')), false)
+  writeFileSync(join(source, '.env.local'), 'TEST_KEY=current-local')
+  syncReleaseEnv(source, target, true)
+  assert.equal(readFileSync(join(target, '.env.local'), 'utf8'), 'TEST_KEY=current-local')
+  writeFileSync(join(target, '.env.example'), 'TEST_KEY=')
+  syncReleaseEnv(source, target)
+  assert.equal(existsSync(join(target, '.env')), false)
+  assert.equal(existsSync(join(target, '.env.local')), false)
+  assert.equal(existsSync(join(target, '.env.example')), true)
+  assert.equal(existsSync(join(source, '.env')), true)
+})
+
+test('归档清单：公开包拒绝凭据、自用包允许，任意目录名和分隔符均生效', () => {
+  for (const separator of ['/', '\\']) {
+    for (const file of ['.env', '.env.local']) {
+      const listing = '2026-11-04 00:00:00 ....A 123 100 ' + ['邻舍-v4.1.1', 'agent-core', file].join(separator)
+      assert.throws(() => inspectReleaseEnv(listing), /拒绝交付/)
+      assert.equal(inspectReleaseEnv(listing, true).envInPkg, true)
+    }
+  }
+  assert.deepEqual(inspectReleaseEnv('custom/agent-core/.env.example'), { envInPkg: false, exampleInPkg: true })
+  assert.equal(inspectReleaseEnv('custom/agent-core/.env.local.example').envInPkg, false)
 })
 
 test('⑤ 轮次号 ≥100 必须主动 die，不许拼出 undefined 文件名', () => {

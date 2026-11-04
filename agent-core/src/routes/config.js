@@ -631,6 +631,7 @@ router.put('/llm', async (req, res) => {
   const effectiveUrl = baseURL || config.llm.baseURL;
   if (effectiveUrl && PRESET_LLM_URLS.includes(effectiveUrl) && config.features.serializeBackgroundLLM) {
     updateFeatureFlag('serializeBackgroundLLM', false);
+    applyFromConfig(config);
     console.log('[config] serializeBackgroundLLM auto-disabled (preset LLM selected)');
   }
 
@@ -828,6 +829,7 @@ router.post('/llm/profiles/:id/activate', (req, res) => {
   // preset 检测：与 PUT /api/config/llm 一致
   if (PRESET_LLM_URLS.includes(config.llm.baseURL) && config.features.serializeBackgroundLLM) {
     updateFeatureFlag('serializeBackgroundLLM', false);
+    applyFromConfig(config);
   }
 
   res.json({ ok: true, llmConfig: getLlmConfig(), profiles: getLlmProfiles(), activeProfileId: getActiveProfileId() });

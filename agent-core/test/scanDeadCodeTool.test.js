@@ -71,9 +71,11 @@ test('② 回归钉子：调度器的 start/stop 不许被判成死导出', () =
 
 test('③ 确实抓到了本轮确认过的真死导出（防"空输出假绿"）', () => {
   const text = out();
-  for (const fn of ['findLatestImageInFolder', 'listToyPlay', 'clientCount', 'runWithLimit', 'repairMissingItemImages']) {
+  for (const fn of ['findLatestImageInFolder', 'listToyPlay', 'clientCount', 'repairMissingItemImages']) {
     assert.ok(text.includes(fn), `${fn} 应在清单里（本轮已确认零调用点）`);
   }
+  // 2026-11-04：并发取消回归已使用 runWithLimit；扫描口径包含 test/。
+  assert.equal(text.split('疑似死列')[0].includes('runWithLimit'), false);
 });
 
 test('④ 死列候选数不超过基线（新增未标注的死列会被抓出来）', () => {

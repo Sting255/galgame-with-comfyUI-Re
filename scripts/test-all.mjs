@@ -38,6 +38,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { testProcessDiagnostics } from './lib/testResults.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -127,6 +128,7 @@ function runSuite({ name, cwd, patterns, env = {}, withSetup = false }) {
     return m ? Number(m[1]) : -1
   }
   const stats = {
+    ...testProcessDiagnostics(res),
     tests: num('tests'),
     pass: num('pass'),
     fail: num('fail'),
@@ -149,7 +151,7 @@ function report({ name, key, stats }) {
   console.log(`\n${C.bold}${name} 结果${C.reset}  ${C.dim}（${secs}s）${C.reset}`)
   console.log(`  tests=${tests}  pass=${pass}  fail=${fail}  skipped=${skipped}  cancelled=${cancelled}`)
 
-  const problems = []
+  const problems = [...stats.problems]
   if (fail > 0) problems.push(`fail=${fail}`)
   if (cancelled > 0) {
     // 这是本仓最容易被漏判的一项：摘要 0 fail 但用例没跑完
@@ -165,6 +167,7 @@ function report({ name, key, stats }) {
     console.log(`\n  ${C.dim}失败项（最多列 10 条）${C.reset}`)
     for (const l of notOk) console.log(`    ${l}`)
   }
+  if (stats.diagnostics) console.log(`\n  失败诊断（最多 10 项，每项 50 行）：\n${stats.diagnostics}`)
 
   if (problems.length) {
     console.log(`\n  ${C.red}✗ ${name} 未通过：${problems.join(' / ')}${C.reset}`)

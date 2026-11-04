@@ -86,5 +86,7 @@ test('④ HOST 是空串/纯空格时回落到 undefined（不能变成"只监�
 });
 
 test('⑤ 加了 HOST 之后端口口径没被带歪（默认仍是 3099）', () => {
-  assert.equal(readHost({ HOST: '127.0.0.1' }).port, 3099, 'PORT 默认值不该被这次改动影响');
+  // 显式空值隔离用户 .env；本机可合法改用其它端口。
+  assert.equal(readHost({ HOST: '127.0.0.1', PORT: '' }).port, 3099, 'PORT 默认值不该被这次改动影响');
+  assert.equal(readHost({ HOST: '127.0.0.1', PORT: '3199' }).port, 3199, 'PORT 覆盖必须生效');
 });

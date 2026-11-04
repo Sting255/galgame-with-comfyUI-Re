@@ -16,7 +16,7 @@ import { startEditTask } from '../services/imageEditTasks.js';
 import { deleteByConversation } from '../services/vectorClient.js';
 import { clearConversationMemories } from '../services/memory/memoryRepository.js';
 import { cropPersonalityForEmotion, generateShortPromptWithLLM, runShortPromptMigration, getMigrationStatus, giveGift, getGiftCooldowns, loadEmotionState, saveEmotionSnapshot, loadOath, setOath, canSendRing, loadAffinity } from '../services/emotionEngine.js';
-import { generateImage, generateImageRaw, getLastWorkflowMode } from '../services/imageSkill.js';
+import { generateImage, generateImageRaw } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
 import { forceProactiveNow } from '../services/proactiveChatScheduler.js';
@@ -31,7 +31,7 @@ import {
   OUTFIT_SCENES, listSceneOutfits, upsertSceneOutfits, generateSceneOutfits,
   getSceneOutfitForNow, setCharacterBody, backfillBodyFromExisting,
 } from '../services/outfitScene.js';
-import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS } from '../services/characterStanding.js';
+import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS, STANDING_SCENE_LABELS } from '../services/characterStanding.js';
 import { buildCharacterPersona, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
@@ -961,7 +961,7 @@ router.post('/:id/gift', async (req, res) => {
           const imageUrl = saveBase64Image('gifts', filename, img.base64);
           db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
             VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-            .run(conversationId, result.imagePrompt, imgResult.promptRefined || result.imagePrompt, JSON.stringify([imageUrl]), getLastWorkflowMode());
+            .run(conversationId, result.imagePrompt, imgResult.promptRefined || result.imagePrompt, JSON.stringify([imageUrl]), imgResult.wfMode ?? null);
           db.prepare(`UPDATE messages SET images = ? WHERE id = ?`)
             .run(JSON.stringify([imageUrl]), msgId);
           console.log(`[gift] image attached to msg #${msgId}: ${imageUrl}`);
@@ -1139,7 +1139,7 @@ ${buildCharacterPersona(char, { variant: 'full', outfitScene: 'base' })}
 
       db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
         VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-        .run(`char_${char.id}_avatar`, promptText, result.promptRefined || promptText, JSON.stringify(savedPaths), getLastWorkflowMode());
+        .run(`char_${char.id}_avatar`, promptText, result.promptRefined || promptText, JSON.stringify(savedPaths), result.wfMode ?? null);
 
       // 使相册缓存失效
       invalidateGalleryCache();
@@ -1177,7 +1177,7 @@ router.use(createCharacterBackgroundRouter({ getDb, saveBase64Image, deleteImage
  * @param {string} requirement - 用户额外立绘需求（可空）
  * @param {'normal'|'dynamic'} [mode='normal'] - 姿势风格档位
  */
-function buildStandingMessages(char, requirement, mode = 'normal') {
+export function buildStandingMessages(char, requirement, mode = 'normal', scene = null) {
   const worldSetting = getWorldSetting();
   const msgs = [
     { role: 'system', content: worldSetting
@@ -1190,9 +1190,16 @@ function buildStandingMessages(char, requirement, mode = 'normal') {
   ];
   if (worldSetting) msgs.push({ role: 'system', content: getWorldIntegrationRule('interaction') });
   msgs.push({ role: 'system', content: STANDING_IMAGE_PROMPT_RULE.rule_content });
+  // 2026-11-04：指定场景必须取该槽的服装，不受生成时的日程选装影响。
+  // 使用 text 保留本地共用身体描述；缺槽时关闭自动选装，避免悄悄借用另一套。
+  const outfit = scene ? listSceneOutfits(char.id).find(item => item.scene === scene) : null;
+  const outfits = scene
+    ? (outfit ? { limited: [{ name: outfit.name, description: outfit.text || outfit.description }], exclusive: null } : null)
+    : 'auto';
+  const sceneLabel = STANDING_SCENE_LABELS[scene] || scene;
   msgs.push({
     role: 'system',
-    content: `【角色外观信息】\n${buildCharacterPersona(char, { variant: 'short', person: char.display_name })}`,
+    content: `【角色外观信息${scene ? ` · 本次绘制「${sceneLabel}」形象` : ''}】\n${buildCharacterPersona(char, { variant: 'short', person: char.display_name, outfits })}`,
   });
   msgs.push({
     role: 'user',
@@ -1288,6 +1295,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
     filename: path.basename(stageBase) + ext,
     promptRefined: result.promptRefined || promptText,
     sourceFilename: img.filename || 'comfy.png',
+    wfMode: result.wfMode ?? null,
   };
 }
 
@@ -1295,7 +1303,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
  * 确认落库：删旧立绘 → 暂存文件转正 → 更新 characters.standing_url → 记 image_tasks。
  * @returns {string} standing_url
  */
-function commitStandingImage({ characterId, pendingPath, promptText, promptRefined, sourceFilename }) {
+function commitStandingImage({ characterId, pendingPath, promptText, promptRefined, sourceFilename, wfMode }) {
   // 旧立绘文件先清掉，再保存新图
   const db = getDb();
   const old = db.prepare('SELECT standing_url FROM characters WHERE id = ?').get(characterId);
@@ -1314,7 +1322,7 @@ function commitStandingImage({ characterId, pendingPath, promptText, promptRefin
 
   db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
     VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-    .run(`char_${characterId}_standing`, promptText, promptRefined || promptText, JSON.stringify([url]), getLastWorkflowMode());
+    .run(`char_${characterId}_standing`, promptText, promptRefined || promptText, JSON.stringify([url]), wfMode ?? null);
 
   invalidateGalleryCache();
   return url;
@@ -1334,6 +1342,7 @@ async function renderStandingImage(char, promptText) {
     promptText,
     promptRefined: staged.promptRefined,
     sourceFilename: staged.sourceFilename,
+    wfMode: staged.wfMode,
   });
 }
 
@@ -1367,9 +1376,9 @@ async function renderSceneStanding(char, scene, composedText, explicitPrompt = '
   getDb().prepare(
     // 列名是 prompt_original（不是 prompt）—— 2026-10-29 真机验收：写成 prompt 会让整条
     // 场景立绘生成在「图已出、落盘已完成」之后抛 500，前端表现为「生成失败」但图其实有了。
-    `INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, output_paths, status, created_at)
-     VALUES (?, ?, ?, ?, 'done', CURRENT_TIMESTAMP)`
-  ).run(`char_${char.id}_scene_standing_${scene}`, promptText, staged.promptRefined || promptText, JSON.stringify([url]));
+    `INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, output_paths, workflow_template, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'done', CURRENT_TIMESTAMP)`
+  ).run(`char_${char.id}_scene_standing_${scene}`, promptText, staged.promptRefined || promptText, JSON.stringify([url]), staged.wfMode);
   invalidateGalleryCache();
   console.log(`[scene-standing] ${char.display_name} 的「${scene}」立绘已生成：${url}`);
   return url;
@@ -1442,6 +1451,7 @@ router.post('/:id/generate-standing-task', async (req, res) => {
         const staged = await runStandingGeneration(char, text, { stageBase, onProgress });
         ctx.promptRefined = staged.promptRefined;
         ctx.sourceFilename = staged.sourceFilename;
+        ctx.wfMode = staged.wfMode;
         return { filename: staged.filename };
       },
       finalize: (task) => commitStandingImage({
@@ -1450,6 +1460,7 @@ router.post('/:id/generate-standing-task', async (req, res) => {
         promptText: task.meta.promptText,
         promptRefined: ctx.promptRefined,
         sourceFilename: ctx.sourceFilename,
+        wfMode: ctx.wfMode,
       }),
       restart: () => buildTask(text),
     });
@@ -1519,10 +1530,11 @@ async function renderSceneStandingImage(char, promptText, scene) {
   const stageBase = path.join(getPendingDir(), `standing-${char.id}-${scene}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   fs.mkdirSync(path.dirname(stageBase), { recursive: true });
   const staged = await runStandingGeneration(char, promptText, { stageBase });
-  return commitSceneStandingImage(char.id, scene, promptText, path.join(getPendingDir(), staged.filename), staged.sourceFilename);
+  return commitSceneStandingImage(char.id, scene, promptText, path.join(getPendingDir(), staged.filename), staged);
 }
 
-function commitSceneStandingImage(characterId, scene, promptText, pendingPath, sourceFilename) {
+function commitSceneStandingImage(characterId, scene, promptText, pendingPath, staged) {
+  const { sourceFilename, promptRefined, wfMode } = staged;
   if (!getDb().prepare('SELECT id FROM characters WHERE id = ?').get(characterId)) {
     throw new Error('角色已不存在，无法替换形象');
   }
@@ -1536,23 +1548,25 @@ function commitSceneStandingImage(characterId, scene, promptText, pendingPath, s
   const url = buildImageUrl('standing', filename);
 
   upsertSceneStanding(characterId, scene, { imageUrl: url, promptText });
+  getDb().prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, output_paths, workflow_template, status, finished_at)
+    VALUES (?, ?, ?, ?, ?, 'done', datetime('now'))`)
+    .run(`char_${characterId}_scene_standing_${scene}`, promptText, promptRefined || promptText, JSON.stringify([url]), wfMode ?? null);
   if (oldRow?.image_url) { try { deleteImageFileByUrl(oldRow.image_url); } catch {} }
   invalidateGalleryCache();
   return url;
 }
 
 function startSceneStandingTask(char, scene, promptText, beforeUrl) {
-  let sourceFilename;
+  let staged;
   return startEditTask({
     action: 'standing',
     url: beforeUrl,
     meta: { characterId: char.id, characterName: char.display_name, scene, promptText },
     run: async ({ stageBase, onProgress }) => {
-      const staged = await runStandingGeneration(char, promptText, { stageBase, onProgress });
-      sourceFilename = staged.sourceFilename;
+      staged = await runStandingGeneration(char, promptText, { stageBase, onProgress });
       return staged;
     },
-    finalize: task => commitSceneStandingImage(char.id, scene, promptText, task.pendingPath, sourceFilename),
+    finalize: task => commitSceneStandingImage(char.id, scene, promptText, task.pendingPath, staged),
     restart: () => startSceneStandingTask(char, scene, promptText, beforeUrl),
   });
 }
