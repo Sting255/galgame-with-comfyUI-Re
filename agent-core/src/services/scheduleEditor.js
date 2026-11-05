@@ -22,6 +22,9 @@ import {
   parseHhmm,
   toProgramTime,
 } from './programTime.js';
+import { assertScheduleEditable } from './scheduleGenerationLock.js';
+import { overlaps } from './cohabitationSchedule.js';
+import { refreshResidenceDailySleep } from './cohabitationPersistence.js';
 
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
@@ -114,8 +117,7 @@ function loadTodaySchedule(characterId) {
 }
 
 function finishEdit(characterId) {
-  invalidateCache(characterId);
-  syncSleepingState(characterId);
+  for (const id of refreshResidenceDailySleep(getDb(), characterId)) { invalidateCache(id); syncSleepingState(id); }
 }
 
 /** 日程更改成功 → 广播给前端（右上角 toast） */
@@ -150,6 +152,7 @@ function markEdited(activity, source) {
  * @returns {{ ok: boolean, error?: string, activities?: array }}
  */
 export function updateScheduleActivity(characterId, index, patch = {}) {
+  assertScheduleEditable();
   const schedule = loadTodaySchedule(characterId);
   if (!schedule || !Array.isArray(schedule) || !schedule[index]) {
     return { ok: false, error: '日程条目不存在' };
@@ -157,6 +160,7 @@ export function updateScheduleActivity(characterId, index, patch = {}) {
 
   // 手动编辑只改内容，不改时间：未传或传空时沿用原条目的时间段
   const base = schedule[index];
+  if (base.sharedEventId) return { ok: false, error: '这是共同活动，请通过重置所有人重新安排，避免与同行者日程不一致' };
   const clean = sanitizeActivityInput({
     ...patch,
     startTime: patch.startTime || base.startTime,
@@ -168,6 +172,16 @@ export function updateScheduleActivity(characterId, index, patch = {}) {
 
   const updated = [...schedule];
   updated[index] = { ...updated[index], ...clean };
+  if (base.residence) {
+    if (clean.replyDelay === -1) {
+      updated[index].sleepOriginalDescription = clean.description;
+      updated[index].sleepAtHome = clean.location === base.residence.name;
+    } else {
+      delete updated[index].participantIds;
+      delete updated[index].sleepOriginalDescription;
+      delete updated[index].sleepAtHome;
+    }
+  }
   markEdited(updated[index], 'manual');
 
   saveTodaySchedule(characterId, updated);
@@ -183,6 +197,7 @@ export function updateScheduleActivity(characterId, index, patch = {}) {
  * @returns {{ ok: boolean, reason?: string, activity?: object }}
  */
 export function applyScheduleChange(characterId, newActivity, now = getProgramNow()) {
+  assertScheduleEditable();
   const schedule = loadTodaySchedule(characterId);
   if (!schedule || !Array.isArray(schedule)) {
     return { ok: false, reason: 'no_schedule' };
@@ -205,6 +220,7 @@ export function applyScheduleChange(characterId, newActivity, now = getProgramNo
   if (newE <= nowMin) {
     return { ok: false, reason: 'expired' }; // 约定时段已经过去了，插入没有意义
   }
+  if (schedule.some(a => a.sharedEventId && overlaps(a, clean))) return { ok: false, reason: 'shared_activity_conflict' };
 
   // 保留未被覆盖的条目；与 [newS, newE) 重叠的条目裁掉重叠段（跨午夜条目拆成两段处理）
   const kept = [];

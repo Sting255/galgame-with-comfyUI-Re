@@ -217,7 +217,7 @@ export function upsertSceneOutfits(characterId, outfits) {
       if (!o?.scene || !SCENE_KEYS.includes(o.scene) || !o.name) continue;
       const body = o.body != null ? String(o.body).trim().slice(0, 2000) : null;
       // 写库前过一遍脚部口径：居家→拖鞋、睡衣→赤脚（见 enforceSceneFootwear 注释）
-      const desc = enforceSceneFootwear(o.scene, String(o.description || '').trim()).slice(0, 1200);
+      const desc = enforceSceneFootwear(o.scene, String(o.description || '').trim()).slice(0, 2400);
       const exist = find.get(characterId, o.scene);
       if (exist) { upd.run(o.name, desc, body, exist.id); updated++; }
       else { ins.run(characterId, o.name, desc, o.scene, body || ''); added++; }
@@ -236,6 +236,8 @@ function cropPersona(basePrompt) {
 }
 
 /** 仅设计几套换装；默认外观只作为基准，不进入返回值与保存流程。 */
+const SCENE_LABELS = { nude: '裸体', work: '常服', casual: '私服', home: '居家', sleep: '睡衣' };
+
 export async function generateSceneOutfits(character, opts = {}) {
   const displayName = character?.display_name || '角色';
   const persona = cropPersona(character?.base_prompt);
@@ -286,6 +288,21 @@ export async function generateSceneOutfits(character, opts = {}) {
     seeds,
     bodySource,
   });
+  // 上游 v4.2.0：神说/用户对服装提出修改要求时，要求必须作为独立 user 消息投递，
+  // 否则模型只看到「反推未填分项」的指令、收不到本次要改什么（真机上表现为「说了但没改」）。
+  const instructionText = String(opts.instruction || '').trim();
+  if (instructionText) {
+    // ⚠️ 拼进**已有的收尾指令**那条 user 消息里，不新增一条：
+    //   ① 「请设计 casual、home」是这条链路的固定锚点，新增消息会把它顶掉；
+    //   ② 一次生成只应有**一条** user 消息（多一条会让模型把要求当成新一轮对话）。
+    const last = msgs[msgs.length - 1];
+    const current = (Array.isArray(opts.currentOutfits) ? opts.currentOutfits : [])
+      .filter(o => o && targetScenes.includes(o.scene) && String(o.description || '').trim())
+      .map(o => `【现有${SCENE_LABELS[o.scene] || o.scene}】${String(o.name || '').trim() ? String(o.name).trim() + '：' : ''}${String(o.description).trim()}`);
+    last.content += `\n\n【本次修改要求】\n${instructionText}`
+      + (current.length ? `\n\n【这套现在长这样，在它基础上改，别推倒重来】\n${current.join('\n')}` : '')
+      + '\n\n只改被要求改的部分（颜色/款式/材质/配饰），其余沿用上面的身体与服装基准；输出格式与字段要求完全不变。';
+  }
 
   const raw = await chatSync(msgs, {
     model: config.llm.model || 'deepseek-chat', temperature: 0.8, response_format: { type: 'json_object' }, label: '场景服装生成',

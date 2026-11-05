@@ -107,8 +107,8 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 调试过程中产生的临时验证脚本（`test.js`、`debug-*.js`、根目录散落的 scratch 脚本等）默认用完即删，不要留在仓库里污染 `git status` 和搜索结果。
 
 1. 临时脚本只用于当场验证，跑完、结论确认后就删除；随手生成的调试日志（如 `*.log`）一并清理
-2. 如果脚本验证的是真实 bug 的复现路径，或是一段以后还要反复跑的回归逻辑，把它改写成正式测试：`agent-core` 放 `agent-core/test/*.test.js`（还会扫 `src/services/*.test.js`），`web-ui` 放 `web-ui/test/*.test.js`，统一用 `node --test`（`npm test`）
-3. 判断口径：进了 `test/` 目录、命名规范、能被 `npm test` 收集到的是正式测试，随代码一起维护；其余一律不留
+2. 临时脚本用完即删。**本项目已移除全部自动化测试**（2026-11-06 用户决定），不再新增 `test/` 目录与 `*.test.js`；验证方式是解压交付包真启动 + 真机点一遍
+3. 判断口径：没有「正式测试」这一层了。要留的验证逻辑写成文档里的复现步骤（`docs/`），或留成可按需手动跑的独立脚本放 `scripts/`，不要伪装成测试收集链
 
 ## 角色生图人格组装（characterPersona）
 
@@ -130,4 +130,15 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 
 1. 数据源两张表：`character_outfits`（角色专属形态/装甲/衣服，每角色同时只启用一套，启用互斥由 `outfitService` 保证；详情卡 UI 入口暂注释隐藏在 `CharacterDetailModal.vue`，搜「暂时隐藏」）、`global_outfits`（通用限时服饰如女仆装 tag 组合，可多套叠加；管理方式未定，`condition_json` 预留注入条件，当前 `enabled` 即生效）
 2. 查询生效外观只走 `outfitService.getActiveOutfits(characterId)`；注入文本格式与着装优先级说明（两者都有 / 只有限时 / 只有专属三种）只改 `buildOutfitInjectionBlocks`，不要在调用点拼
-3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`，并同步维护 `agent-core/test/characterPersona.test.js`（含无外观时与旧口径逐字节一致的回归断言）
+3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`；改完在真机上换一次衣服确认五套身体没漂
+
+## git commit 提交
+
+commit提交必须按照大功能划分，大功能里如果还有小功能点，划分到一起写进注释里的要点，不要把其他功能的改动混在同一个commit中，每个commit中文注释作用或功能
+
+## 最终结论输出格式要求
+
+运用第一性原理思考，拒绝经验主义和路径盲从，不要假设我完全清楚目标，保持审慎，从原始需求和问题出发，若目标模糊请停下和我讨论，若目标清晰但路径非最优，请直接建议更短、更低成本的办法。
+所有最终结论必须分为两个部分：
+• ​直接执行：按照我当前的要求和逻辑，直接给出任务结果。
+• ​深度交互：基于底层逻辑对我的原始需求进行“审慎挑战”。包括但不限于：质疑我的动机是否偏离目标（XY问题）、分析当前路径的弊端、并给出更优雅的替代方案。

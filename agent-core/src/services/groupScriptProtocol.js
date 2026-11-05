@@ -15,7 +15,7 @@
 
 import { config } from '../config.js';
 import { getGlobalRule } from '../db/index.js';
-import { isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
+import { isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt, extractUnbracedGroupImagePrompt } from '../utils/groupImagePrompt.js';
 import { parseGroupEmojiText } from './emojiService.js';
 
 export function detectMentions(text, members) {
@@ -175,6 +175,8 @@ export function parseScriptLine(line, membersByName) {
         imagePrompt: embeddedImage.prompt,
       };
     }
+    const unbraced = extractUnbracedGroupImagePrompt(trimmed);
+    if (unbraced) return { continuation: null, imagePrompt: unbraced };
     return { continuation: trimmed };
   }
 
@@ -186,6 +188,9 @@ export function parseScriptLine(line, membersByName) {
   // 有说话人格式但不是群成员：整行丢弃，避免用户台词被拼进上一位角色气泡。
   if (!member) return null;
   if (!body) return null;
+  // 容错：模型漏写花括号的长英文画面描述，直接当发图行
+  const unbraced = extractUnbracedGroupImagePrompt(body);
+  if (unbraced) return { speaker: member, text: null, imagePrompt: unbraced };
   // 防御：模型照抄 transcript 里的图片占位符 → 丢弃，发图必须走 {...} 格式
   if (/^\[?发了一张图片\]?$/.test(body)) return null;
   if (/^<image_sent\s*\/>$/i.test(body)) return null;

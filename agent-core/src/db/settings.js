@@ -117,6 +117,7 @@ export const SETTING_TO_CONFIG = {
   feature_disturbMode:              { obj: 'features', key: 'disturbMode',         type: 'bool' },
   feature_schedule:                 { obj: 'features', key: 'schedule',             type: 'bool' },
   feature_scheduleRefreshDays:      { obj: 'features', key: 'scheduleRefreshDays',  type: 'int' },
+  feature_scheduleDisableThinking:  { obj: 'features', key: 'scheduleDisableThinking', type: 'bool' },
   feature_serializeBackgroundLLM:     { obj: 'features', key: 'serializeBackgroundLLM',    type: 'bool' },
   feature_backgroundLLMMaxConcurrency: { obj: 'features', key: 'backgroundLLMMaxConcurrency', type: 'int' },
   feature_mergeMessages:             { obj: 'features', key: 'mergeMessages',             type: 'bool' },
@@ -152,12 +153,11 @@ export const SETTING_TO_CONFIG = {
   // 加载时会走到 setSetting 里那条 "key is not registered" 的 warn（真机日志已吃过这个亏）。
   feature_jailbreak:                 { obj: 'features', key: 'jailbreak',               type: 'bool' },
   feature_groupIdleBudget:           { obj: 'features', key: 'groupIdleBudget',        type: 'int'  },
-  feature_deepThinkMode:             { obj: 'features', key: 'deepThinkMode',          type: 'bool' },
+  // 上游 v4.2.0：下线深度思考预规划链路，feature_deepThinkMode 一并删除。
   // 上游 v3.9.0 合并：灵魂系统开关（feature_soul）—— 迁移时会把旧安装的关闭值一次性改成开启，
   // 之后 setSetting('feature_soul') 也能持久化（否则重启后丢，日志会 warn）。
   feature_soul:                      { obj: 'features', key: 'soul',                  type: 'bool' },
-  // 上游 v3.9.0 合并：媒体内容页自动抓帖间隔（分钟）
-  media_auto_minutes: { obj: 'features', key: 'mediaAutoMinutes', type: 'int' },
+  // media_auto_minutes 与上方 feature_mediaAutoMinutes 是同一个键，本地保留上游那份，删掉这条重复。
   group_activity: { obj: 'groupChat', key: 'activity', type: 'int' },
   group_temperature:                 { obj: 'groupChat', key: 'temperature',           type: 'float' },
   group_summary_interval:            { obj: 'groupChat', key: 'summaryInterval',      type: 'int' },

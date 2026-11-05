@@ -4,15 +4,7 @@
   <Teleport to="body">
     <Transition name="np-window">
       <div v-if="visible" class="np-overlay" @click.self="closeWindow">
-        <div
-          v-if="!detailArticle"
-          class="np-close"
-          role="button"
-          tabindex="0"
-          aria-label="关闭日报"
-          @click="closeWindow"
-          @keydown.enter="closeWindow"
-        >✕</div>
+        <linshe-close-button v-if="!detailArticle" class="np-close" label="关闭日报" @click="closeWindow" />
 
         <!-- 加载骨架 -->
         <div v-if="loading" class="np-gate">
@@ -209,12 +201,23 @@
             variant="link"
             size="sm"
             :loading="regenerating"
-            :disabled="regenerating"
+            :disabled="regenerating || deleting"
             @click="regeneratePaper"
           >{{ regenerating ? '正在重新生成…' : '重新生成今日日报' }}</linshe-button>
         </div>
         <span class="np-colophon-hint">点击任意新闻，读全文、看大图</span>
-        <span class="np-colophon-motto">今日事，早知道</span>
+        <div class="np-colophon-end">
+          <span class="np-colophon-motto">今日事，早知道</span>
+          <linshe-button
+            v-if="isToday"
+            variant="link"
+            tone="danger"
+            size="sm"
+            :loading="deleting"
+            :disabled="regenerating || navLoading || dismissing || Object.values(regenLoading).some(Boolean)"
+            @click="deleteTodayPaper"
+          >删除今日报纸</linshe-button>
+        </div>
       </footer>
 
       <!-- 新闻详情：盖在版面上的「摊开的一页」 -->
@@ -283,6 +286,8 @@
 </template>
 
 <script setup>
+import LinsheCloseButton from "./ui/LinsheCloseButton.vue"
+
 // 《邻舍日报》——小镇预告报纸阅读窗。
 // 纸面视觉属于设计系统的「质感岛」例外家族（同信箱/世界观编辑器）：固定暖纸底 + 墨色文字，
 // 不随暗夜主题切换；不套 LinsheModal 外壳，四周留一圈暖纸衬底，纸面带报边做旧质感。
@@ -307,10 +312,11 @@ const props = defineProps({
   // 打开时直接定位到某一期（'' = 今天）。与本地日期比较，避免 UTC 在凌晨偏移一天
   initialDate: { type: String, default: '' },
 })
-const emit = defineEmits(['update:modelValue', 'close', 'read'])
+const emit = defineEmits(['update:modelValue', 'close', 'read', 'deleted'])
 
 // toast 走注入（App.vue 提供）；没有注入时静默降级，测试里不需要 mock
 const toastFn = inject('toast', null)
+const confirmFn = inject('confirm', async () => false)
 
 const visible = computed({
   get: () => props.modelValue,
@@ -326,6 +332,7 @@ const loading = ref(false)
 const urging = ref(false)
 // 整版重印中（「重新生成今日日报」按钮）
 const regenerating = ref(false)
+const deleting = ref(false)
 const dismissing = ref(false)
 const detail = ref(null)   // { kind: 'lead' | 'world' } | { kind: 'item', index }
 const zoomSrc = ref('')
@@ -521,6 +528,7 @@ function closeWindow() {
 // Esc 分层关：大图 → 详情页 → 整份报纸（原 LinsheModal 的职责收编到这里）
 function onWindowKeydown(e) {
   if (e.key !== 'Escape') return
+  if (deleting.value) return
   if (zoomSrc.value) { zoomSrc.value = ''; return }
   if (detail.value) { closeDetail(); return }
   closeWindow()
@@ -589,7 +597,7 @@ async function urgePrint() {
 }
 
 async function regeneratePaper() {
-  if (regenerating.value || !isToday.value) return
+  if (regenerating.value || deleting.value || !isToday.value) return
   regenerating.value = true
   try {
     const data = await api.regenerateTodayNewspaper()
@@ -603,6 +611,31 @@ async function regeneratePaper() {
     toastFn?.(err.message || '日报重新生成失败，请稍后再试', 'error')
   } finally {
     regenerating.value = false
+  }
+}
+
+async function deleteTodayPaper() {
+  if (deleting.value || regenerating.value || navLoading.value || dismissing.value ||
+      Object.values(regenLoading).some(Boolean) || !isToday.value || !todayPaper.value) return
+  const date = todayPaper.value.publish_date
+  deleting.value = true
+  try {
+    const confirmed = await confirmFn({
+      title: '删除今日报纸',
+      message: '确定删除今日报纸及其配图吗？删除后无法恢复。',
+      okText: '删除',
+      danger: true,
+    })
+    if (!confirmed) return
+    await api.deleteNewspaperEdition(date)
+    // 保留纸面直到原有的 0.3 秒关闭动画结束，列表由父级刷新。
+    closeWindow()
+    emit('deleted', date)
+    toastFn?.('今日报纸已删除', 'success')
+  } catch (err) {
+    toastFn?.(err.message || '报纸删除失败，请稍后再试', 'error')
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -691,40 +724,17 @@ onBeforeUnmount(() => {
   background: linear-gradient(180deg, #f7f2e7 0%, #f3ecdc 100%);
 }
 
-/* 悬浮关闭钮：报头右上角的墨色圆章（质感岛内自包含样式，不套主题按钮） */
+/* 只保留报头右上角定位；按钮皮肤由 LinsheCloseButton 统一维护。 */
 .np-close {
   position: absolute;
   top: calc(var(--np-inset, 0px) + 10px + env(safe-area-inset-top, 0px));
   right: calc(var(--np-inset, 0px) + 12px + env(safe-area-inset-right, 0px));
   z-index: 20;
-  width: 40px;
-  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px solid rgba(58, 42, 26, 0.55);
-  border-radius: 50%;
-  background: rgba(255, 252, 245, 0.88);
-  color: #6b5a48;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 2px 10px rgba(58, 42, 26, 0.2);
   user-select: none;
-  transition: background 0.3s ease, color 0.3s ease, transform 0.3s ease;
 }
-.np-close:hover,
-.np-close:focus-visible {
-  background: #8c3b22;
-  border-color: #8c3b22;
-  color: #f5efe0;
-  transform: rotate(90deg);
-}
-.np-close:focus-visible {
-  outline: 2px solid rgba(140, 59, 34, 0.5);
-  outline-offset: 2px;
-}
-
 /* 窗口浮现（0.3s 口径）：衬底渐入渐出，纸面与报头关闭钮从底部往上浮。
    淡入淡出与上浮都走 --ease-out（cubic-bezier(0.22, 1, 0.36, 1)，先快后慢） */
 .np-window-enter-active,
@@ -738,16 +748,20 @@ onBeforeUnmount(() => {
 .np-window-enter-active .np-paper,
 .np-window-enter-active .np-gate,
 .np-window-leave-active .np-paper,
-.np-window-leave-active .np-gate,
+.np-window-leave-active .np-gate {
+  transition: transform 0.34s var(--ease-out);
+  will-change: transform;
+}
 .np-window-enter-active .np-close,
 .np-window-leave-active .np-close {
-  transition: transform 0.34s var(--ease-out);
   will-change: transform;
 }
 .np-window-enter-from .np-paper,
 .np-window-enter-from .np-gate,
 .np-window-leave-to .np-paper,
-.np-window-leave-to .np-gate,
+.np-window-leave-to .np-gate {
+  transform: translateY(var(--np-rise, 56px));
+}
 .np-window-enter-from .np-close,
 .np-window-leave-to .np-close {
   transform: translateY(var(--np-rise, 56px));
@@ -1188,6 +1202,14 @@ onBeforeUnmount(() => {
   font-family: 'Kaiti SC', 'STKaiti', 'KaiTi', 'SimSun', serif;
   font-size: 13px;
 }
+.np-colophon-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-left: auto;
+}
 
 /* ── 新闻详情（盖在版面上的摊开一页） ── */
 .np-detail {
@@ -1352,6 +1374,13 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .np-paper {
     padding: 14px 16px 12px;
+  }
+  .np-mast-row {
+    padding-right: 0;
+  }
+  .np-close {
+    top: calc(var(--np-inset, 8px) + 8px + env(safe-area-inset-top, 0px));
+    right: calc(var(--np-inset, 8px) + 10px + env(safe-area-inset-right, 0px));
   }
   /* 期号切换条：窄屏允许换行、隐藏目标期日期，避免横向溢出 */
   .np-edition-switch {

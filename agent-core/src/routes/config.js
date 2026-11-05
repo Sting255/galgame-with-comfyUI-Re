@@ -30,6 +30,8 @@ import {
   getIntimateActionQuotaPayload,
   setIntimateActionDailyLimit,
 } from '../services/intimateActionQuota.js';
+import { buildLanguageStylePolishRequest } from '../services/worldLanguageStylePolish.js';
+import { chatSync as chatSyncWithLorebook } from '../services/lorebook/runtime.js';
 
 const router = Router();
 
@@ -356,6 +358,7 @@ router.put('/features', (req, res) => {
     return res.status(400).json({ error: `Invalid feature key: ${key}` });
   }
   updateFeatureFlag(key, value);
+  if (key === 'proactiveChat') restartProactiveFreq();
   if (key === 'serializeBackgroundLLM') {
     applyFromConfig(config);
   }
@@ -573,15 +576,19 @@ router.put('/moment-freq', (req, res) => {
   res.json({ ok: true, momentFreq: config.features.momentFreq, momentFreqMode: config.features.momentFreqMode });
 });
 
-// PUT /api/config/schedule-refresh-days — 更新日程刷新周期（天，1~3）
+// PUT /api/config/schedule-refresh-days — 更新日程设置（兼容只传刷新周期）
 router.put('/schedule-refresh-days', (req, res) => {
-  const { value } = req.body;
+  const { value, disableThinking } = req.body;
   const n = parseInt(value, 10);
   if (!Number.isInteger(n) || n < 1 || n > 3) {
     return res.status(400).json({ error: 'value must be an integer 1~3' });
   }
+  if (disableThinking !== undefined && typeof disableThinking !== 'boolean') {
+    return res.status(400).json({ error: 'disableThinking must be a boolean' });
+  }
   updateScheduleRefreshDays(n);
-  res.json({ ok: true, scheduleRefreshDays: config.features.scheduleRefreshDays });
+  if (disableThinking !== undefined) updateFeatureFlag('scheduleDisableThinking', disableThinking);
+  res.json({ ok: true, scheduleRefreshDays: config.features.scheduleRefreshDays, scheduleDisableThinking: config.features.scheduleDisableThinking });
 });
 
 // PUT /api/config/background-llm-concurrency — 更新后台 LLM 并发数 1~10
@@ -1240,9 +1247,10 @@ router.get('/world-settings', (req, res) => {
 
 // POST /api/world-settings — 创建新世界观
 router.post('/world-settings', (req, res) => {
-  const { name, content } = req.body;
+  const { name, content, language_style } = req.body;
+  if (language_style !== undefined && typeof language_style !== 'string') return res.status(400).json({ error: '语言风格必须是文本' });
   if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
-  const item = createWorldSetting({ name: name.trim(), content: content?.trim() || '' });
+  const item = createWorldSetting({ name: name.trim(), content: content?.trim() || '', language_style: language_style?.trim() });
   res.json({ ok: true, item });
 });
 
@@ -1250,8 +1258,9 @@ router.post('/world-settings', (req, res) => {
 router.put('/world-settings/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id || !getWorldSettingById(id)) return res.status(404).json({ error: 'not found' });
-  const { name, content } = req.body;
-  const item = updateWorldSetting(id, { name: name?.trim(), content: content?.trim() });
+  const { name, content, language_style } = req.body;
+  if (language_style !== undefined && typeof language_style !== 'string') return res.status(400).json({ error: '语言风格必须是文本' });
+  const item = updateWorldSetting(id, { name: name?.trim(), content: content?.trim(), language_style: language_style?.trim() });
   res.json({ ok: true, item });
 });
 
@@ -1274,6 +1283,28 @@ router.post('/world-settings/:id/activate', (req, res) => {
 // GET /api/config/system-rules — 获取系统破限词（供世界观润色等 AI 功能请求体携带）
 router.get('/system-rules', (_req, res) => {
   res.json({ content: getSystemRules({ roleplay: false }) || '' });
+});
+
+// 语言风格只生成草稿；保存复用世界观局部更新接口。
+router.post('/world-settings/:id/language-style/polish', async (req, res) => {
+  const id = Number(req.params.id);
+  const world = Number.isSafeInteger(id) && id > 0 ? getWorldSettingById(id) : null;
+  if (!world) return res.status(404).json({ error: '世界观不存在' });
+  const source = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
+  if (!source) return res.status(400).json({ error: '请先填写语言风格需求或示例' });
+  try {
+    const { messages, lorebook } = buildLanguageStylePolishRequest({
+      content: source,
+      worldContent: world.content,
+      worldId: world.id,
+    });
+    const result = await chatSyncWithLorebook(messages, { temperature: 0.7, label: '语言风格润色', lorebook });
+    const polished = (result || '').trim().replace(/^```[^\n]*\n([\s\S]*?)\n?```$/, '$1').trim();
+    if (!polished) return res.status(502).json({ error: 'AI 生成结果为空，请重试' });
+    res.json({ ok: true, content: polished });
+  } catch (err) {
+    res.status(500).json({ error: '润色失败: ' + err.message });
+  }
 });
 
 // POST /api/world-settings/polish — AI 一键润色扩写世界观（酒馆世界书风格）

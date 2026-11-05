@@ -320,7 +320,7 @@
         :recent-images="groupAlbumImages"
         :recent-loading="groupAlbumLoading"
         @close="showGroupAvatarPicker = false"
-        @save="onGroupAvatarSave"
+        :save-handler="onGroupAvatarSave"
         @switch-to-recent="loadGroupAvatarRecents"
       />
     </Teleport>
@@ -502,6 +502,8 @@
 </template>
 
 <script setup>
+import LinsheCloseButton from "../components/ui/LinsheCloseButton.vue"
+
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroupsStore } from '../stores/groups.js'
@@ -1525,10 +1527,10 @@ async function onGroupAvatarSave(base64) {
   groupAvatarSaving.value = true
   try {
     await store.setGroupAvatar(store.activeGroupId, base64)
-    showGroupAvatarPicker.value = false
     toast?.('群头像已更新', 'success')
   } catch (err) {
     toast?.(err.message || '群头像保存失败', 'error')
+    throw err
   } finally { groupAvatarSaving.value = false }
 }
 
@@ -1647,7 +1649,12 @@ async function clearGroupAvatar() {
   border-radius:inherit; display:block;
 }
 .msg-same-role .msg-avatar { opacity: 0; pointer-events: none; }
-.avatar-fallback { color:#fff; font-size:14px; font-weight:700; user-select:none; }
+.msg-avatar > .avatar-fallback {
+  width: 100%; height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  font-size: 14px;
+}
 .avatar-clickable { cursor:pointer; transition:filter 0.15s ease, transform 0.15s ease; }
 .avatar-clickable:hover { filter:brightness(0.93); }
 .avatar-clickable:active { transform:scale(0.96); }

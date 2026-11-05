@@ -1,3 +1,4 @@
+import { generateReplacement } from './replacementGenerator.js';
 import { getDb, getSystemRules, getWorldSetting } from '../../db/index.js';
 import { config } from '../../config.js';
 import { getWorldIntegrationRule } from '../../builtinRules.js';
@@ -11,6 +12,7 @@ import { getTodaySchedule, getCurrentActivity } from '../scheduleManager.js';
 import { toProgramTime } from '../programTime.js';
 import { applyScheduleChange, queueScheduleChange } from '../scheduleEditor.js';
 import { generateSchedule } from '../scheduleGenerator.js';
+import { assertScheduleIdle } from '../scheduleGenerationLock.js';
 import { generateEvent } from '../eventGenerator.js';
 import { runGroupRound, isGroupRoundRunning } from '../groupChatEngine.js';
 import { broadcast } from '../unifiedStreamBus.js';
@@ -32,10 +34,13 @@ import { chatSync as describeAngelImage } from '../lorebook/runtime.js';
 export { angelActivity } from './promptBuilder.js';
 
 export const AGENT_RULES = `你是神与邻舍世界之间的天使，既可以自然聊天，也可以使用提供的工具完成神谕。
+【能力边界】用户要求修改真实实体时，必须有针对该实体和字段的工具。没有相应工具就明确说明不能执行并停止；禁止用 create_world_event、改人设、朋友圈、群聊或奇遇“宣告已经做到”来替代接口操作。世界事件只承载用户要求设定的叙事事实，不会修改店铺、角色资料、图片或系统设置。工具返回 CAPABILITY_UNAVAILABLE 或 stop 时，不能继续尝试任何替代写操作。小镇全部管理能力均未接入，不尝试模拟。
+【确认规则】新增内容直接执行；替换、切换、删除或消耗已有内容由后端生成确认卡。只提交用户要求的字段，不能为改名重传人设。已有日记/表情等重新生成先准备草稿，确认提交冻结结果，不在确认后重新编写正文。天使自身资料使用 read_angel、update_angel、apply_angel_appearance、generate_angel_outfits；天使不是普通角色，不能猜一个 character_id。表情包先 create_emoji_set，再 initialize_emoji_prompts，再 generate_emoji_images，使用 read_emoji_set 核对真实结果。
+批量处理多位角色时使用 batch_characters，所有人由后端展开完整名单。长期资料、外观、世界观等修改会自动生成待确认草稿，awaiting_confirmation 只表示内容已准备好，必须让用户查看变更卡后确认，不能声称已修改。调整草稿时先让用户取消旧草稿，再准备新草稿。用户询问确认后的结果或批量进度时，用 inspect_changes 查询最新状态。部分失败后只处理明确失败的角色，不重做成功项，结果待核对的项先核对业务记录。读取完整人设使用 read_character_source。修改基础外观使用 apply_character_appearance，逐角色提取原始“你的外观”并生成完整新版，确认后只替换该段，不创建叠加效果；按要求修改世界观优先使用 rewrite_world_setting，确认前展示完整新版正文；只有明确临时效果才使用 inject_character_state。
 只有工具确实成功才能说已完成。排队、安排、开启奇遇和活动完成是不同状态；工具的错误与返回数据是事实，不能编造结果。
 先查询真实编号与相关状态，不猜角色、群聊或事件编号。指代有多个合理对象时简短询问。日常聊天无需勉强调用工具。
 世界改变使用 create_world_event，角色发帖使用 publish_moment，群聊接话使用 discuss_in_group，日程安排使用 set_schedule，角色互动用 create_encounter 承载，不替用户选择奇遇选项。
-要给某个角色换装、换个发型、变身或注入身心状态时，用 inject_character_state 直接塑造（默认持续一天），不必先开宝箱或攒道具。
+外观、人设修改或服装设计只读取相关原始资料（read_character_source），不为“了解角色”额外查询日程；仅当神询问安排、当前活动或需要按时段办事时，才用 read_character 的 include_schedule=true。生成或修改私服、居家服、睡衣必须使用 generate_scene_outfits 调用邻舍服装生成接口，分别写入 casual、home、sleep 槽位，确认前仅生成草稿；需要读取已有服装时用 read_scene_outfits。只有修改基础外观、发型时才用 apply_character_appearance；只有明确要求新增独立、可切换的专属外观才使用 create_outfit，不能仅因“私服”一词就推断为新增专属外观。明确要求临时变身、限时换装或临时身心状态时才用 inject_character_state，不必先开宝箱或攒道具。
 写 publish_moment、discuss_in_group、create_encounter 的 instruction 时，先给角色一个自然发生的起因（意料之外的契机、角色莫名涌起的冲动、其他角色——绝不是天使或神——的提议或要求、环境或身体的偶然触动等），再落到具体的画面、话题或场景；不要写成神或天使命令的转述，也不在起因里点破授意者。
 你也能调用邻舍各模块工具。能力不确定时先 list_capabilities；先读真实对象与状态，再使用对应写工具，不因旧印象声称某个模块没有接入。私聊、评论、发信和用户朋友圈仅在神明确要求传达时，以用户身份执行授权内容。
 异步接口返回 accepted/started/queued 只代表受理，应使用对应读取工具核对；不确定结果先检查目标记录，不能直接重复执行。涉及库存、冷却、睡眠和并发的限制沿用原模块。小镇专属功能未接入，不假装能操作小镇。
@@ -81,7 +86,8 @@ export function getGodRuntime() {
   world.recover();
   const tools = createGodTools(repo, world, memory, { localDate: getLocalDateKey, scheduleEnabled: () => config.features.schedule !== false,
     getSchedule: getTodaySchedule, getActivity: getCurrentActivity, changeSchedule: applyScheduleChange, queueSchedule: queueScheduleChange, encounter: generateEvent,
-    api: createGodLocalApi({ port: () => config.port }) });
+    assertScheduleIdle: id=>assertScheduleIdle([id]),
+    generateReplacement, api: createGodLocalApi({ port: () => config.port }) });
   let schedulePromise;
   let scheduleRetryAt = 0;
   // 用户为天使选好性格后召唤：先落所选性格，再强制重生成人格；失败抛出带 502 的错误供前端提示重试。
@@ -110,7 +116,7 @@ export function getGodRuntime() {
       if (!schedulePromise) schedulePromise = (async () => {
         try {
           const result = await generateSchedule({ id: 'god:angel', display_name: angel.display_name, base_prompt: angel.persona },
-            '这是常驻云庭、随时回应神的天使。安排天堂中的日常工作、闲暇与休息；观察邻舍世界也是职责之一。', { persist: false, outfits: angel.outfits, thinking: { type: 'enabled' } });
+            '这是常驻云庭、随时回应神的天使。安排天堂中的日常工作、闲暇与休息；观察邻舍世界也是职责之一。', { persist: false, outfits: angel.outfits });
           repo.db.prepare('UPDATE god_angel SET schedule_json=?,schedule_generated_at=?,schedule_error=NULL WHERE id=1 AND persona=? AND scene_outfits_json=?').run(result.schedule_json, `${repo.day()}T00:00:00`, angel.persona, angel.scene_outfits_json);
         } catch (err) {
           scheduleRetryAt = Date.now() + 300000;
@@ -170,7 +176,7 @@ export function getGodRuntime() {
     repo.db.prepare("UPDATE god_world_deliveries SET status='cancelled' WHERE status='pending' AND event_id IN (SELECT id FROM god_world_events WHERE run_id=?)").run(id);
     return { ok: true };
   }
-  singleton = { repo, world, memory, images, start, cancel, ensurePersona, ensureSchedule, summon };
+  singleton = { repo, world, memory, images, tools, start, cancel, ensurePersona, ensureSchedule, summon };
   return singleton;
 }
 

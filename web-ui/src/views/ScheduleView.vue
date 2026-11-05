@@ -92,7 +92,7 @@
             </div>
             <div class="sidebar-scan-sub">
               <template v-if="sidebarScanContext === 'reset' && store.resetTask">
-                正在为 <b>{{ store.resetTask.currentName || '...' }}</b> 编排日程
+                {{ store.resetTask.stageLabel || '编排日程' }} <b>{{ store.resetTask.currentName || '...' }}</b>
                 <span class="sidebar-scan-count">({{ store.resetTask.current }}/{{ store.resetTask.total }})</span>
               </template>
               <template v-else>
@@ -138,6 +138,31 @@
           aria-label="日程刷新周期"
         />
         <p class="sched-settings-hint">每隔 {{ refreshDays }} 天自动为所有角色重新编排日程，更改在下次刷新时生效。</p>
+        <div class="sched-settings-divider"></div>
+        <div class="sched-settings-toggle-row">
+          <div class="sched-settings-toggle-text">
+            <span class="sched-settings-toggle-label">停止所有角色生成日程</span>
+            <span class="sched-settings-hint">开启后不再调用模型编排日程，已生成的日程照常使用、内容保持不变；想单独控制某个角色，去它的详情卡「更多设置」里关。</span>
+          </div>
+          <linshe-switch
+            :model-value="allSchedulesDisabled"
+            :disabled="scheduleAllToggling"
+            @change="toggleAllSchedules"
+            aria-label="停止所有角色生成日程"
+          />
+        </div>
+        <div class="sched-settings-divider"></div>
+        <div class="sched-settings-toggle-row">
+          <div class="sched-settings-toggle-text">
+            <span class="sched-settings-toggle-label">强制关闭思考</span>
+            <span class="sched-settings-hint">默认跟随 LLM 设置；开启后仅日程编排关闭思考。</span>
+          </div>
+          <linshe-switch
+            v-model="scheduleDisableThinking"
+            :disabled="savingRefreshDays"
+            aria-label="日程编排强制关闭思考"
+          />
+        </div>
       </div>
       <template #footer>
         <linshe-button variant="primary" :disabled="savingRefreshDays" :loading="savingRefreshDays" @click="onConfirmSettings">确定</linshe-button>
@@ -242,11 +267,9 @@
     </Teleport>
 
     <!-- ═══ 改变日程方向输入弹窗 ═══ -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showRegenerateModal" class="reset-overlay" @click.self="showRegenerateModal = false">
-          <div class="reset-dialog" @click.stop>
-            <div class="reset-dialog-header">
+    <linshe-modal :visible="showRegenerateModal" title="编排日程" @close="showRegenerateModal = false" panel-class="schedule-direction-modal">
+      <template #title>
+        <div class="modal-heading-content">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="1,4 1,10 7,10" />
                 <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
@@ -256,6 +279,8 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </linshe-button>
             </div>
+      </template>
+
             <div class="reset-dialog-desc">
               <p>定向规划{{ detailChar?.display_name || '...' }}今天的行程。留空则正常随机规划。</p>
               <linshe-input
@@ -268,27 +293,25 @@
                 @keydown.enter.exact="confirmRegenerateWithDirection"
               />
             </div>
-            <div class="reset-dialog-actions">
+
+      <template #footer>
               <linshe-button class="reset-btn-bg" variant="secondary" style="flex: 1" @click="confirmRegenerateRandom">随机日程规划</linshe-button>
               <linshe-button class="reset-btn-confirm" variant="primary" @click="confirmRegenerateWithDirection" :disabled="!regenerateDirection.trim()">按此方向生成</linshe-button>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+      </template>
+    </linshe-modal>
 
     <!-- ═══ 重置世界线确认弹窗 ═══ -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showResetConfirm" class="reset-overlay" @click.self="showResetConfirm = false">
-          <div class="reset-dialog" @click.stop>
-            <div class="reset-dialog-header">
+    <linshe-modal :visible="showResetConfirm" title="全部重置" @close="showResetConfirm = false" panel-class="schedule-reset-modal">
+      <template #title>
+        <div class="modal-heading-content">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="1,4 1,10 7,10" />
                 <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
               </svg>
               <span>全部重置</span>
             </div>
+      </template>
+
             <div class="reset-dialog-desc">
               <p>将重新生成全部 <b>{{ store.characters.length }}</b> 个角色的日程表。可输入方向来影响生成结果，留空则随机生成。</p>
               <linshe-input
@@ -301,14 +324,12 @@
                 @keydown.enter.exact="confirmResetAll"
               />
             </div>
-            <div class="reset-dialog-actions">
+
+      <template #footer>
               <linshe-button class="reset-btn-bg" variant="secondary" style="flex: 1" @click="confirmResetRandom">随机日程规划</linshe-button>
               <linshe-button class="reset-btn-confirm" variant="primary" @click="confirmResetAll" :disabled="!resetDirection.trim()">按此方向生成</linshe-button>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+      </template>
+    </linshe-modal>
 
     <!-- ═══ 重置世界线进度弹窗 ═══ -->
     <Teleport to="body">
@@ -338,13 +359,13 @@
             <!-- 当前任务 -->
             <div class="reset-current-task" v-if="store.resetTask.phase === 'running'">
               <div class="loader-ring-sm"></div>
-              <span>正在生成 <b>{{ store.resetTask.currentName }}</b> 的日程...</span>
+              <span>{{ store.resetTask.stageLabel || '正在生成日程' }} <b>{{ store.resetTask.currentName }}</b>…</span>
             </div>
             <div class="reset-current-task done" v-else-if="store.resetTask.phase === 'complete'">
               <span>✅ 全部 {{ store.resetTask.total }} 个角色日程已更新</span>
             </div>
             <div class="reset-current-task cancelled" v-else-if="store.resetTask.phase === 'cancelled'">
-              <span>⚠️ 已取消，完成了 {{ store.resetTask.current }} / {{ store.resetTask.total }} 个角色</span>
+              <span>本轮未发布，原日程保持不变</span>
             </div>
 
             <!-- 错误列表 -->
@@ -362,6 +383,7 @@
                 <linshe-button class="reset-btn-bg" variant="secondary" @click="dismissResetProgress" :disabled="resetCancelling">后台静默生成</linshe-button>
               </template>
               <template v-else>
+                <linshe-button v-if="store.resetTask.errors.length" variant="secondary" @click="retryReset">继续安排</linshe-button>
                 <linshe-button class="reset-btn-confirm" variant="primary" @click="finishReset">完成</linshe-button>
               </template>
             </div>
@@ -413,12 +435,14 @@ const cardGridEl = ref<HTMLElement | null>(null)
 // ── 日程设置（刷新周期） ──
 const settingsOpen = ref(false)
 const refreshDays = ref(1)
+const scheduleDisableThinking = ref(false)
 const savingRefreshDays = ref(false)
 
 async function openSettings() {
   try {
     const cfg = await api.getConfig()
     refreshDays.value = Math.max(1, Math.min(3, cfg?.features?.scheduleRefreshDays ?? 1))
+    scheduleDisableThinking.value = cfg?.features?.scheduleDisableThinking === true
   } catch {
     // 读取失败时沿用本地值打开弹窗
   }
@@ -429,8 +453,8 @@ async function onConfirmSettings() {
   if (savingRefreshDays.value) return
   savingRefreshDays.value = true
   try {
-    await api.updateScheduleRefreshDays(refreshDays.value)
-    toastFn(`日程刷新周期已设为每 ${refreshDays.value} 天一次`, 'success')
+    await api.updateScheduleRefreshDays(refreshDays.value, scheduleDisableThinking.value)
+    toastFn('日程设置已保存', 'success')
     settingsOpen.value = false
   } catch (err: any) {
     toastFn('保存失败: ' + (err.message || '未知错误'), 'error')
@@ -543,6 +567,7 @@ function startPeekRequest(request: () => Promise<unknown>) {
   request().catch((err: any) => failPeek(err?.message || '生成失败'))
 }
 const peekPrompt = ref<string | null>(null)
+const peekParticipantIds = ref<number[]>([])
 const peekChar = ref<any>(null)
 const peekAct = ref<any>(null)
 const shutterFire = ref(false) // 相机快门动画触发器
@@ -783,13 +808,19 @@ onMounted(async () => {
   try {
     const status = await api.getResetStatus()
     if (disposed) return
-    if (status.active) {
+    if (status.active || ['failed', 'running'].includes(status.status)) {
       store.startResetTask(status.total)
       // 用后端返回的当前进度更新
       if (store.resetTask) {
         store.resetTask.current = status.current
         store.resetTask.total = status.total
         store.resetTask.currentName = status.currentName || ''
+        store.resetTask.stageLabel = status.phase === 'cohabitation' ? '正在安排共同生活' : status.phase === 'sleep' ? '正在整理同睡时段' : '正在生成日程'
+        if (!status.active) {
+          store.resetTask.phase = 'cancelled'
+          store.resetTask.processing = false
+          store.resetTask.errors.push({ name: '本轮日程', error: status.error || '生成已中断，可继续已保存的进度' })
+        }
         // 刷新恢复后默认显示进度弹窗（非后台）
         store.resetTask.backgrounded = false
       }
@@ -800,6 +831,7 @@ onMounted(async () => {
   try {
     peekUnsubscribers.push(onEvent('schedule_peek_ready', (d: any) => {
       if (d.prompt) peekPrompt.value = d.prompt
+      if (d.participant_ids) peekParticipantIds.value = d.participant_ids
       if (d.images?.length) { peekImage.value = d.images[0]; peekError.value = null }
       else if (d.error) { peekError.value = d.error }
       peekLoading.value = false; peekBusy.value = false
@@ -878,6 +910,8 @@ function onPeekAt(act: any) {
     startTime: act.startTime,
     endTime: act.endTime,
     tags: act.tags,
+    participantIds: act.participantIds,
+    sharedEventId: act.sharedEventId,
   }))
 }
 
@@ -1103,7 +1137,7 @@ async function retakePeek() {
   peekLoading.value = true; peekBusy.value = true
   startFakeProgress()
   try {
-    await api.retakePeekSnapshot(peekChar.value.id, peekPrompt.value)
+    await api.retakePeekSnapshot(peekChar.value.id, peekPrompt.value, peekParticipantIds.value)
   } catch (err: any) {
     peekError.value = err.message
     peekLoading.value = false
@@ -1193,18 +1227,19 @@ async function confirmResetAll() {
   }
 }
 
+async function retryReset() {
+  const total = store.resetTask?.total || 0
+  store.startResetTask(total)
+  try { await api.regenerateAllSchedules(undefined, true) }
+  catch (error: any) { toastFn(error.message, 'error'); store.finishResetTask() }
+}
+
 async function cancelReset() {
   if (resetCancelling.value) return
   resetCancelling.value = true
   try {
     await api.cancelRegenerateAll()
-    // 立即反馈取消结果，不等 SSE（后端可能还有 in-flight LLM 调用）
-    if (store.resetTask && store.resetTask.phase === 'running') {
-      store.resetTask.phase = 'cancelled'
-      store.resetTask.current = Math.max(0, store.resetTask.current - 1)
-      store.resetTask.processing = false
-      store.resetTask.backgrounded = false
-    }
+    // 等待后端当前请求结束并确认取消，期间继续显示取消中。
   } catch (err) {
     resetCancelling.value = false
     console.error('[ScheduleView] cancel reset failed:', err)

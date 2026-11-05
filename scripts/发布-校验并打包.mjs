@@ -48,6 +48,8 @@ const WEB = path.join(REPO, 'web-ui')
 // ── 机器相关路径：集中在这里，可用环境变量覆写（2026-10-17 复查 §P3-1）─────────────
 // 原来这几个字面量散在函数体里，换机/换目录就要改码。现在只在这里出现一次。
 const DELIVER = process.env.DELIVER_DIR || 'C:\\3.6.2-r'
+const DELIVER_NAME = path.basename(DELIVER)
+const DELIVER_PARENT = path.dirname(DELIVER)
 const OUTDIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || 'C:\\Users\\Sting', 'Downloads', '输出')
 const NODE = path.join(REPO, 'runtime', 'nodejs', 'node.exe')
 const SEVENZIP = process.env.SEVENZIP_EXE || 'C:\\Program Files\\7-Zip\\7z.exe'
@@ -275,11 +277,15 @@ function runScript(name, scriptRel, env, { expectExitZero = true, tolerateWarn =
 let be = null
 let fe = null
 assertNoStalePaths()
-if (skipTests) {
-  log('⚠️ --skip-tests：跳过测试门禁。**只有在你刚刚亲眼看过全绿时**才能这么用。')
-} else {
-  be = runSuite('后端全量', SRC, ['test/*.test.js', 'src/services/*.test.js'], {}, { withSetup: true })
-  fe = runSuite('前端全量', WEB, ['test/*.test.js'])
+// 2026-11-06 用户决定移除全部自动化测试：门禁改为「前端能构建」。
+// 代码正确性靠真机验收（解压 → 真启动 → 抽端点），这一步在打包后手工做。
+{
+  log('\n── 前端生产构建 ────────────────')
+  const build = spawnSync(NODE, ['build.mjs'], { cwd: WEB, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  if (build.status !== 0) {
+    die('前端生产构建失败：' + String((build.stderr || build.stdout || '')).slice(-600))
+  }
+  log('   前端生产构建通过 ✓')
 }
 
 // ── ②-冒烟族（默认关，交付日手动开）─────────────────────────────────────────
@@ -393,7 +399,12 @@ function syncDir(from, to) {
       //   positionPoseSkeletons.js）被一起跳过，打出来的包一启动就
       //   `ERR_MODULE_NOT_FOUND: src/data/sexPositions.js`。只有**数据库目录**
       //   `agent-core/data` 该跳过，其余同名目录都是源码。
-      if (['node_modules', '.git', '目标', 'logs', '.claude',
+      // ⚠️ 2026-11-06 事故：这里按**目录名**跳过 `logs`，把 Python 依赖里的
+      // `opentelemetry/proto/collector/logs` 一起跳掉了 ⇒ 换机启动向量服务直接
+      // `ModuleNotFoundError: No module named 'opentelemetry.proto.collector.logs'`。
+      // 只有**仓库自己的日志目录**该跳过，第三方包里的同名目录是代码。
+      const isThirdParty = absDir.includes('site-packages')
+      if (!isThirdParty && ['node_modules', '.git', '目标', 'logs', '.claude',
         // `.pai/` 是项目级临时资产目录（计划/报告/工作树/临时副本），
         // 里面还留着上游合并时的 node_modules junction —— 被当文件复制会 EPERM，且绝不该进包。
         '.pai'].includes(e.name)) continue
@@ -489,6 +500,27 @@ if (incremental) {
     copied += 1
   }
   log(`   全量镜像：仓库顶层 ${copied} 项整份刷到交付目录（data/ 与 node_modules 已跳过）`)
+}
+
+// 运行依赖：上面的镜像**故意跳过 node_modules**（否则每次全量同步都要搬几万文件），
+// 但包里没有它后端就起不来（`Cannot find package 'express'`）。所以单独补一步：
+// robocopy 增量镜像，已存在时只补差异，几十秒就能完成。
+{
+  const nmSrc = path.join(SRC, 'node_modules')
+  const nmDst = path.join(DELIVER, 'agent-core', 'node_modules')
+  if (fs.existsSync(nmSrc)) {
+    fs.mkdirSync(nmDst, { recursive: true })
+    const rc = spawnSync('robocopy', [
+      nmSrc, nmDst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1',
+    ], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+    // robocopy 的退出码语义：0/1/2/3 都算成功（1=复制了文件，2=有额外项，3=两者都有）
+    if ((rc.status ?? 1) > 3) {
+      throw new Error(`复制 agent-core/node_modules 失败（robocopy 退出码 ${rc.status}）`)
+    }
+    log('   已补入 agent-core/node_modules（后端运行依赖）')
+  } else {
+    log('   ⚠️ 仓库缺 agent-core/node_modules —— 包里不会有依赖，换机能启动才怪')
+  }
 }
 // 文档：**整份刷掉**（2026-10-02 用户：「文档也同步吧」）。
 // 原来这里只同步 `git status` 里改动过的文件，而且 `目标/` 被**显式排除**（上面 syncDir 的跳过名单
@@ -612,20 +644,20 @@ const t0 = Date.now()
 const zip = spawnSync(SEVENZIP, [
   'a', '-t7z', `-mx=${LEVEL}`, `-mmt=${cores}`,
   HIGH ? `-m0=LZMA2:mt=${cores}:fb=273:d=256m` : `-m0=LZMA2:mt=${cores}:fb=32`, '-mf=off',
-  outFile, '3.6.2-r',
+  outFile, DELIVER_NAME,
   // 2026-10-02 用户：「文档也同步吧」。原来这里有一条 `-xr!3.6.2-r\目标\*`，
   // 把整个 `目标/` 排除在包外 ⇒ 交付包里的开发文档一直是旧的、甚至缺文件（前面好几版包都这样）。
   // 文档是交付物的一部分 ⇒ 取消这条排除；上面的同步段会整份刷 `目标/` 与 `docs/`，这里照实打进去。
   // （2026-10-13：`目标/` 已从 19 份精简为 3 份 —— 接手必读 / 历史与教训 / 编程模式，别再往里堆逐轮流水。）
-  '-xr!3.6.2-r\\web-ui\\node_modules\\*', '-xr!*.log',
+  `-xr!${DELIVER_NAME}\\web-ui\\node_modules\\*`, '-xr!*.log',
   // 2026-11-03 用户：「打包程序就行，不要带玩家数据」⇒ 默认把数据库整份排除在包外。
   // 包内仍随源码带上 `agent-core/data/` 目录本身（首次启动会自动建空库），只是不带 agent.db 及其日志。
-  ...(WITH_DATA ? [] : ['-xr!3.6.2-r\\\\agent-core\\\\data\\\\*']),
+  ...(WITH_DATA ? [] : [`-xr!${DELIVER_NAME}\\agent-core\\data\\*`]),
   // 2026-10-02 交付前审计发现：交付包顶层躺着一个 103 MB 的旧备份
   // （`linshe-backup-20260930-1405.tar.gz`）+ 一个 2.5 MB 的 apk ⇒ 它们**不是运行所需**，
   // 排除后包体积立省约 1/8。（用户磁盘上那两个文件不动，只是不进包。）
   '-xr!*.tar.gz', '-xr!.access-token',
-], { cwd: 'C:\\', encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+], { cwd: DELIVER_PARENT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
 if (zip.status !== 0) die(`7z 退出码 ${zip.status}：${(zip.stderr || '').slice(0, 300)}`)
 const secs = Math.round((Date.now() - t0) / 1000)
 log('   ' + (zip.stdout || '').split(/\r?\n/).filter((l) => l.includes('Everything is Ok') || l.includes('Archive size')).join(' | '))
@@ -635,11 +667,13 @@ log(`   用时 ${secs} 秒（${(secs / 60).toFixed(1)} 分钟）`)
 // 2026-10-02 真事故后补的：我原本只验了"打包前的 DB"（integrity_check=ok），
 // 结果用户在另一台机器上解压出损坏的 agent.db ⇒ 现在改成"打到包里再抽出来验"，
 // 这样"包内真的可用"这件事每次交付都有机器证据（而不是靠我打包前那一眼）。
-{
+// 2026-11-05：默认已改成「只打包程序、不带玩家数据」⇒ 包里根本没有 agent.db，
+// 这一步只在 PACK_WITH_DATA=1 的含数据备份包里才做，否则会把自己的排除项当成损坏。
+if (WITH_DATA) {
   const tmp = path.join(process.env.TEMP || process.env.TMP || '.', 'pkgdbverify')
   fs.rmSync(tmp, { recursive: true, force: true })
   fs.mkdirSync(tmp, { recursive: true })
-  const ex = spawnSync(SEVENZIP, ['e', outFile, '3.6.2-r\\agent-core\\data\\agent.db', `-o${tmp}`, '-y'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+  const ex = spawnSync(SEVENZIP, ['e', outFile, `${DELIVER_NAME}\\agent-core\\data\\agent.db`, `-o${tmp}`, '-y'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   const dbFile = path.join(tmp, 'agent.db')
   if (ex.status !== 0 || !fs.existsSync(dbFile)) die('从压缩包里抽 agent.db 失败（说明包内这一项已损坏）：' + String((ex.stdout || '') + (ex.stderr || '')).slice(-300))
   const probe = path.join(tmp, 'probe.mjs')
@@ -682,7 +716,12 @@ const plain = spawnSync(SEVENZIP, ['l', outFile], { encoding: 'utf8', maxBuffer:
 const needCollectorLogs = /collector\\logs/.test(plain)
 const needGitLogs = /\.git\\logs/.test(plain)
 log(`   collector\\logs=${needCollectorLogs} | .git\\logs=${needGitLogs}`)
-if (!needCollectorLogs || !needGitLogs) die('包内缺少 collector\\logs 或 .git\\logs（会被 .gitignore 式排除规则误伤）')
+// 这条只防「7z 的排除规则误伤了本该进包的空目录」。
+// 全新交付目录（不含 .git、还没跑过服务）本来就没有这些目录，不能当成误伤。
+const hasCollectorLogs = fs.existsSync(path.join(DELIVER, 'collector', 'logs'))
+const hasGitLogs = fs.existsSync(path.join(DELIVER, '.git', 'logs'))
+if (hasCollectorLogs && !needCollectorLogs) die('包内缺少 collector\\logs（交付目录里有，却被排除规则误伤）')
+if (hasGitLogs && !needGitLogs) die('包内缺少 .git\\logs（交付目录里有，却被排除规则误伤）')
 
 // 2026-11-03 事故：打包脚本按**目录名**跳过 `data`，把 `agent-core/src/data/`（体位数据）一起跳掉了，
 // 包一启动就 ERR_MODULE_NOT_FOUND，而当时所有校验都是绿的（只查固定条目 + DB + 使用说明）。

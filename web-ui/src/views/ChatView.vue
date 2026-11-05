@@ -52,7 +52,9 @@
         正常 column 布局：最旧消息在顶部，最新消息在底部
         新消息到达时 JS 平滑滚底，与列表高度变化同步
       -->
-      <div ref="msgList" class="message-list" @scroll="onScroll(); clearSpeechBubble()">
+      <div ref="msgList" class="message-list" @scroll="onScroll(); clearSpeechBubble()"
+        @wheel.passive="interruptImageScroll" @touchstart.passive="interruptImageScroll"
+        @pointerdown="interruptImageScroll" @keydown="onScrollKeydown">
         <!-- 加载指示器置于列表顶部 → 用户上滚到顶部时自动展开更早消息 -->
         <div v-if="chat.hasMoreOlder" class="load-older load-older-hint">↑ 向上滚动加载更多</div>
 
@@ -77,9 +79,6 @@
             </div>
 
             <!-- 深度思考块（可折叠） -->
-            <div v-else-if="item.msg.type === 'thinking'" class="thinking-row">
-              <ThinkingBlock :msg="item.msg" />
-            </div>
 
             <!-- Text bubble (user or assistant) -->
             <div v-else-if="item.msg.type !== 'image_gen'" class="message" :class="[item.msg.role, { 'msg-same-role': item.sameRole }]">
@@ -152,8 +151,9 @@
               </div>
               <ImageGenBubble
                 :msg="item.msg"
+                :emit-loaded-when-initially-done="!!item.msg.liveImage"
                 @preview="onChatImagePreview($event)"
-                @loaded="scrollToBottom(true)"
+                @loaded="onChatImageLoaded(item.msg)"
               />
             </div>
           </template>
@@ -239,6 +239,9 @@
         @close="showIntimatePanel = false"
       />
 
+      <!-- 上游 v4.2.0：断线 / 超时后保留已收内容并给出重试入口 -->
+      <ChatRetryNotice />
+
 
       <div class="input-area">
         <div class="force-img-wrap">
@@ -314,7 +317,7 @@
 
     <!-- galgame 沉浸模式（上游 v3.9.0 合并）：舞台覆盖整个 chat-view，普通侧在 chat-standard 里被隐藏 -->
     <Transition name="chat-mode" @after-enter="galgameEntering = false" @enter-cancelled="galgameEntering = false">
-      <GalgameDialogue v-if="galgameVisited && chat.activeChar" v-show="immersive" :active="immersive" :character="chat.activeChar" v-model:draft="inputText" :image-mode="imageGenMode" :deep-think="deepThinkMode" :sleeping="isCharSleeping" :wake-busy="wakeBusy" @wake="onWakeChar" @exit="chatMode = 'chat'" @open-standing="openStandingDisplayPage" />
+      <GalgameDialogue v-if="galgameVisited && chat.activeChar" v-show="immersive" :active="immersive" :character="chat.activeChar" v-model:draft="inputText" :image-mode="imageGenMode" :sleeping="isCharSleeping" :wake-busy="wakeBusy" @wake="onWakeChar" @exit="chatMode = 'chat'" @open-standing="openStandingDisplayPage" />
     </Transition>
 
     <ImageLightbox
@@ -463,6 +466,7 @@
           <span>{{ chat.activeChar?.display_name }} 对你的印象</span>
           <linshe-button variant="icon" class="editor-close" @click="showImpression = false">&times;</linshe-button>
         </div>
+
         <div class="impression-body">
           <!-- 加载中 -->
           <div v-if="impressionLoading" class="impression-status">
@@ -666,7 +670,7 @@
 
         </div>
       </div>
-    </div>
+      </div>
     </Transition>
 
     <!-- 角色头像选择器（设置面板） -->
@@ -681,7 +685,7 @@
         :recent-images="recentImages"
         :recent-loading="recentLoading"
         @close="closeAvatarPicker"
-        @save="onAgentAvatarSave"
+        :save-handler="onAgentAvatarSave"
         @switch-to-recent="switchToRecent"
       />
     </Teleport>
@@ -698,6 +702,8 @@
 </template>
 
 <script setup>
+import LinsheModal from '../components/ui/LinsheModal.vue'
+
 import SpeechButton from '../components/SpeechButton.vue'
 import { useSpeechBubbleControls } from '../composables/useSpeechBubbleControls.js'
 import '../styles/speechBubble.css'
@@ -708,7 +714,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
 import { useProgramClock } from '../composables/useProgramClock.js'
 import ImageGenBubble from '../components/ImageGenBubble.vue'
-import ThinkingBlock from '../components/ThinkingBlock.vue'
 import EventShareCard from '../components/EventShareCard.vue'
 import EventCard from '../components/EventCard.vue'
 import GearIcon from '../components/GearIcon.vue'
@@ -723,6 +728,7 @@ import TouchActionPanel from '../components/TouchActionPanel.vue'
 import ToyPanel from '../components/ToyPanel.vue'
 // 性爱交互姿势面板（2026-10-01，task-1）：自包含（自己读状态、自己发动作），父组件只持显隐
 import IntimateActionPanel from '../components/IntimateActionPanel.vue'
+import ChatRetryNotice from '../components/chat/ChatRetryNotice.vue'
 import { buildGroupsFromServer, createCoalescer, hypnosisBadgeOf, pendingHintByMode } from '../components/touchActionLogic.js'
 import { getHypnosisState } from '../api/hypnosis.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
@@ -731,7 +737,6 @@ import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
 // galgame 模式（上游 v3.9.0 合并）：入口开关 + 沉浸舞台
 import ChatModeSwitch from '../components/chat/ChatModeSwitch.vue'
 import GalgameDialogue from '../components/chat/GalgameDialogue.vue'
-import LinsheModal from '../components/ui/LinsheModal.vue'
 import IntimatePanel from '../components/character/IntimatePanel.vue'
 import HypnosisPhonePanel from '../components/HypnosisPhonePanel.vue'
 import { userAvatar, loadUserAvatar } from '../userConfig.js'
@@ -1096,12 +1101,12 @@ async function onTouchAction(actionId) {
 const imageGenMode = computed(() => settings.imageGenMode)
 const imageGenModeLabel = computed(() => {
   if (imageGenMode.value === 'off') return '关闭配图'
-  if (imageGenMode.value === 'force') return '强制配图'
+  if (imageGenMode.value === 'force') return '导演模式'
   return '灵性配图'
 })
 const imageGenModeIcon = computed(() => {
   if (imageGenMode.value === 'off') return '🚫'
-  if (imageGenMode.value === 'force') return '✨'
+  if (imageGenMode.value === 'force') return '🎬'
   return '🎨'
 })
 const realtimeAffinityEnabled = computed({
@@ -1117,7 +1122,6 @@ function cycleImageGenMode() {
   showForceTip()
 }
 
-const deepThinkMode = computed(() => settings.deepThinkMode)
 
 function onGiftSent(result) {
   showGiftPanel.value = false
@@ -1802,7 +1806,6 @@ recentImages.value = d.images || []
 
 async function onAgentAvatarSave(base64) {
 await chat.uploadAvatar(base64)
-showAvatarPicker.value = false
 }
 
 const messageGroups = computed(() => {
@@ -1842,7 +1845,7 @@ if (pieces.length === 0) pieces.push({ kind: 'text' })
     const pieceId = piece.kind === 'text' ? `${msg.id}-text` : `${msg.id}-sticker-${piece.index}`
     items.push({ type: 'message', msg, piece, id: pieceId, sameRole })
     // 深度思考块不参与连发头像合并——否则它后面第一条回复的头像会被当作"同角色连发"隐藏
-    if (msg.type !== 'thinking') prevRole = msg.role
+    prevRole = msg.role
   }
 }
 }
@@ -1873,10 +1876,33 @@ function timeLabel(iso) {
 
 let userScrolledUp = false
 let scrollTimer = null
+let imageScrollFrame = null
+
+function onChatImageLoaded(message) {
+  message.liveImage = false
+  scrollToBottom(false, 600)
+}
+
+function cancelImageScroll() {
+  if (imageScrollFrame !== null) cancelAnimationFrame(imageScrollFrame)
+  imageScrollFrame = null
+}
+
+function interruptImageScroll() {
+  if (imageScrollFrame === null) return
+  cancelImageScroll()
+  userScrolledUp = true
+}
+
+function onScrollKeydown(event) {
+  if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) interruptImageScroll()
+}
 
 function onScroll() {
   const el = msgList.value
   if (!el) return
+  // 图片缓动中离底部较远是正常追赶，不应误判为用户上翻。
+  if (imageScrollFrame !== null) return
   const distToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   if (distToBottom > 60) {
     userScrolledUp = true
@@ -1898,17 +1924,36 @@ function onScroll() {
   }
 }
 
-// force=true: 瞬间滚底（切角色/首次加载/发消息/图片加载完毕）
-// force=false: 平滑滚动（流式分句，列表高度变化有 0.2s 缓动）
-async function scrollToBottom(force = false) {
+// force=true: 瞬间滚底（切角色/首次加载/发消息）
+// force=false: 文字沿用浏览器平滑滚动；图片显式使用更长的 duration（毫秒）
+async function scrollToBottom(force = false, duration = 0) {
   await nextTick()
   const el = msgList.value
   if (!el) return
   if (force || !userScrolledUp) {
     if (force) {
+      cancelImageScroll()
       el.scrollTop = el.scrollHeight
+    } else if (duration > 0 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      cancelImageScroll()
+      clearTimeout(scrollTimer)
+      const from = el.scrollTop
+      // 停止尚未结束的原生 smooth，避免两套滚动相互争抢。
+      el.scrollTo({ top: from, behavior: 'instant' })
+      const started = performance.now()
+      const step = now => {
+        const progress = Math.min(1, (now - started) / duration)
+        const eased = progress < 0.5 ? 4 * progress ** 3 : 1 - (-2 * progress + 2) ** 3 / 2
+        const bottom = Math.max(0, el.scrollHeight - el.clientHeight)
+        el.scrollTop = from + (bottom - from) * eased
+        imageScrollFrame = progress < 1 ? requestAnimationFrame(step) : null
+      }
+      imageScrollFrame = requestAnimationFrame(step)
+    } else if (imageScrollFrame !== null) {
+      // 图片跟随期间新分句共用当前动画，下一帧会读取最新底部。
+      return
     } else {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      el.scrollTo({ top: el.scrollHeight, behavior: duration > 0 ? 'instant' : 'smooth' })
     }
   }
 }
@@ -1928,6 +1973,7 @@ function setupMobileKeyboard() {
     const h = window.visualViewport.height
     if (Math.abs(h - prevH) < 10) return
     prevH = h
+    cancelImageScroll()
     userScrolledUp = false
     el.scrollTop = el.scrollHeight
   }
@@ -1958,7 +2004,7 @@ function setupResizeObserver() {
     resizeRaf = requestAnimationFrame(() => {
       resizeRaf = null
       const el2 = msgList.value
-      if (!el2 || pendingCharSwitch || chat.streaming) return
+      if (!el2 || pendingCharSwitch || chat.streaming || imageScrollFrame !== null) return
       const newSH = el2.scrollHeight
       if (newSH === lastObservedSH) return
       // 用旧 scrollHeight 算 distBefore，避免 userScrolledUp 被 scroll 事件误判污染
@@ -2006,6 +2052,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  cancelImageScroll()
+  clearTimeout(scrollTimer)
   teardownMobileKeyboard()
   teardownResizeObserver()
   window.removeEventListener('click', dismissUndoBubble)
@@ -2027,6 +2075,7 @@ watch(() => chat.activeCharId, (id, oldId) => {
   stopSpeech()
   if (id) loadSpeech(id).catch(() => {})
   if (id && id !== oldId) {
+    cancelImageScroll()
     const routeId = parseInt(route.params.id)
     if (id !== routeId) router.replace('/chat/' + id)
     pendingCharSwitch = true
@@ -2036,7 +2085,11 @@ watch(() => chat.activeCharId, (id, oldId) => {
 })
 
 // 新消息到达 → 自动滚底（监听 messages.length，窗口展开不影响）
+let previousImageIds = new Set(chat.messages.filter(msg => msg.type === 'image_gen').map(msg => msg.id))
 watch(() => chat.messages.length, (newLen) => {
+  const imageIds = new Set(chat.messages.filter(msg => msg.type === 'image_gen').map(msg => msg.id))
+  const hasNewImage = [...imageIds].some(id => !previousImageIds.has(id))
+  previousImageIds = imageIds
   if (newLen === 0) return
   // task-29 问题 3：新消息往往就是「她回应了」⇒ 把「还有 N 个动作」刷掉。
   // 走合并器：同一轮会连插好几条，只刷一次，别把请求打爆。
@@ -2056,7 +2109,8 @@ watch(() => chat.messages.length, (newLen) => {
       }, 150)
     }, 50)
   } else {
-    scrollToBottom()  // 流式分句：平滑滚动
+    // 图片的第一次入场发生在占位气泡插入时，不能只在 loaded 后延长滚动。
+    scrollToBottom(false, hasNewImage ? 600 : 0)
   }
 })
 // 表情包是追加到当前分句气泡上的，不改变 messages.length；单独监听贴图数量触发滚底
@@ -2147,7 +2201,7 @@ async function send() {
   const text = inputText.value.trim()
   inputText.value = ''
   userScrolledUp = false  // 用户主动发送 → 强制跟随
-  await chat.sendMessage(text, imageGenMode.value, deepThinkMode.value)
+  await chat.sendMessage(text, imageGenMode.value)
   await scrollToBottom(true)
 }
 
@@ -2247,7 +2301,6 @@ function renderContent(text) {
 .message { display:flex; margin:3px 0; align-items:flex-start; gap:8px; }
 .message.user { flex-direction:row-reverse; }
 .message.assistant { flex-direction:row; }
-.thinking-row { margin:2px 0; }
 
 .msg-avatar {
   position: relative;
@@ -2268,7 +2321,12 @@ function renderContent(text) {
   box-shadow: 0 0 0 2px rgba(255,255,255,0.4);
 }
 .msg-same-role .msg-avatar { opacity: 0; pointer-events: none; }
-.avatar-fallback { color:#fff; font-size:14px; font-weight:700; user-select:none; }
+.msg-avatar > .avatar-fallback {
+  width: 100%; height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  font-size: 14px;
+}
 
 /* ── 睡眠 Zzz：三个 Z 从头像右上角逐个冒出（渐入→上飘→渐出） ── */
 .sleep-zzz {
@@ -2681,17 +2739,6 @@ function renderContent(text) {
 .sp-btn-icon { width:16px; height:16px; vertical-align:middle; margin-right:6px; display:inline-block; }
 
 /* ── 毛玻璃编辑弹窗 ── */
-.editor-overlay { position:fixed; inset:0; background:transparent; display:flex; align-items:center; justify-content:center; z-index:1001; }
-.editor-panel {
-  width:768px; max-height:90vh; height:80vh;
-  background: var(--bg-secondary);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-radius:16px;
-  border:1px solid var(--border);
-  box-shadow: 0 12px 48px rgba(0,0,0,0.1);
-  display:flex; flex-direction:column; overflow:hidden;
-}
 
 /* 编辑弹窗淡入缩放 */
 .editor-fade-enter-active { transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
@@ -2934,12 +2981,6 @@ function renderContent(text) {
   .input-area { padding: 8px 16px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
 
   /* 手机端编辑弹窗全屏 */
-  .editor-overlay { background: rgba(0,0,0,0.3); }
-  .editor-panel {
-    width:100vw; max-width:100vw;
-    height:100vh; height:100dvh; max-height:100vh; max-height:100dvh;
-    border-radius:0; border:none;
-  }
   .editor-header { padding-top: calc(16px + env(safe-area-inset-top, 0px)); }
   .editor-actions { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
 
@@ -3021,13 +3062,6 @@ function renderContent(text) {
 }
 
 /* ── 印象弹窗 ── */
-.impression-panel {
-  max-width: 720px;
-  max-height: 68vh;
-  height: auto;
-  display: flex;
-  flex-direction: column;
-}
 .impression-body {
   overflow-y: auto;
   flex: 1;
@@ -3300,12 +3334,6 @@ function renderContent(text) {
 .impression-btn-save:hover { filter: brightness(1.08); }
 
 @media (max-width: 767px) {
-  .impression-panel {
-    width: 100vw; max-width: 100vw;
-    height: 100vh; height: 100dvh;
-    max-height: 100vh; max-height: 100dvh;
-    border-radius: 0; border: none;
-  }
   .impression-card { padding: 8px 10px; }
   .impression-content { flex-direction: column; }
   .impression-right { width: 100% !important; border-left: none; border-top: 1px solid var(--border); padding: 14px 0 0; min-width: 0; }

@@ -1,3 +1,5 @@
+import { appendWorldLanguageStyle } from '../services/worldLanguageStyle.js';
+import { scheduleMomentCompanions } from '../services/scheduleParticipants.js';
 import { Router } from 'express';
 import { saveBase64Image } from '../services/imagePaths.js';
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlobalRule } from '../db/index.js';
@@ -802,6 +804,20 @@ async function generateMomentPostImpl(character, opts = {}) {
     ).run(character.id, combinedStyle, `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`, opts.godDeliveryKey || null).lastInsertRowid;
   }
 
+  // 场景已有同行者时直接复用；主题或动因不改变实际在场的人。
+  let currentActivity = null;
+  let multiPersons = [];
+  try {
+    if (opts.backfill || config.features.schedule !== false) {
+      const activity = opts.backfill ? opts.activity : getCurrentActivity(character.id);
+      multiPersons = scheduleMomentCompanions(character.id, activity);
+      if ((multiPersons.length || (!selectedTopic && !isFreeMode)) && activity && activity.activity !== '自由时间'
+          && buildMomentScheduleContext(character.display_name, activity, { includeDescription: false })) {
+        currentActivity = activity;
+      }
+    }
+  } catch { /* schedule not available, skip */ }
+
   // 2.5 Sigmoid 模型：根据角色关系网数量决定多人概率
   // P(多人) = P_min + (P_max - P_min) / (1 + e^(-k × (R - R_mid)))
   const MULTI_P_MIN = 0.50;  // 最低多人概率
@@ -809,7 +825,6 @@ async function generateMomentPostImpl(character, opts = {}) {
   const MULTI_K = 1.0;       // 陡峭度：越大曲线越陡，1.0 时 R≈4~6 为快速拉升区
   const MULTI_R_MID = 5;     // 拐点：R=5 时概率正好 = (P_min+P_max)/2 = 55%
 
-  let multiPersons = [];
   const relCount = db.prepare(`
     SELECT COUNT(*) AS cnt
     FROM character_relationships cr
@@ -818,7 +833,7 @@ async function generateMomentPostImpl(character, opts = {}) {
   `).get(character.id)?.cnt || 0;
 
   // R=0 时没有关系网对象，强制单人
-  if (relCount > 0) {
+  if (multiPersons.length === 0 && relCount > 0) {
     const multiProb = MULTI_P_MIN + (MULTI_P_MAX - MULTI_P_MIN) / (1 + Math.exp(-MULTI_K * (relCount - MULTI_R_MID)));
     console.log(`[moments] ${character.display_name} relCount=${relCount}, multiProb=${(multiProb * 100).toFixed(0)}%`);
 
@@ -868,9 +883,7 @@ async function generateMomentPostImpl(character, opts = {}) {
   const multiPersonImageNote = multiPersons.length > 0 ? `
 - **多人画面**：包含你和${multiPersons.map(p => p.otherName).join('、')}，另指定同框的用户也计入人数；每人独立描述，参与同一活动。` : '';
 
-  const postingTaskIntro = worldSetting
-    ? '你正在发朋友圈。你的人设生存在<world_setting>中，融入世界观，把世界观当做常识，像刷手机时随手发一条那样发出一条真实的朋友圈动态——不是写作品。'
-    : '你正在发朋友圈。请根据你的人设，像刷手机时随手发一条那样发出一条真实的朋友圈动态——不是写作品。';
+  const postingTaskIntro = '你正在发朋友圈。你就是下方人格在当前世界中的本人，现在正打开自己的账号，把此刻想分享的生活片段发给熟人。以下从你的生活处境出发，用你自己的所见、所感和说话习惯完成这条动态。';
 
   const imagePromptRule = getGlobalRule('image_prompt');
   const imagePromptGuide = imagePromptRule?.rule_content || '';
@@ -887,17 +900,6 @@ async function generateMomentPostImpl(character, opts = {}) {
   const weatherNote = getLightNoteWithWeather(now);
   const weatherHint = weatherNote ? `Environment reference：${weatherNote}。` : '';
 
-  // 先确定主次，再序列化日程；动因为主时不传 description，也不据它推断同行者。
-  let currentActivity = null;
-  try {
-    if (!selectedTopic && (opts.backfill || (!isFreeMode && config.features.schedule !== false))) {
-      const activity = opts.backfill ? opts.activity : getCurrentActivity(character.id);
-      if (activity && activity.activity !== '自由时间'
-          && buildMomentScheduleContext(character.display_name, activity, { includeDescription: false })) {
-        currentActivity = activity;
-      }
-    }
-  } catch { /* schedule not available, skip */ }
   const momentFocus = pickMomentFocus({
     hasSchedule: Boolean(currentActivity),
     hasMotive: Boolean(pickedTopic || pickedSpecialMode),
@@ -942,7 +944,7 @@ async function generateMomentPostImpl(character, opts = {}) {
 通用规则：
 - 只输出 JSON，不要解释
 ${MOMENT_SINGLE_FOCUS_RULE}
-${MOMENT_TONE_RULES}
+${appendWorldLanguageStyle(MOMENT_TONE_RULES)}
 ${MOMENT_IMAGE_RULES}
 - text 中的事符合当前时间和天气，但不用报时或报天气；只有它直接触发了这次反应才自然提及。
 
@@ -953,7 +955,7 @@ ${imageFormatRule}
   const postingTask = (() => {
     const textShape = isSpecialMode
       ? '中文口语，第一人称，按本次内容主次决定写日程感想或梦境片段，分清梦与现实'
-      : '中文口语，只围绕一个具体中心，用角色自己的语气表达';
+      : '中文口语，只围绕一个具体中心，用你自己的语气表达';
     const jsonFmt = buildMomentOutputFormat({
       imageCount,
       textRequirement: textShape,
@@ -994,14 +996,19 @@ ${dynamicRules}`;
       );
 
   const userMsg = multiPersons.length > 0
-    ? `${timeTag}${scheduleContext}${styleDirective}${focusDirective} ${multiPersons.map(p => p.relDesc).join('，')}——和${multiPersons.map(p => p.otherName).join('、')}在一起。同行者只作为同一场景里的互动对象，不要另写人物介绍或关系感想。发一条朋友圈。`
-    : `${timeTag}${scheduleContext}${styleDirective}${focusDirective} 发一条朋友圈。`;
+    ? `${timeTag}${scheduleContext}${styleDirective}${focusDirective} ${multiPersons.map(p => p.relDesc).join('，')}——和${multiPersons.map(p => p.otherName).join('、')}在一起。同行者只作为同一场景里的互动对象，不要另写人物介绍或关系感想。现在，你是当前世界里的${character.display_name}本人。思考中的“我”和发帖者都是你自己，从“我此刻的感受和分享欲”开始斟酌；把你想发的原话和画面按上述字数要求与 JSON 格式提交。`
+    : `${timeTag}${scheduleContext}${styleDirective}${focusDirective} 现在，你是当前世界里的${character.display_name}本人。思考中的“我”和发帖者都是你自己，从“我此刻的感受和分享欲”开始斟酌；把你想发的原话和画面按上述字数要求与 JSON 格式提交。`;
 
   // msgs[0] 舞台 → [世界观] → msgs[1] 任务 → msgs[2] 角色 → msgs[3] 交互(多人) → user
   const msgs = [{ role: 'system', content: permissionPrompt }];
   if (worldSetting) msgs.push({ role: 'system', content: getWorldIntegrationRule('moments') });
   const postingTaskIndex = msgs.length;
-  msgs.push({ role: 'system', content: postingTask });
+  const godWorldContext = getGodWorldContext([Number(character.id)]);
+  msgs.push({ role: 'system', content: godWorldContext ? postingStablePrefix : postingTask });
+  if (godWorldContext) {
+    msgs.push({ role: 'system', content: godWorldContext });
+    msgs.push({ role: 'system', content: postingTask.slice(postingStablePrefix.length) });
+  }
   // 整卡人格（统一入口，含生效外观注入；输出含 imagePrompt，配图需体现当前外观）
   const lorePersona = buildCharacterPersona(character, { variant: 'full' });
   msgs.push({ role: 'system', content: lorePersona });
@@ -1040,8 +1047,6 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
   if (selectedTopic) {
     msgs.push({ role: 'system', content: `【用户指定的朋友圈话题】\n名称：${selectedTopic.name}\n描述：${selectedTopic.desc || selectedTopic.name}` });
   }
-  const godWorldContext = getGodWorldContext([Number(character.id)]);
-  if (godWorldContext) msgs.push({ role: 'system', content: godWorldContext });
   // ⚠ 本地特有的 worldRulePrefix（世界观优先）必须保留，上游没有这段
   msgs.push({ role: 'user', content: worldRulePrefix + (selectedTopic
     ? `${userMsg} 本次围绕用户指定话题生成图文，严格按 JSON 格式输出。`
@@ -1225,12 +1230,12 @@ async function generateSpecialScheduleMoment({ characterId, activity }) {
     .filter(Boolean).join('；');
 
   // 静态规则（含生图格式）在前，随本次变化的字段（同框人物、誓约、天气）压到后面。
-  const postingTask = `你正在发朋友圈。像刷手机时随手发一条那样发出一条真实的朋友圈动态——不是写作品。
+  const postingTask = `你正在发朋友圈。你就是下方人格在当前世界中的本人，现在正打开自己的账号，把此刻想分享的生活片段发给熟人。以下从你的生活处境出发，用你自己的所见、所感和说话习惯完成这条动态。
 
 通用规则：
 - 只输出 JSON，不要解释
 ${MOMENT_SINGLE_FOCUS_RULE}
-${MOMENT_TONE_RULES}
+${appendWorldLanguageStyle(MOMENT_TONE_RULES)}
 ${MOMENT_IMAGE_RULES}
 ${worldSetting ? '- **世界观驱动**：你的朋友圈发生在<world_setting>中，不是在真空或现实世界中。' : ''}
 - text 中的事符合当前时间，不用特意报时。
@@ -1250,7 +1255,8 @@ ${weatherHint}`;
   const descPart = activity.description ? `（${activity.description}）` : '';
   const userMsg = `${timeTag}
 **【此刻正在做】${character.display_name}此刻正在${doing}${descPart}**
-**【本次发朋友圈动因】这是你与${userName}约好的事情——就是上面【此刻正在做】的内容，只围绕它发一条朋友圈。**`;
+**【本次发朋友圈动因】这是你与${userName}约好的事情——就是上面【此刻正在做】的内容，只围绕它发一条朋友圈。**
+现在，你是当前世界里的${character.display_name}本人。思考中的“我”和发帖者都是你自己，从“我此刻的感受和分享欲”开始斟酌；把你想发的原话和画面按上述字数要求与 JSON 格式提交。`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });

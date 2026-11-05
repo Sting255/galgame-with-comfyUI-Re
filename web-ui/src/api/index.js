@@ -1,6 +1,13 @@
 import { defaultBackupFileName, parseBackupFileName } from '../utils/dataBackup.js'
 
 const BASE = '/api'
+
+// ── 宿舍（同居，上游 v4.2.0）──
+export const getCohabitation = () => request('/cohabitation')
+export const createResidence = body => request('/cohabitation/rooms', { method: 'POST', body })
+export const renameResidence = (id, name) => request(`/cohabitation/rooms/${id}`, { method: 'PUT', body: { name } })
+export const deleteResidence = id => request(`/cohabitation/rooms/${id}`, { method: 'DELETE' })
+export const moveResidenceMember = (id, roomId) => request(`/cohabitation/members/${id}`, { method: 'PUT', body: { roomId } })
 export const getGodSaysState = session => request(`/god-says/state${session ? `?session=${session}` : ''}`)
 export const getGodSaysSessions = before => request(`/god-says/sessions${before ? `?before=${encodeURIComponent(before)}` : ''}`)
 export const getGodSaysMemories = () => request('/god-says/memories')
@@ -548,17 +555,19 @@ export async function deleteUserRelationship(id) {
   return request(`/user-relationships/${id}`, { method: 'DELETE' })
 }
 
-export function chatStream(characterId, message, clientMsgId, imageMode = 'smart', deepThink = false, townContext, galgameMode = false) {
+export function chatStream(characterId, message, clientMsgId, imageMode = 'smart', townContext, galgameMode = false) {
   const controller = new AbortController()
   const stream = new ReadableStream({
     async start(outerController) {
       // ── 健壮连接：fetch 异常 + 非 2xx 响应均重试（覆盖代理 ECONNRESET → 502 场景）──
       //    每次尝试带 8s 超时，防止 Vite proxy 挂起导致无限等待
       let res
+      let detachResponseAbort
       let retries = 0
       const MAX_RETRIES = 3
       while (true) {
-        let timeoutId, onUserAbort
+        if (controller.signal.aborted) { outerController.close(); return }
+        let timeoutId, onUserAbort, keepAbortListener = false
         const attemptCtrl = new AbortController()
         try {
           // 8s 超时：超时后走重试逻辑，保证连接断开场景下 8 秒内必有一次判决
@@ -569,10 +578,14 @@ export function chatStream(characterId, message, clientMsgId, imageMode = 'smart
 
           res = await fetch(`${BASE}/characters/${characterId}/chat`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, client_msg_id: clientMsgId, image_mode: imageMode, force_image_gen: imageMode === 'force', deep_think: !!deepThink, ...(galgameMode === true ? { galgame_mode: true } : {}), ...(townContext === undefined ? {} : { townContext }) }),
+            body: JSON.stringify({ message, client_msg_id: clientMsgId, image_mode: imageMode, force_image_gen: imageMode === 'force', ...(galgameMode === true ? { galgame_mode: true } : {}), ...(townContext === undefined ? {} : { townContext }) }),
             signal: attemptCtrl.signal,
           })
-          if (res.ok) break  // 成功
+          if (res.ok) {
+            keepAbortListener = true
+            detachResponseAbort = () => controller.signal.removeEventListener('abort', onUserAbort)
+            break
+          }
           if (townContext !== undefined && [400, 409].includes(res.status)) {
             const detail = await res.json().catch(() => ({}))
             const error = Object.assign(new Error(detail.error || '小镇对话暂时不可用，请重新选择邻居'), { status: res.status, code: detail.code || 'TOWN_CHAT_REJECTED' })
@@ -595,25 +608,25 @@ export function chatStream(characterId, message, clientMsgId, imageMode = 'smart
           await new Promise(r => setTimeout(r, retries * 1000))
         } finally {
           clearTimeout(timeoutId)
-          if (onUserAbort) controller.signal.removeEventListener('abort', onUserAbort)
+          if (onUserAbort && !keepAbortListener) controller.signal.removeEventListener('abort', onUserAbort)
         }
       }
 
-      // ── 日程系统：检测 queued 响应（非 SSE，是 JSON）──
-      const contentType = res.headers.get('Content-Type') || ''
-      if (contentType.includes('application/json')) {
-        const json = await res.json()
-        if (json.queued) {
-          // 返回结构化事件（与正常 SSE 解析路径格式一致，确保 store 能正确识别）
-          outerController.enqueue({ type: 'event', event: 'queued' })
-          outerController.enqueue({ type: 'data', event: 'queued', data: json })
-          outerController.close()
-          return
-        }
-      }
-
-      // ── 流式读取 ──
       try {
+        // ── 日程系统：检测 queued 响应（非 SSE，是 JSON）──
+        const contentType = res.headers.get('Content-Type') || ''
+        if (contentType.includes('application/json')) {
+          const json = await res.json()
+          if (json.queued) {
+            // 返回结构化事件（与正常 SSE 解析路径格式一致，确保 store 能正确识别）
+            outerController.enqueue({ type: 'event', event: 'queued' })
+            outerController.enqueue({ type: 'data', event: 'queued', data: json })
+            outerController.close()
+            return
+          }
+        }
+
+        // ── 流式读取 ──
         await consumeSSE(res, (event, data) => {
           if (data === undefined) {
             outerController.enqueue({ type: 'event', event })
@@ -623,9 +636,10 @@ export function chatStream(characterId, message, clientMsgId, imageMode = 'smart
         })
         outerController.close()
       } catch (err) {
-        if (err.name !== 'AbortError') outerController.error(err)
-      }
+        outerController.error(err)
+      } finally { detachResponseAbort() }
     },
+    cancel() { controller.abort() },
   })
   return { stream, abort: () => controller.abort() }
 }
@@ -1003,9 +1017,9 @@ export async function updateMomentFreq(value, mode) {
   await request(`/config/moment-freq`, { method: 'PUT', body: { value, mode } })
 }
 
-/** 更新日程刷新周期（天，1~3） */
-export async function updateScheduleRefreshDays(value) {
-  await request(`/config/schedule-refresh-days`, { method: 'PUT', body: { value } })
+/** 更新日程刷新周期（天，1~3）与独立思考设置 */
+export async function updateScheduleRefreshDays(value, disableThinking) {
+  await request(`/config/schedule-refresh-days`, { method: 'PUT', body: { value, disableThinking } })
 }
 
 /** 更新后台 LLM 并发数 1~10 */
@@ -1276,6 +1290,10 @@ export async function getSystemRules() {
 
 export async function polishWorldSetting(data) {
   return request(`/config/world-settings/polish`, { method: 'POST', body: data })
+}
+
+export async function polishWorldLanguageStyle(id, data) {
+  return request(`/config/world-settings/${id}/language-style/polish`, { method: 'POST', body: data })
 }
 
 export async function activateWorldSetting(id) {
@@ -1867,8 +1885,8 @@ export function peekSnapshot(characterId, genImage = true, activityContext = nul
 }
 
 /** 瞄一眼再拍一张：使用已生成的 prompt 重新提交 ComfyUI 生图 */
-export function retakePeekSnapshot(characterId, prompt) {
-  return request(`/schedule/${characterId}/peek/retake`, { method: 'POST', body: { prompt } })
+export function retakePeekSnapshot(characterId, prompt, participantIds) {
+  return request(`/schedule/${characterId}/peek/retake`, { method: 'POST', body: { prompt, participantIds } })
 }
 
 export function regenerateSchedule(characterId, direction) {
@@ -1878,8 +1896,8 @@ export function regenerateSchedule(characterId, direction) {
 }
 
 /** 重置世界线：重新生成所有角色日程（后端 SSE 推送进度） */
-export function regenerateAllSchedules(direction) {
-  const body = {}
+export function regenerateAllSchedules(direction, resume = false) {
+  const body = { resume }
   if (direction) body.direction = direction
   return request(`/schedule/regenerate-all`, { method: 'POST', body })
 }
@@ -2000,6 +2018,10 @@ export async function listNewspaperEditions() {
 // 按日期回看某一期
 export async function getNewspaperByDate(date) {
   return request(`/newspaper/by-date/${date}`)
+}
+
+export async function deleteNewspaperEdition(date) {
+  return request(`/newspaper/editions/${encodeURIComponent(date)}`, { method: 'DELETE' })
 }
 
 export async function generateNewspaper() {
@@ -2766,3 +2788,9 @@ export const updatePromptPreset = (id, body) => request(`/presets/${id}`, { meth
 export const activatePromptPreset = (id, active, expectedRevision) => request(`/presets/${id}/active`, { method: 'PUT', body: { active, expectedRevision } })
 export const deletePromptPreset = (id, expectedRevision) => request(`/presets/${id}`, { method: 'DELETE', body: { expectedRevision } })
 export const previewPromptPreset = body => request('/presets/preview', { method: 'POST', body })
+
+// ── 神说（上游 v4.2.0：工作区、变更决策、批量停止）──
+export const getGodWork = session => request(`/god-says/work?session=${session}`)
+export const decideGodChange = (id, version, decision) => request(`/god-says/changes/${id}/decision`, { method: 'POST', body: { version, decision } })
+
+export const stopGodBatch = id => request(`/god-says/batches/${id}/stop`, { method: 'POST' })

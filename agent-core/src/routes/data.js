@@ -15,6 +15,7 @@
  */
 import express, { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { scheduleSelfRestart } from '../services/procRestart.js';
 import {
   createBackup, importBackup, getExportInfo, getMaxArchiveBytes, BackupError,
 } from '../services/dataBackup.js';
@@ -98,7 +99,14 @@ router.post('/import', importBodyParser, asyncHandler(async (req, res) => {
       restartRecommended: result.restartRecommended,
       restartRequired: result.restartRequired,
       message: result.message,
+      // 前端据此显示「正在重启…」并轮询 /api/health，起来后自动刷新
+      autoRestart: Boolean(result.restartRequired || result.restartRecommended),
     });
+    // 换库 / 写回 .env 都只有新进程才生效 ⇒ 恢复成功后直接把进程换掉，
+    // 免得用户自己关窗口、杀进程（真机上还会被启动器的重复启动搅乱）。
+    if (result.restartRequired || result.restartRecommended) {
+      scheduleSelfRestart({ delayMs: 2500, reason: '备份已恢复' });
+    }
   } catch (err) {
     if (err instanceof BackupError) {
       const status = err.status || 400;

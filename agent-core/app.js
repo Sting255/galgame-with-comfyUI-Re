@@ -1,3 +1,4 @@
+import { godCommitGuard } from './src/services/godSays/commitGuard.js';
 import './src/envCheck.js'; // 必须最先执行：Node ABI 预检，防 better-sqlite3 加载崩溃
 import './src/logCapture.js'; // 尽早安装 console 捕获到内存环形缓冲（幂等）
 import express from 'express';
@@ -21,7 +22,8 @@ import imagesRoutes from './src/routes/images.js';
 import charactersRoutes from './src/routes/characters.js';
 import emojiRoutes from './src/routes/emoji.js';
 import intimateRoutes from './src/routes/intimate.js';
-import hypnosisRoutes, { phoneRouter as hypnosisPhoneRoutes } from './src/routes/hypnosis.js';
+import hypnosisRoutes from './src/routes/hypnosis.js';
+import hypnosisPhoneRoutes from './src/routes/hypnosisPhone.js';
 import intimateAiEditRoutes from './src/routes/intimateAiEdit.js';
 import touchRoutes from './src/routes/touch.js';
 import toysRoutes from './src/routes/toys.js';
@@ -52,6 +54,7 @@ import scheduleRoutes from './src/routes/schedule.js';
 import diaryRoutes from './src/routes/diary.js';   // 上游 v3.9.0 合并：角色日记 /api/diaries/*
 import mediaRoutes from './src/routes/media.js';   // 上游 v3.9.0 合并：媒体内容页 /api/media/*
 import timeRoutes from './src/routes/time.js';   // 程序时间（世界钟）：/api/time*
+import cohabitationRoutes from './src/routes/cohabitation.js';   // 上游 v4.2.0：宿舍（同居）/api/cohabitation/*
 import workflowsRoutes from './src/routes/workflows.js';
 import mailboxRoutes from './src/routes/mailbox.js';
 import groupsRoutes from './src/routes/groups.js';
@@ -180,6 +183,7 @@ app.use('/avatars', express.static(path.join(DATA_DIR, 'avatars'), { maxAge: '30
 // 固定名那一类一旦加了长缓存，重生成后浏览器会一直拿旧图 ⇒ 结论：**维持不带强缓存**，
 // 这条注释就是防止后来者只看 uuid 名就顺手加 maxAge。
 // API 路由（wrapRouterAsync：给所有 async 处理器加 rejection 兜底，防请求挂起）
+app.use('/api', godCommitGuard);
 app.use('/api', wrapRouterAsync(expressionStandingRoutes));
 app.use('/api', wrapRouterAsync(chatRoutes));           // /api/characters/:id/chat, /api/characters/:id/messages
 app.use('/api/tts', wrapRouterAsync(ttsRoutes));
@@ -229,6 +233,7 @@ app.use('/api/stream', wrapRouterAsync(streamRoutes));
 app.use('/api/schedule', wrapRouterAsync(scheduleRoutes));
 app.use('/api/diaries', wrapRouterAsync(diaryRoutes));   // 上游 v3.9.0 合并：角色日记（与 intimate→characters 紧邻契约无关）
 app.use('/api/time', wrapRouterAsync(timeRoutes));   // 程序时间：GET /api/time、POST /api/time/{advance,period,set,reset}
+app.use('/api/cohabitation', wrapRouterAsync(cohabitationRoutes));   // 上游 v4.2.0：宿舍（同居）居室与整轮日程
 app.use('/api/workflows', wrapRouterAsync(workflowsRoutes));
 app.use('/api/mailbox', wrapRouterAsync(mailboxRoutes));
 app.use('/api/groups', wrapRouterAsync(groupsRoutes));

@@ -8,6 +8,8 @@ import { applyAssistantReplace } from '../utils/assistantReplace.js'
 import { emitCharacterAvatarChanged } from '../utils/characterReactionProducers.js'
 import { chatSpeechAutoPlay } from '../utils/speechAutoPlay.js'
 import { createImageTaskRecovery } from '../utils/imageTaskRecovery.js'
+import { onEvent } from './unifiedStream.js'
+import { readChatRecovery, writeChatRecovery } from '../utils/chatRecovery.js'
 
 /** D2 重写兜底：最近一次已应用的 replace_last_assistant.turn（§12.4 用它校验「替换的是本轮」，防乱序/重复投递） */
 let lastReplaceTurn = 0
@@ -23,8 +25,50 @@ export const useChatStore = defineStore('chat', () => {
   let selectionSeq = 0
   let historySeq = 0
   let activeStream = null  // { charId, id, abort } | null
+  let restoreAfterStream = false
+  let imageRevision = 0
+  // 仅控制上屏顺序；后台生图与事件接收始终立即进行，按轮次隔离等待中的图片。
+  const imageTurns = new Map()
+
+  function clearImageTurns() {
+    for (const turn of imageTurns.values()) clearTimeout(turn.timer)
+    imageTurns.clear()
+  }
+  onScopeDispose(clearImageTurns)
+
+  function insertImageMessage(message) {
+    // 重连/刷新可能已经从历史接口读回同一张图，不能在延迟上屏时再插入一次。
+    if (messages.value.some(m => m.type === 'image_gen' && (m.genId === message.genId
+      || (message.sourceMsgId && m.sourceMsgId === message.sourceMsgId)))) return
+    const user = messages.value.findIndex(m => m.role === 'user' && (
+      (message.userRawId && m.raw_id === message.userRawId)
+      || (message.turnClientMsgId && (m.clientMsgId || m.client_msg_id) === message.turnClientMsgId)))
+    const nextUser = user < 0 ? -1 : messages.value.findIndex((m, i) => i > user && m.role === 'user')
+    const anchor = messages.value.findIndex(m => m.id === message.sourceMsgId)
+    const at = nextUser >= 0 ? nextUser : user >= 0 || anchor < 0 ? messages.value.length : anchor + 1
+    messages.value.splice(at, 0, message)
+  }
+
+  function revealTurnImages(turn) {
+    if (!turn?.ended || turn.contentTimers.size || imageTurns.get(turn.clientMsgId) !== turn || turn.timer) return
+    // 给最后一句文字的滚动留出一拍，再让图片以自己的 600ms 节奏入场。
+    turn.timer = setTimeout(() => {
+      if (imageTurns.get(turn.clientMsgId) !== turn) return
+      imageTurns.delete(turn.clientMsgId)
+      if (activeCharId.value !== turn.charId) return
+      for (const image of turn.images.values()) insertImageMessage(image)
+      if (turn.images.size) dialogueRevision.value++
+    }, 300)
+  }
+
+  function finishTurnImages(turn) {
+    if (!turn) return
+    turn.ended = true
+    revealTurnImages(turn)
+  }
 
   function cancelActiveStream() {
+    clearImageTurns()
     if (!activeStream) return
     try { activeStream.abort() } catch {}
     activeStream = null
@@ -51,6 +95,14 @@ export const useChatStore = defineStore('chat', () => {
   // 开启 antiRepetitionReroll 后，重写要多花一次模型调用（几秒），期间把已上屏的气泡标成
   // 「重新组织语言中…」，否则用户会以为刚才那段就是最终答案（2026-10-15 补）。
   const rerolling = ref(false)
+  // 上游 v4.2.0：断线/超时恢复（保留已收到的内容，可原消息重试）
+  const failedTurn = ref(null)
+
+  async function retryFailedMessage() {
+    const turn = failedTurn.value
+    if (!turn || streaming.value) return
+    return sendMessage(turn.content, turn.imageMode, { ...turn.options, retryClientMsgId: turn.clientMsgId })
+  }
   const realtimeAffinity = ref(null)  // { affinity, affinityDelta, lastReason } — SSE affinity_update 推送
   const affinityKey = ref(0)          // 仅 SSE 推送时递增，驱动 roll 动画；初始加载/切角色时不递增
   const sidebarScrollSignal = ref(0)  // 主动消息到达时递增，驱动 Sidebar 滚动到顶部
@@ -72,6 +124,38 @@ export const useChatStore = defineStore('chat', () => {
   watch(activeCharId, () => imageRecovery.stopAll(), { flush: 'sync' })
   onScopeDispose(() => imageRecovery.stopAll())
   const activeChar = computed(() => characters.value.find(c => c.id === activeCharId.value))
+
+  function applyImageEvent(d) {
+    if (Number(d.characterId) !== Number(activeCharId.value)) return
+    imageRevision++
+    let gm = findGenMsg(d.taskId, d.messageId)
+    if (!gm) {
+      gm = { id: uid(), role: 'assistant', type: 'image_gen', genId: d.taskId, independentTask: true,
+        sourceMsgId: d.messageId, userRawId: d.userRawId, turnClientMsgId: d.clientMsgId, liveImage: true,
+        genStatus: 'pending', genStartTime: Date.now(), created_at: d.created_at || new Date().toISOString() }
+      const user = messages.value.find(m => m.role === 'user' && d.userRawId && m.raw_id === d.userRawId)
+      const turn = imageTurns.get(d.clientMsgId || user?.clientMsgId || user?.client_msg_id)
+      if (turn) turn.images.set(gm.genId, gm)
+      else insertImageMessage(gm)
+      gm = findGenMsg(d.taskId, d.messageId)
+    }
+    if (d.event === 'generate_progress') { gm.genStatus = 'generating'; gm.genProgress = d.progress; gm.genTotalSteps = d.totalSteps }
+    if (d.event === 'generate_retrying') { gm.genStatus = 'retrying'; gm.genProgress = 0 }
+    if (d.event === 'generate_done') { gm.genStatus = 'done'; gm.images = d.images; dialogueRevision.value++ }
+    if (d.event === 'generate_error') { gm.genStatus = 'error'; gm.genError = d.error }
+  }
+  onEvent('private_chat_image', applyImageEvent)
+  onEvent('private_chat_aux', d => {
+    if (Number(d.characterId) !== Number(activeCharId.value)) return
+    const user = [...messages.value].reverse().find(m => m.role === 'user')
+    if (!d.clientMsgId || (user?.clientMsgId || user?.client_msg_id) !== d.clientMsgId) return
+    if (d.event === 'guesses') { guesses.value = { a: d.a, b: d.b }; guessSourceRawId.value = d.source_raw_id }
+    if (d.event === 'affinity_update') { realtimeAffinity.value = d; affinityKey.value++ }
+  })
+  onEvent('connected', () => {
+    if (streaming.value) restoreAfterStream = true
+    else if (activeCharId.value) loadMessages(activeCharId.value)
+  })
 
   // 客户端渲染窗口：messages 已全量加载，窗口策略统一由 useMessageWindow 提供
   const { visibleMessages, hasMoreOlder, expandOlder, resetToLatest, anchorToLatest, keepTailPinned } =
@@ -97,13 +181,29 @@ export const useChatStore = defineStore('chat', () => {
   async function loadMessages(charId) {
     clearTouchPlaceholder()
     const request = ++historySeq
+    const revision = imageRevision
     try {
       const d = await api.getMessages(charId);
       if (request !== historySeq || activeCharId.value !== charId) return false;
+      if (revision !== imageRevision) return loadMessages(charId)
       if (!Array.isArray(d.messages)) return false;
       const raw = d.messages || [];
       const result = rawToMessages(raw);
+      let recovery = readChatRecovery(charId)
+      if (recovery && d.completedClientMsgIds?.includes(recovery.clientMsgId)) { writeChatRecovery(charId, null); recovery = null }
+      failedTurn.value = recovery
+      if (!recovery) lastSendError.value = ''
+      if (recovery) {
+        const user = result.find(m => m.role === 'user' && (m.client_msg_id === recovery.clientMsgId || m.id === recovery.userMessageId))
+        if (!user) result.push({ id: uid(), role: 'user', type: 'text', content: recovery.content, clientMsgId: recovery.clientMsgId })
+        else user.clientMsgId = recovery.clientMsgId
+        if (recovery.partial) result.push({ id: uid(), role: 'assistant', type: 'text', content: recovery.partial, interrupted: true, recoveryKey: recovery.clientMsgId })
+        lastSendError.value = recovery.error
+      }
       messages.value = result;
+      for (const task of d.imageTasks || []) applyImageEvent({ characterId: charId, taskId: task.id,
+        messageId: task.message_id, userRawId: task.user_raw_id, created_at: task.created_at,
+        event: task.status === 'failed' ? 'generate_error' : 'generate_start', error: task.error_message })
       anchorToLatest();
       // 恢复好感度快照（切角色后 reatimeAffinity 被清空，从 DB 恢复）
       if (d.affinity && !realtimeAffinity.value) {
@@ -121,7 +221,6 @@ export const useChatStore = defineStore('chat', () => {
   function rawToMessages(raw) {
     const result = [];
     let genSeq = 0;
-    const seenThinking = new Set();  // 深度思考按 raw_id 去重（thinking 只挂在 raw 组第一条消息上）
     for (const msg of raw) {
       const content = msg.content?.replace(/<br\s*\/?>/gi, '').trim();
       let allImages = [];
@@ -130,26 +229,6 @@ export const useChatStore = defineStore('chat', () => {
       const emojiImages = imageUrls.filter(isEmojiImageUrl);
       const genImages = imageUrls.filter(u => !isEmojiImageUrl(u));
       if (!content && emojiImages.length === 0 && genImages.length === 0) continue;
-
-      // 深度思考块：插到该 raw 组第一条消息（可能是文本气泡或生图气泡）之前
-      if (msg.role === 'assistant' && msg.thinking && !seenThinking.has(msg.raw_id)) {
-        seenThinking.add(msg.raw_id);
-        let thinkData = null;
-        try { thinkData = typeof msg.thinking === 'string' ? JSON.parse(msg.thinking) : msg.thinking; } catch {}
-        if (thinkData?.think || thinkData?.plan) {
-          result.push({
-            id: uid(),
-            role: 'assistant',
-            type: 'thinking',
-            status: 'done',
-            content: thinkData.think || '',
-            summary: thinkData.plan?.summary || '',
-            elapsedMs: 0,
-            raw_id: msg.raw_id,
-            created_at: msg.created_at,
-          });
-        }
-      }
 
       if (msg.raw_id === null && msg.event_id != null) {
         let eventData = null;
@@ -164,7 +243,7 @@ export const useChatStore = defineStore('chat', () => {
         continue;
       }
 
-      // 图即回复（深度思考 standalone）：空文本消息只是图片载体，不渲染文本气泡，仅出图
+      // 空文本消息只是图片载体，不渲染文本气泡。
       const isImageCarrier = !content && emojiImages.length === 0 && genImages.length > 0;
       if (!isImageCarrier) {
         result.push({
@@ -181,6 +260,7 @@ export const useChatStore = defineStore('chat', () => {
           role: 'assistant',
           type: 'image_gen',
           genId: `hist_${msg.id}_${genSeq++}`,
+          sourceMsgId: msg.id,
           genStatus: 'done',
           images: genImages.map(url => ({ url, base64: null })),
           created_at: msg.created_at,
@@ -213,6 +293,7 @@ export const useChatStore = defineStore('chat', () => {
     imageRecovery.stopAll()
     clearTouchPlaceholder()
     const selection = ++selectionSeq
+    clearImageTurns()
     if (activeStream) {
       cancelActiveStream()
       streaming.value = false
@@ -226,6 +307,7 @@ export const useChatStore = defineStore('chat', () => {
     guessSourceRawId.value = null
     responseComplete.value = false
     lastSendError.value = ''
+    failedTurn.value = null
     realtimeAffinity.value = null  // 切角色时清除实时好感度
     rerolling.value = false        // 切角色时清掉重写过渡态（上一个角色的重写与本角色无关）
     // 标记主动消息已读（DB 持久化），Sidebar 的 onCharClick 也会调，这里兜底
@@ -257,6 +339,8 @@ export const useChatStore = defineStore('chat', () => {
     streamingContent.value = ''
     showTypingDots.value = false
     await api.clearMessages(id)
+    writeChatRecovery(id, null)
+    failedTurn.value = null
     messages.value = []
     resetToLatest()
   }
@@ -267,6 +351,8 @@ export const useChatStore = defineStore('chat', () => {
     if (!id) return
     const result = await api.undoLastRound(id)
     if (!result.ok || !result.deleted) return
+    writeChatRecovery(id, null)
+    failedTurn.value = null
 
     // 找到本地消息数组中最后一个 user 消息的 raw_id
     const msgs = messages.value
@@ -344,15 +430,20 @@ export const useChatStore = defineStore('chat', () => {
     streamingContent.value = ''
     showTypingDots.value = false
     await api.deleteCharacter(id)
+    writeChatRecovery(id, null)
+    failedTurn.value = null
     messages.value = []
     resetToLatest()
     activeCharId.value = null
     await loadCharacters()
   }
 
-  function findGenMsg(genId) { return messages.value.find(m => m.genId === genId) }
+  function findGenMsg(genId, sourceMsgId) {
+    const match = m => m.type === 'image_gen' && (m.genId === genId || (sourceMsgId && m.sourceMsgId === sourceMsgId))
+    return messages.value.find(match) || [...imageTurns.values()].flatMap(turn => [...turn.images.values()]).find(match)
+  }
 
-  async function sendMessage(content, imageMode = 'smart', deepThink = false, { townContext, galgameMode = false } = {}) {
+  async function sendMessage(content, imageMode = 'smart', { townContext, galgameMode = false, retryClientMsgId } = {}) {
     if (streaming.value || !content.trim()) return
     const charId = activeCharId.value
     if (!charId) return
@@ -368,24 +459,44 @@ export const useChatStore = defineStore('chat', () => {
     rerolling.value = false  // 新一轮开始：清掉上一轮残留的重写过渡态
     const now = new Date().toISOString()
     // 幂等键：防止重试导致服务端写入重复用户消息
-    const clientMsgId = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
-    messages.value.push({ id: uid(), role: 'user', type: 'text', content, created_at: now, clientMsgId })
+    const clientMsgId = retryClientMsgId || Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
+    const previousImageTurn = imageTurns.get(clientMsgId)
+    clearTimeout(previousImageTurn?.timer)
+    const imageTurn = { charId, clientMsgId, images: previousImageTurn?.images || new Map(), contentTimers: new Set(), ended: false, timer: null }
+    imageTurns.set(clientMsgId, imageTurn)
+    messages.value = messages.value.filter(m => !m.recoveryKey)
+    if (!retryClientMsgId || !messages.value.some(m => m.role === 'user' && (m.clientMsgId || m.client_msg_id) === clientMsgId)) {
+      messages.value.push({ id: uid(), role: 'user', type: 'text', content, created_at: now, clientMsgId })
+    }
+    failedTurn.value = null
+    let dialogueSaved = false
+    const previousRecovery = retryClientMsgId ? readChatRecovery(charId) : null
+    const recovery = { clientMsgId, content, imageMode, options: { townContext, galgameMode }, partial: previousRecovery?.partial || '', error: '上次回应中断，可以重试' }
+    function checkpoint() {
+      if (dialogueSaved) return
+      const user = messages.value.find(m => m.role === 'user' && (m.clientMsgId || m.client_msg_id) === clientMsgId)
+      recovery.userMessageId = user?.id
+      writeChatRecovery(charId, recovery)
+    }
+    checkpoint()
 
     streaming.value = true; streamingContent.value = ''; showTypingDots.value = true; memoryRecalling.value = false
 
     // ── 安全超时：自适应时长，防止 streaming 永久锁死发送键 ──
-    //     纯文本场景 30s，生图场景延长到 600s（匹配 ComfyUI 后端超时）
+    // 首次回应允许 120s；收到正文后按 30s 无活动计时，生图阶段允许 600s。
+    const FIRST_RESPONSE_MS = 120_000
     const TEXT_SAFETY_MS = 30_000
     const IMAGE_SAFETY_MS = 600_000
     let safetyFired = false
     let safetyTimer = null
-    let safetyMs = TEXT_SAFETY_MS
+    let safetyMs = FIRST_RESPONSE_MS
 
     function clearSafetyTimer() {
       if (safetyTimer) { clearTimeout(safetyTimer); safetyTimer = null }
     }
     function resetSafetyTimer(newMs) {
       clearSafetyTimer()
+      if (dialogueSaved) return
       if (newMs) safetyMs = newMs
       safetyTimer = setTimeout(onSafetyFire, safetyMs)
     }
@@ -393,7 +504,7 @@ export const useChatStore = defineStore('chat', () => {
       if (!isCurrentStream(sessionId)) return
       if (!streaming.value) return
       // 检查是否有正在进行的生图任务
-      const hasActiveGen = messages.value.some(m => m.type === 'image_gen' && m.genStatus !== 'done' && m.genStatus !== 'error')
+      const hasActiveGen = messages.value.some(m => !m.independentTask && m.type === 'image_gen' && m.genStatus !== 'done' && m.genStatus !== 'error')
       if (hasActiveGen && safetyMs < IMAGE_SAFETY_MS) {
         // 生图还在跑，自动升级到生图级超时
         console.warn('[chat] safety timer: active image gen detected, extending to 600s')
@@ -402,14 +513,13 @@ export const useChatStore = defineStore('chat', () => {
       }
       console.warn('[chat] streaming safety timeout — force reset')
       safetyFired = true
+      lastSendError.value = '回应中断，已保留收到的内容'
+      recovery.error = lastSendError.value
+      checkpoint()
+      failedTurn.value = { ...recovery }
       abort()
       streaming.value = false
       streamingContent.value = ''
-      // 移除未完成的深度思考块
-      if (thinkingMsg) {
-        messages.value = messages.value.filter(m => m !== thinkingMsg)
-        thinkingMsg = null
-      }
       // 清理当前重试窗口中的空泡
       for (let i = messages.value.length - 1; i >= 0; i--) {
         const m = messages.value[i]
@@ -420,17 +530,12 @@ export const useChatStore = defineStore('chat', () => {
       // 标记未完成的生图
       for (let i = messages.value.length - 1; i >= 0; i--) {
         const gm = messages.value[i]
-        if (gm.type === 'image_gen' && gm.genStatus !== 'done' && gm.genStatus !== 'error') {
+        if (!gm.independentTask && gm.type === 'image_gen' && gm.genStatus !== 'done' && gm.genStatus !== 'error') {
           gm.genStatus = 'error'
         }
       }
-      // 确保至少有一条提示
-      messages.value.push({
-        id: uid(), role: 'assistant', type: 'text',
-        content: '(请求超时，请重试)', created_at: new Date().toISOString()
-      })
     }
-    resetSafetyTimer(TEXT_SAFETY_MS)
+    resetSafetyTimer(FIRST_RESPONSE_MS)
 
     // 安全剥离 {"prompt":"..."} JSON 块
     function stripPromptBlock(s) {
@@ -446,7 +551,6 @@ export const useChatStore = defineStore('chat', () => {
     //    这比 "收到任何 token" 更严格 —— 防止只收到几个残字就不重试的问题
     const MAX_STREAM_RETRIES = 2
     let fullResponse = ''
-    let thinkingMsg = null   // 深度思考块（本请求的，跨重试清理重建）
     let sawImageGen = false  // 本轮是否出现过生图任务（图即回复时禁止 "..." 兜底）
     let admissionError = null
 
@@ -464,11 +568,6 @@ export const useChatStore = defineStore('chat', () => {
       // ── 每轮尝试的状态 ──
       let bubbleIds, bubbleText, msgSavedIdx, lastEvent, _bufTimer, pendingStickerTimers, pendingTextTimers
       function initAttemptState() {
-        // 上一次尝试遗留的深度思考块一并清理（重试时服务端会重新规划）
-        if (thinkingMsg) {
-          messages.value = messages.value.filter(m => m !== thinkingMsg)
-          thinkingMsg = null
-        }
         const firstBubbleId = uid()
         bubbleIds = [firstBubbleId]
         bubbleText = ''
@@ -477,52 +576,51 @@ export const useChatStore = defineStore('chat', () => {
         _bufTimer = null
         pendingStickerTimers = new Map()
         pendingTextTimers = new Map()
-        messages.value.push({ id: firstBubbleId, role: 'assistant', type: 'text', content: '', created_at: new Date().toISOString() })
+        messages.value.push({ id: firstBubbleId, role: 'assistant', type: 'text', content: '', recoveryKey: clientMsgId, created_at: new Date().toISOString() })
       }
+      if (streamAttempt > 0) fullResponse = ''
       initAttemptState()
+      resetSafetyTimer(FIRST_RESPONSE_MS)
 
-      // 深度思考块：插到本轮首个 assistant 气泡之前，流式追加内容
-      const ensureThinkingMsg = () => {
-        if (thinkingMsg) return thinkingMsg
-        const raw = {
-          id: uid(), role: 'assistant', type: 'thinking', status: 'streaming',
-          content: '', summary: '', elapsedMs: 0, created_at: new Date().toISOString(),
-        }
-        const firstBubbleIdx = messages.value.findIndex(m => m.id === bubbleIds[0])
-        if (firstBubbleIdx >= 0) messages.value.splice(firstBubbleIdx, 0, raw)
-        else messages.value.push(raw)
-        // 关键：从 reactive 数组取回代理对象。若直接持有 raw 引用，
-        // 后续 tm.content += ... 绕过 Proxy set 陷阱，Vue 不会触发更新（内容只在刷新后可见）
-        thinkingMsg = messages.value.find(m => m.id === raw.id) || raw
-        return thinkingMsg
-      }
       const scheduleSticker = (target, urls, leadingSticker = false) => {
         if (!target || !Array.isArray(urls) || urls.length === 0) return
         const existing = pendingStickerTimers.get(target)
-        if (existing) clearTimeout(existing)
+        if (existing) { clearTimeout(existing); imageTurn.contentTimers.delete(existing) }
         const delay = leadingSticker ? 0 : 450
-        pendingStickerTimers.set(target, setTimeout(() => {
+        const timer = setTimeout(() => {
           pendingStickerTimers.delete(target)
           target.sticker_images = urls.map(url => ({ url, base64: null }))
-        }, delay))
+          imageTurn.contentTimers.delete(timer)
+          revealTurnImages(imageTurn)
+        }, delay)
+        pendingStickerTimers.set(target, timer)
+        imageTurn.contentTimers.add(timer)
+        clearTimeout(imageTurn.timer); imageTurn.timer = null
       }
       const scheduleLeadingText = (target, text, delay = 450) => {
         if (!target) return
         const existing = pendingTextTimers.get(target)
-        if (existing) clearTimeout(existing)
-        pendingTextTimers.set(target, setTimeout(() => {
+        if (existing) { clearTimeout(existing); imageTurn.contentTimers.delete(existing) }
+        const timer = setTimeout(() => {
           pendingTextTimers.delete(target)
           target.content = stripPromptBlock(text)
-        }, delay))
+          imageTurn.contentTimers.delete(timer)
+          revealTurnImages(imageTurn)
+        }, delay)
+        pendingTextTimers.set(target, timer)
+        imageTurn.contentTimers.add(timer)
+        clearTimeout(imageTurn.timer); imageTurn.timer = null
       }
       const clearPendingEmojiTimers = () => {
-        for (const timer of pendingStickerTimers.values()) clearTimeout(timer)
-        for (const timer of pendingTextTimers.values()) clearTimeout(timer)
+        for (const timer of [...pendingStickerTimers.values(), ...pendingTextTimers.values()]) {
+          clearTimeout(timer); imageTurn.contentTimers.delete(timer)
+        }
         pendingStickerTimers.clear()
         pendingTextTimers.clear()
+        revealTurnImages(imageTurn)
       }
 
-      const { stream, abort: streamAbort } = api.chatStream(charId, content, clientMsgId, imageMode, deepThink, townContext, galgameMode)
+      const { stream, abort: streamAbort } = api.chatStream(charId, content, clientMsgId, imageMode, townContext, galgameMode)
       abort = streamAbort
       const reader = stream.getReader()
 
@@ -531,26 +629,40 @@ export const useChatStore = defineStore('chat', () => {
           const { done, value } = await reader.read()
           if (done) break
           if (!isCurrentStream(sessionId)) break
+          if (value?.type === 'event' || value?.type === 'data') resetSafetyTimer()
           if (value?.type === 'event') lastEvent = value.event
           if (value?.type === 'data') {
             const d = value.data
             // galgame 转录状态（上游 v3.9.0 合并）：先记录完成/错误状态，再进普通事件分支
-            if (lastEvent === 'response_end') responseComplete.value = true
-            if (lastEvent === 'dialogue_saved') { responseComplete.value = true; lastSendError.value = ''; dialogueRevision.value++ }
+            if (lastEvent === 'response_end') { responseComplete.value = true; finishTurnImages(imageTurn) }
+            if (lastEvent === 'dialogue_saved' || lastEvent === 'done') {
+              dialogueSaved = true
+              writeChatRecovery(charId, null)
+              failedTurn.value = null
+              for (const m of messages.value) { if (m.recoveryKey === clientMsgId) delete m.recoveryKey }
+              clearSafetyTimer()
+              responseComplete.value = true
+              finishTurnImages(imageTurn)
+              lastSendError.value = ''
+              dialogueRevision.value++
+            }
         // 本轮彻底结束：重写过渡态兜底清掉（正常流程 reroll_end 已清；这里防后端异常/断流残留）
         if (lastEvent === 'dialogue_saved' || lastEvent === 'response_end') rerolling.value = false
             if (lastEvent === 'error') lastSendError.value = d.message || '回应失败，请稍后重试'
              //  token（只有 token 事件才写入回复气泡，避免 msg_saved 等带 content 的事件串入）
              if (lastEvent === 'token' && (d.content || (Array.isArray(d.images) && d.images.length))) {
+               resetSafetyTimer(sawImageGen ? IMAGE_SAFETY_MS : TEXT_SAFETY_MS)
                if (showTypingDots.value) showTypingDots.value = false
                if (d.content) {
                  fullResponse += d.content
+                 recovery.partial = stripPromptBlock(fullResponse)
+                 checkpoint()
                  bubbleText += d.content
                }
                const curId = bubbleIds[bubbleIds.length - 1]
                let m = messages.value.find(x => x.id === curId)
                if (!m) {
-                 m = { id: curId, role: 'assistant', type: 'text', content: '', created_at: new Date().toISOString() }
+                 m = { id: curId, role: 'assistant', type: 'text', content: '', recoveryKey: clientMsgId, created_at: new Date().toISOString() }
                  messages.value.push(m)
                }
                 const hasImages = Array.isArray(d.images) && d.images.length
@@ -574,6 +686,9 @@ export const useChatStore = defineStore('chat', () => {
              }
             // ── bubble_break ──
             if (lastEvent === 'bubble_break') {
+              fullResponse += '\n\n'
+              recovery.partial = stripPromptBlock(fullResponse)
+              checkpoint()
               thisAttemptHadBubble = true
               const prevId = bubbleIds[bubbleIds.length - 1]
               const pm = messages.value.find(x => x.id === prevId)
@@ -613,6 +728,8 @@ export const useChatStore = defineStore('chat', () => {
             // ── context_update ──
             if (lastEvent === 'context_update' && d.content !== undefined && d.content !== null) {
               fullResponse = d.content
+              recovery.partial = stripPromptBlock(fullResponse)
+              checkpoint()
                if (_bufTimer) { clearTimeout(_bufTimer); _bufTimer = null }
                clearPendingEmojiTimers()
                const parts = d.content.split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
@@ -640,44 +757,27 @@ export const useChatStore = defineStore('chat', () => {
             if (lastEvent === 'memory_recall_start') {
               // Memory v3 阶段二：角色发起主动回想，显示状态条并刷新安全超时
               memoryRecalling.value = true
-              resetSafetyTimer(TEXT_SAFETY_MS)
+              resetSafetyTimer(FIRST_RESPONSE_MS)
             }
             if (lastEvent === 'memory_recall_end') {
               memoryRecalling.value = false
             }
-            // ── 深度思考 plan 事件（发生在正式回复之前）──
-            if (lastEvent === 'plan_start') {
-              resetSafetyTimer(TEXT_SAFETY_MS)
-              ensureThinkingMsg()
-            }
-            if (lastEvent === 'plan_delta' && d.text) {
-              resetSafetyTimer(TEXT_SAFETY_MS)
-              const tm = ensureThinkingMsg()
-              tm.content += d.text
-            }
-            if (lastEvent === 'plan_end') {
-              const tm = thinkingMsg
-              if (tm) {
-                tm.status = 'done'
-                tm.summary = d.summary || ''
-                tm.elapsedMs = d.elapsedMs || 0
-                if (!tm.content?.trim()) {
-                  // 没有任何思考内容 → 移除空块
-                  messages.value = messages.value.filter(m => m !== tm)
-                  thinkingMsg = null
-                }
-              }
-            }
             // ── 生图事件 ──
+            if (lastEvent === 'image_unavailable') lastSendError.value = d.message
             if (lastEvent === 'generate_start') {
               // 生图开始，延长安全超时到 10 分钟（匹配 ComfyUI 后端超时）
               resetSafetyTimer(IMAGE_SAFETY_MS)
               sawImageGen = true
-              messages.value.push({
+              const genId = d.taskId || uid()
+              const image = {
                 id: uid(), role: 'assistant', type: 'image_gen',
-                genId: d.taskId || uid(), genStatus: 'pending', genStartTime: Date.now(),
+                genId, genStatus: 'pending', genStartTime: Date.now(), liveImage: true, turnClientMsgId: clientMsgId,
                 created_at: new Date().toISOString(),
-              })
+              }
+              if (!findGenMsg(genId)) {
+                if (imageTurns.get(clientMsgId) === imageTurn) imageTurn.images.set(genId, image)
+                else insertImageMessage(image)
+              }
             }
             if (lastEvent === 'generate_progress') {
               const gm = findGenMsg(d.taskId)
@@ -694,7 +794,7 @@ export const useChatStore = defineStore('chat', () => {
             }
             if (lastEvent === 'generate_retrying') {
               const gm = findGenMsg(d.taskId)
-              if (gm) gm.genStatus = 'retrying'
+              if (gm) { gm.genStatus = 'retrying'; gm.genProgress = 0 }
             }
             if (lastEvent === 'generate_error') {
               const gm = findGenMsg(d.taskId)
@@ -707,6 +807,8 @@ export const useChatStore = defineStore('chat', () => {
             }
             // ── queued: 日程系统延迟回复 ──
             if (lastEvent === 'queued') {
+              dialogueSaved = true
+              writeChatRecovery(charId, null)
               queuedReplies.value[charId] = { currentActivity: d.currentActivity || '', estimatedReplyAt: d.estimatedReplyAt || null }
               // 清理临时气泡（后端已保存用户消息）
               for (const bid of bubbleIds) {
@@ -744,6 +846,7 @@ export const useChatStore = defineStore('chat', () => {
                const m = messages.value.find(x => x.id === tempId)
                if (m) {
                  m.id = d.id
+                 if (d.raw_id != null) m.raw_id = d.raw_id
                  m.speech_message_id = d.id
                  m.speech_auto_token = chatSpeechAutoPlay.mark(`chat:${charId}`, d.id)
                   if (d.content !== undefined) m.content = d.content
@@ -756,6 +859,8 @@ export const useChatStore = defineStore('chat', () => {
               if (lastEvent === 'msg_saved' && d.role === 'user' && d.client_msg_id) {
                 const m = messages.value.find(x => x.role === 'user' && x.clientMsgId === d.client_msg_id)
                 if (m) {
+                  if (d.id) m.id = d.id
+                  checkpoint()
                   if (d.content !== undefined) m.content = d.content
                   if (Array.isArray(d.images) && d.images.length) {
                     scheduleSticker(m, d.images, !!d.leadingSticker)
@@ -768,7 +873,8 @@ export const useChatStore = defineStore('chat', () => {
         // stream 正常结束（done=true）
         // 有完整气泡或服务端已保存 → 成功
         if (!isCurrentStream(sessionId)) break
-        if (thisAttemptHadBubble || thisAttemptHadMsgSaved) break
+        if (dialogueSaved || thisAttemptHadMsgSaved) break
+        if (thisAttemptHadBubble) { lastSendError.value = '回应中断，已保留收到的内容'; break }
         // 无意义空流（连接后立即关闭，无数据）→ 可重试
         if (streamAttempt < MAX_STREAM_RETRIES) {
           for (const bid of bubbleIds) {
@@ -790,7 +896,7 @@ export const useChatStore = defineStore('chat', () => {
         if (townContext !== undefined && [400, 409].includes(err.status)) {
           admissionError = err
           // The town guard rejects before any chat write. Remove only this rejected optimistic turn.
-          messages.value = messages.value.filter(m => m.clientMsgId !== clientMsgId && !bubbleIds.includes(m.id) && m !== thinkingMsg)
+          messages.value = messages.value.filter(m => m.clientMsgId !== clientMsgId && !bubbleIds.includes(m.id))
           bubbleIds.length = 0
           break
         }
@@ -886,8 +992,17 @@ export const useChatStore = defineStore('chat', () => {
           imageRecovery.start(message.genId, { charId, message })
         }
       }
+      if (!dialogueSaved && !admissionError) {
+        recovery.error = lastSendError.value || '回应中断，可以重试'
+        if (!fullResponse.trim() && recovery.partial) messages.value.push({ id: uid(), role: 'assistant', type: 'text', content: recovery.partial, interrupted: true, recoveryKey: clientMsgId })
+        checkpoint()
+        failedTurn.value = { ...recovery }
+      } else if (admissionError) writeChatRecovery(charId, null)
       streaming.value = false; streamingContent.value = ''; showTypingDots.value = false
+      finishTurnImages(imageTurn)
       activeStream = null
+      if (restoreAfterStream) { restoreAfterStream = false; await loadMessages(charId) }
+      if (retryClientMsgId && dialogueSaved) await loadMessages(charId)
       if (!admissionError) await loadCharacters()
     }
     if (admissionError) throw admissionError
@@ -1061,6 +1176,6 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  return { characters, activeCharId, messages, queuedReplies, visibleMessages, streaming, streamingContent, showTypingDots, memoryRecalling, hasMoreOlder, guesses, guessSourceRawId, dialogueRevision, responseComplete, lastSendError, rerolling, realtimeAffinity, affinityKey, activeChar, sidebarScrollSignal,
+  return { characters, activeCharId, messages, queuedReplies, visibleMessages, streaming, streamingContent, showTypingDots, memoryRecalling, hasMoreOlder, guesses, guessSourceRawId, dialogueRevision, responseComplete, lastSendError, failedTurn, retryFailedMessage, rerolling, realtimeAffinity, affinityKey, activeChar, sidebarScrollSignal,
     loadCharacters, loadMessages, expandWindow, selectChar, updateActiveCharacter, clearActiveMessages, undoLastRound, generateCharacter, uploadAvatar, getRecentChatImages, deleteActiveCharacter, sendMessage, handleProactiveMessage, handleProactiveMessageUpdate, handleDelayedReply, bumpImageUrls, showTouchPlaceholder, clearTouchPlaceholder }
 })

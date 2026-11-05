@@ -136,40 +136,51 @@ class PortCleaner(QObject):
     """在后台线程中执行 psutil 端口清理，避免阻塞 GUI。"""
 
     output = Signal(str, str)  # (service_name, text)
-    finished = Signal()
-
-    def __init__(self, project_path):
-        super().__init__()
-        self._project_path = project_path
+    finished = Signal(bool)  # 是否确认清理成功
 
     def run(self):
         """在后台线程中执行（由 QThread.started 触发）。"""
+        success = False
         try:
             import psutil
 
-            ports = [service_port(self._project_path), 8765]
+            ports = [svc["port"] for svc in SERVICES.values()]
             keywords = [
                 "agent-core", "vector-service", "web-ui",
                 "app.js", "server:app", "uvicorn", "nodemon",
             ]
             for conn in psutil.net_connections(kind="inet"):
                 if conn.laddr.port in ports and conn.status == "LISTEN":
+                    if conn.pid is None:
+                        raise RuntimeError(f"无法识别端口 {conn.laddr.port} 的占用进程")
                     try:
                         proc = psutil.Process(conn.pid)
                         name = proc.name().lower()
                         if name in ("node.exe", "python.exe"):
                             cmdline = " ".join(proc.cmdline()).lower()
-                            if belongs_to_project(proc, self._project_path) and any(kw.lower() in cmdline for kw in keywords):
+                            if any(kw.lower() in cmdline for kw in keywords):
                                 proc.kill()
+                                proc.wait(timeout=5)
                                 self.output.emit(
                                     "system",
-                                    f"  已终止残留进程: {proc.name()} (PID {conn.pid}) on port {conn.laddr.port}",
+                                    f"  已终止残留进程: {name} (PID {conn.pid}) on port {conn.laddr.port}",
                                 )
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    except psutil.NoSuchProcess:
                         pass
-        except Exception:
-            pass
-        self.finished.emit()
+            remaining = [
+                conn for conn in psutil.net_connections(kind="inet")
+                if conn.laddr.port in ports and conn.status == "LISTEN"
+            ]
+            if remaining:
+                details = ", ".join(
+                    f"{conn.laddr.port} (PID {conn.pid})" for conn in remaining
+                )
+                raise RuntimeError(f"端口仍被占用: {details}")
+            success = True
+        except Exception as exc:
+            self.output.emit("system", f"[ERROR] 旧进程清理失败，已取消启动: {exc}")
+        finally:
+            self.finished.emit(success)
 
 
 class ServiceWorker(QObject):
@@ -411,11 +422,14 @@ class ServiceRunner(QObject):
 
     status_summary = Signal(str, str, str)  # (vector_status, agent_status, overall)
     output = Signal(str, str)  # (service_name, text) — 转发给日志
+    startup_started = Signal()  # 清理成功，已进入服务启动链
 
     def __init__(self, project_path: str, parent=None):
         super().__init__(parent)
         self._project_path = project_path
         self._workers: dict[str, ServiceWorker] = {}
+        self._startup_cancelled = False
+        self._startup_connections = []
 
         for key, svc_def in SERVICES.items():
             worker = ServiceWorker(svc_def, project_path, self)
@@ -440,37 +454,61 @@ class ServiceRunner(QObject):
 
     def start_all(self):
         """顺序启动：端口清理（后台线程） → vector → agent_core。"""
-        # 防止重复点击
+        # 防止重复点击 —— 必须覆盖**整个启动流程**，不能只看清理线程是否还在跑：
+        # 清理只要 1~2 秒，之后用户再点一次启动，第二次的端口清理会把**刚起来的新进程**
+        # 当成残留杀掉（日志表现：连续两次「启动: …」→ code 15/1 退出、端口反复被占）。
+        if getattr(self, "_starting", False):
+            self.output.emit("system", "[!] 正在启动中，请稍候（不要重复点击启动）")
+            return
         if hasattr(self, "_cleaner_thread") and self._cleaner_thread and self._cleaner_thread.isRunning():
             self.output.emit("system", "[!] 端口清理正在进行中，请稍后再试")
             return
+        self._starting = True
+        # 兜底复位：启动流程异常中断时不至于永久锁死
+        QTimer.singleShot(45000, lambda: setattr(self, "_starting", False))
 
+        self._startup_cancelled = False
+        self._clear_startup_connections()
         self.output.emit("system", "正在清理端口...")
 
         # 在后台线程中执行 psutil 端口清理，避免阻塞 GUI
         self._cleaner_thread = QThread(self)
-        self._cleaner_worker = PortCleaner(self._project_path)
+        self._cleaner_worker = PortCleaner()
         self._cleaner_worker.moveToThread(self._cleaner_thread)
         self._cleaner_worker.output.connect(self.output)
         self._cleaner_thread.started.connect(self._cleaner_worker.run)
         self._cleaner_worker.finished.connect(self._on_ports_cleaned)
         self._cleaner_worker.finished.connect(self._cleaner_thread.quit)
+        self._cleaner_thread.finished.connect(self._on_cleanup_finished)
         self._cleaner_thread.start()
 
-    def _on_ports_cleaned(self):
-        """端口清理完成 → 启动服务链。"""
-        self.output.emit("system", "端口清理完成")
+    def _clear_startup_connections(self):
+        connections, self._startup_connections = self._startup_connections, []
+        for signal, callback in connections:
+            signal.disconnect(callback)
 
-        # 先启 vector
-        self._workers["vector"].start()
+    def _on_cleanup_finished(self):
+        if self._startup_cancelled:
+            # 关闭窗口时要等清理线程结束，再通知已有停止流程退出应用。
+            self._on_worker_status("cleanup", ServiceWorker.STATUS_STOPPED)
+
+    def _on_ports_cleaned(self, success: bool):
+        """端口清理完成 → 启动服务链。"""
+        if self._startup_cancelled:
+            return
+        if not success:
+            self._starting = False
+            self.status_summary.emit(
+                self.vector_worker.status, self.agent_worker.status, "start_failed"
+            )
+            return
+        self.output.emit("system", "端口清理完成")
 
         # vector 健康后启 agent_core
         def on_vector_healthy(name, is_healthy):
             if is_healthy and name == "vector":
-                self._workers["vector"].health_changed.disconnect(on_vector_healthy)
+                self._clear_startup_connections()
                 self._workers["agent_core"].start()
-
-        self._workers["vector"].health_changed.connect(on_vector_healthy)
 
         # 如果 vector 已经超时/失败，仍然尝试启动 agent_core
         def on_vector_status(name, status):
@@ -478,14 +516,25 @@ class ServiceRunner(QObject):
                 ServiceWorker.STATUS_TIMEOUT,
                 ServiceWorker.STATUS_ERROR,
             ):
-                self._workers["vector"].status_changed.disconnect(on_vector_status)
+                self._clear_startup_connections()
                 self.output.emit("system", "[!] 向量服务启动异常，继续启动主控后端...")
                 self._workers["agent_core"].start()
 
-        self._workers["vector"].status_changed.connect(on_vector_status)
+        self._startup_connections = [
+            (self.vector_worker.health_changed, on_vector_healthy),
+            (self.vector_worker.status_changed, on_vector_status),
+        ]
+        for signal, callback in self._startup_connections:
+            signal.connect(callback)
+        # 先注册回调，避免同步启动失败的信号遗漏。
+        self._workers["vector"].start()
+        self.startup_started.emit()
 
     def stop_all(self):
         """优雅停止：agent_core 先 stop → vector 后 stop。"""
+        self._starting = False
+        self._startup_cancelled = True
+        self._clear_startup_connections()
         self._workers["agent_core"].stop()
 
         def on_agent_done(name, status):
@@ -515,6 +564,8 @@ class ServiceRunner(QObject):
         self.status_summary.connect(on_all_stopped)
 
     def _force_kill_all(self):
+        self._startup_cancelled = True
+        self._clear_startup_connections()
         if hasattr(self, "_stop_timer") and self._stop_timer:
             self._stop_timer.stop()
         for w in self._workers.values():
@@ -529,6 +580,8 @@ class ServiceRunner(QObject):
 
     def any_active(self) -> bool:
         """是否有进程仍存活或正在启停（ERROR/STOPPED 视为不活跃）。"""
+        if hasattr(self, "_cleaner_thread") and self._cleaner_thread.isRunning():
+            return True
         return any(
             w.status in (
                 ServiceWorker.STATUS_STARTING,

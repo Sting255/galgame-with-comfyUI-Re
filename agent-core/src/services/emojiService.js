@@ -3,8 +3,7 @@ import { chatSync } from './lorebook/runtime.js';
 import { generateImageRaw } from './imageSkill.js';
 import { buildImageCrossRefInfo, buildCharacterAppearanceSection } from './characterPersona.js';
 import { saveBase64Image } from './imagePaths.js';
-import { invalidateGalleryCache } from '../routes/images.js';
-// 上游 v3.10.0：表情包与表情立绘共用「显式选装」口径（outfitScene / 缺失策略）。
+import { invalidateGalleryCache } from './galleryCache.js';
 import { resolveStandingOutfits, normalizeStandingOutfitScene, validateMissingOutfitPolicy, hasStandingOutfit, completeStandingOutfit } from './expressionStandingAppearance.js';
 // 角色 LoRA 解析：2026-10-17 收口到 `characterLoras.js`（全仓唯一实现，4 份本地实现已合并）。
 // 本文件在下方原样再导出，既有 import 点（expressionStandingService 等）不用改。

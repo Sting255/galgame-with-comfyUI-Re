@@ -184,7 +184,7 @@ export function parseSceneOutfitDesign(raw, scenes, opts = {}) {
     }
     // 身体一律以真源为准（模型可能仍自作主张改写），保证五套完全一致
     const body = bodySource || String(hit.body || '').trim().slice(0, 2000);
-    let description = String(hit.description || '').trim().slice(0, 1200);
+    let description = String(hit.description || '').trim().slice(0, 2400);
     // nude 那套必须显式声明裸体
     if (scene === 'nude' && !/nude|no clothing|bare skin/i.test(description)) {
       description = FALLBACK_OUTFITS.nude.description;

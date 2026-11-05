@@ -200,6 +200,25 @@ function onImportFilePicked(event) {
   importDialog.show = true
 }
 
+/**
+ * 等自动重启完成：旧进程退出 → 新进程重新 listen。
+ * 不刷新页面就继续操作的话，所有请求都会打到「备份已恢复」的维护锁上。
+ */
+async function waitForRestart() {
+  await new Promise(resolve => setTimeout(resolve, 3500))
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      const res = await fetch('/api/health', { cache: 'no-store' })
+      if (res.ok) {
+        window.location.reload()
+        return
+      }
+    } catch { /* 进程还没起来，继续等 */ }
+    await new Promise(resolve => setTimeout(resolve, 1500))
+  }
+  importNotice.value = { type: 'error', text: '自动重启超时，请手动关闭启动器后重新启动邻舍' }
+}
+
 async function confirmImport() {
   const file = pendingImportFile
   if (!file || controlsDisabled.value) return
@@ -213,6 +232,14 @@ async function confirmImport() {
     importNotice.value = { type: 'success', text }
     toastFn?.(text, 'success')
     importDialog.show = false
+    // 后端会在 2.5 秒后自重启（换库 / .env 生效只有新进程才做得到）：
+    // 这里先提示，再轮询 /api/health，服务回来后自动刷新页面。
+    if (result?.autoRestart || result?.restartRequired) {
+      importNotice.value = { type: 'success', text: '数据已恢复，正在自动重启…本页稍后会自动刷新' }
+      importBusy.value = false
+      await waitForRestart()
+      return
+    }
     if (!result?.restartRequired && !result?.restartRecommended) await refreshExportInfo()
   } catch (err) {
     // 500 时后端会带回导入前的自动备份路径：一并写进页面，用户可按它回滚

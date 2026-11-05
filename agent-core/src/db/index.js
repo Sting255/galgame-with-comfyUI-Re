@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../config.js';
 import { initSettingsHandle, loadSystemSettings } from './settings.js';
-import { initWorldRepository } from './worldRepository.js';
+import { initWorldRepository, migrateWorldLanguageStyle } from './worldRepository.js';
 import { migrateLorebooks } from './lorebookRepository.js';
 import { migratePresets } from './presetRepository.js';
 import { seedAll } from './seedData.js';
@@ -44,9 +44,14 @@ import { migrateCharacterReactionPacksSchema } from './characterReactionPackSche
 import { createMediaTables, migrateMediaSchema } from './mediaSchema.js';
 // 上游 v3.9.0 合并：小镇特殊建筑「描述驱动的可执行玩法」（见 services/town/townBuildingFeature*）
 import { migrateTownBuildingFeatureSchema } from './townBuildingFeatureSchema.js';
+// 上游 v4.2.0 合并：角色日记、头像库、收藏
+import { recoverInterruptedDiaries } from './diarySchema.js';
+import { migrateMediaAvatarLibrary } from './mediaAvatarSchema.js';
+import { migrateMediaFavorites } from './mediaFavorites.js';
 // 上游 v4.0.0 合并：语音合成任务表与中断回收（见 services/speechService.js）
 import { migrateTtsSchema, recoverSpeechJobs } from './ttsSchema.js';
 import { migrateGodSaysSchema } from './godSaysSchema.js';
+import { migrateCohabitationSchema } from './cohabitationRepository.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -215,6 +220,7 @@ function runStartupDbMaintenance(database) {
 // ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
 // moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
 function cleanupOrphanedInFlight(database) {
+  recoverInterruptedDiaries(database);
   recoverSpeechJobs(database);
   recoverExpressionStandingJobs(database);
   cleanupTownDialogueRequests(database);
@@ -323,6 +329,19 @@ function initSchema(db) {
     );
 
     -- 生图任务表
+    CREATE TABLE IF NOT EXISTS private_chat_image_turns (
+      user_raw_id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, scene TEXT NOT NULL,
+      task_id INTEGER NOT NULL, raw_id INTEGER NOT NULL, message_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS private_chat_replies (
+      user_raw_id INTEGER PRIMARY KEY REFERENCES raw_messages(id) ON DELETE CASCADE,
+      raw_id INTEGER NOT NULL REFERENCES raw_messages(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS private_chat_tool_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_raw_id INTEGER NOT NULL, call_id TEXT NOT NULL,
+      assistant_json TEXT NOT NULL, arguments_json TEXT NOT NULL, result_json TEXT NOT NULL, task_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS image_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       conversation_id TEXT,
@@ -1125,6 +1144,7 @@ function initSchema(db) {
 
   // 迁移: 日程系统 — characters 表新增 schedule 相关列
   migrateScheduleSchema(db);
+  migrateCohabitationSchema(db);
 
   // 迁移: moment_comments 新增 auto_trigger + thread_root_id（朋友圈关系网互动）
   migrateMomentAutoTrigger(db);
@@ -1165,6 +1185,7 @@ function initSchema(db) {
 
   // 迁移: 将 global_rules.world_setting 移至 world_settings 表（多套世界观）
   migrateWorldSettings(db);
+  migrateWorldLanguageStyle(db);
 
   // 空表补默认激活世界观：前端世界观弹窗的保存依赖选中项，空表时写入无法落库
   seedDefaultWorldSetting(db);

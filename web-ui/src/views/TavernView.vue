@@ -126,6 +126,16 @@
         <span class="relation-entry-arrow">›</span>
       </div>
 
+      <!-- 上游 v4.2.0：宿舍安排（同居） -->
+      <div class="relation-entry card" role="button" tabindex="0" @click="showCohabitation = true" @keydown.enter.prevent="showCohabitation = true" @keydown.space.prevent="showCohabitation = true">
+        <div class="relation-entry-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7" /></svg></div>
+        <div class="relation-entry-text">
+          <span class="relation-entry-title">宿舍安排</span>
+          <span class="relation-entry-hint">{{ cohabitationHint }}</span>
+        </div>
+        <span class="relation-entry-arrow">›</span>
+      </div>
+
       <div class="relation-entry card" @click="showUserRelationGraph = true">
         <div class="relation-entry-icon">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -366,30 +376,21 @@
     <div v-if="!visibleCharacters.length" class="char-empty empty">
       <div class="empty-title">{{ emptyTitle }}</div>
       <div class="empty-hint">{{ emptyDesc }}</div>
-      <linshe-button
-        v-if="canSearchEverywhere"
-        variant="secondary"
-        size="sm"
-        @click="folderFilter = 'all'"
-      >
-在全部角色中搜索
-</linshe-button>
     </div>
 
     <!-- ═══════════════════════════════════════════
          招募弹窗
          ═══════════════════════════════════════════ -->
-    <Teleport to="body">
-      <Transition name="modal-fade">
-        <div v-if="recruit.show" class="modal-overlay">
-          <div class="modal-panel modal-wide">
-            <div class="modal-header">
+    <linshe-modal :visible="recruit.show" title="招募新角色" wide :close-on-backdrop="false" @close="closeRecruit" panel-class="recruit-modal">
+      <template #title>
+        <div class="modal-heading-content">
               <h3>招募新角色</h3>
-              <linshe-button class="modal-close" variant="icon" @click="closeRecruit">✕</linshe-button>
+
             </div>
+      </template>
 
             <!-- 步骤 0：输入描述 -->
-            <div v-if="recruit.step === 'input'" class="modal-body" style="position:relative;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:18px;margin:0 20px 20px">
+      <div v-if="recruit.step === 'input'" class="modal-content-section" style="position:relative">
               <p class="modal-hint">描述你想招募的角色——可以是知名 IP 角色（尽可能输入全名+IP），也可以是原创设定。</p>
               <linshe-input
                 type="textarea"
@@ -425,7 +426,7 @@
             </div>
 
             <!-- 步骤 1：预览确认 -->
-            <div v-if="recruit.step === 'preview'" class="modal-body" style="position:relative">
+      <div v-if="recruit.step === 'preview'" class="modal-content-section" style="position:relative">
               <div class="preview-card">
                 <div class="preview-name-row">
                   <input
@@ -482,10 +483,8 @@
                 <a :href="`https://animadex.net/?mode=characters&q=${encodeURIComponent(recruit.result.name).replaceAll('_', '+')}`" target="_blank">animadex</a>直接补充tag
               </div>
             </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+
+    </linshe-modal>
 
     <!-- 招募预览的修正外观：结果回填到待确认的角色卡草稿（尚未创建角色，无最近图片入口） -->
     <AppearanceRefineModal
@@ -502,8 +501,8 @@
          ═══════════════════════════════════════════ -->
     <Teleport to="body">
       <Transition name="modal-fade">
-        <div v-if="showWorldModal" class="modal-overlay" @mousedown.self="closeWorldSetting">
-          <div class="modal-panel world-modal-panel">
+        <div v-if="showWorldModal" class="modal-overlay world-modal-overlay" @mousedown.self="closeWorldSetting">
+          <div class="modal-panel world-modal-panel" role="dialog" aria-modal="true" aria-label="世界观设置">
             <div class="modal-header world-modal-header">
               <div class="world-modal-title">
                 <h3>世界观设置</h3>
@@ -547,7 +546,7 @@
                     @keyup.escape="editingNameId = null"
                     @blur="renameWorld(item)"
                   />
-                  <span v-else>{{ item.name }}</span>
+                  <span v-else class="world-tag-name" :title="item.name">{{ item.name }}</span>
                   <div
                     class="world-tag-act world-tag-edit"
                     title="重命名"
@@ -567,6 +566,7 @@
                 <div class="world-editor-bar">
                   <span class="world-editor-label">世界观内容</span>
                   <div class="world-editor-tools">
+                    <linshe-button variant="secondary" :disabled="!selectedWorldId || worldSaving" @click="showLanguageStyle = true">语言风格</linshe-button>
                     <linshe-button
                       class="btn-polish"
                       variant="secondary"
@@ -588,6 +588,7 @@
                     v-model="worldContent"
                     type="textarea"
                     class="world-textarea"
+                    aria-label="世界观内容"
                     rows="10"
                     placeholder="例如：这是一个低魔世界，魔法师必须养一只不会魔法的宠物当充电宝。/每天凌晨三点，全人类会共享同一个梦，醒后都能记住。"
                     @input="worldDirty = true"
@@ -699,7 +700,7 @@
         :recent-images="recentImages"
         :recent-loading="recentLoading"
         @close="showCharAvatarPicker = false"
-        @save="onCharAvatarSave"
+        :save-handler="onCharAvatarSave"
         @switch-to-recent="switchToRecent"
       />
     </Teleport>
@@ -712,7 +713,7 @@
         :show-recent-tab="false"
         :show-generate-tab="false"
         @close="showUserAvatarPicker = false"
-        @save="onUserAvatarSave"
+        :save-handler="onUserAvatarSave"
       />
     </Teleport>
 
@@ -730,6 +731,7 @@
     <!-- ═══════════════════════════════════════════
          用户关系图（独立全屏弹窗）
          ═══════════════════════════════════════════ -->
+    <CohabitationModal v-model="showCohabitation" @room-count-change="cohabitationRoomCount = $event" />
     <UserRelationshipGraph
       :visible="showUserRelationGraph"
       :all-characters="chat.characters"
@@ -768,6 +770,14 @@
       <AssetGenerationModal v-if="showAssetGen" :characters="sortedCharacters" @close="showAssetGen = false" />
       <VoiceLibraryModal v-model="showVoiceLibrary" :characters="sortedCharacters" />
 
+    <!-- 上游 v4.2.0：世界观语言风格 -->
+    <WorldLanguageStyleModal
+      v-model="showLanguageStyle"
+      :world-id="selectedWorldId"
+      :world-name="selectedWorld?.name || ''"
+      :language-style="selectedWorld?.language_style || ''"
+      @saved="onLanguageStyleSaved"
+    />
     <CharacterFolderManager
       v-model="showFolderManager"
       :initial-folder-id="folderFilter"
@@ -782,6 +792,11 @@
 </template>
 
 <script setup>
+import LinsheModal from '../components/ui/LinsheModal.vue'
+
+import WorldLorebookModal from '../components/WorldLorebookModal.vue'
+import WorldLanguageStyleModal from '../components/WorldLanguageStyleModal.vue'
+import PromptPresetModal from '../components/PromptPresetModal.vue'
 import { ref, reactive, computed, onMounted, onUnmounted, watch, inject, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
@@ -790,6 +805,7 @@ import * as api from '../api/index.js'
 import AvatarCropper from '../components/AvatarCropper.vue'
 import RelationshipGraph from '../components/RelationshipGraph.vue'
 import UserRelationshipGraph from '../components/UserRelationshipGraph.vue'
+import CohabitationModal from '../components/CohabitationModal.vue'
 import RelationshipDeductionModal from '../components/RelationshipDeductionModal.vue'
 import CharacterDetailModal from '../components/CharacterDetailModal.vue'
 import MailboxModal from '../components/MailboxModal.vue'
@@ -801,8 +817,6 @@ import VoiceLibraryModal from '../components/VoiceLibraryModal.vue'
 import AppearanceRefineModal from '../components/AppearanceRefineModal.vue'
 // 上游 v3.10.0 合并（2026-10-19）：立绘管理 / SillyTavern 世界书 / SillyTavern 预设
 import StandingManagerModal from '../components/StandingManagerModal.vue'
-import WorldLorebookModal from '../components/WorldLorebookModal.vue'
-import PromptPresetModal from '../components/PromptPresetModal.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import { useBurst } from '../composables/useBurst.js'
@@ -1031,7 +1045,6 @@ const userAvatarStyle = computed(() => {
 
 async function onUserAvatarSave(base64) {
   await uploadUserAvatar(base64)
-  showUserAvatarPicker.value = false
 }
 
 // ── 姓名 ──
@@ -1336,6 +1349,21 @@ const detailChar = ref(null)
 
 const showRelationGraph = ref(false)
 const showUserRelationGraph = ref(false)
+const showCohabitation = ref(false)
+const cohabitationRoomCount = ref(null)
+const cohabitationHint = computed(() => {
+  if (cohabitationRoomCount.value === null) return '查看和安排邻舍'
+  return cohabitationRoomCount.value === 0
+    ? '邻舍现在空空如也'
+    : `已经安排了${cohabitationRoomCount.value}间邻舍`
+})
+onMounted(async () => {
+  try {
+    const data = await api.getCohabitation()
+    // 弹窗可能已载入或完成修改，首屏请求不覆盖更新后的数量。
+    if (cohabitationRoomCount.value === null) cohabitationRoomCount.value = data.rooms.length
+  } catch (error) { console.warn('读取邻舍数量失败', error) }
+})
 const showDeductionModal = ref(false)
 const deductionMode = ref('character')
 const deductionUserName = ref('')
@@ -1356,6 +1384,8 @@ watch(showRelationGraph, async (val) => {
 // ═══════════════════════════════════════
 const showWorldModal = ref(false)
 const worldItems = ref([])
+const showLanguageStyle = ref(false)
+const selectedWorld = computed(() => worldItems.value.find(item => item.id === selectedWorldId.value))
 const activeWorldName = ref('')
 const selectedWorldId = ref(null)
 const worldContent = ref('')
@@ -1369,6 +1399,12 @@ const editingNameId = ref(null)
 const editNameValue = ref('')
 const editNameInput = ref(null)
 const worldTextareaRef = ref(null)
+
+function onLanguageStyleSaved(item) {
+  const saved = worldItems.value.find(world => world.id === item.id)
+  if (saved) saved.language_style = item.language_style
+  showToast('语言风格已保存', 'success')
+}
 
 // 纯文本世界观 → 带层级标记的展示 HTML（不改变原始文本内容）
 function toWorldHighlightHtml(text) {
@@ -2122,6 +2158,9 @@ onMounted(async () => {
   border-radius: 24px;
   box-shadow: 0 24px 70px rgba(58, 42, 30, 0.22), 0 3px 12px rgba(58, 42, 30, 0.06);
 }
+.world-modal-overlay.modal-fade-enter-active,
+.world-modal-overlay.modal-fade-leave-active { transition-duration: 0.3s; }
+.world-modal-overlay.modal-fade-enter-active .world-modal-panel { animation-duration: 0.3s; }
 .world-modal-panel::before {
   content: '';
   position: absolute;
@@ -2199,6 +2238,7 @@ onMounted(async () => {
 }
 .world-editor-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -2213,6 +2253,7 @@ onMounted(async () => {
 }
 .world-editor-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -2294,9 +2335,8 @@ onMounted(async () => {
 
 /* Footer 操作区 */
 .world-modal-panel .modal-actions {
-  position: sticky;
-  bottom: 0;
-  margin: 10px -30px -24px;
+  flex-shrink: 0;
+  margin: 0;
   padding: 8px 30px 12px;
   border-top: 1px solid rgba(120, 90, 60, 0.08);
 }
@@ -3142,14 +3182,44 @@ onMounted(async () => {
   }
 
   /* 世界观 / 润色弹窗移动端 */
-  .world-modal-panel .world-modal-header { padding: 14px 16px 12px; padding-top: calc(14px + env(safe-area-inset-top, 0px)); }
+  /* 世界观保留独立暖纸容器；安全区由遮罩统一留出。 */
+  .world-modal-overlay {
+    padding: calc(8px + env(safe-area-inset-top, 0px))
+             calc(8px + env(safe-area-inset-right, 0px))
+             calc(8px + env(safe-area-inset-bottom, 0px))
+             calc(8px + env(safe-area-inset-left, 0px));
+  }
+  .world-modal-panel {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 24px;
+  }
+  .world-modal-panel .world-modal-header { padding: 12px; gap: 8px; }
+  .world-modal-panel .world-modal-title { flex-shrink: 0; }
+  .world-modal-panel .world-modal-title h3 { font-size: var(--fs-lg); letter-spacing: 1px; margin: 0; }
   .world-modal-subtitle { display: none; }
-  .world-active-badge { max-width: 110px; padding: 3px 9px; }
-  .world-modal-panel .modal-body { padding: 0 14px 20px; }
-  .world-tags { padding: 2px 4px 0; gap: 2px; }
-  .world-editor { border-radius: 0 0 12px 12px; }
-  .world-editor .world-textarea { min-height: 320px; padding: 20px 20px 16px; }
-  .world-modal-panel .modal-actions { margin: 10px -14px -20px; padding: 8px 14px 12px; }
+  .world-header-right { min-width: 0; flex-shrink: 1; gap: 6px; }
+  .world-active-badge { display: block; min-width: 0; max-width: 110px; padding: 3px 9px; }
+  .world-modal-panel .modal-body { padding: 0 12px 12px; overscroll-behavior: contain; }
+  .world-tags { flex-wrap: nowrap; overflow-x: auto; padding: 2px 0 0; gap: 2px; scrollbar-width: thin; }
+  .world-tag { flex-shrink: 0; max-width: 100%; min-height: 44px; padding: 0 8px; gap: 2px; }
+  .world-tag-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .world-tag-act { width: 44px; height: 44px; opacity: 0.7; }
+  .world-tag-add { width: 44px; height: 44px; margin: 0; }
+  .world-new-row { flex-wrap: wrap; padding: 8px; }
+  .world-name-input { flex-basis: 100%; min-width: 0; }
+  .world-editor { border-radius: 0 0 12px 12px; margin-bottom: 0; }
+  .world-modal-panel .modal-body > .world-editor { flex: 1 0 260px; }
+  .world-editor-body { display: flex; flex: 1; min-height: 0; }
+  .world-editor-bar, .world-editor-meta { flex-shrink: 0; }
+  .world-editor-bar { padding: 10px 12px 0; gap: 8px; }
+  .world-editor-tools { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .world-editor .world-textarea { flex: 1; min-height: 160px; height: auto; resize: none; padding: 16px 12px; font-size: 16px; line-height: 1.8; }
+  .world-editor-meta { padding: 4px 12px 10px; }
+  .world-modal-panel .modal-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; padding: 10px 12px 12px; }
+  .world-lorebook-button { grid-column: 1 / -1; margin-right: 0; }
   .polish-preview { max-height: 55vh; }
 
   /* 招募预览卡片 */

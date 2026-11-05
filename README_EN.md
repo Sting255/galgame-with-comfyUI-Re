@@ -13,7 +13,51 @@ A local-first AI character companion inspired by visual novels. Create character
 
 **[🤯这一定是一个不同以往的浪漫AI小镇♪~【超自定义的素材生成】【邻舍3.5】](https://www.bilibili.com/video/BV1tKab6CEp2/)**
 
-Full link: [https://www.bilibili.com/video/BV1tKab6CEp2/](https://www.bilibili.com/video/BV1tKab6CEp2/)
+## Features
+
+| Feature | Experience |
+| --- | --- |
+| **Character companionship** | Private and group chats, relationships, emotions, and affinity, with recent conversations, rolling summaries, and long-term memory informing replies. |
+| **Daily life** | Proactive messages, schedules, social posts, letters, gifts, and inventory. |
+| **Town & adventures** | Explore the town, talk to NPCs, and accept invitations. Choices on the Adventures page advance stories and building services; coins, gifting, and trading are also supported. |
+| **Scene images** | Generate images from conversations and character appearances through ComfyUI or NovelAI, with galleries, standing portraits, and upscaling tools. |
+| **Customization & devices** | Editable personas, world settings, and model profiles; warm and dark themes with time-based switching; browser and Android WebView access. |
+
+Chats, characters, and images are stored locally. Cloud language models, image providers, embedding services, and rerankers receive the content needed for their configured tasks.
+
+## Quick start
+
+### Windows release package
+
+1. Download and extract `邻舍.EXE-vX.Y.Z.zip` from [Releases](https://github.com/icecranberry/galgame-with-comfyUI/releases), then run `邻舍.EXE.exe`.
+2. Click 「启动邻舍」 on the launcher's home page. The browser opens automatically.
+3. Configure the LLM API address, key, and model in web **Settings**. OpenAI-compatible endpoints are supported.
+4. Configure image generation as needed: ComfyUI requires the models and nodes used by the workflow (default address: `http://localhost:8188`); NovelAI requires its endpoint and key.
+5. Create or import a character in **Tavern** and start chatting.
+
+The package includes portable runtimes, dependencies, and the frontend build. Android connects to the service running on your PC: keep the PC running on the same LAN. Check the selected release's assets for APK availability; see the [Android guide (Chinese)](./android-shell/README.md).
+
+### Run from source
+
+The commands below use **Windows PowerShell**. Use **Node.js 22.18+ (22.x)**, **Python 3.12 with venv**, and **Git** to align with the packaging script.
+
+```powershell
+git clone https://github.com/icecranberry/galgame-with-comfyUI.git
+cd galgame-with-comfyUI
+
+npm --prefix agent-core install
+npm --prefix web-ui install
+
+python -m venv vector-service/venv
+./vector-service/venv/Scripts/python.exe -m pip install -r vector-service/requirements.txt
+./vector-service/venv/Scripts/python.exe vector-service/download_model.py
+
+npm run dev
+```
+
+Open [localhost:5173](http://localhost:5173) and complete the configuration above. The development script starts the frontend on `5173`, backend on `3099`, and vector service on `8765`. Start ComfyUI separately. The initial embedding model download requires network access; the development script also attempts to download it if missing.
+
+On macOS / Linux, create the environment with `python3 -m venv vector-service/venv`, activate it with `source vector-service/venv/bin/activate`, and use `python` for dependency installation and model download before running `npm run dev`. Desktop EXE and release packaging target Windows.
 
 ## Screenshots
 
@@ -39,18 +83,22 @@ This screenshot shows a historical upstream feature. The town page has been remo
 
 | Private chat | Group chat |
 | --- | --- |
+| Talk one-on-one as memories, emotions, and relationships evolve. | Chat with multiple characters and experience their distinct personalities interacting. |
 | ![Private chat](https://github.com/user-attachments/assets/73bb4cae-c191-41a0-a0fb-26c4ec2087fa) | ![Group chat](https://github.com/user-attachments/assets/c2c92fcb-d6f1-4be6-9e96-12d18157b58f) |
 
 | Moments | Schedule |
 | --- | --- |
+| Browse characters' posts and discover their daily lives beyond chat. | View each character's plans and follow their daily rhythm. |
 | ![Moments](https://github.com/user-attachments/assets/3d191b4e-2353-4440-ab36-990759ced1ea) | ![Schedule](https://github.com/user-attachments/assets/71c08460-5473-4d8f-a069-7fdf76532e85) |
 
 | Character tavern | Character details |
 | --- | --- |
+| Create or import characters to begin a new companionship story. | View and edit character personas, appearances, and other settings. |
 | ![Character tavern](https://github.com/user-attachments/assets/1711b6ee-b7df-4130-a192-d61ca783eb08) | ![Character details](https://github.com/user-attachments/assets/4cd732fa-1e98-4627-af87-5f7fc3b8cddc) |
 
 | Gallery | Adventures |
 | --- | --- |
+| Browse generated images and revisit scenes from conversations and daily life. | Accept invitations and advance stories and town services through choices. |
 | ![Gallery](https://github.com/user-attachments/assets/6b746150-7974-43fa-b2f5-677406f23bcd) | ![Adventures](https://github.com/user-attachments/assets/c2b80641-54c7-4c08-8d1a-661f14d8da9e) |
 
 **Mobile**

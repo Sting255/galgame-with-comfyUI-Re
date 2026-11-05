@@ -1,3 +1,4 @@
+import { appendWorldLanguageStyle } from '../worldLanguageStyle.js';
 /**
  * 镇民朋友圈生成器
  *
@@ -161,7 +162,7 @@ export async function generateTownNpcMoment(npc, opts = {}) {
   const formatPrompt = `规则：
 - 只输出 JSON，不要解释
 ${MOMENT_SINGLE_FOCUS_RULE}
-${MOMENT_TONE_RULES}
+${appendWorldLanguageStyle(MOMENT_TONE_RULES)}
 ${MOMENT_IMAGE_RULES}
 
 生图格式：

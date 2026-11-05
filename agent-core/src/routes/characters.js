@@ -10,7 +10,6 @@ import { currentWorldSignature, withStandingStaleness } from '../services/worldS
 import { chatSync } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { runPersonaGeneration } from '../services/characterGenerator.js';
-import { clearImageJudgeCounter } from './chat.js';
 import { invalidateGalleryCache, dataUriExt } from './images.js';
 import { startEditTask } from '../services/imageEditTasks.js';
 import { deleteByConversation } from '../services/vectorClient.js';
@@ -429,6 +428,13 @@ router.put('/:id', (req, res) => {
       updates.push('short_prompt = ?'); params.push(cropPersonalityForEmotion(base_prompt, cropName));
     }
   }
+  if (base_prompt===undefined && (display_name!==undefined || name!==undefined)) {
+    const current=db.prepare('SELECT name,display_name,base_prompt FROM characters WHERE id=?').get(req.params.id);
+    if (current && ((display_name!==undefined && display_name!==current.display_name)||(name!==undefined && name!==current.name))) {
+      updates.push('short_prompt = ?');
+      params.push(cropPersonalityForEmotion(current.base_prompt,display_name||current.display_name||name||current.name));
+    }
+  }
   if (emotion_baseline !== undefined) { updates.push('emotion_baseline = ?'); params.push(typeof emotion_baseline === 'string' ? emotion_baseline : JSON.stringify(emotion_baseline)); }
   if (avatar_path !== undefined) { updates.push('avatar_path = ?'); params.push(avatar_path || null); }
   if (chat_bg_path !== undefined) { updates.push('chat_bg_path = ?'); params.push(chat_bg_path || null); }
@@ -472,6 +478,8 @@ router.put('/:id', (req, res) => {
         const char = db.prepare('SELECT display_name, name, base_prompt FROM characters WHERE id = ?').get(charId);
         if (!char) return;
         const optimized = await generateShortPromptWithLLM(char.base_prompt, char.display_name || char.name, char.name);
+        const current=db.prepare('SELECT name,display_name,base_prompt FROM characters WHERE id=?').get(charId);
+        if (!current || current.name!==char.name || current.display_name!==char.display_name || current.base_prompt!==char.base_prompt) return;
         db.prepare('UPDATE characters SET short_prompt = ? WHERE id = ?').run(optimized, charId);
         console.log(`[char] short_prompt LLM-optimized for "${char.display_name || char.name}" (id=${charId})`);
         runShortPromptMigration();
@@ -616,7 +624,6 @@ router.delete('/:id', async (req, res, next) => {
     }
 
     // 4. 删除角色（CASCADE 自动清理 character_relationships / user_relationships / character_events / event_history）
-    clearImageJudgeCounter(char.id);
     // 角色的托管居民档案一并删除（影子档案不留在镇上）；普通居民档案不受影响
     const { removeCharacterNpcProfile } = await import('../services/town/townService.js');
     removeCharacterNpcProfile(char.id);
@@ -1943,6 +1950,9 @@ router.post('/:id/outfits/generate', async (req, res) => {
       baseAppearance,
       scenes: req.body?.scenes,
       seeds: req.body?.seeds,
+      // 上游 v4.2.0：改服装时把目标槽位现有的样子一起给模型，否则它只能凭空重写
+      instruction: req.body?.instruction,
+      currentOutfits: String(req.body?.instruction || '').trim() ? listSceneOutfits(char.id) : [],
     });
     const saved = req.body?.save === true ? upsertSceneOutfits(char.id, outfits) : null;
     res.json({ ok: true, outfits, saved });
@@ -1970,7 +1980,9 @@ router.put('/:id/outfits/scene', (req, res) => {
     .map(o => ({
       scene: String(o?.scene || '').trim(),
       name: String(o?.name || '').trim().slice(0, 60),
-      description: String(o?.description || '').trim().slice(0, 1200),
+      // 上限 2400：本地 description 只写衣服、通常很短，但「整段外观」型描述（含身体细节）
+      // 也需要能存下，否则会被静默截断、下次编辑看到的就是半句。
+      description: String(o?.description || '').trim().slice(0, 2400),
       ...(body != null ? { body } : (o?.body != null ? { body: String(o.body).trim().slice(0, 2000) } : {})),
     }))
     .filter(o => o.scene && o.name);

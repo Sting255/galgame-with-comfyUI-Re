@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
-import { randomUUID } from 'node:crypto';
+import { createVertexClient, clearVertexTokenCache, vertexBaseURL } from './vertex-client.js';
+import { randomUUID, createHash } from 'node:crypto';
 import { config, updateFreeEggEnabled, FREE_EGG_MODELS } from '../config.js';
 import { compressLlmImageInputs } from '../services/llmImageInput.js';
 import { acquireSlot, releaseSlot } from '../services/llmConcurrency.js';
@@ -11,7 +12,6 @@ import { applyShield } from '../services/promptShield.js';
 import { isRefusal, REFUSAL_RETRY_INSTRUCTION } from '../services/refusalDetector.js';
 // 上游 v3.10.0：输出额度统一由设置页决定（按 baseURL/模型猜上限）
 import { defaultMaxTokens, isValidMaxTokens } from './modelCapabilities.js';
-import { createVertexClient, clearVertexTokenCache, vertexBaseURL } from './vertex-client.js';
 import { buildAgentRequest, readAgentResponse } from './agentStream.js';   // 上游 4.1.0：神说原生工具流
 
 /**
@@ -70,11 +70,7 @@ function resolveShieldTarget(label) {
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
 
 // 思考内容仅进入日志，不混入业务正文；完整打印，便于检查服务商实际返回的内容。
-// （上游 4.1.0 随「神说」的 chatAgentStream 一起引入；2026-11-03 合并时补回，否则该路径 ReferenceError）
-function logReasoning(label, reasoning) {
-  console.log(`[${providerLabel()} ← ${label} 思考链]`);
-  console.log(reasoning || '(服务商未返回思考内容)');
-}
+// （上游 4.1.0 随「神说」的 chatAgentStream 一起引入；4.2.0 起补充"未开启思考且无内容时不输出"。）
 
 function logResponse(label, content, reasoning) {
   logReasoning(label, reasoning);
@@ -86,10 +82,10 @@ function logResponse(label, content, reasoning) {
 }
 
 /** 神说使用结构化原生工具流，不合并消息、不丢弃 tool 角色、不自动重放。 */
-export async function* chatAgentStream(messages, { tools = [], signal, label = '神说', requestId } = {}) {
+export async function* chatAgentStream(messages, { tools = [], toolChoice = 'auto', signal, label = '神说', requestId, forceThinking = true, temperature = 0.72 } = {}) {
   const llm = { ...config.llm, model: config.llm.freeEgg ? freeEggCandidates()[0] : config.llm.model };
   if (!llm.model) throw new Error('请先配置支持思考与工具调用的模型');
-  const params = buildAgentRequest(messages, tools, llm);
+  const params = buildAgentRequest(messages, tools, llm, { forceThinking, temperature, toolChoice });
   applyOutputTokenLimit(params);
   if (isDeepseek()) params.stream_options = { ...params.stream_options, include_usage: true };
   const logLabel = requestId ? `${label} [${requestId}]` : label;
@@ -103,12 +99,16 @@ export async function* chatAgentStream(messages, { tools = [], signal, label = '
     signal?.throwIfAborted();
     console.log(`\n══════════ [${providerLabel()} → ${logLabel}] ══════════`);
     console.log(JSON.stringify(compressLogMessages(messages), null, 2));
-    console.log(`[${logLabel}] model=${params.model}, tools=${tools.length}, max_tokens=${params.max_completion_tokens ?? params.max_tokens}`);
+    console.log(`[${logLabel}] model=${params.model}, tools=${tools.length}, tool_choice=${params.tool_choice ?? 'none'}, max_tokens=${params.max_completion_tokens ?? params.max_tokens}`);
+    if (!forceThinking) {
+      const fingerprint = createHash('sha256').update(JSON.stringify({ tools, firstMessage: messages[0] })).digest('hex').slice(0, 16);
+      console.log(`[${logLabel}] local_prefix_fingerprint=${fingerprint}（仅本地字节指纹；服务商缓存命中见 usage）`);
+    }
     console.log(`[${logLabel} 可用工具] ${tools.map(tool => tool.function?.name).filter(Boolean).join(', ')}`);
     console.log('────────────────────────────────────────────────');
     stream = await getClient().chat.completions.create(params, { signal, maxRetries: 0 });
     console.log(`[${providerLabel()} ← ${logLabel} start]`);
-    for await (const event of readAgentResponse(stream, { signal })) {
+    for await (const event of readAgentResponse(stream, { signal, allowEmpty: !forceThinking })) {
       if (event.type === 'usage') usage = event.usage;
       else {
         if (event.type === 'text_delta') content += event.text;
@@ -121,7 +121,7 @@ export async function* chatAgentStream(messages, { tools = [], signal, label = '
   } catch (error) {
     outcome = signal?.aborted ? 'cancelled' : 'failed';
     console.error(`[${providerLabel()} ← ${logLabel}] ${outcome}:`, error.message);
-    if (error.status === 400 || error.status === 422) throw new Error('当前模型或接口不接受神说的思考 / 工具协议，请检查模型配置；本轮未完成的工具不会执行。');
+    if (forceThinking && (error.status === 400 || error.status === 422)) throw new Error('当前模型或接口不接受神说的思考 / 工具协议，请检查模型配置；本轮未完成的工具不会执行。');
     throw error;
   } finally {
     stream?.controller?.abort?.();
@@ -234,6 +234,14 @@ function withErrorBodyLogging(client, label) {
     return res;
   };
   return client;
+}
+
+// 思考内容仅进入日志，不混入业务正文；完整打印，便于检查服务商实际返回的内容。
+function logReasoning(label, reasoning) {
+  // 未开启思考且没有返回思考内容时，不输出空标题和缺失提示。
+  if (!reasoning && config.llm.thinkingMode !== 'enabled') return;
+  console.log(`[${providerLabel()} ← ${label} 思考链]`);
+  console.log(reasoning || '(服务商未返回思考内容)');
 }
 
 /**
@@ -687,7 +695,7 @@ function compressLogMessages(messages) {
   });
 }
 
-async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-flash', temperature = 0.7, response_format, thinking, presence_penalty: presencePenalty, frequency_penalty: frequencyPenalty, label = 'sync', retries = 2, retryDelay = 1000, signal, timeout, maxRetries } = {}) {
+async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-flash', temperature = 0.7, response_format, thinking, forceDisableThinking = false, presence_penalty: presencePenalty, frequency_penalty: frequencyPenalty, label = 'sync', retries = 2, retryDelay = 1000, signal, timeout, maxRetries } = {}) {
   throwIfSyncAborted(signal);
   if (config.features.mergeMessages) messages = mergeConsecutiveRoles(messages);
   const limited = _limitEnabled();
@@ -727,6 +735,14 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
   const extraBody = config.llm.extraBody;
   if (extraBody && Object.keys(extraBody).length > 0) {
     Object.assign(params, extraBody);
+  }
+  // 日程等业务明确要求关闭时，不能被全局自定义请求体重新开启。
+  if (forceDisableThinking) {
+    params.thinking = { type: 'disabled' };
+    if (params.generationConfig?.thinkingConfig) {
+      params.generationConfig = { ...params.generationConfig };
+      delete params.generationConfig.thinkingConfig;
+    }
   }
   // 上游 v3.10.0：最后统一确定输出额度（会删掉 extraBody 里的额度字段，
   // 再按 config.llm.maxTokens / 模型能力填一个）。放在 extraBody 之后是有意的 ——

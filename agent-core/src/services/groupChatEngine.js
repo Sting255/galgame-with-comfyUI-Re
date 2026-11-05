@@ -1,3 +1,4 @@
+import { appendWorldLanguageStyle } from './worldLanguageStyle.js';
 /**
  * 群聊引擎 — 批量剧本生成 + 流式行协议解析
  *
@@ -5,6 +6,7 @@
  * 上下文布局按变更频率升序排列，最大化 DeepSeek 前缀缓存命中：
  *   [system] 舞台块（破限词 + 世界观）        ← 全局不变，与 1 对 1 同串
  *   [system] 输出协议（行协议/活人感规则）  ← 全局不变，所有群共享前缀
+ *   [system] 生效中的世界事件              ← 生效期内复用，到期移除
  *   [system] 群信息（成员资料/关系/用户）    ← 每群稳定，改群设置才变
  *   [system] 群滚动摘要                       ← 每 N 轮群聊推进（用户/主动/冷场都算一轮，默认 4）
  *   [user]   群聊天记录 transcript             ← append-only
@@ -21,6 +23,8 @@
  */
 import { getDb, getSystemRules, getWorldSetting, getGlobalRule, stmt } from '../db/index.js';
 import { chatStream, chatSync } from '../llm/llm-client.js';
+import { prepareNarrativePrompt } from './presets/narrative.js';
+import { getGodWorldContext } from './godSays/worldContext.js';
 import { config } from '../config.js';
 import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
 import { createTownActorRegistry } from './town/townActorRegistry.js';
@@ -39,7 +43,7 @@ import { hybridSearch } from './memorySearch.js';
 import { getTimeTag } from './timeLight.js';
 import { takeGroupNewspaperBlockFor } from './newspaperService.js';
 import { splitText } from '../utils/sentenceSplitter.js';
-import { stripImagePromptLines, stripBracePromptBlocks, isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
+import { stripImagePromptLines, stripBracePromptBlocks, extractUnbracedGroupImagePrompt, isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
 import { getCurrentActivity, isSleeping } from './scheduleManager.js';
 import { detectAndApplyAppointment } from './appointmentDetector.js';
 import { invalidateGalleryCache } from './galleryCache.js';
@@ -423,7 +427,7 @@ export function buildRecentGroupLogBlock(db, characterId, chatUserName) {
       const source = r.role === 'user'
         ? (String(r.content || '').match(USER_WRAPPER_RE)?.[1] ?? String(r.content || ''))
         : String(r.content || '').trim();
-      const text = stripBracePromptBlocks(stripImagePromptLines(source));
+      const text = stripBracePromptBlocks(stripImagePromptLines(source, { allowUnbraced: r.role !== 'user' }));
       return text ? (speaker ? `[${speaker}]: ${text}` : text) : '';
     }).filter(Boolean);
     if (logLines.length > 0) lines.push(`[最近的聊天记录]\n${logLines.join('\n')}`);
@@ -562,6 +566,9 @@ export function buildGroupContext(group, directiveBlocks = [], { excludeTimeRang
   const messages = [];
   if (stage) messages.push({ role: 'system', content: stage });
   messages.push({ role: 'system', content: protocolBlock });
+  // 上游 v4.2.0：神说世界上下文（天使改过的世界规则）要参与群聊
+  const godWorldContext = getGodWorldContext(group.members.map(m => m.id));
+  if (godWorldContext) messages.push({ role: 'system', content: godWorldContext });
   messages.push({ role: 'system', content: groupCard });
   if (summaryMessage) messages.push({ role: 'system', content: summaryMessage });
   messages.push({ role: 'user', content: transcriptMessage });
@@ -1070,9 +1077,6 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   // ── 动态指令块 ──
   const directiveBlocks = [];
   directiveBlocks.push(`<time_context>${getTimeTag(new Date())}</time_context>`);
-  const { getGodWorldContext } = await import('./godSays/worldContext.js');
-  const godWorldContext = getGodWorldContext(group.members.map(m => m.id));
-  if (godWorldContext) directiveBlocks.push(godWorldContext);
   if (trigger === 'world_event' || trigger === 'god_command') {
     directiveBlocks.push(trigger === 'world_event'
       ? `以下是刚刚感知到的世界事件，请至少一位成员主动提起，其他人按人格自然回应、接续现有群聊上文。不是用户发言，不要假装用户在群里发了指令。\n${directive}`
@@ -1259,11 +1263,18 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
     console.warn('[hypnosis] group collect failed:', err.message);
   }
 
-  // 遗忘屏蔽（task-1）：在组装上下文之前一次性取回本群成员的 active 遗忘窗口，
-  // 只影响 <group_transcript> 的内容，不传（无窗口/开关关闭）时与改动前逐字节一致。
-  const excludeTimeRanges = resolveTranscriptExcludeRanges(group.members);
-
-  const msgs = buildGroupContext(group, directiveBlocks, { excludeTimeRanges });
+  // 遗忘屏蔽（task-1）：buildGroupContext 内部按成员 active 遗忘窗口裁剪 transcript，
+  // 保持与改动前逐字节一致。
+  const originalMsgs = buildGroupContext(group, directiveBlocks);
+  const loreHistory = db.prepare('SELECT id,role,content FROM (SELECT id,role,content FROM raw_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1000) ORDER BY id').all(conversationId);
+  const groupPersonaIndex = originalMsgs.findIndex(m => m.role === 'system' && m.content.startsWith('<group_info>'));
+  const groupPersona = originalMsgs[groupPersonaIndex]?.content || '';
+  const worldEventIndex = originalMsgs.findIndex(m => m.role === 'system' && m.content.startsWith('<world_events>'));
+  // 前缀缓存边界：世界事实整块变动，已闭合的边界取它的起点；否则退到群卡末尾
+  const groupCacheBoundary = worldEventIndex >= 0 ? { index: worldEventIndex, offset: 0 }
+    : groupPersonaIndex >= 0 ? { index: groupPersonaIndex, offset: groupPersona.length } : undefined;
+  const lorebookTurn = await prepareNarrativePrompt(originalMsgs, { scope: conversationId, turnKey: `${trigger}:${loreHistory.at(-1)?.id || 0}`, step: db.prepare('SELECT COUNT(*) AS n FROM raw_messages WHERE conversation_id=?').get(conversationId).n, history: loreHistory, transcriptSegments: buildTranscript(db, conversationId).segments, characterNames: group.members.flatMap(m => [m.name, m.display_name]).filter(Boolean), characterDescription: groupPersona, personaTexts: [groupPersona], cacheBoundary: groupCacheBoundary, trigger: trigger === 'lull' ? 'continue' : 'normal', protectedPrefix: groupPersonaIndex + 1 });
+  const msgs = lorebookTurn.messages;
 
   // ── 先插 raw 占位（messages.raw_id FK 需要），流结束后回填完整剧本 ──
   const existingGodRaw = godDeliveryKey ? db.prepare('SELECT id FROM raw_messages WHERE god_delivery_key=?').get(godDeliveryKey) : null;
@@ -1498,6 +1509,7 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   const rawContent = rawLines.filter(Boolean).join('\n');
   if (rawContent) {
     stmt(`UPDATE raw_messages SET content = ? WHERE id = ?`).run(rawContent, rawId);
+    lorebookTurn.commit();
   } else {
     stmt(`DELETE FROM raw_messages WHERE id = ?`).run(rawId);
     // 看板联动：空剧本的 raw 被删除，下面的记账分支也会跳过；这里同样做一次对称回滚

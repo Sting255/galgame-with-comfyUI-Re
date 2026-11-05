@@ -1,3 +1,4 @@
+import { continuousSleepEnd } from './cohabitationSchedule.js';
 /**
  * 日程运行时管理器
  *
@@ -12,6 +13,7 @@
 import { getDb } from '../db/index.js';
 import { config } from '../config.js';
 import { snapshotTodaySchedule } from './scheduleGenerator.js';
+import { refreshResidenceDailySleep } from './cohabitationPersistence.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { onCharacterWake } from './dreamService.js';
 // 奇遇时长预留（上游 v3.9.0）：事件存续期间的日程要把「开场活动」钉住，不被刷新挪走。
@@ -309,7 +311,8 @@ function getTodayScheduleRaw(characterId, programNow = getProgramNow()) {
       `).run(characterId, today, template.schedule_json);
       // 奇遇时长预留：新快照要把进行中的事件开场活动重新钉回去（上游 v3.9.0）
       reapplyActiveEventSchedule(characterId, db);
-      // 清理超过 2 天的旧快照
+      for (const id of refreshResidenceDailySleep(db, characterId)) invalidateCache(id);
+      // 清理阈值沿用本次快照的 today，不读取 SQLite 墙钟。
       db.prepare(
         `DELETE FROM daily_schedules WHERE character_id = ? AND schedule_date < date(?, '-2 days')`
       ).run(characterId, today);
@@ -383,6 +386,8 @@ export function getCurrentActivity(characterId, now = getProgramNow()) {
   for (const act of schedule) {
     if (isInTimeSlot(act.startTime, act.endTime, now)) {
       const result = {
+        ...act,
+        sleepEndTime: act.replyDelay === -1 ? continuousSleepEnd(schedule, act) : undefined,
         activity: act.activity,
         location: act.location,
         replyDelay: act.replyDelay,
@@ -1072,10 +1077,11 @@ export function invalidateCache(characterId) {
 export function syncEventSchedule(event) {
   const changes = extendEventSchedule(event);
   if (!changes.length) return;
-  invalidateCache(event.character_id);
-  syncSleepingState(event.character_id);
-  const name = getDb().prepare('SELECT display_name FROM characters WHERE id = ?')
-    .get(event.character_id)?.display_name || '';
+  for (const id of refreshResidenceDailySleep(getDb(), event.character_id)) {
+    invalidateCache(id);
+    syncSleepingState(id);
+  }
+  const name = getDb().prepare('SELECT display_name FROM characters WHERE id = ?').get(event.character_id)?.display_name || '';
   const today = getLocalDateKey();
   const change = changes.find(item => item.date === today) || changes[0];
   broadcast('schedule_changed', {

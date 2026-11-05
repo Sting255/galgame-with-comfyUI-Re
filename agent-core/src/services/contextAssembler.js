@@ -181,14 +181,14 @@ function isRawInWindows(rawId, windows) {
  *        这里屏蔽的只是"喂给模型的这一段历史"。不传时行为与改动前逐字节一致。
  * @returns {{ checkpoint, checkpointHistory, checkpointRounds, activeText, activeRounds }}
  */
-export function getSplitHistory(db, conversationId, maxActiveRounds = 10, maxCheckpointRounds = 10, { userName = 'user', characterName = 'assistant', excludeWindows = [] } = {}) {
+export function getSplitHistory(db, conversationId, maxActiveRounds = 10, maxCheckpointRounds = 10, { userName = 'user', characterName = 'assistant', excludeWindows = [], throughId = Number.MAX_SAFE_INTEGER } = {}) {
   // 1. 找到最新摘要分界线（冻结点）
   const checkpoint = db.prepare(`
     SELECT id, end_msg_id, summary
     FROM rolling_summaries
-    WHERE conversation_id = ? AND end_msg_id > 0 AND checkpoint_version = 1
+    WHERE conversation_id = ? AND end_msg_id > 0 AND end_msg_id <= ? AND checkpoint_version = 1
     ORDER BY end_msg_id DESC, id DESC LIMIT 1
-  `).get(conversationId);
+  `).get(conversationId, throughId);
 
   const afterId = checkpoint?.end_msg_id || 0;
 
@@ -198,10 +198,10 @@ export function getSplitHistory(db, conversationId, maxActiveRounds = 10, maxChe
   const activeFetched = db.prepare(`
     SELECT id, role, content FROM (
       SELECT id, role, content FROM raw_messages
-      WHERE conversation_id = ? AND id > ? AND role IN ('user', 'assistant')
+      WHERE conversation_id = ? AND id > ? AND id <= ? AND role IN ('user', 'assistant')
       ORDER BY id DESC LIMIT ?
     ) ORDER BY id ASC
-  `).all(conversationId, afterId, activeFetchLimit);
+  `).all(conversationId, afterId, throughId, activeFetchLimit);
 
   // 屏蔽区间（催眠遗忘窗口等）：在 SELECT 之后**立刻**过滤，后面"从尾部数 maxActiveRounds
   // 条 assistant"的计数就天然只数留下来的消息，切片语义正确。

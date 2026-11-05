@@ -254,10 +254,10 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     disturbMode: process.env.FEATURE_DISTURB_MODE === 'true', // 默认关：防打扰模式
     schedule: process.env.FEATURE_SCHEDULE !== 'false', // 默认开：日程系统
     scheduleRefreshDays: Math.max(1, Math.min(3, parseInt(process.env.SCHEDULE_REFRESH_DAYS, 10) || 1)), // 日程刷新周期（天），1~3
+    scheduleDisableThinking: false, // 默认跟随 LLM 设置；开启后日程编排强制关闭思考
     serializeBackgroundLLM: process.env.FEATURE_SERIALIZE_BG_LLM === 'true', // 默认关：后台LLM任务串行化
     backgroundLLMMaxConcurrency: parseInt(process.env.BG_LLM_MAX_CONCURRENCY, 10) || 3, // 后台最大并发数 (1-10)
     mergeMessages: process.env.FEATURE_MERGE_MESSAGES === 'true', // 默认关：合并连续同角色消息兼容Jinja模板
-    deepThinkMode: false, // 默认关：私聊深度思考（planner 先规划媒介组合再回复），设置页/聊天页可开
     weather: process.env.FEATURE_WEATHER !== 'false', // 默认开：实时天气
     groupChat: process.env.FEATURE_GROUP_CHAT !== 'false', // 默认开：群聊系统
     groupIdleBudget: Math.max(0, parseInt(process.env.GROUP_IDLE_BUDGET ?? '0', 10) || 0), // 默认关闭；显式设为正数后启用每群每日后台闲聊预算
@@ -934,12 +934,11 @@ export function updateFeatureFlag(key, value) {
 
 /**
  * 更新主动聊天频率 0~1
- * freq=0 → 双线全关；freq>0 → 启用以频率为基准的定时触发线
+ * freq=0 暂停自动调度；频率独立于主动聊天总开关。
  */
 export function updateProactiveFreq(value) {
   const f = Math.max(0, Math.min(1, parseFloat(value) || 0));
   config.features.proactiveChatFreq = f;
-  config.features.proactiveChat = f > 0;
   persistSettingSync('feature_proactiveChatFreq', String(f));
   console.log(`[config] proactiveChatFreq = ${f}`);
 }
