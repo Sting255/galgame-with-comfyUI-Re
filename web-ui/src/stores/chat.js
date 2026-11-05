@@ -592,7 +592,7 @@ export const useChatStore = defineStore('chat', () => {
               rerolling.value = false
             }
 
-            // ── replace_last_assistant（D2 重写兜底 · docs/anti-repetition.md §12.4，形状已冻结）──
+            // ── replace_last_assistant（D2 重写兜底 · docs/chat/anti-repetition.md §12.4，形状已冻结）──
             // 后端**只在重写成功后**发（失败/空流不发，所以这里不用处理空内容）。
             // 形状：{ content, segments:[{content, emojiKeys, images}], reason:'reroll', turn }
             //   · segments 是**超集**：逐气泡对齐，替换后**不能丢表情包与图片**（见 utils/assistantReplace.js）

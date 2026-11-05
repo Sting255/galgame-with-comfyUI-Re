@@ -348,21 +348,21 @@ async function openCharacterChat(page, char) {
 /** 读动作条：按分级分组，逐条记录文案与是否置灰（🔒 / .is-locked） */
 /**
  * 找出"当前真正在屏幕上"的那个 ✋ 动作入口。
- * 交互改版后常驻条没有了：入口是输入区最右（发送按钮左侧）的 .touch-icon-btn，点开底部弹层。
- * 为什么不能只用 :visible：app 会缓存 chat-view，切角色后 DOM 里同时挂着多个 .touch-icon-btn；
+ * 交互改版后常驻条没有了：入口是输入框上方共享工具栏中的 .chat-action-toolbar [aria-label="动作"]，点开底部弹层。
+ * 为什么不能只用 :visible：app 会缓存 chat-view，切角色后 DOM 里同时挂着多个 .chat-action-toolbar [aria-label="动作"]；
  * Playwright 的 :visible 对"被移出视口但仍有尺寸"的元素也判可见，:first() 可能点到上一个。
  * 判据换成"有尺寸 + 顶边在视口内"。
  */
 async function activeTouchEntry(page) {
   const idx = await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('.touch-icon-btn'))
+    const btns = Array.from(document.querySelectorAll('.chat-action-toolbar [aria-label="动作"]'))
     return btns.findIndex(b => {
       const r = b.getBoundingClientRect()
       return r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight && r.left >= 0
     })
   })
   if (idx < 0) return null
-  return page.locator('.touch-icon-btn').nth(idx)
+  return page.locator('.chat-action-toolbar [aria-label="动作"]').nth(idx)
 }
 
 /** 读动作面板：按 Lv 分段，逐卡记录标题 / 状态行 / 是否置灰（.is-disabled） */
@@ -407,8 +407,8 @@ async function clickResilient(page, locator, timeoutMs = 15000) {
 
 /**
  * 面板里的某张动作卡（**注意作用域**）：面板是 Teleport 到 body 的 `.touch-panel`，
- * 卡片**不在** ✋ 按钮（`.touch-icon-btn`）里面 —— 写成 `.touch-icon-btn .touch-card` 永远点不到
- * （2026-09-30 实跑踩到：A2/A3 绿、A4 卡在"点不动 .touch-icon-btn .touch-card"）。
+ * 卡片**不在** ✋ 按钮（`.chat-action-toolbar [aria-label="动作"]`）里面 —— 写成 `.chat-action-toolbar [aria-label="动作"] .touch-card` 永远点不到
+ * （2026-09-30 实跑踩到：A2/A3 绿、A4 卡在"点不动 .chat-action-toolbar [aria-label="动作"] .touch-card"）。
  */
 async function touchCardLocator(page, label) {
   await openTouchPanel(page)
@@ -426,7 +426,7 @@ async function openTouchPanel(page) {
     if (await page.locator('.touch-panel').count() > 0) return true
   }
   const diag = await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('.touch-icon-btn'))
+    const btns = Array.from(document.querySelectorAll('.chat-action-toolbar [aria-label="动作"]'))
     const panel = document.querySelector('.touch-panel')
     return {
       icons: btns.length,
@@ -492,7 +492,7 @@ async function checkTouchPendingBadge(page, char) {
   const readTrio = async () => {
     const backend = await fetchJson(BASE + '/api/characters/' + char.id + '/touch/state')
     const dom = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('.touch-icon-btn'))
+      const btns = Array.from(document.querySelectorAll('.chat-action-toolbar [aria-label="动作"]'))
       const idx = btns.findIndex(b => {
         const r = b.getBoundingClientRect()
         return r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight && r.left >= 0
@@ -501,7 +501,7 @@ async function checkTouchPendingBadge(page, char) {
       const panel = document.querySelector('.touch-panel')
       const line = panel?.querySelector('.touch-pending')?.textContent?.trim() || ''
       return {
-        badge: btn?.querySelector('.touch-icon-badge')?.textContent?.trim() || '',
+        badge: btn?.querySelector('.action-count')?.textContent?.trim() || '',
         panelLine: line,
         panelNum: (line.match(/(\d+)/) || [])[1] || '',
         panelOpen: !!panel,
@@ -902,17 +902,17 @@ async function clickInModal(locator, timeoutMs = 8000) {
   throw new Error('弹窗内点不动（' + lastError + '）')
 }
 
-/** 🧸 入口（与 activeTouchEntry 同判据：有尺寸 + 在视口内）。注意它也带 .touch-icon-btn 类 */
+/** 🧸 入口（与 activeTouchEntry 同判据：有尺寸 + 在视口内）。注意它也带 .chat-action-toolbar [aria-label="动作"] 类 */
 async function activeToyEntry(page) {
   const idx = await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('.toy-icon-btn'))
+    const btns = Array.from(document.querySelectorAll('.chat-action-toolbar [aria-label="玩具"]'))
     return btns.findIndex(b => {
       const r = b.getBoundingClientRect()
       return r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight && r.left >= 0
     })
   })
   if (idx < 0) return null
-  return page.locator('.toy-icon-btn').nth(idx)
+  return page.locator('.chat-action-toolbar [aria-label="玩具"]').nth(idx)
 }
 
 async function waitForToyResponse(suffix, timeoutMs) {
@@ -958,11 +958,11 @@ async function checkToyEquipNo400(page, char) {
     const entry = await activeToyEntry(page)
     if (!entry) {
       const diag = await page.evaluate(() => ({
-        toyBtns: document.querySelectorAll('.toy-icon-btn').length,
-        allIconBtns: document.querySelectorAll('.touch-icon-btn').length,
+        toyBtns: document.querySelectorAll('.chat-action-toolbar [aria-label="玩具"]').length,
+        allIconBtns: document.querySelectorAll('.chat-action-toolbar [aria-label="动作"]').length,
       }))
       record('A14', '玩具：真点一件玩具不再 400（equip=200 + 无 400）', 'BLOCKED',
-        '点不到 🧸 入口（.toy-icon-btn=' + diag.toyBtns + '，图标钮总数=' + diag.allIconBtns + '）⇒ 前端没把 toysEnabled 打开')
+        '点不到 🧸 入口（.chat-action-toolbar [aria-label="玩具"]=' + diag.toyBtns + '，图标钮总数=' + diag.allIconBtns + '）⇒ 前端没把 toysEnabled 打开')
       return
     }
 
@@ -1006,9 +1006,9 @@ async function checkToyEquipNo400(page, char) {
       await sleep(500)
     }
     const badge = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('.toy-icon-btn'))
+      const btns = Array.from(document.querySelectorAll('.chat-action-toolbar [aria-label="玩具"]'))
       const b = btns.find(x => { const r = x.getBoundingClientRect(); return r.width > 0 && r.top >= 0 && r.top < window.innerHeight })
-      return b?.querySelector('.touch-icon-badge')?.textContent?.trim() || ''
+      return b?.querySelector('.action-count')?.textContent?.trim() || ''
     })
     await shot(page, 'A14-toy-equipped')
 
@@ -1889,7 +1889,7 @@ async function checkIntimateSensitivityHud(page, char) {
   let clickError = ''
   let domClick = null
   try {
-    await clickResilient(page, page.locator('.intimate-icon-btn').first(), 6000)
+    await clickResilient(page, page.locator('.chat-action-toolbar [aria-label="亲密"]').first(), 6000)
   } catch (err) {
     clickError = String(err && err.message || err).slice(0, 80)
   }
@@ -1897,7 +1897,7 @@ async function checkIntimateSensitivityHud(page, char) {
   // 兜底：那个 ❤ 入口是**开关型**的（点一次开、再点一次关），不能盲点第二次 ——
   // 所以只有"确实还没开"时才在 DOM 上补一次真正的 click。
   if (!(await page.locator('.ia-panel').count())) {
-    domClick = await domClickFirst(page, '.intimate-icon-btn')
+    domClick = await domClickFirst(page, '.chat-action-toolbar [aria-label="亲密"]')
     await sleep(1500)
   }
   const panel = page.locator('.ia-panel')
@@ -1908,7 +1908,7 @@ async function checkIntimateSensitivityHud(page, char) {
   const threshold = stateRes.json?.state?.climaxThreshold
   // 诊断（永久保留）：❤ 入口为什么点不动 —— 位置 + 命中元素（诚实记录，别把"被挡住"当成"没这个功能"）
   const hit = await page.evaluate(() => {
-    const el = document.querySelector('.intimate-icon-btn')
+    const el = document.querySelector('.chat-action-toolbar [aria-label="亲密"]')
     if (!el) return { found: false }
     const r = el.getBoundingClientRect()
     const cx = Math.round(r.left + r.width / 2)
@@ -1932,7 +1932,7 @@ async function checkIntimateSensitivityHud(page, char) {
     ' | 服务端 her.sensitivity=' + JSON.stringify(her) +
     ' | 服务端门槛=' + threshold + ' | 面板文案=' + JSON.stringify(text.slice(0, 160)))
   await shot(page, 'H2-intimate-sensitivity')
-  await page.locator('.ia-panel button[aria-label="关闭推进面板"]').first().click({ timeout: 3000 }).catch(() => {})
+  await page.locator('.ia-panel button[aria-label="关闭亲密面板"]').first().click({ timeout: 3000 }).catch(() => {})
   await sleep(500)
 }
 
@@ -1953,13 +1953,13 @@ async function checkSensitivityGrowth(page, char) {
   await openCharacterChat(page, char)
   let clickError = ''
   try {
-    await clickResilient(page, page.locator('.intimate-icon-btn').first(), 6000)
+    await clickResilient(page, page.locator('.chat-action-toolbar [aria-label="亲密"]').first(), 6000)
   } catch (err) {
     clickError = String(err && err.message || err).slice(0, 80)
   }
   await sleep(1200)
   if (!(await page.locator('.ia-panel').count())) {
-    await domClickFirst(page, '.intimate-icon-btn')
+    await domClickFirst(page, '.chat-action-toolbar [aria-label="亲密"]')
     await sleep(1500)
   }
   const panel = page.locator('.ia-panel')
@@ -1992,7 +1992,7 @@ async function checkSensitivityGrowth(page, char) {
     ' | 敏感度 ' + before.value + '(' + before.tier + ') → ' + after.value + '(' + after.tier + ') | Δ=' + delta +
     ' | 接口=' + after.status)
   await shot(page, 'H3-sensitivity-growth')
-  await page.locator('.ia-panel button[aria-label="关闭推进面板"]').first().click({ timeout: 3000 }).catch(() => {})
+  await page.locator('.ia-panel button[aria-label="关闭亲密面板"]').first().click({ timeout: 3000 }).catch(() => {})
   await sleep(500)
 }
 

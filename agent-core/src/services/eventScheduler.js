@@ -68,6 +68,7 @@ async function expireDueEvents() {
     JOIN characters c ON c.id = ce.character_id
     WHERE ce.expires_at <= datetime('now')
       AND ce.status IN ('open','engaged')
+      AND ce.processing = 0
   `).all();
 
   for (const event of expiredEvents) {

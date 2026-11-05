@@ -119,7 +119,8 @@ test('聊天页：冷启动/换角色就拉玩具状态（否则 🧸 入口根�
     'loadToys() 必须挂在「进页面 / 换角色」这条 watcher 上（原来只在点开 ✋ 时才算，冷启动看不到 🧸）')
   assert.ok(/\{ immediate: true \}/.test(seg), '要 immediate，否则首屏永远不拉')
   // 面板仍要受服务端 unlocked 门控
-  assert.ok(/v-if="toysEnabled"/.test(chat.template.content), '未解锁仍不渲染入口')
+  assert.ok(/:toys-enabled="toysEnabled"/.test(chat.template.content), '服务端门控传给共享工具栏')
+  assert.ok(/v-if="toysEnabled"/.test(read('components/chat/ChatActionToolbar.vue')), '未解锁仍不渲染入口')
 })
 
 test('聊天页：把服务端玩具清单（含逐件 gate）传给面板，别让它回落前端镜像', () => {

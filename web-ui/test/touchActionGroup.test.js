@@ -100,22 +100,26 @@ test('GroupChatView 用既有 @提及面板与 composable 做「对谁」，没�
 
 // ── 3. pickTarget ──
 
-test('pickTarget：选中成员并收起面板；忽略「全体成员」这种非法对象', () => {
+test('pickTarget：选中成员后打开原功能；忽略「全体成员」这种非法对象', async () => {
   const state = {
     touchTargetId: ref(null),
-    closeTargetPicker: () => { state.closed = true },
+    requestedPanel: 'toy',
+    closeTargetPicker: () => { state.closed = true; state.requestedPanel = null },
+    nextTick: async () => {},
+    openGroupPanel: kind => { state.opened = kind },
     closed: false,
   }
   const pick = makeRunner(viewNodes, viewScript, 'pickTarget', state)
 
-  pick({ id: 8, display_name: '阿澈' })
+  await pick({ id: 8, display_name: '阿澈' })
   assert.equal(state.touchTargetId.value, 8)
   assert.equal(state.closed, true, '选完要收起面板')
+  assert.equal(state.opened, 'toy', '选人后保留原先请求的功能')
 
   state.touchTargetId.value = 8
-  pick({ isAll: true, display_name: '全体成员' })
+  await pick({ isAll: true, display_name: '全体成员' })
   assert.equal(state.touchTargetId.value, 8, '全体成员不是合法动作对象')
-  pick(null)
+  await pick(null)
   assert.equal(state.touchTargetId.value, 8)
 })
 

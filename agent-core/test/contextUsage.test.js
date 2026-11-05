@@ -10,7 +10,7 @@
  *     只堵 globalThis.fetch 是堵不住 LLM 流量的（这一点吃过亏）；
  *     globalThis.fetch 另装一个只放行本机地址的桩，既保证本文件不出网，又能让
  *     /v1/models 的探测真的走到假上游；
- *   - 改 .env 的用例（PUT /api/config/llm）跑完按字节还原配置文件，绝不让测试改坏真实配置。
+ *   - PUT /api/config/llm 只读写 setup.mjs 分配的临时配置，不接触真实 .env。
  *
  * 边界声明：假上游只验证"链路与口径"，不代表真实网关 /v1/models 的字段形态；
  * 真实网关字段差异（context_length / max_allowed_size …）由 contextWindowFromModelEntry 的用例覆盖。
@@ -18,9 +18,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import nodeFetch from 'node-fetch';
 
@@ -133,7 +131,8 @@ function api(method, requestPath, body) {
   });
 }
 
-const ENV_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.env');
+const ENV_PATH = process.env.LINSHE_ENV_PATH;
+assert.ok(ENV_PATH, '必须通过 test/setup.mjs 分配临时配置');
 
 /** 直接改 .env 的用例：跑完把文件按字节还原（.env 是真实配置，测试不许留痕） */
 async function withEnvFileRestored(fn) {
@@ -618,7 +617,7 @@ test('GET /api/config 的 llm 段带 contextWindow / contextWindowSource；PUT /
     config.llm.contextWindowSource = savedSource;
   });
 
-  // 本用例会写真实 .env（persistEnv 的落点），跑完按字节还原
+  // 在临时文件中验证持久化，结束后还原本用例的夹具。
   const originalEnv = fs.existsSync(ENV_PATH) ? fs.readFileSync(ENV_PATH) : null;
   await withEnvFileRestored(async () => {
     const put = await api('PUT', '/api/config/llm', { contextWindow: 555000 });
@@ -659,7 +658,7 @@ test('GET /api/config 的 llm 段带 contextWindow / contextWindowSource；PUT /
     assert.equal(switched.json.contextWindowSource, null);
   });
 
-  // 文件必须逐字节回到原样（否则测试就改了用户的真实配置）
+  // 临时夹具逐字节还原，不影响后面的测试。
   const restored = fs.existsSync(ENV_PATH) ? fs.readFileSync(ENV_PATH) : null;
   assert.deepEqual(restored, originalEnv, '.env 必须原样还原');
 });

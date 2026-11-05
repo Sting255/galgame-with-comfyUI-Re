@@ -17,6 +17,9 @@ export const useMailboxStore = defineStore('mailbox', () => {
   let _unsubReady = null
   let _unsubFailed = null
   let _pollingRefs = 0
+  let listRequest = 0
+  let listRevision = 0
+  let unreadRequest = 0
 
   const pendingLetters = computed(() =>
     letters.value.filter(l => l.status === 'pending' || l.status === 'processing')
@@ -31,22 +34,27 @@ export const useMailboxStore = defineStore('mailbox', () => {
   )
 
   async function fetchLetters() {
+    const request = ++listRequest
+    const revision = listRevision
     loading.value = true
     try {
       const data = await api.listLetters()
+      if (request !== listRequest || revision !== listRevision) return
       letters.value = data.letters || []
       loadError.value = null
     } catch (err) {
       console.error('[mailbox] fetchLetters error:', err)
-      loadError.value = err?.message || '加载失败'
+      if (request === listRequest && revision === listRevision) loadError.value = err?.message || '加载失败'
     } finally {
-      loading.value = false
+      if (request === listRequest) loading.value = false
     }
   }
 
   async function fetchUnread() {
+    const request = ++unreadRequest
     try {
       const data = await api.getUnreadCount()
+      if (request !== unreadRequest) return
       unreadCount.value = data.unread || 0
       processingCount.value = data.processing || 0
     } catch (err) {
@@ -57,13 +65,15 @@ export const useMailboxStore = defineStore('mailbox', () => {
   async function sendLetter(characterId, title, content, extra = {}) {
     const result = await api.sendLetter(characterId, title, content, extra)
     if (result.letter) {
-      letters.value.unshift(result.letter)
+      listRevision++
+      letters.value = [result.letter, ...letters.value.filter(l => l.id !== result.letter.id)]
     }
     return result
   }
 
   async function markRead(letterId) {
     await api.markLetterRead(letterId)
+    listRevision++
     const letter = letters.value.find(l => l.id === letterId)
     if (letter) {
       letter.is_read = 1
@@ -73,6 +83,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
 
   async function deleteLetter(letterId) {
     await api.deleteLetter(letterId)
+    listRevision++
     letters.value = letters.value.filter(l => l.id !== letterId)
     fetchUnread()
   }
@@ -80,6 +91,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
   /** 手动重新投递一封失败的信（2026-10-17 §P2-1）：后端 failed → pending + 清零重试。 */
   async function retryLetter(letterId) {
     const result = await api.retryLetter(letterId)
+    listRevision++
     if (result.letter) {
       const idx = letters.value.findIndex(l => l.id === letterId)
       if (idx >= 0) letters.value[idx] = result.letter
@@ -90,6 +102,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
   }
 
   function _onReplyProcessing(data) {
+    listRevision++
     const letterId = data.letter_id
     const letter = letters.value.find(l => l.id === letterId)
     if (letter) {
@@ -99,6 +112,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
   }
 
   function _onReplyReady(data) {
+    listRevision++
     const letterId = data.letter_id
     const letter = letters.value.find(l => l.id === letterId)
     if (letter) {
@@ -117,6 +131,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
   }
 
   function _onReplyFailed(data) {
+    listRevision++
     const letterId = data.letter_id
     const letter = letters.value.find(l => l.id === letterId)
     if (letter) {

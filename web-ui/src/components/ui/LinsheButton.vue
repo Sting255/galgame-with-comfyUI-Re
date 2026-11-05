@@ -11,9 +11,11 @@
         'ls-btn--tone-paper': tone === 'paper',
         'ls-btn--tone-muted': tone === 'muted',
         'ls-btn--tone-ink': tone === 'ink',
+        'ls-btn--tone-accent': tone === 'accent',
         'ls-btn--jelly-enter': jellyPhase === 'enter',
         'ls-btn--jelly-leave': jellyPhase === 'leave',
         'ls-btn--loading': loading,
+        'ls-btn--touch-target': touchTarget,
       },
     ]"
     :type="type"
@@ -47,9 +49,9 @@ const props = defineProps({
   running: { type: Boolean, default: false },
   /** 宽度撑满父容器 */
   block: { type: Boolean, default: false },
-  /** chip 变体的选中态 */
+  /** chip / icon 变体的选中态 */
   active: { type: Boolean, default: false },
-  /** 色调覆盖：danger 转红色；paper 为白底图标按钮；muted 为弱操作的中性墨色；ink 为高对比图标操作 */
+  /** 色调覆盖：danger 转红色；paper 白底；muted 中性墨色；ink 高对比；accent 主题色描边图标 */
   tone: { type: String, default: 'default' },
 })
 
@@ -192,6 +194,22 @@ const endJelly = (event) => {
   background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
 }
+.ls-btn--icon.ls-btn--tone-accent {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--accent-text);
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.ls-btn--icon.ls-btn--tone-accent:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: 0 4px 16px rgba(var(--accent-rgb), 0.2);
+}
+.ls-btn--icon.ls-btn--tone-accent.ls-btn--active {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.25);
+}
 .ls-btn--icon.ls-btn--tone-paper,
 .ls-btn--icon.ls-btn--tone-paper:hover:not(:disabled) {
   background: var(--button-paper-bg);
@@ -268,6 +286,10 @@ const endJelly = (event) => {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 .ls-btn--chip:active:not(:disabled) { transform: translateY(1px); }
+
+@media (max-width: 767px), (pointer: coarse) {
+  .ls-btn.ls-btn--touch-target { min-height: 44px; min-width: 44px; }
+}
 
 /* ── 禁用：厚底压平、降透明 ── */
 .ls-btn:disabled {

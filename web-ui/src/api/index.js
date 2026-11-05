@@ -732,7 +732,7 @@ export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artis
 }
 
 export async function updateFeatureFlag(key, value) {
-  await request(`/config/features`, { method: 'PUT', body: { key, value } })
+  return request(`/config/features`, { method: 'PUT', body: { key, value } })
 }
 
 // ── 提示词破限（Prompt Shield）──────────────────────────────────────────────
@@ -796,7 +796,7 @@ export async function setJailbreakTargets(targets) {
 }
 
 // ── SLG 动作系统（触摸互动）───────────────────────────────────────────────
-// 契约见 docs/touch-system.md §6.3。
+// 契约见 docs/characters/touch-system.md §6.3。
 // 注意：**门控拒绝是 200 + { allowed:false, code, message }**（“她不愿意”是叙事结果，不是服务端错误），
 // 所以走上面的 request() 不会抛；只有非法 action / 角色（400 / 404）或功能关闭（409）才抛。
 
@@ -1010,7 +1010,7 @@ export async function updateScheduleRefreshDays(value) {
 
 /** 更新后台 LLM 并发数 1~10 */
 export async function updateBackgroundConcurrency(value) {
-  await request(`/config/background-llm-concurrency`, { method: 'PUT', body: { value } })
+  return request(`/config/background-llm-concurrency`, { method: 'PUT', body: { value } })
 }
 
 /** 更新防打扰模式总开关 */
@@ -1072,26 +1072,9 @@ export async function activateLlmProfile(id) {
 }
 
 export async function syncActiveLlmProfile() {
-  await request(`/config/llm/profiles/active/sync`, { method: 'PUT' })
+  return request(`/config/llm/profiles/active/sync`, { method: 'PUT' })
 }
 
-// ── 上下文窗口用量 / 压缩 ──
-// 走 jsonRequest：需要把 409（正在压缩）的 status 透传给调用方区分提示，
-// 而 request() 会把状态码吞成一个普通 Error。
-
-/** 当前会话的上下文用量（conversationId 形如 char_2 / group_7） */
-export function getContextUsage(conversationId) {
-  return jsonRequest(`/api/context/usage?conversationId=${encodeURIComponent(conversationId)}`)
-}
-
-/** 手动压缩当前会话上下文；服务端已有压缩在跑时抛 status=409 */
-export function compressContext(conversationId) {
-  return jsonRequest('/api/context/compress', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ conversationId }),
-  })
-}
 
 // ── 数据备份（一键导出 / 一键导入）──
 //

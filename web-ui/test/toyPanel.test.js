@@ -63,17 +63,14 @@ test('玩具面板：门控只渲染服务端结论，前端零推断', () => {
 test('聊天页：独立玩具入口，未解锁不渲染', () => {
   const compiled = compileTemplate({ source: chatTpl, filename: 'ChatView.vue', id: 'c' })
   assert.deepEqual(compiled.errors, [])
-  assert.ok(chatTpl.includes('toy-icon-btn'), '要有独立玩具按钮')
-  assert.ok(/v-if="toysEnabled"[\s\S]{0,200}toy-icon-btn|toy-icon-btn[\s\S]{0,200}v-if="toysEnabled"/.test(chatTpl),
-    '未解锁就不渲染（不是灰按钮）')
+  const toolbar = readFileSync(new URL('../src/components/chat/ChatActionToolbar.vue', import.meta.url), 'utf8')
+  assert.ok(chatTpl.includes('<ChatActionToolbar'), '要挂载共享入口')
+  assert.ok(chatTpl.includes(':toys-enabled="toysEnabled"'), '门控传给共享入口')
+  assert.ok(/v-if="toysEnabled"/.test(toolbar), '未解锁就不渲染（不是灰按钮）')
   assert.ok(chatScript.includes('showToyPanel'), '有自己的显隐状态')
   assert.ok(chatTpl.includes(':open="showToyPanel"'), '挂独立的 ToyPanel')
-  assert.ok(/aria-label="玩具"/.test(chatTpl), '无障碍标签')
-  assert.ok(/role="button"/.test(chatTpl), '照样例用 role=button')
-  // 入口必须在 ✋ 旁边（同一输入行）
-  const iToy = chatTpl.indexOf('toy-icon-btn')
-  const iHand = chatTpl.indexOf('touch-icon-btn')
-  assert.ok(iHand > 0 && Math.abs(iToy - iHand) < 2500, '两个入口要在同一输入区、位置相邻')
+  assert.ok(/aria-label="玩具"/.test(toolbar), '无障碍标签')
+  assert.ok(toolbar.includes('<linshe-button'), '统一按钮支持键盘触发')
 })
 
 test('聊天页：装/调/摘真的调那三个 API', () => {

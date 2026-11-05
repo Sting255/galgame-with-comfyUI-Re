@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Console } from 'node:console';
+import { Writable } from 'node:stream';
 
 const {
   dayStamp,
@@ -77,28 +79,24 @@ test('pruneOldLogs：只删超期的 <prefix>-日期.log，别的文件不动', 
 
 // ──────────────── 2. 镜像 ────────────────
 
-test('镜像：console.log/info/warn/error 都进文件，且原始输出不被抢走', async () => {
+test('镜像：console.log/info/warn/error 都进文件，且原始输出不被抢走', async t => {
   const dir = tmpDir();
+  // 不替换 process.stdout.write：node --test 的子进程协议也走它，吞掉协议帧
+  // 会随机触发 Unable to deserialize cloned data。用独立 Console 验证原始输出。
+  const chunks = [];
+  const output = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const originalConsole = globalThis.console;
+  globalThis.console = new Console({ stdout: output, stderr: output });
+  t.after(() => { globalThis.console = originalConsole; output.end(); });
   await withLogging({ dir, prefix: 'backend', keepDays: 14 }, async h => {
     assert.ok(h, '应返回句柄');
     assert.equal(path.dirname(h.file), path.resolve(dir));
     assert.equal(path.basename(h.file), `backend-${dayStamp()}.log`);
 
-    // 捕获原始 stdout/stderr，确认"照旧打给人看"（error 走 stderr）
-    const chunks = [];
-    const realOut = process.stdout.write.bind(process.stdout);
-    const realErr = process.stderr.write.bind(process.stderr);
-    process.stdout.write = c => { chunks.push(String(c)); return true; };
-    process.stderr.write = c => { chunks.push(String(c)); return true; };
-    try {
-      console.log('普通一行');
-      console.info('信息一行');
-      console.warn('警告一行');
-      console.error('错误一行');
-    } finally {
-      process.stdout.write = realOut;
-      process.stderr.write = realErr;
-    }
+    console.log('普通一行');
+    console.info('信息一行');
+    console.warn('警告一行');
+    console.error('错误一行');
     assert.ok(chunks.join('').includes('普通一行'), 'console.log 必须照旧输出到 stdout');
     assert.ok(chunks.join('').includes('错误一行'));
 

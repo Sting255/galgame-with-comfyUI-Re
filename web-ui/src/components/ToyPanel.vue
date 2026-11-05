@@ -12,8 +12,14 @@
       · 面板**自包含**：只要拿得到角色 id（props 或聊天 store），自己取数、自己轮询（4 秒 tick，
         曲线/档位随时间变），不依赖父组件的刷新节奏（父组件那三条 emit 依旧保留，兼容既有接线）。
   -->
-  <linshe-modal :model-value="open" title="玩具" @update:model-value="onModalToggle">
+  <linshe-modal :model-value="open" :title="targetName ? '玩具 · ' + targetName : '玩具'" @update:model-value="onModalToggle">
     <div class="toy-panel">
+      <div v-if="loadError" class="toy-load-state" role="alert">
+        <span>{{ loadError }}</span><linshe-button size="sm" variant="secondary" :loading="loading" @click="refresh">重试</linshe-button>
+      </div>
+      <p v-else-if="loading && !server" class="toy-load-state" role="status">正在读取状态…</p>
+      <linshe-tabs v-model="section" :options="sectionOptions" aria-label="玩具分区" />
+      <div v-show="section === 'worn'" class="toy-section">
       <template v-if="wornList.length">
         <div class="toy-panel__head">
           她正戴着
@@ -40,6 +46,9 @@
               </span>
               <linshe-button variant="link" size="sm" :disabled="busyKey === toy.toyKey" @click="unequipToy(toy.toyKey)">摘下</linshe-button>
             </div>
+            <linshe-button v-if="hasIntensity(toy.toyKey)" variant="link" size="sm" :aria-expanded="expandedToy === toy.toyKey" @click="expandedToy = expandedToy === toy.toyKey ? '' : toy.toyKey">{{ expandedToy === toy.toyKey ? '收起设置' : '模式与曲线' }}</linshe-button>
+            <CollapseTransition :show="hasIntensity(toy.toyKey) && expandedToy === toy.toyKey">
+            <div>
             <div class="toy-worn-line toy-worn-line--play">
               <span class="toy-play-label">模式</span>
               <linshe-tabs
@@ -83,10 +92,12 @@
               </template>
               <span v-if="remainingOf(toy)" class="toy-curve-remain">{{ remainingOf(toy) }}</span>
             </div>
+            </div>
+            </CollapseTransition>
           </li>
         </ul>
       </template>
-      <p v-else class="toy-worn-empty">还没给她戴上任何玩具 —— 从下面挑一件吧</p>
+      <p v-else class="toy-worn-empty">还没佩戴玩具，可以到「背包」挑选</p>
 
       <div class="toy-panel__head">她自己</div>
       <div class="toy-self">
@@ -99,9 +110,12 @@
           :disabled="selfPlayBusy || !activeCharId"
           title="逗她一下：只是给她加一点念头，她自己决定要不要动手"
           @click="onEncourage"
-        >逗她一下</linshe-button>
+        >
+逗她一下
+</linshe-button>
       </div>
-
+</div>
+      <div v-show="section === 'backpack'" class="toy-section">
       <div class="toy-panel__head">背包里的玩具</div>
       <!-- 玩法说明（2026-10-02，规划 §二）：每件玩具的 desc/effect 是给模型看的，
            用户看不到就等于不知道这套玩具能干嘛 ⇒ 面板里要有一段"怎么玩"。默认收起。 -->
@@ -137,9 +151,12 @@
           :title="gateMessage(toy)"
           :aria-disabled="toy.gate && toy.gate.allowed === false ? 'true' : undefined"
           @click="equipFromBackpack(toy)"
-        >{{ labelOf(toy.key || toy.toyKey) }} · {{ partOf(toy.key || toy.toyKey) }} · {{ intensityCapText(toy) }}</linshe-button>
+        >
+<span class="toy-card-copy"><strong>{{ labelOf(toy.key || toy.toyKey) }}</strong><span>{{ partOf(toy.key || toy.toyKey) }} · {{ intensityCapText(toy) }}</span><span v-if="toy.gate?.allowed === false" class="toy-gate-reason">{{ toy.gate.message || '现在还不行' }}</span></span>
+</linshe-button>
       </div>
       <p v-if="catalogNote" class="toy-note">{{ catalogNote }}</p>
+      </div>
     </div>
   </linshe-modal>
 </template>
@@ -151,6 +168,7 @@ import LinsheButton from './ui/LinsheButton.vue'
 import LinsheTabs from './ui/LinsheTabs.vue'
 import LinsheSwitch from './ui/LinsheSwitch.vue'
 import LinsheSelect from './ui/LinsheSelect.vue'
+import CollapseTransition from './CollapseTransition.vue'
 import { useChatStore } from '../stores/chat.js'
 import * as api from '../api/index.js'
 import {
@@ -179,6 +197,7 @@ const props = defineProps({
   toyOptions: { type: Array, default: () => [] },
   /** 角色 id（不传就从聊天 store 取当前角色 —— 面板自己取数，保证"打开就能用"） */
   characterId: { type: [Number, String], default: null },
+  targetName: { type: String, default: '' },
   /**
    * 场景（2026-10-03 群聊 bug）：群聊里必须传 `scene="group"` + `:group-id`，
    * 否则她的反应会写到私聊去（「在哪里聊天就在哪里继续进行」）。
@@ -211,6 +230,11 @@ const chat = useChatStore()
 
 /** 面板自己的服务端状态（worn/catalog/combos/selfPlay）；父组件的 props 只作回落 */
 const server = ref(null)
+const loading = ref(false)
+const loadError = ref('')
+const section = ref('backpack')
+const expandedToy = ref('')
+const sectionOptions = computed(() => [{ label: `已佩戴 ${wornList.value.length}`, value: 'worn' }, { label: '背包', value: 'backpack' }])
 const liveWorn = ref([])
 const busyKey = ref('')
 const selfPlayBusy = ref(false)
@@ -232,7 +256,7 @@ const toyList = computed(() => {
 
 /** 已戴清单：服务端（带实时档位/模式/曲线）优先，拿不到就用父组件那份 */
 const wornList = computed(() => {
-  if (liveWorn.value.length) return liveWorn.value
+  if (server.value && Array.isArray(server.value.worn)) return liveWorn.value
   return Array.isArray(props.wornToys) ? props.wornToys : []
 })
 
@@ -241,7 +265,7 @@ const catalogNote = computed(() => {
   const list = toyList.value
   if (!list.length) return ''
   const locked = list.filter(t => t.gate && t.gate.allowed === false).length
-  return locked > 0 ? (locked + ' 件现在还不行（好感 / 授权 / 群聊开关由服务端判定，鼠标悬停看原因）') : ''
+  return locked > 0 ? (locked + ' 件暂不可用，原因显示在对应卡片上') : ''
 })
 const selfPlayLine = computed(() => selfPlayText(server.value && server.value.selfPlay && server.value.selfPlay.decision))
 const lastSelfPlayText = computed(() => {
@@ -302,19 +326,23 @@ function adopt(payload) {
   if (Array.isArray(payload.worn)) liveWorn.value = payload.worn
 }
 
+let refreshVersion = 0
 async function refresh() {
   const id = activeCharId.value
+  const version = ++refreshVersion
   if (!id) { server.value = null; liveWorn.value = []; return }
+  loading.value = true
+  loadError.value = ''
   try {
     // 场景要带上：群聊口径下服务端逐件给的是**群里**的门控结论（群聊成人开关关着 = allowed:false）
     const res = await api.fetchToys(id, sceneOpts.value)
-    if (activeCharId.value !== id) return
+    if (activeCharId.value !== id || version !== refreshVersion) return
     if (res && res.unlocked === true) adopt(res)
     else { server.value = null; liveWorn.value = [] }
   } catch (err) {
-    // 取数失败：退回父组件那份（面板不能因此变白）
-    server.value = null
-    liveWorn.value = []
+    if (version === refreshVersion) loadError.value = err?.message || '读取状态失败，请重试'
+  } finally {
+    if (version === refreshVersion) loading.value = false
   }
 }
 
@@ -345,7 +373,7 @@ function refreshSoon(delay = 700) {
 }
 
 watch(() => props.open, (v) => {
-  if (v) { refresh(); startPolling() } else stopPolling()
+  if (v) { section.value = wornList.value.length ? 'worn' : 'backpack'; expandedToy.value = ''; refresh(); startPolling() } else { refreshVersion++; loading.value = false; stopPolling() }
 }, { immediate: true })
 watch(activeCharId, () => { if (props.open) refresh() })
 // 换群（或场景变了）也要重取：门控是**按场景**算的（群聊成人开关关着时每件 allowed:false），
@@ -486,6 +514,11 @@ async function onEncourage() {
   color: var(--text-secondary);
   display: flex; align-items: center; gap: 6px;
 }
+.toy-section { animation: toy-reveal 0.3s ease; }
+.toy-load-state { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; }
+.toy-card-copy { display: flex; flex-direction: column; align-items: flex-start; white-space: normal; overflow-wrap: anywhere; gap: 4px; width: 100%; text-align: left; line-height: 1.5; }
+.toy-card-copy > span { font-size: 12px; color: var(--text-secondary); }
+.toy-gate-reason { font-weight: 400; }
 .toy-panel__head:first-child { margin-top: 0; }
 .toy-panel__count {
   font-weight: 500; color: var(--text-bright);

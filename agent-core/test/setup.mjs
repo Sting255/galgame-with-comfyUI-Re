@@ -28,6 +28,15 @@
  *   需要真实网关的用例，自己在 import config 之后设 `config.llm.baseURL`（仓库既有 15 个
  *   小镇测试都是这个写法：`config.llm.baseURL = 'http://127.0.0.1:9/v1'`）。
  */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+// 每个测试进程独占空白配置；即使外部设置了真实路径，也不能读写用户 .env。
+const configDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'linshe-test-config-'))
+process.env.LINSHE_ENV_PATH = path.join(configDirectory, '.env')
+process.on('exit', () => fs.rmSync(configDirectory, { recursive: true, force: true }))
+
 process.env.DB_PATH = process.env.DB_PATH || ':memory:'
 process.env.LOG_TO_FILE = 'false'
 // LLM 走 OpenAI SDK，绕过下面的 fetch 桩 → 必须在 import config 之前预设死端口，

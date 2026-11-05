@@ -29,8 +29,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const CORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-/** 必须用仓库自带 node（PATH 上可能是 ABI 不兼容的版本） */
-const NODE = path.join(CORE, '..', 'runtime', 'nodejs', 'node.exe');
+/** 沿用测试进程的 Node，保持原生模块 ABI 一致，也支持 CI 的干净检出。 */
+const NODE = process.execPath;
 const CONFIG_URL = pathToFileURL(path.join(CORE, 'src', 'config.js')).href;
 
 /** 在干净子进程里读 `config.host`（`@undefined@` 代表确实是 undefined） */

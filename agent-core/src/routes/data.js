@@ -90,12 +90,13 @@ router.post('/import', importBodyParser, asyncHandler(async (req, res) => {
   }
 
   try {
-    const result = await importBackup(body);
+    const result = await importBackup(body, { holdUntilRestart: req.app.locals.restoreRequiresRestart !== false });
     res.json({
       ok: true,
       restored: result.restored,
       backupPath: result.backupPath,
       restartRecommended: result.restartRecommended,
+      restartRequired: result.restartRequired,
       message: result.message,
     });
   } catch (err) {

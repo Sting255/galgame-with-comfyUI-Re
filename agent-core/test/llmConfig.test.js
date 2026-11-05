@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPairSync } from 'node:crypto';
+import dotenv from 'dotenv';
 import { defaultMaxTokens, normalizeModelCapabilities, isValidMaxTokens } from '../src/llm/modelCapabilities.js';
 
 test('official, known text models and unknown models get appropriate defaults', () => {
@@ -34,10 +35,30 @@ test('model discovery preserves output limits, never mistakes input/context limi
 
 const stub = source => `data:text/javascript,${encodeURIComponent(source)}`;
 const settingsUrl = stub('export const values = new Map(); export const getSetting = key => values.get(key); export const setSetting = (key, value) => values.set(key, value);');
-const fsUrl = stub("export let saved = ''; export default { existsSync: () => true, readFileSync: () => saved, writeFileSync: (_path, text) => { saved = text; } };");
+const fsUrl = stub(`
+  export let saved = '';
+  export let writes = 0;
+  let temporary;
+  let failure = false;
+  export const setSaved = value => { saved = value; };
+  export const failWrites = value => { failure = value; };
+  export default {
+    existsSync: path => String(path).endsWith('.tmp') ? temporary !== undefined : true,
+    readFileSync: () => saved, statSync: () => ({ mode: 0o600 }),
+    openSync: () => 1, closeSync() {}, fsyncSync() {},
+    writeFileSync: (_fd, value) => { temporary = value; },
+    renameSync: () => { if (failure) throw new Error('fixture write failure'); saved = temporary; temporary = undefined; writes++; },
+    unlinkSync: () => { temporary = undefined; },
+  };
+`);
 const configUrl = new URL('../src/config.js', import.meta.url);
+const envHelperUrl = new URL('../src/utils/envFile.js', import.meta.url).href;
 const imports = {
-  dotenv: stub('export default { config() {} };'), fs: fsUrl,
+  dotenv: stub(`import dotenv from ${JSON.stringify(import.meta.resolve('dotenv'))}; export default { ...dotenv, config() {} };`), fs: fsUrl,
+  './utils/envFile.js': stub(`import { persistEnvValues as save } from ${JSON.stringify(envHelperUrl)};
+    import fsImpl from ${JSON.stringify(fsUrl)};
+    export const resolveEnvPath = () => 'fixture.env';
+    export const persistEnvValues = (path, updates) => save(path, updates, { fsImpl });`),
   './db/settings.js': settingsUrl,
   './utils/servicePort.js': stub('export const resolveServicePort = () => 3099;'),
   './services/weatherSource.js': stub('export const notifyWeatherSourceChange = () => {};'),
@@ -75,7 +96,8 @@ test('NovelAI native protocol, proxy and normalized key persist and reload', asy
   assert.equal(settings.values.get('novelai_proxy_url'), 'http://127.0.0.1:7890');
   assert.equal(runtime.getNovelaiApiKey(), 'test-novelai-key');
   const settingsSource = readFileSync(new URL('../src/db/settings.js', import.meta.url), 'utf8')
-    .replace("'../config.js'", JSON.stringify(stub(source)));
+    .replace("'../config.js'", JSON.stringify(stub(source)))
+    .replace("'./maintenance.js'", JSON.stringify(new URL('../src/db/maintenance.js', import.meta.url).href));
   const { loadSystemSettings } = await import(stub(settingsSource));
   runtime.config.comfyui.novelaiApiFormat = 'relay';
   runtime.config.comfyui.novelaiProxyUrl = '';
@@ -256,4 +278,99 @@ test('NovelAI profiles snapshot the current config, switch cleanly and follow la
   assert.equal(getNovelaiApiKey(), 'key-a');
   assert.equal(deleteNovelaiProfile(defaultId).ok, false);
   settings.values.clear();
+});
+
+
+test('invalid context window rejects the entire update before file, DB or memory changes', async () => {
+  const { runtime, memoryFs, settings } = await loadRuntime();
+  const before = { ...runtime.config.llm };
+  const saved = memoryFs.saved;
+  const db = [...settings.values];
+  for (const contextWindow of [-1, 1.5, '1200oops', '1e5', true, {}, Number.MAX_SAFE_INTEGER + 1]) {
+    const result = runtime.updateLlmConfig({ model: 'must-not-save', apiKey: 'fixture-key', connectionType: 'vertexai', contextWindow });
+    assert.equal(result.ok, false);
+    assert.deepEqual({ ...runtime.config.llm }, before);
+    assert.equal(memoryFs.saved, saved);
+    assert.deepEqual([...settings.values], db);
+  }
+});
+
+test('a whole LLM update persists once and reloads special characters without truncation', async () => {
+  const { runtime, memoryFs } = await loadRuntime();
+  memoryFs.setSaved('# LLM_API_KEY=template\nexport LLM_MODEL = old\nLLM_MODEL=stale\nPORT=3199\n');
+  const headers = { 'X-Test': 'hash#value', 'X-Path': String.raw`C:\new\relay` };
+  const apiKey = 'fixture#$&key';
+  const writes = memoryFs.writes;
+  assert.equal(runtime.updateLlmConfig({ apiKey, model: 'custom#model', headers, contextWindow: 128000 }).ok, true);
+  assert.equal(memoryFs.writes, writes + 1);
+  const saved = dotenv.parse(memoryFs.saved);
+  assert.equal(saved.LLM_API_KEY, apiKey);
+  assert.equal(saved.LLM_MODEL, 'custom#model');
+  assert.deepEqual(JSON.parse(saved.LLM_HEADERS), headers);
+  assert.equal(saved.PORT, '3199');
+  runtime.config.llm.apiKey = '';
+  assert.equal(runtime.getLlmApiKey(), apiKey, 'fallback reads quoted dotenv values using the same parser');
+});
+
+test('file replacement failure leaves LLM, image settings and profile selection unchanged', async t => {
+  const { runtime, memoryFs, settings } = await loadRuntime();
+  runtime.updateFreeEggEnabled(false);
+  const active = runtime.addLlmProfile('active-fixture').profile;
+  runtime.activateLlmProfile(active.id);
+  const other = runtime.addLlmProfile('other-fixture').profile;
+  const before = { llm: { ...runtime.config.llm }, comfy: { ...runtime.config.comfyui }, db: [...settings.values], env: memoryFs.saved };
+  memoryFs.failWrites(true);
+  t.after(() => memoryFs.failWrites(false));
+  for (const action of [
+    () => runtime.updateLlmConfig({ model: 'unsaved', connectionType: 'vertexai', contextWindow: 10000 }),
+    () => runtime.updateComfyConfig({ url: 'http://fixture.invalid', tlsVerify: false, artist: 'unsaved' }),
+    () => runtime.activateLlmProfile(other.id),
+    () => runtime.deleteLlmProfile(active.id),
+  ]) {
+    assert.throws(action, /fixture write failure/);
+    assert.deepEqual({ ...runtime.config.llm }, before.llm);
+    assert.deepEqual({ ...runtime.config.comfyui }, before.comfy);
+    assert.deepEqual([...settings.values], before.db);
+    assert.equal(memoryFs.saved, before.env);
+  }
+});
+
+test('profiles created in the same millisecond keep independent IDs and deletion targets', async t => {
+  const { runtime } = await loadRuntime();
+  const originalNow = Date.now;
+  Date.now = () => 123456789;
+  t.after(() => { Date.now = originalNow; });
+  const first = runtime.addLlmProfile('first').profile;
+  const second = runtime.addLlmProfile('second').profile;
+  assert.notEqual(first.id, second.id);
+  runtime.activateLlmProfile(second.id);
+  assert.equal(runtime.deleteLlmProfile(first.id).ok, true);
+  assert.ok(runtime.getLlmProfiles().some(profile => profile.id === second.id));
+  assert.equal(runtime.getActiveProfileId(), second.id);
+});
+
+test('saving personal model settings while free mode is enabled preserves file and active profile', async t => {
+  const { runtime, memoryFs, settings } = await loadRuntime();
+  const activeId = runtime.getActiveProfileId();
+  assert.ok(activeId);
+  runtime.updateFreeEggEnabled(true);
+  t.after(() => runtime.updateFreeEggEnabled(false));
+  runtime.updateLlmConfig({ model: 'gemini-2.5-pro', apiKey: 'personal-fixture', headers: { 'X-Test': 'personal' } });
+  const saved = dotenv.parse(memoryFs.saved);
+  assert.equal(saved.LLM_MODEL, 'gemini-2.5-pro');
+  assert.equal(saved.LLM_API_KEY, 'personal-fixture');
+  assert.equal(saved.LLM_MAX_TOKENS, '65536');
+  assert.deepEqual(JSON.parse(saved.LLM_HEADERS), { 'X-Test': 'personal' });
+  assert.equal(runtime.config.llm.freeEgg, true);
+  runtime.syncActiveLlmProfile(); // 保存路由的下一步必须同样保留个人配置
+  const profile = JSON.parse(settings.values.get('llm_profiles')).find(item => item.id === activeId);
+  assert.equal(profile.model, 'gemini-2.5-pro');
+  assert.equal(profile.apiKey, 'personal-fixture');
+  assert.equal(profile.maxTokens, 65536);
+  assert.deepEqual(profile.headers, { 'X-Test': 'personal' });
+  runtime.updateFreeEggEnabled(false);
+  runtime.updateLlmConfig({ model: 'temporary-other-model' });
+  runtime.activateLlmProfile(activeId);
+  assert.equal(runtime.config.llm.model, 'gemini-2.5-pro');
+  assert.equal(runtime.config.llm.apiKey, 'personal-fixture');
 });

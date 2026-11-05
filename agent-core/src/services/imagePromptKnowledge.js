@@ -413,14 +413,22 @@ export async function retrieveImagePromptKnowledge(query, { scene = 'chat', limi
 }
 
 let syncSchedulerTimer = null;
+let syncInitialTimer = null;
 let syncCheckInFlight = false;
 const SYNC_CHECK_INTERVAL_MS = 60 * 1000;
 
 export function startKnowledgeSyncScheduler() {
   if (syncSchedulerTimer) return;
   console.log('[imagePromptKnowledge] sync scheduler started (runs when user is quiet)');
-  setTimeout(syncTick, 15 * 1000);
+  syncInitialTimer = setTimeout(syncTick, 15 * 1000);
   syncSchedulerTimer = setInterval(syncTick, SYNC_CHECK_INTERVAL_MS);
+}
+
+export function stopKnowledgeSyncScheduler() {
+  clearTimeout(syncInitialTimer);
+  clearInterval(syncSchedulerTimer);
+  syncInitialTimer = null;
+  syncSchedulerTimer = null;
 }
 
 async function syncTick() {

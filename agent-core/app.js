@@ -1,7 +1,10 @@
 import './src/envCheck.js'; // 必须最先执行：Node ABI 预检，防 better-sqlite3 加载崩溃
 import './src/logCapture.js'; // 尽早安装 console 捕获到内存环形缓冲（幂等）
 import express from 'express';
-import cors from 'cors';
+import { startBackgroundServices, stopBackgroundServices } from './src/server/backgroundServices.js';
+import { createHttpLifecycle } from './src/server/httpLifecycle.js';
+import { createAccessControl, loadAccessToken } from './src/server/accessControl.js';
+import { maintenanceStatus } from './src/db/maintenance.js';
 import path from 'path';
 import { readFileSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -61,29 +64,12 @@ import contextRoutes from './src/routes/context.js';
 import dataRoutes from './src/routes/data.js';   // 一键导出/导入全部数据
 import maibotBridgeRoutes from './src/maibot-bridge/router.js';
 import { autoRestoreMissing } from './src/services/workflowTemplates.js';
-import { startMomentScheduler } from './src/services/momentScheduler.js';
-import { startSpecialMomentScheduler } from './src/services/scheduleSpecialMoment.js';
-import { startProactiveChatScheduler } from './src/services/proactiveChatScheduler.js';
-import { startEventScheduler } from './src/services/eventScheduler.js';
-import { startDisturbScheduler } from './src/services/disturbModeScheduler.js';
-import { startReplyQueueScheduler } from './src/services/replyQueueScheduler.js';
 // 2026-10-01：世界翻篇（程序日切换）——启动补一次，覆盖"关机跨天"
 import { runProgramDayRollover } from './src/services/programDayRollover.js';
-import { initialize as initScheduleManager } from './src/services/scheduleManager.js';
 import { ensurePoseControlAssetsOnBoot } from './src/services/poseControlInstall.js';
-import { startScheduler as startImageCompressor } from './src/services/imageCompressor.js';
-import { startMailboxScheduler } from './src/services/mailboxScheduler.js';
-import { startWeatherScheduler } from './src/services/weatherService.js';
-import { startGroupIdleScheduler } from './src/services/groupIdleScheduler.js';
-// 2026-10-02：「自动继续抽插」的服务端 ticker（用户原话：「自动抽插并没有自动 只是点一下
-// 后面就没有角色的反应和图了」）—— 没有它时，她只在"下一条动作进来"时才补算推进。
-import { startIntimateAutoThrust } from './src/services/intimateAutoThrust.js';
-import { startKnowledgeSyncScheduler } from './src/services/imagePromptKnowledge.js';
-import { startItemScheduler } from './src/services/itemScheduler.js';
 import { applyFromConfig } from './src/services/llmConcurrency.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
 import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
-import { startConsolidationScheduler, stopConsolidationScheduler } from './src/services/memory/consolidationScheduler.js';
 import { initFileLogging, getFileLogging } from './src/utils/fileLogger.js';
 // 体型行注册（副作用 import）：characterPersona 通过 bodyBuildRegistry 取用，避免三角环
 import './src/services/characterBuild.js';
@@ -106,8 +92,23 @@ const DATA_DIR = path.join(__dirname, 'data');
 // 仓库根目录：发布包里 agent-core 与 VERSION 同级（VERSION 由 `npm run tag` 写入）
 const ROOT_DIR = path.join(__dirname, '..');
 
+const httpLifecycle = createHttpLifecycle();
+app.use(httpLifecycle.middleware);
+
 // 中间件
-app.use(cors());
+app.use('/api/access/session', express.json({ limit: '1kb' }));
+app.use(createAccessControl({
+  token: loadAccessToken(process.env.LINSHE_ACCESS_TOKEN_PATH || (config.dbPath === ':memory:' ? null : path.join(DATA_DIR, '.access-token'))),
+  development: config.isDev,
+  hosts: (process.env.LINSHE_ALLOWED_HOSTS || '').split(',').map(value => value.trim()).filter(Boolean),
+}));
+app.use('/api', (req, res, next) => {
+  const reason = maintenanceStatus();
+  if (reason && !['/health', '/shutdown', '/access'].includes(req.path)) {
+    return res.status(503).json({ error: reason, code: 'DATABASE_MAINTENANCE' });
+  }
+  next();
+});
 // 刻意不使用 compression 中间件（v3.4.0 加过，已整体移除）。两条理由，改回来之前先读：
 //   1) 正确性：它的默认 filter 认为 text/event-stream 可压缩（compressible 返回 true），
 //      会把 SSE 接进 zlib/brotli 变换流，事件被缓冲在压缩缓冲里下不去。
@@ -349,49 +350,7 @@ applyFromConfig(config);
 // 启动时自动补全缺失的工作流文件（已有文件不会被覆盖）
 autoRestoreMissing();
 
-// 启动朋友圈定时调度器
-startMomentScheduler();
-
-// 启动特殊日程朋友圈队列（启动时先检查所有角色的日程：过时的直接跳过，到点的立即发送）
-startSpecialMomentScheduler();
-
-// 启动主动对话调度器（由 config.features.proactiveChat 控制开关，scheduler 内部自行判断）
-startProactiveChatScheduler();
-
-// 启动奇遇事件调度器（由 config.features.events 控制开关，scheduler 内部自行判断）
-startEventScheduler();
-
-// 启动防打扰模式调度器（由 config.features.disturbMode 控制开关，scheduler 内部自行判断）
-startDisturbScheduler();
-
-// 启动回复队列调度器（日程刷新 + 延迟回复处理）
-startReplyQueueScheduler();
-
-// 启动「自动继续抽插」ticker（2026-10-02）：每 3 秒扫一遍正在自动抽插的场次，
-// 到点的就内部走一遍同一条推进链（状态推进 + 她的反应 + 配图），面板关掉也继续。
-// 用户原话：「自动抽插并没有自动 只是点一下 后面就没有角色的反应和图了」。
-startIntimateAutoThrust();
-
-// 初始化日程管理器（恢复睡眠状态）
-initScheduleManager();
-
-// 启动图片压缩调度器（定时 + 立即压缩功能）
-startImageCompressor();
-
-// 启动信箱调度器（每 60 秒扫描待回信的信件）
-startMailboxScheduler();
-
-// 启动天气调度器（每日 08:00 后更新小时级天气缓存）
-startWeatherScheduler();
-
-// 启动群聊后台调度器（预算制闲聊 + 角色自发建群，由 config.features.groupChat 控制）
-startGroupIdleScheduler();
-
-// 启动图片知识库同步调度器（用户安静时才执行同步，不阻塞生图）
-startKnowledgeSyncScheduler();
-
-// 启动记忆整理 daemon（记忆的"睡眠期"：空闲触发，内部自带开关与预算判断）
-startConsolidationScheduler();
+startBackgroundServices();
 
 // 2026-10-01：角色资产「一键后台生成」——进程重启把在跑的批量任务标成 interrupted（可续跑），
 // 不假成 failed（failed 是"跑过了、错了"，interrupted 是"被打断了、还能接着跑"）。
@@ -407,10 +366,6 @@ try {
 runProgramDayRollover({ reason: 'startup' }).catch(error => {
   console.warn('[rollover] 启动检查失败（不影响启动）:', error?.message || error);
 });
-
-// 启动道具系统调度器（每 10 分钟清理到期效果、恢复变身、标记卡死的生成中道具）
-startItemScheduler();
-
 // 先启动 HTTP 服务，向量检查异步进行
 // host 默认 undefined ⇒ 与历史行为一致（监听全部接口，手机端能连）；要只给本机用设 `HOST=127.0.0.1`
 const server = app.listen(config.port, config.host, () => {
@@ -479,32 +434,23 @@ process.on('uncaughtException', (err) => {
 
 // 优雅退出（幂等 — 防止 shutdown 端点 + 信号双重触发）
 let shuttingDown = false;
-const shutdown = () => {
+const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('\n[agent-core] shutting down...');
+  stopBackgroundServices();
   stopMemoryIndexWorker();
-  stopConsolidationScheduler();
-
-  // 1. WAL checkpoint：确保所有未落盘事务写入主 DB
-  try {
-    const db = getDb();
-    const r = db.pragma('wal_checkpoint(TRUNCATE)');
-    console.log(`[db] WAL checkpointed before shutdown: ${r[0]?.checkpointed || 0} pages`);
-  } catch (e) {
-    console.warn('[db] WAL checkpoint failed:', e.message);
-  }
-
-  // 2. 先关 HTTP 服务（拒绝新连接），再清理资源
-  server.close(async () => {
-    // 日志文件先收尾（把缓冲区刷盘、还原 console），再关库退出
-    try { stopGodSays(); } catch { /* 旁路，不影响退出 */ }
-    try { await getFileLogging()?.close(); } catch { /* 旁路，不影响退出 */ }
+  try { stopGodSays(); } catch { /* 退出继续收尾 */ }
+  // 只给无法完成的资源收尾设置最终兜底；HTTP 超时仍会走下面的关库与刷日志。
+  const hardExit = setTimeout(() => process.exit(1), 10000).unref();
+  let graceful = false;
+  try { graceful = await httpLifecycle.close(server); }
+  finally {
     closeDb();
-    process.exit(0);
-  });
-  // 5 秒硬超时兜底
-  setTimeout(() => process.exit(1), 5000).unref();
+    try { await getFileLogging()?.close(); } catch { /* 日志错误不阻止退出 */ }
+    clearTimeout(hardExit);
+    process.exit(graceful ? 0 : 1);
+  }
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

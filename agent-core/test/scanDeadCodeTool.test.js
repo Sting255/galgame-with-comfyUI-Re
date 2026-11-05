@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'scan-dead-code.mjs');
-const NODE = path.join(ROOT, 'runtime', 'nodejs', 'node.exe');
+const NODE = process.execPath;
 
 /** @type {string|null} 全文件共享的扫描输出（只跑一次） */
 let scanOut = null;

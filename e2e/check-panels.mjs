@@ -57,7 +57,7 @@ try {
   await page.goto(CHAT_URL, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
   await dismissOverlays(page)
-  const heart = page.locator('.intimate-icon-btn')
+  const heart = page.locator('.chat-action-toolbar [aria-label="亲密"]')
   record('① ❤ 入口渲染出来了', await heart.count() > 0, `count=${await heart.count()}`)
   if (await heart.count() > 0) {
     await heart.first().click()
@@ -71,12 +71,12 @@ try {
     const bodyText = (await page.locator('body').innerText()).slice(0, 4000)
     record('① 面板文案含推进动作', /继续抽插|加速抽插|换姿势|进入她/.test(bodyText), bodyText.match(/继续抽插|加速抽插|换姿势|进入她/)?.[0] || '(未命中)')
     await page.keyboard.press('Escape').catch(() => {})
-    await page.locator('.ia-close, [aria-label="关闭推进面板"]').first().click().catch(() => {})
+    await page.locator('.ia-close, [aria-label="关闭亲密面板"]').first().click().catch(() => {})
     await page.waitForTimeout(500)
   }
 
   // ── ② 🧸 玩具入口 ──
-  const toy = page.locator('.toy-icon-btn')
+  const toy = page.locator('.chat-action-toolbar [aria-label="玩具"]')
   record('② 🧸 入口渲染出来了', await toy.count() > 0, `count=${await toy.count()}`)
   if (await toy.count() > 0) {
     await toy.first().click()

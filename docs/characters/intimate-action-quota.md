@@ -2,7 +2,7 @@
 
 > **这份文件管什么**：性爱动作「立刻反馈」那条**模型调用**的每日上限（成本刹车）。
 > 制定日期：2026-10-15。落点：`agent-core/src/services/intimateActionQuota.js` + `routes/intimateActions.js` + `routes/config.js`。
-> 配套：`docs/intimate-actions.md`（状态机本体）、`docs/intimate-dashboard.md`（看板）、`docs/testing.md`（测试定位）。
+> 配套：`docs/characters/intimate-actions.md`（状态机本体）、`docs/characters/intimate-dashboard.md`（看板）、`docs/testing.md`（测试定位）。
 
 ---
 
@@ -82,6 +82,6 @@ POST /api/intimate-actions/:id/:action
 1. **额度只影响"要不要调模型"**，不影响玩法状态 —— 这一点是刻意设计（用户口径："不哑玩法"，比"严格限制"重要）。
 2. **不占触摸的额度**，也不被触摸的额度影响：两本账互不相干。
 3. **手动 / 发情来源不受影响**：本配额管的是"这一下要不要调模型"，与 `SEX_DAILY_CAP`（敏感度每日增长上限）**不是同一件事**。
-   敏感度那条见 `docs/intimate-actions.md` §7。
+   敏感度那条见 `docs/characters/intimate-actions.md` §7。
 4. **跨天口径是本地日期**（不是 UTC）：否则东八区要到早上 8 点才归零。与 aiJudge / 触摸配额一致。
 5. **进程内兜底**：库读写成问题时计数暂存内存（重启会丢那一段），只 warn 一次、不刷屏。

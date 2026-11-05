@@ -46,7 +46,7 @@ test('文案与口径：讲清升级/回落；「重写兜底」D2 起正式接�
 test('重写兜底：store 认「替换」事件，走的是替换语义（不追加、清掉多余气泡）', () => {
   // 形状由 b1-antirep 定、尚未落地 ⇒ 先按约定事件名写并在源码里标注（见 stores/chat.js 注释）
   // 只看**代码**（第一版用 includes 被注释里的同名字符串满足了 ⇒ 假绿）
-  // 事件名已按 docs/anti-repetition.md §12.4 冻结为 replace_last_assistant
+  // 事件名已按 docs/chat/anti-repetition.md §12.4 冻结为 replace_last_assistant
   assert.ok(/lastEvent === 'replace_last_assistant'/.test(storeScript), '要在事件分支里判冻结后的事件名')
   assert.ok(storeScript.includes('applyAssistantReplace'), '要复用一个可单测的替换函数（utils/assistantReplace.js）')
   // 替换路径的实质：复用既有气泡 → 多出来的删掉 ⇒ 不重复、不残留旧文本

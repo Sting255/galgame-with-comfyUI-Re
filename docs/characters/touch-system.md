@@ -1,5 +1,9 @@
 # SLG 动作系统（触摸互动）· 口径与实施
 
+当前聊天 UI：私聊／群聊共用输入区底部、文本域下方的「动作 / 玩具 / 亲密」入口，对话推测保留在输入区上方，先选群成员后继续原功能，面板互斥并支持 Esc 与切会话收起。布局以 [设计系统](../design-system.md#私聊与群聊互动入口) 为准；下文旧版图标位置与验收记录仅作历史依据。
+
+动作面板新增顶部分类筛选，默认显示全部；限制原因保留在卡片中。
+
 > **设计来源**：`目标/规划/专题-SLG动作系统.md`（冻结清单与三阶段排期；该目录已删，可用 git 取回）。
 > **本文分工**：§1~§3、§5、§6.1 是**服务层**（task-11，写手 intimate-hypno）；§4 与 §6.2 是**前端**（task-12，写手 hires-ui）——
 > 两份任务书曾把前端派给两个人，已于 2026-09-30 由 Lead 裁决：服务层 / 前端各写各的，**本文按小节分头追加，别整文件覆盖**。
@@ -1128,7 +1132,7 @@ POST 成功（200）：`{ allowed:true, code:'ok', action, requestedMode, mode:'
 | --- | --- |
 | `services/touchEventStore.js` | `countPendingTouchEvents` 两个作用域的 SQL 都改成 `status = 'pending'`；新增 `countPendingTouchEventsByMode(characterId, { groupId })` → `{ instant, implicit }`（同口径同作用域） |
 | `routes/touch.js` | `GET /:id/touch/state` 响应新增 **`pendingByMode`**（生效场景：私聊 = 私聊口径，`scene=group&groupId` = 该群口径） |
-| `docs/touch-system.md` | 本节 + §3.8③ 的口径与字段表同步 |
+| `docs/characters/touch-system.md` | 本节 + §3.8③ 的口径与字段表同步 |
 
 **边界（刻意不动）**
 

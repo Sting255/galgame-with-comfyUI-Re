@@ -357,6 +357,12 @@ function reschedule() {
   }, 60_000);
 }
 
+export function stopScheduler() {
+  clearTimeout(schedulerTimer);
+  clearInterval(schedulerTimer);
+  schedulerTimer = null;
+}
+
 // ── 立即压缩（全量，SSE 推送进度）──
 
 async function runFullCompression() {

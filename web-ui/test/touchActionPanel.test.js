@@ -197,17 +197,14 @@ test('groups：服务端优先，端点不可用时回落镜像', () => {
 
 // ── 4. 两个页面：✋ 入口 + 面板挂载 + 角标 ──
 
-test('聊天页：✋ 图标在图标排最右（发送按钮左侧），角标显示 pendingCount', () => {
-  assert.ok(chatTemplate.includes('touch-icon-btn'), '要有 ✋ 入口按钮')
+test('聊天页：共享工具栏位于输入区内，传递待回应数', () => {
+  assert.ok(chatTemplate.includes('<ChatActionToolbar'), '要有共享互动入口')
   assert.ok(chatScript.includes('showTouchPanel'), '要有面板显隐 ref')
   assert.ok(chatTemplate.includes('<TouchActionPanel'), '要挂面板')
   assert.ok(chatTemplate.includes(':open="showTouchPanel"'), '受控显隐')
   assert.ok(chatScript.includes("import TouchActionPanel from '../components/TouchActionPanel.vue'"))
-  // 位置：✋ 在发送按钮之前
-  assert.ok(chatTemplate.indexOf('touch-icon-btn') < chatTemplate.indexOf('class="send-btn"'), '✋ 要排在发送按钮左侧')
-  // 角标：pendingCount>0 才显示数字点
-  assert.ok(/touchPendingCount > 0/.test(chatTemplate), '角标要有阈值判断')
-  assert.ok(/touch-icon-badge/.test(chatTemplate))
+  assert.ok(chatTemplate.indexOf('<ChatActionToolbar') > chatTemplate.indexOf('class="input-area"'), '工具栏在输入区内部，不占用回复候选区')
+  assert.ok(chatTemplate.includes(':pending-count="touchPendingCount"'), '待回应数传给共享入口')
 })
 
 test('聊天页：动作条挂载整个移除（常驻条不再存在）', () => {
@@ -216,7 +213,7 @@ test('聊天页：动作条挂载整个移除（常驻条不再存在）', () =>
 })
 
 test('群聊页：同一颗 ✋，先选人；面板顶部可换人', () => {
-  assert.ok(groupTemplate.includes('touch-icon-btn'), '群聊同一颗 ✋')
+  assert.ok(groupTemplate.includes('<ChatActionToolbar'), '群聊复用相同工具栏')
   assert.ok(groupTemplate.includes('<TouchActionPanel'), '要挂面板')
   assert.ok(groupTemplate.includes(':requires-target="true"'), '群聊需要先选人')
   assert.ok(groupScript.includes('openTargetPicker'), '选人复用既有 @提及面板')

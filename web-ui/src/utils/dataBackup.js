@@ -168,10 +168,11 @@ export function restoredText(restored) {
   return `${head}${counts}`
 }
 
-/** 导入成功的 toast 文案（restartRecommended 为真时补一句建议重启） */
+/** 导入成功的 toast 文案：锁库恢复必须重启；旧版本回执仍兼容建议重启。 */
 export function importSuccessText(result) {
   const data = result && typeof result === 'object' ? result : {}
   const message = typeof data.message === 'string' && data.message.trim() ? data.message.trim() : '备份已导入'
+  if (data.restartRequired) return /重启/.test(message) ? message : `${message}；请重启邻舍后继续使用`
   return data.restartRecommended ? `${message}；建议重启应用` : message
 }
 

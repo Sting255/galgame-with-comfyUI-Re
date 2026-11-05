@@ -80,10 +80,11 @@ test('门控拒绝必须 toast 服务端那句人话（不许静默），reactio
   assert.ok(cleanTemplate.includes('v-if="feedback"'), '有反馈就要渲染出来')
   assert.ok(cleanTemplate.includes('class="ia-feedback"'), '反馈行有独立样式位')
   // 读不到状态 / 上报失败也要有提示，不留白屏
-  assert.ok(cleanScript.includes("setFeedback(err?.message || '读取状态失败', true)"), '读状态失败要给提示')
+  assert.ok(cleanScript.includes("loadError.value = err?.message || '读取状态失败，请重试'"), '读状态失败要给提示')
+  assert.ok(cleanTemplate.includes('v-if="loadError"') && cleanTemplate.includes('@click="refresh"'), '读取失败可在面板内重试')
   assert.ok(cleanScript.includes("setFeedback(err?.message || '推进失败', true)"), '上报失败要给提示')
   // 功能关闭时面板要说明，而不是一串点不动的按钮
-  assert.ok(cleanTemplate.includes('「性爱推进」功能当前已关闭。'), '功能关闭要有说明行')
+  assert.ok(cleanTemplate.includes('「亲密」功能当前已关闭。'), '功能关闭要有说明行')
 })
 
 test('面板 props / emits 契约（Lead 挂 ChatView 按这个接）', () => {
@@ -121,7 +122,7 @@ test('交互契约：体位 = chip（:active）、节奏 = LinsheTabs（档位�
   assert.ok(/:model-value="view.pace"/.test(cleanTemplate), '节奏分段绑定服务端 pace')
   assert.ok(/:options="paces"/.test(cleanTemplate), '分段选项来自纯逻辑')
   // 动作按钮
-  assert.ok(cleanTemplate.includes(':disabled="!action.available || busy || loading || !enabled"'), '不可用 / 忙 / 读取中 / 功能关闭都要禁用')
+  assert.ok(cleanTemplate.includes(':disabled="!action.available || busy || loading || !!loadError || !enabled"'), '不可用 / 忙 / 读取中 / 读取失败 / 功能关闭都要禁用')
   assert.ok(cleanTemplate.includes(':loading="busy && busyKey === action.key"'), '上报中要 loading')
   // 2026-10-02 改：置灰理由的 title 由内联三元改成 hintFor(action)（开关回显要能换 title）
   // —— 老契约的**行为**必须保住：未生效时仍回落 `action.available ? action.hint : action.reason`。

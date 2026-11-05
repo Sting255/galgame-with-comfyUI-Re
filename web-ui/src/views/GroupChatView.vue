@@ -36,6 +36,7 @@
           <div class="chat-title">{{ store.activeGroup?.name || '群聊' }}</div>
         </div>
         <div class="chat-header-schedule">{{ store.activeGroup?.members?.length || 0 }} 位成员{{ store.activeGroup?.topic ? ' · ' + store.activeGroup.topic : '' }}</div>
+        <ChatSleepStatus group :states="memberSleepStates" :loaded="scheduleStore.overviewLoaded" :error="scheduleStore.overviewError" @retry="scheduleStore.fetchOverview(true)" />
       </div>
       <div class="chat-header-right">
         <!-- 催眠手机：群里对成员用手机（可单人可多人，见 HypnosisPhoneGroupPanel） -->
@@ -153,6 +154,9 @@
           class="mention-panel"
           role="listbox"
           aria-label="选择动作对象"
+          @keydown.esc.stop.prevent="closeTargetPicker"
+          @keydown.up.prevent="moveTargetFocus(-1)"
+          @keydown.down.prevent="moveTargetFocus(1)"
         >
           <div
             v-for="(opt, idx) in targetOptions"
@@ -160,9 +164,13 @@
             class="mention-item"
             :class="{ 'is-active': idx === targetIndex }"
             role="option"
+            tabindex="0"
             :aria-selected="idx === targetIndex"
             @mouseenter="targetIndex = idx"
+            @focus="targetIndex = idx"
             @click="pickTarget(opt)"
+            @keydown.enter.prevent="pickTarget(opt)"
+            @keydown.space.prevent="pickTarget(opt)"
           >
             <div class="mention-avatar" :style="opt.avatar_path ? {} : { background: 'var(--accent)' }">
               <img v-if="opt.avatar_path" :src="opt.avatar_path" class="avatar-img" alt="" />
@@ -197,6 +205,7 @@
            - 换目标时 watch(touchTargetId) 会把两个面板关掉，避免继续作用在上一个人身上。 -->
       <ToyPanel
         :open="showToyPanel"
+        :target-name="touchTarget?.display_name || ''"
         :character-id="panelCharacterId"
         :worn-toys="groupWornToys"
         :toy-options="groupToyOptions"
@@ -209,12 +218,14 @@
       />
       <IntimateActionPanel
         :open="showIntimatePanel"
+        :target-name="touchTarget?.display_name || ''"
         :character-id="panelCharacterId"
         scene="group"
         :group-id="store.activeGroupId"
         @close="showIntimatePanel = false"
       />
     </div>
+
 
     <!-- 输入区（与私聊 input-area 同款） -->
     <div class="input-area">
@@ -263,58 +274,12 @@
         @keydown.down="onMentionArrow(1, $event)"
         @keydown.esc="onMentionEscape"
       ></textarea>
-      <!-- ✋ 动作入口：图标排最右（紧贴发送按钮左侧），与私聊同位置同皮肤；pendingCount>0 显示角标 -->
-      <div
-        role="button"
-        tabindex="0"
-        class="touch-icon-btn"
-        :title="touchPendingHint || '动作'"
-        aria-label="动作"
-        @keydown.enter.prevent="showTouchPanel = true"
-        @keydown.space.prevent="showTouchPanel = true"
-        @click="showTouchPanel = true"
-      >
-        <svg viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5" /><path d="M14 10V4a2 2 0 0 0-4 0v6" /><path d="M10 10.5V6a2 2 0 0 0-4 0v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></svg>
-        <span v-if="touchPendingCount > 0" class="touch-icon-badge">{{ touchPendingCount }}</span>
-      </div>
-      <!-- 🧸 玩具入口（2026-10-02）：与私聊那排图标钮**同款同样例**（同一个 .touch-icon-btn 皮肤、
-           同一套 SVG 风格、同样的 is-open 高亮）。群聊与私聊的区别只在点击后的行为：
-           这里必须先选定"对谁"（见 openGroupPanel / groupPanelLogic.js）。
-           和 ❤ 一样**不做"未解锁就不渲染"**——藏掉入口会让用户以为功能不存在（面板里有门控人话）。 -->
-      <div
-        role="button"
-        tabindex="0"
-        class="touch-icon-btn toy-icon-btn"
-        :class="{ 'is-open': showToyPanel }"
-        :title="showToyPanel ? '收起玩具面板' : (touchTarget ? '玩具（对 ' + touchTarget.display_name + '）' : '玩具（先选一个人）')"
-        aria-label="玩具"
-        @keydown.enter.prevent="openGroupPanel('toy')"
-        @keydown.space.prevent="openGroupPanel('toy')"
-        @click="openGroupPanel('toy')"
-      >
-        <svg viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
-          <path d="M5 21c0-3.9 3.1-7 7-7s7 3.1 7 7" />
-        </svg>
-        <!-- 角标与私聊同口径：她正戴着几件（数量来自群聊自己按选中成员取的那份状态） -->
-        <span v-if="groupWornToys.length > 0" class="touch-icon-badge">{{ groupWornToys.length }}</span>
-      </div>
-      <!-- ❤ 推进入口（2026-10-02）：同上，先选目标再开会话面板 -->
-      <div
-        role="button"
-        tabindex="0"
-        class="touch-icon-btn intimate-icon-btn"
-        :class="{ 'is-open': showIntimatePanel }"
-        :title="showIntimatePanel ? '收起推进面板' : (touchTarget ? '推进（对 ' + touchTarget.display_name + '）（继续抽插 / 加速 / 换姿势）' : '推进（先选一个人）')"
-        aria-label="推进"
-        @keydown.enter.prevent="openGroupPanel('intimate')"
-        @keydown.space.prevent="openGroupPanel('intimate')"
-        @click="openGroupPanel('intimate')"
-      >
-        <svg viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8z" />
-        </svg>
-      </div>
+    <ChatActionToolbar
+      group :target-name="touchTarget?.display_name || ''"
+      :touch-open="showTouchPanel" :toy-open="showToyPanel" :intimate-open="showIntimatePanel"
+      :pending-count="touchPendingCount" :pending-hint="touchPendingHint" :toy-count="groupWornToys.length"
+      @toggle="openGroupPanel" @pick-target="openTargetPicker"
+    />
       <div
         role="button"
         tabindex="0"
@@ -540,6 +505,8 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroupsStore } from '../stores/groups.js'
+import { useChatSchedule } from '../composables/useChatSchedule.js'
+import ChatSleepStatus from '../components/chat/ChatSleepStatus.vue'
 import { useChatStore } from '../stores/chat.js'
 import { useProgramClock } from '../composables/useProgramClock.js'
 import { useMomentsStore } from '../stores/moments.js'
@@ -547,13 +514,10 @@ import { getConfig, updateGroupActivity, updateGroupSummaryInterval, updateGroup
 // 玩具面板的"父组件那一半"要用到这几个接口（戴上/调强度/摘下/取状态）；
 // 与 ChatView 同一写法：再引一个命名空间（api.xxx），这样与私聊的口径逐字对得上。
 import * as api from '../api/index.js'
+import ChatActionToolbar from '../components/chat/ChatActionToolbar.vue'
+import { useChatActionPanels } from '../composables/useChatActionPanels.js'
 import TouchActionPanel from '../components/TouchActionPanel.vue'
-// 群聊也要能开「🧸 玩具 / ❤ 推进」面板（2026-10-02 用户：「群聊里也没有动作系统和玩具 性爱系统的按钮」）。
-// 两个面板都是**自包含**的（自己取数、自己轮询、自己 POST、门控文案也自己出），所以这里只做两件事：
-//   ① 先校验"当前选中的群成员"（纯函数在 components/groupPanelLogic.js ⇒ 口径能被测试钉住）；
-//   ② 把那个人的 id 喂进 `:character-id`。
-// ⚠️ 刻意**不传** `worn-toys` / `toy-options`：ToyPanel 的这两个 prop 有默认值、面板会自己去取，
-//    私聊那份 props 只是"打开瞬间别闪空"的回落（见 ToyPanel.vue 的 defineProps 注释）。
+// 群聊面板必须绑定选中的成员；玩具穿戴状态和操作事件由本页接入。
 import ToyPanel from '../components/ToyPanel.vue'
 import IntimateActionPanel from '../components/IntimateActionPanel.vue'
 import { resolveGroupPanelTarget, panelStateOnTargetChange } from '../components/groupPanelLogic.js'
@@ -581,6 +545,9 @@ const route = useRoute()
 useSpeechAutoPlay(() => route.path.startsWith('/group/') ? `group:${route.params.id}` : null)
 const router = useRouter()
 const store = useGroupsStore()
+const scheduleStore = useChatSchedule(() => store.activeGroupId, () => store.sending || store.playing, () => store.messages.length)
+const memberSleepStates = computed(() => (store.activeGroup?.members || []).map(member =>
+  scheduleStore.characters.find(state => String(state.id) === String(member.id)) || null))
 // 程序时间：群聊时间分隔符与私聊同口径
 const clock = useProgramClock()
 clock.ensureLoaded()
@@ -623,24 +590,41 @@ const showTargetPicker = ref(false)
 const targetPicker = useMentionPicker(() => store.activeGroup?.members || [], { includeAll: false })
 const { options: targetOptions, index: targetIndex } = targetPicker
 
-function openTargetPicker() {
+let requestedPanel = null
+function openTargetPicker(kind = 'touch') {
   if (!(store.activeGroup?.members || []).length) {
     toast?.('这个群里还没有成员', 'info')
     return
   }
   targetPicker.close()
+  requestedPanel = kind
+  closePanels()
   showTargetPicker.value = true
+  nextTick(() => document.querySelector('#touch-target-list [role="option"]')?.focus())
 }
 
 function closeTargetPicker() {
+  const restoreFocus = document.activeElement?.closest('#touch-target-list')
   showTargetPicker.value = false
+  requestedPanel = null
   targetPicker.close()
+  if (restoreFocus) nextTick(() => document.querySelector('.chat-action-toolbar [aria-label="选择互动对象"]')?.focus())
 }
 
-function pickTarget(opt) {
+function moveTargetFocus(delta) {
+  const options = document.querySelectorAll('#touch-target-list [role="option"]')
+  if (!options.length) return
+  const index = (targetIndex.value + delta + options.length) % options.length
+  options[index]?.focus()
+}
+
+async function pickTarget(opt) {
   if (!opt || opt.isAll) return
+  const kind = requestedPanel
   touchTargetId.value = opt.id
   closeTargetPicker()
+  await nextTick()
+  if (kind) openGroupPanel(kind)
 }
 
 /** 拉目标成员的动作清单 + 服务端逐条门控（群聊口径：scene=group） */
@@ -660,7 +644,7 @@ async function loadTouchActions() {
 
 // ── 待回应条数（task-29 问题 2/3）：群聊口径 ──
 // 数据：GET .../touch/state?scene=group&groupId=<n> 的 pendingCount（不传参数 = 旧行为 / 私聊口径）。
-// ⚠️ 口径（docs/touch-system.md §3.8）：群聊口径统计的是**整个群**还没被注入的动作，
+// ⚠️ 口径（docs/characters/touch-system.md §3.8）：群聊口径统计的是**整个群**还没被注入的动作，
 //    **不按 character 过滤**（群聊页要的是「这个群还有几件事」）——路径里的角色 id 只用来定位会话。
 //    响应同时带 pendingCounts.chat / pendingCounts.group，前端统一读 pendingCount 即可。
 // ── 催眠状态徽标（复审遗留 2）──
@@ -686,15 +670,16 @@ const touchPendingByMode = ref({})
 /** 入口角标标题 / 面板提示行同源文案 */
 const touchPendingHint = computed(() => pendingHintByMode({ count: touchPendingCount.value, byMode: touchPendingByMode.value }))
 /** 动作面板显隐（✋ 入口点开） */
-const showTouchPanel = ref(false)
+const { showTouchPanel, showToyPanel, showIntimatePanel, closePanels } = useChatActionPanels(() => store.activeGroupId)
 
 // ── 群聊里的「🧸 玩具 / ❤ 推进」入口（2026-10-02 用户：「群聊里也没有动作系统和玩具 性爱系统的按钮」）──
-/** 玩具面板显隐（🧸 入口点开） */
-const showToyPanel = ref(false)
-/** 性爱推进面板显隐（❤ 入口点开） */
-const showIntimatePanel = ref(false)
 /** 面板作用的群成员 id：在**打开那一刻**从 touchTargetId 锁定（换人时下面的 watch 会把面板关掉） */
 const panelCharacterId = ref(null)
+watch(() => store.activeGroupId, () => {
+  closeTargetPicker()
+  touchTargetId.value = null
+  panelCharacterId.value = null
+})
 
 /**
  * 点 🧸 / ❤ 的统一入口。
@@ -702,15 +687,19 @@ const panelCharacterId = ref(null)
  * 群聊与私聊最大的差别：群里有很多人，这两个面板一次只能作用于**一个人** ⇒ 必须先选定"对谁"。
  * 这里刻意**不**回落到 `members[0]`（纯函数 resolveGroupPanelTarget 里也是这么写的）：
  * 默认拿第一个人会让用户以为"点一下就能玩"，实际作用在别人身上 —— 那是更难查的错。
- * 没选目标时给一句人话就返回，不打开面板、也不默默无反应。
+ * 没选目标时打开选人列表，选择后继续原来的功能。
  */
 function openGroupPanel (kind) {
+  if (kind === 'touch' && touchTargetId.value) {
+    showTouchPanel.value = !showTouchPanel.value
+    return
+  }
   const r = resolveGroupPanelTarget({
     targetId: touchTargetId.value,
     members: store.activeGroup?.members || [],
   })
   if (!r.ok) {
-    toast?.(r.message, 'info')
+    openTargetPicker(kind)
     return
   }
   panelCharacterId.value = r.characterId
@@ -1764,7 +1753,7 @@ async function clearGroupAvatar() {
   -webkit-backdrop-filter: blur(18px);
 }
 .chat-input {
-  flex:1; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
+  flex:1; min-width:0; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
   background: var(--bg-secondary);
   border-radius: 14px; color:var(--text-bright); outline:none; resize:none;
   overflow: hidden; caret-color: var(--accent);
@@ -1779,40 +1768,6 @@ async function clearGroupAvatar() {
     0 0 0 4px rgba(var(--accent-rgb), 0.10),
     0 0 24px rgba(var(--accent-rgb), 0.08),
     inset 0 0 10px rgba(var(--accent-rgb), 0.04);
-}
-
-/* ── ✋ 动作入口（与私聊同皮肤）：输入区图标排最右，紧贴发送按钮 ── */
-.touch-icon-btn {
-  position: relative;
-  width: 42px; height: 42px; flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  color: var(--accent);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  user-select: none;
-}
-.touch-icon-btn:hover { transform: scale(1.08); border-color: var(--accent); }
-.touch-icon-btn:active { transform: scale(0.94); }
-.touch-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* 面板开着时入口高亮（2026-10-02 补；与私聊 .touch-icon-btn.is-open 同款口径）：
-   入口自己就是开关（再点一下就收），所以必须让人一眼看出"面板是我开着的"。
-   渐变 + 0.3s 过渡，与设计系统的其它状态变化同节奏。 */
-.touch-icon-btn.is-open {
-  background: linear-gradient(135deg, var(--accent), rgba(var(--accent-rgb), 0.72));
-  border-color: var(--accent);
-  color: #fff;
-  transition: background 0.3s var(--ease-standard), color 0.3s var(--ease-standard), transform 0.3s var(--ease-standard);
-}
-.touch-icon-badge {
-  position: absolute; top: -3px; right: -3px;
-  min-width: 16px; height: 16px; padding: 0 4px;
-  border-radius: 999px;
-  background: var(--accent); color: #fff;
-  font-size: 10px; line-height: 16px; font-weight: 600;
-  text-align: center;
 }
 
 .send-btn {
@@ -1977,4 +1932,11 @@ async function clearGroupAvatar() {
   .new-message-enter-active,
   .new-message-leave-active { transition:none; }
 }
+
+/* 与私聊一致：输入在上，工具与发送在输入区底部。 */
+.input-area { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.input-area > .chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; box-sizing: border-box; }
+.input-area > .chat-action-toolbar { grid-column: 1; grid-row: 2; }
+.input-area > .send-btn { grid-column: 2; grid-row: 2; }
+
 </style>

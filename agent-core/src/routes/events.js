@@ -391,7 +391,7 @@ router.post('/:id/choose', async (req, res) => {
 });
 
 // POST /api/events/:id/dismiss — 取消事件（不互动直接关闭）
-router.post('/:id/dismiss', async (req, res) => {
+router.post('/:id/dismiss', (req, res) => {
   const db = getDb();
 
   // 镇民奇遇分支：移入 town_npc_event_history，不生成结局
@@ -399,18 +399,21 @@ router.post('/:id/dismiss', async (req, res) => {
   if (townNpcId) {
     const npcEvent = db.prepare(`SELECT * FROM town_npc_events WHERE id = ?`).get(townNpcId);
     if (!npcEvent) return res.status(404).json({ error: 'event_not_found' });
-    db.prepare(`
-      INSERT INTO town_npc_event_history (id, npc_id, event_type_key, title, description, final_image, summary, conclusion,
-        choice_history, total_branches, engaged, outcome, world_id, world_epoch, location_key, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'cancelled', ?, ?, ?, ?)
-    `).run(
-      npcEvent.id, npcEvent.npc_id, npcEvent.event_type_key,
-      npcEvent.title, npcEvent.description, npcEvent.image,
-      npcEvent.summary || npcEvent.description,
-      npcEvent.choice_history, npcEvent.current_branch || 0,
-      npcEvent.engaged, npcEvent.world_id, npcEvent.world_epoch, npcEvent.location_key, npcEvent.created_at,
-    );
-    db.prepare(`DELETE FROM town_npc_events WHERE id = ?`).run(townNpcId);
+    if (npcEvent.processing) return res.status(409).json({ error: 'event_processing', message: '奇遇正在推进，请完成后再取消' });
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO town_npc_event_history (id, npc_id, event_type_key, title, description, final_image, summary, conclusion,
+          choice_history, total_branches, engaged, outcome, world_id, world_epoch, location_key, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'cancelled', ?, ?, ?, ?)
+      `).run(
+        npcEvent.id, npcEvent.npc_id, npcEvent.event_type_key,
+        npcEvent.title, npcEvent.description, npcEvent.image,
+        npcEvent.summary || npcEvent.description,
+        npcEvent.choice_history, npcEvent.current_branch || 0,
+        npcEvent.engaged, npcEvent.world_id, npcEvent.world_epoch, npcEvent.location_key, npcEvent.created_at,
+      );
+      db.prepare(`DELETE FROM town_npc_events WHERE id = ?`).run(townNpcId);
+    })();
     broadcastEventExpired({
       event_id: req.params.id,
       npc_event: true,
@@ -427,24 +430,28 @@ router.post('/:id/dismiss', async (req, res) => {
     return res.status(404).json({ error: 'event_not_found' });
   }
 
-  // 移到 history（不生成结局，不存记忆；保留原始 ID）
-  db.prepare(`
-    INSERT INTO event_history (id, character_id, event_type_key, title, description, final_image, summary, conclusion, choice_history, total_branches, engaged, outcome, referenced_character_ids)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cancelled', ?)
-  `).run(
-    event.id,
-    event.character_id, event.event_type_key,
-    event.title, event.description, event.image,
-    event.summary || event.description,
-    null,
-    event.choice_history, event.current_branch || 0,
-    event.engaged,
-    event.referenced_character_ids || '[]'
-  );
+  if (event.processing) return res.status(409).json({ error: 'event_processing', message: '奇遇正在推进，请完成后再取消' });
+  db.transaction(() => {
+    // 移到 history（不生成结局，不存记忆；保留原始 ID）
+    db.prepare(`
+      INSERT INTO event_history (id, character_id, event_type_key, title, description, final_image, summary, conclusion, choice_history, total_branches, engaged, outcome, referenced_character_ids, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cancelled', ?, ?)
+    `).run(
+      event.id,
+      event.character_id, event.event_type_key,
+      event.title, event.description, event.image,
+      event.summary || event.description,
+      null,
+      event.choice_history, event.current_branch || 0,
+      event.engaged,
+      event.referenced_character_ids || '[]', event.created_at
+    );
 
-  db.prepare(`DELETE FROM character_events WHERE id = ?`).run(event.id);
+    db.prepare(`DELETE FROM character_events WHERE id = ?`).run(event.id);
 
+  })();
   broadcastEventExpired({
+    event_id: event.id,
     character_id: event.character_id,
     event_title: event.title,
     outcome: 'cancelled',
@@ -499,7 +506,7 @@ router.post('/generate', async (req, res) => {
       ).get(character.id);
       const title = active?.title || '未命名事件';
       const remaining = active?.expires_at
-        ? Math.max(0, Math.round((new Date(active.expires_at).getTime() - Date.now()) / 60000))
+        ? Math.max(0, Math.round((new Date(toISO(active.expires_at)).getTime() - Date.now()) / 60000))
         : 0;
       const remainingText = remaining > 0 ? `剩余 ${remaining} 分钟` : '即将过期';
       const msg = `${character.display_name} 当前还有未结束的奇遇「${title}」，${remainingText}。请先完成或取消后再试。`;
@@ -513,23 +520,18 @@ router.post('/generate', async (req, res) => {
 // DELETE /api/events/:id — 删除事件（活跃或历史均可）
 router.delete('/:id', (req, res) => {
   const db = getDb();
-  // 镇民奇遇分支：两张表都尝试删除
   const townNpcId = parseTownNpcEventId(req.params.id);
-  if (townNpcId) {
-    const ne = db.prepare(`DELETE FROM town_npc_events WHERE id = ?`).run(townNpcId);
-    const nh = db.prepare(`DELETE FROM town_npc_event_history WHERE id = ?`).run(townNpcId);
-    if (ne.changes === 0 && nh.changes === 0) {
-      return res.status(404).json({ error: 'event_not_found' });
-    }
-    return res.json({ ok: true });
-  }
-  // 尝试从活跃表删除
-  const ce = db.prepare(`DELETE FROM character_events WHERE id = ?`).run(req.params.id);
-  // 尝试从历史表删除
-  const eh = db.prepare(`DELETE FROM event_history WHERE id = ?`).run(req.params.id);
-  if (ce.changes === 0 && eh.changes === 0) {
-    return res.status(404).json({ error: 'event_not_found' });
-  }
+  const activeTable = townNpcId ? 'town_npc_events' : 'character_events';
+  const historyTable = townNpcId ? 'town_npc_event_history' : 'event_history';
+  const id = townNpcId || req.params.id;
+  const event = db.prepare(`SELECT processing FROM ${activeTable} WHERE id = ?`).get(id);
+  if (event?.processing) return res.status(409).json({ error: 'event_processing', message: '奇遇正在推进，请完成后再删除' });
+  const changes = db.transaction(() => {
+    const active = db.prepare(`DELETE FROM ${activeTable} WHERE id = ?`).run(id);
+    const history = db.prepare(`DELETE FROM ${historyTable} WHERE id = ?`).run(id);
+    return active.changes + history.changes;
+  })();
+  if (!changes) return res.status(404).json({ error: 'event_not_found' });
   res.json({ ok: true });
 });
 
@@ -670,6 +672,7 @@ router.post('/:id/conclude', async (req, res) => {
       await concludeTownNpcEvent(npc, npcEvent, npcEvent.engaged ? 'completed' : 'expired');
       return res.json({ ok: true });
     } catch (err) {
+      if (err.message === 'EVENT_ALREADY_PROCESSING') return res.status(409).json({ error: 'event_processing', message: '奇遇正在推进，请稍后再试' });
       console.error(`[events] town npc conclude error:`, err.message);
       return res.status(500).json({ error: 'internal_error', message: err.message });
     }
@@ -690,6 +693,7 @@ router.post('/:id/conclude', async (req, res) => {
     await concludeEvent(character, event, event.engaged ? 'completed' : 'expired');
     res.json({ ok: true });
   } catch (err) {
+    if (err.message === 'EVENT_ALREADY_PROCESSING') return res.status(409).json({ error: 'event_processing', message: '奇遇正在推进，请稍后再试' });
     console.error(`[events] conclude error:`, err.message);
     res.status(500).json({ error: 'internal_error', message: err.message });
   }

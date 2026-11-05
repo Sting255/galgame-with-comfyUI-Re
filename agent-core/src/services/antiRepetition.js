@@ -23,7 +23,7 @@
  *       重叠率回落 → 自动降档到 strong / mild / none（**保证可回落，不"赶话题"**）。
  *     · 开关关闭（`antiRepetitionEscalation === false`）→ 完全按阶段一的 base 阈值判定，行为与阶段一一致。
  *   重写兜底（再请求一次 LLM 替换输出）**未实现**：需要额外调用 + 替换已流式输出的内容，
- *   本项目的流式协议没有替换语义，属于专题 L4 里"默认关"的那半；见 docs/anti-repetition.md §十。
+ *   本项目的流式协议没有替换语义，属于专题 L4 里"默认关"的那半；见 docs/chat/anti-repetition.md §十。
  */
 
 // ── 阈值常量（真机调参只动这里）──
@@ -105,7 +105,7 @@ export function buildRerollInstruction(topicKeywords = []) {
 /**
  * 替换事件 `replace_last_assistant`（后端 → 前端 SSE）。
  *
- * 契约（前端由 hires-ui 接；字段与语义冻结在 docs/anti-repetition.md §12.4）：
+ * 契约（前端由 hires-ui 接；字段与语义冻结在 docs/chat/anti-repetition.md §12.4）：
  *   content:     string   —— 所有文本气泡拼起来（前端简单路径：整体替换）
  *   segments:    Array<{content, emojiKeys, stickerUrls, images}>
  *   reason:      'reroll' —— 为什么替换（后续可扩展）

@@ -1,41 +1,16 @@
 /**
- * L6 浏览器点击验证 · **群聊版**：🧸 玩具 / ❤ 性爱推进入口（2026-10-02）
- *
- * 为什么单独一份：私聊版 `e2e/check-panels.mjs` 里 `:character-id` 就是当前会话角色，点开就行；
- * 而**群里有很多人**，这两个面板一次只能作用于一个人 ⇒ 必须先「对谁」。所以群聊版多验三件事：
- *   ① 未选目标不许打开、也不许默认拿 members[0]；② 选中后必须作用在**那个成员**身上（不是 chat.activeCharId）；
- *   ③ 选人流程本身（✋ → 面板顶部「对 谁？」→ 点成员）走不走得通。
- * 另外按功能 Agent 的提示补了两条它没验过的：🧸 的「戴上」是 emit 给父组件的（接线断了就点了没反应）、
- * 以及**换目标时两个面板会自动关掉**。
- *
- * 怎么跑（两步，别合成一条命令）：
- *   1) 起后端（**副本库**，绝不碰真库）：
- *        $src='D:\邻舍改'; $snap="$env:TEMP\e2eg.db"
- *        & "$src\runtime\nodejs\node.exe" --input-type=module -e "import {createRequire} from 'node:module'; const r=createRequire('file:///C:/3.6.2-r/agent-core/package.json'); const D=r('better-sqlite3'); const s=new D('C:/3.6.2-r/agent-core/data/agent.db',{readonly:true,fileMustExist:true}); s.prepare('VACUUM INTO ?').run(process.argv[1]); s.close()" $snap
- *        cd web-ui; node build.mjs; cp -r ../agent-core/public/assets/* C:\3.6.2-r\agent-core\public\assets\   # 让浏览器看到最新前端
- *        $env:DB_PATH=$snap; $env:PORT='3199'; $env:NODE_ENV='production'; $env:LOG_TO_FILE='false'
- *        Start-Process -FilePath "$src\runtime\nodejs\node.exe" -ArgumentList 'app.js' -WorkingDirectory 'C:\3.6.2-r\agent-core' -WindowStyle Hidden
- *   2) 等 /api/config 起来后：node e2e/check-group-panels.mjs
- *   ⚠️ 要停服务请**单独**一条命令只干这一件事（同一个调用里既干重活又 Stop-Process 会让作业运行器崩）。
- *
- * 选择器出处（全部来自功能 Agent 实测契约 + 我只读核对过的源码行）：
- *   · 三个入口：`div.touch-icon-btn[aria-label="动作"|"玩具"|"推进"]`（GroupChatView.vue 252/272/291 行附近）
- *     · 最稳的钩子是 `title` 三态：`玩具（先选一个人）` / `玩具（对 XXX）` / `收起玩具面板`
- *     · 开/关状态另有 `.is-open`
- *   · 目标列表：`#touch-target-list.mention-panel[role="listbox"]`，条目 `div.mention-item[role="option"]`
- *     ⚠️ `.is-active` 是**悬停/键盘高亮**，不是"已选中"；点完列表就关，选中与否只能看 title / ✋ 面板头部
- *   · 🧸 面板在 LinsheModal 外壳里 ⇒ `.modal-overlay.linshe-modal-overlay` + `.modal-panel.linshe-modal`（v-if 卸载）
- *   · ❤ 面板：`div.ia-panel[role="dialog"][aria-label="性爱推进"]`，HUD 是 `.ia-chip`
- *   · 提示走全局 toast：`.live-toast-message`（Toast.vue 37 行），文案来自 components/groupPanelLogic.js
- *   · ⚠️ 接口路径：玩具是 `/api/characters/<id>/toys…`，但**推进不是** —— 它是 `/api/intimate-actions/<id>/state`
- *     （我第一版按 `/api/characters/<id>/intimate-actions` 抓，结果永远抓不到，白判了一条 FAIL）
+ * 群聊真实服务验收：选成员后打开工具，检查作用对象和玩具操作接线。
+ * 默认程序 UI 回归使用 web-ui/test/chatTools.browser.test.js（隔离 Vite + 合成桩）。
+ * 本脚本会调用真实服务并操作功能，仅在已授权联调时对专用合成测试环境运行。
+ * 用 GROUP_PANEL_CHECK_BASE 或 PANEL_CHECK_BASE 指定服务；启动方式见 docs/testing.md。
+ * 工具入口按 .chat-action-toolbar + aria-label 定位，状态读 aria-expanded；
+ * 目标列表为 #touch-target-list，选中对象显示在工具栏的「选择互动对象」按钮中。
  */
 import { chromium } from 'playwright'
 
 // 目标地址可覆盖：红测 / 多份包并行时要指向别的端口。
 // 两个变量名都收：GROUP_PANEL_CHECK_BASE 是本文件专用，PANEL_CHECK_BASE 与 check-panels.mjs 保持同名口径。
 const BASE = process.env.GROUP_PANEL_CHECK_BASE || process.env.PANEL_CHECK_BASE || 'http://127.0.0.1:3199'
-const NO_TARGET_HINT = '先在「✋ 动作」里选一个人'
 
 const results = []
 const record = (name, ok, detail = '') => {
@@ -136,7 +111,7 @@ async function topElementAt(p, loc) {
   }, [box.x + box.width / 2, box.y + box.height / 2]).catch(() => '(evaluate 失败)')
 }
 const toyOpen = (p) => p.locator('.modal-panel.linshe-modal, .toy-panel, .tp-panel').count()
-const iaOpen = (p) => p.locator('.ia-panel[aria-label="性爱推进"]').count()
+const iaOpen = (p) => p.locator('.ia-panel[aria-label="亲密"]').count()
 const toastAll = async (p) => (await p.locator('.live-toast-message').allInnerTexts().catch(() => [])).join(' | ')
 
 try {
@@ -162,24 +137,23 @@ try {
   record('① 群聊视图打开', msgList > 0 && wrap > 0, `msg-list-inner=${msgList} touch-group-wrap=${wrap}`)
 
   // ── ② 三个入口 ──
-  const hand = page.locator('div.touch-icon-btn[aria-label="动作"]')
-  const toyBtn = page.locator('div.touch-icon-btn.toy-icon-btn[aria-label="玩具"]')
-  const iaBtn = page.locator('div.touch-icon-btn.intimate-icon-btn[aria-label="推进"]')
-  const toyTitle0 = await toyBtn.first().getAttribute('title').catch(() => '')
+  const hand = page.locator('.chat-action-toolbar [aria-label="动作"]')
+  const toyBtn = page.locator('.chat-action-toolbar [aria-label="玩具"]')
+  const iaBtn = page.locator('.chat-action-toolbar [aria-label="亲密"]')
+  const targetBtn = page.locator('.chat-action-toolbar [aria-label="选择互动对象"]')
   record('② ✋ / 🧸 / ❤ 三个入口都在', (await hand.count()) > 0 && (await toyBtn.count()) > 0 && (await iaBtn.count()) > 0,
     `hand=${await hand.count()} toy=${await toyBtn.count()} ia=${await iaBtn.count()}`)
-  record('② 未选目标时 🧸 的 title 是「先选一个人」', /先选一个人/.test(toyTitle0 || ''), `title=「${toyTitle0}」`)
+  record('② 未选目标时显示选择对象', /选择对象/.test(await targetBtn.innerText()), '工具栏有独立目标入口')
 
-  // ── ③ 未选目标：点 🧸 不许打开面板，要有那句人话 ──
+  // ── ③ 未选目标：先打开选人列表，不默认任何成员 ──
   const topBefore = await topElementAt(page, toyBtn)
   await toyBtn.first().click({ timeout: 4000 }).catch(() => {})
   await page.waitForTimeout(1200)
   record('③ 未选目标点 🧸 不打开面板', (await toyOpen(page)) === 0, `面板节点=${await toyOpen(page)}｜点击点最上层=${topBefore}`)
-  const hint = await toastAll(page)
-  record('③ 给了那句人话提示', hint.includes(NO_TARGET_HINT), `toast=「${hint || '(无)'}」`)
+  record('③ 直接打开选人列表', await page.locator('#touch-target-list').isVisible(), '选择后继续原功能')
   record('③ 也**没有**偷偷默认成员 0', !(await page.locator('.modal-panel.linshe-modal').count()), '面板节点应为 0（没有回落到 members[0]）')
 
-  // ── ④ 选人：✋ → 「对 谁？」 → 点第一个成员 ──
+  // ── ④ 改点动作，选择成员后打开动作面板 ──
   let pickedName = ''
   let pickedId = null
   await hand.first().click({ timeout: 4000 }).catch(() => {})
@@ -195,9 +169,9 @@ try {
     pickedName = (await item.innerText().catch(() => '')).trim().replace(/\s+/g, ' ')
     await item.click({ timeout: 3000 }).catch(() => {})
     await page.waitForTimeout(1000)
-    const title = await toyBtn.first().getAttribute('title').catch(() => '')
+    const title = await targetBtn.getAttribute('title').catch(() => '')
     pickedId = members.find((m) => String(m.display_name || '').trim() === pickedName)?.id ?? null
-    record('④ 选中成员（title 变成「对 XXX」）', /对\s*\S/.test(title || ''), `点「${pickedName}」⇒ title=「${title}」｜成员表里它的 id=${pickedId ?? '(没匹配上)'}`)
+    record('④ 工具栏显示选中成员', title === pickedName, `点「${pickedName}」⇒ title=「${title}」｜成员 id=${pickedId ?? '(没匹配上)'}`)
   }
 
   // ── ⑤ 选中后点 🧸：打开 + 作用在那个人 + 「戴上」接线 ──
@@ -210,7 +184,7 @@ try {
     const reqIds = [...new Set(roleReqs.map(idOf).filter(Boolean))]
     record('⑤ 面板请求的是**我点的那个人**', reqIds.length === 0 || reqIds.every((i) => i === pickedId),
       `请求=${roleReqs.slice(0, 3).join(' , ') || '(没抓到请求)'}｜期望 id=${pickedId}｜实际=${reqIds.join(',') || '-'}`)
-    record('⑤ 入口高亮 .is-open', /is-open/.test((await toyBtn.first().getAttribute('class')) || ''), `class=${await toyBtn.first().getAttribute('class')}`)
+    record('⑤ 入口选中且 aria-expanded 为 true', (await toyBtn.first().getAttribute('aria-expanded')) === 'true', `class=${await toyBtn.first().getAttribute('class')}`)
 
     // 「戴上」是 emit 给父组件做的（功能 Agent 自己没在浏览器里点过）—— 真点一次。
     // ⚠️ 两条收紧：
@@ -219,6 +193,7 @@ try {
     //   2) **门控没过的按钮点了也不会发请求**（ToyPanel.vue 132 行把 `gate.allowed === false` 写成 aria-disabled）
     //      ⇒ 必须挑"既没 disabled、也没 aria-disabled=true"的那个（例如项圈对 Lv3 就放行）。
     //      挑不到就如实说"全是门控拦着的"，不要算成接线断了。
+    await page.locator('.toy-panel').getByRole('tab', { name: '背包', exact: true }).click()
     roleReqs.length = 0
     const anyBtn = page.locator('.toy-backpack-grid button')
     const equipBtn = page.locator('.toy-backpack-grid button:not([disabled]):not([aria-disabled="true"])').first()
@@ -270,7 +245,7 @@ try {
   await page.waitForTimeout(1500)
   const openedBefore = await toyOpen(page)
   const handTop = await topElementAt(page, hand)
-  if (!/DIV\.touch-icon-btn|DIV\.input-area|BUTTON/.test(String(handTop))) {
+  if (!/BUTTON|SVG|PATH|SPAN/.test(String(handTop))) {
     // 2026-10-18：这条口径已抽成纯函数并由单测钉住（`web-ui/test/groupPanelTargetSwitch.test.js`，
     // 5 条：全关+清空 / 目标没变不关 / 数字与字符串同一人 / 有↔无都算变 / 视图真调了这个函数）。
     // 所以 SKIP 时**明确指向那条测试**，别再写成"建议人工点一次"——那样等于没有验收手段。

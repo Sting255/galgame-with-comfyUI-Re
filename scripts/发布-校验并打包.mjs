@@ -624,7 +624,7 @@ const zip = spawnSync(SEVENZIP, [
   // 2026-10-02 交付前审计发现：交付包顶层躺着一个 103 MB 的旧备份
   // （`linshe-backup-20260930-1405.tar.gz`）+ 一个 2.5 MB 的 apk ⇒ 它们**不是运行所需**，
   // 排除后包体积立省约 1/8。（用户磁盘上那两个文件不动，只是不进包。）
-  '-xr!*.tar.gz',
+  '-xr!*.tar.gz', '-xr!.access-token',
 ], { cwd: 'C:\\', encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
 if (zip.status !== 0) die(`7z 退出码 ${zip.status}：${(zip.stderr || '').slice(0, 300)}`)
 const secs = Math.round((Date.now() - t0) / 1000)

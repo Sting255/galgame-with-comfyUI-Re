@@ -11,6 +11,7 @@
       class="ls-tabs__item"
       :class="{ 'ls-tabs__item--active': option.value === modelValue }"
       role="tab"
+      :tabindex="disabled || option.disabled ? -1 : 0"
       :aria-selected="option.value === modelValue"
       :aria-disabled="disabled || option.disabled || undefined"
       :title="option.title"
@@ -24,7 +25,7 @@
 <script setup>
 defineOptions({ name: 'LinsheTabs' })
 
-defineProps({
+const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
   options: { type: Array, default: () => [] },
   /** sm / md，与 LinsheButton 尺寸对齐 */
@@ -35,7 +36,7 @@ defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 function select(option) {
-  if (option.disabled) return
+  if (props.disabled || option.disabled) return
   emit('update:modelValue', option.value)
 }
 </script>

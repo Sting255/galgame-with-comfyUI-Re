@@ -7,8 +7,8 @@
           <div class="mailbox-header">
             <div class="header-left">
               <svg class="header-svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="2" y="4" width="20" height="16" rx="2"/>
-                <path d="M22 7l-10 6L2 7"/>
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="M22 7l-10 6L2 7" />
               </svg>
               <div>
                 <h3>信箱</h3>
@@ -16,8 +16,8 @@
               </div>
             </div>
             <div class="header-actions">
-              <linshe-button variant="primary" @click="startWrite">开始写一封信</linshe-button>
-              <linshe-button variant="icon" @click="close" title="关闭">&times;</linshe-button>
+              <linshe-button variant="primary" :disabled="sending" @click="startWrite">开始写一封信</linshe-button>
+              <linshe-button variant="icon" :disabled="sending" @click="close" title="关闭">&times;</linshe-button>
             </div>
           </div>
 
@@ -25,14 +25,18 @@
           <div class="mailbox-body">
             <!-- ── Left: Letter List ── -->
             <div class="mailbox-sidebar">
-              <div v-if="store.letters.length === 0 && !store.loading" class="sidebar-empty">
+              <div v-if="store.loadError" class="sidebar-empty" role="alert">
+                <p>{{ store.loadError }}</p>
+                <linshe-button size="sm" :loading="store.loading" @click="store.fetchLetters()">重试</linshe-button>
+              </div>
+              <div v-if="store.letters.length === 0 && !store.loading && !store.loadError" class="sidebar-empty">
                 <svg class="sidebar-empty-svg" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#8a7a6a" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2"/>
-                  <path d="M22 7l-10 6L2 7"/>
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="M22 7l-10 6L2 7" />
                 </svg>
                 <p class="sidebar-empty-title">还没有任何通信</p>
                 <p class="sidebar-empty-hint">写下第一封信吧</p>
-                <linshe-button variant="primary" @click="startWrite">开始写信</linshe-button>
+                <linshe-button variant="primary" :disabled="sending" @click="startWrite">开始写信</linshe-button>
               </div>
 
               <div v-if="store.loading && store.letters.length === 0" class="loading-state">
@@ -54,10 +58,10 @@
                   <div class="card-avatar-col">
                     <div class="card-envelope">
                       <svg class="card-envelope-svg" width="48" height="36" viewBox="0 0 48 36" fill="none">
-                        <rect x="2" y="8" width="44" height="26" rx="2" fill="#f5e6d3" stroke="#c4a882" stroke-width="1.2"/>
-                        <path d="M2 8 L24 22 L46 8" fill="#e8d5c0" stroke="#c4a882" stroke-width="1.2"/>
-                        <line x1="2" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2"/>
-                        <line x1="46" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2"/>
+                        <rect x="2" y="8" width="44" height="26" rx="2" fill="#f5e6d3" stroke="#c4a882" stroke-width="1.2" />
+                        <path d="M2 8 L24 22 L46 8" fill="#e8d5c0" stroke="#c4a882" stroke-width="1.2" />
+                        <line x1="2" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2" />
+                        <line x1="46" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2" />
                       </svg>
                       <img
                         v-if="letter.avatar_path"
@@ -89,6 +93,7 @@
                   <LetterWrite
                     :char="selectedChar"
                     @sent="onLetterSent"
+                    @sending="sending = $event"
                     @cancel="cancelWrite"
                   />
                 </div>
@@ -111,13 +116,14 @@
                         <div class="detail-header-meta" :class="statusTimeClass(activeLetter)">{{ statusTimeText(activeLetter) }}</div>
                       </div>
                     </div>
-                    <linshe-button variant="danger" @click="onDeleteLetter(activeLetter.id)">删除信件</linshe-button>
+                    <linshe-button variant="danger" :disabled="activeLetter.status === 'processing' || deletingId !== null || retryingId !== null" :loading="deletingId === activeLetter.id" @click="onDeleteLetter(activeLetter.id)">删除信件</linshe-button>
                   </div>
 
                   <!-- Reading card -->
                   <div class="reading-card">
+                    <LetterFailure v-if="activeLetter.status === 'failed'" :letter="activeLetter" :busy="retryingId === activeLetter.id" :disabled="deletingId !== null" @retry="onRetryLetter" />
                     <!-- Outgoing letter - not yet replied -->
-                    <div v-if="!isReplied(activeLetter) && activeLetter.status !== 'processing'" class="reading-content reading-outgoing">
+                    <div v-if="!isReplied(activeLetter) && !['processing', 'failed'].includes(activeLetter.status)" class="reading-content reading-outgoing">
                       <div class="reading-text" :style="writeFontStyle">{{ activeLetter.content }}</div>
                     </div>
 
@@ -152,8 +158,8 @@
                 <div v-else key="empty" class="welcome-area">
                   <div class="welcome-card">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#8a7a6a" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.12">
-                      <rect x="2" y="4" width="20" height="16" rx="2"/>
-                      <path d="M22 7l-10 6L2 7"/>
+                      <rect x="2" y="4" width="20" height="16" rx="2" />
+                      <path d="M22 7l-10 6L2 7" />
                     </svg>
                     <p class="welcome-title">曾许下心愿♪</p>
                     <p class="welcome-hint">等待你的出现~</p>
@@ -207,9 +213,11 @@
 </template>
 
 <script setup>
-import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
+import { ref, watch, computed, onUnmounted, inject } from 'vue'
 import { useMailboxStore } from '../stores/mailbox.js'
 import { getFontFamily, loadFont, getPageDefaultFontFamily, getWriteFontFamily } from '../composables/useHandwritingFont.js'
+import LetterFailure from './LetterFailure.vue'
+import { useMailboxActions } from '../composables/useMailboxActions.js'
 import LetterViewer from './LetterViewer.vue'
 import LetterWrite from './LetterWrite.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -222,15 +230,21 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const store = useMailboxStore()
+const toast = inject('toast', null)
+const sending = ref(false)
 const writing = ref(false)
 const showCharPicker = ref(false)
 const selectedChar = ref(null)
 const activeLetterId = ref(null)
-const activeLetter = ref(null)
+const activeLetter = computed(() => store.letters.find(l => l.id === activeLetterId.value) || null)
 const viewingLetterId = ref(null)
 const replySectionRef = ref(null)
 const viewerSourceRect = ref(null)
 const confirmRef = ref(null)
+const { deletingId, retryingId, remove: removeLetter, retry: onRetryLetter } = useMailboxActions(
+  store, options => confirmRef.value.show(options), toast,
+)
+watch(() => activeLetter.value?.handwriting_font, font => { if (font) loadFont(font) })
 
 const viewingLetter = computed(() => {
   if (!viewingLetterId.value) return null
@@ -247,24 +261,28 @@ const writeFontStyle = computed(() => ({
   fontFamily: getWriteFontFamily(),
 }))
 
+let ownsPolling = false
+function stopOwnedPolling() {
+  if (!ownsPolling) return
+  ownsPolling = false
+  store.stopPolling()
+}
 watch(() => props.visible, (v) => {
   if (v) {
+    ownsPolling = true
     store.startPolling()
-    if (store.letters.length === 0) store.fetchLetters()
   } else {
-    store.stopPolling()
+    stopOwnedPolling()
     writing.value = false
     selectedChar.value = null
-    activeLetter.value = null
     activeLetterId.value = null
     viewingLetterId.value = null
     viewerSourceRect.value = null
     showCharPicker.value = false
   }
-})
+}, { immediate: true })
 
-onMounted(() => { if (props.visible) store.startPolling() })
-onUnmounted(() => { store.stopPolling() })
+onUnmounted(stopOwnedPolling)
 
 function statusTimeText(letter) {
   const time = timeAgo(letter.created_at)
@@ -280,6 +298,7 @@ function statusTimeText(letter) {
 
 function statusTimeClass(letter) {
   if (letter.status === 'completed') return 'status-completed'
+  if (letter.status === 'failed') return 'status-failed'
   if (letter.status === 'processing') return 'status-processing'
   if (letter.direction === 'user_to_char') {
     if (letter.reply_at && elapsedOverHalf(letter)) return 'status-processing'
@@ -334,19 +353,19 @@ function estimateReply(letter) {
   return `${hr}小时后`
 }
 
-function close() { emit('close') }
-function startWrite() { writing.value = false; selectedChar.value = null; activeLetter.value = null; activeLetterId.value = null; viewingLetterId.value = null; viewerSourceRect.value = null; showCharPicker.value = true }
-function pickCharacter(char) { selectedChar.value = char; showCharPicker.value = false; writing.value = true }
-function cancelWrite() { writing.value = false; selectedChar.value = null }
+function close() { if (sending.value) return; emit('close') }
+function startWrite() { if (sending.value) return; writing.value = false; selectedChar.value = null; activeLetterId.value = null; viewingLetterId.value = null; viewerSourceRect.value = null; showCharPicker.value = true }
+function pickCharacter(char) { if (sending.value) return; selectedChar.value = char; showCharPicker.value = false; writing.value = true }
+function cancelWrite() { if (sending.value) return; writing.value = false; selectedChar.value = null }
 
 function selectLetter(letter) {
-  activeLetter.value = letter
+  if (sending.value) return
   activeLetterId.value = letter.id
   writing.value = false
   viewingLetterId.value = null
   viewerSourceRect.value = null
   if (letter.handwriting_font) loadFont(letter.handwriting_font)
-  if (letter.direction === 'char_to_user' && !letter.is_read) store.markRead(letter.id)
+  if (letter.direction === 'char_to_user' && !letter.is_read) store.markRead(letter.id).catch(err => toast?.(err?.message || '标记已读失败', 'error'))
 }
 
 function isReplied(letter) {
@@ -363,48 +382,40 @@ function onViewerClosed() {
   viewerSourceRect.value = null
 }
 
-async function onLetterSent(result) {
+function onLetterSent(result) {
   writing.value = false; selectedChar.value = null
-  if (result?.letter) { activeLetter.value = result.letter; await store.fetchLetters() }
+  if (result?.letter) activeLetterId.value = result.letter.id
 }
 
 async function onDeleteLetter(id) {
-  const confirmed = await confirmRef.value.show({
-    title: '删除信件',
-    message: '确定要删除这封信件吗？此操作无法撤销。',
-    okText: '删除',
-    cancelText: '取消',
-    danger: true,
-  })
-  if (!confirmed) return
-  await store.deleteLetter(id)
-  viewingLetterId.value = null
-  viewerSourceRect.value = null
-  activeLetter.value = null
-  activeLetterId.value = null
+  if (!await removeLetter(id)) return
+  if (viewingLetterId.value === id) onViewerClosed()
+  if (activeLetterId.value === id) {
+    activeLetterId.value = null
+  }
 }
 </script>
 
 <style scoped>
 /* ── Transitions ── */
-.mailbox-fade-enter-active { transition: opacity 0.2s ease; }
-.mailbox-fade-leave-active { transition: opacity 0.15s ease; }
+.mailbox-fade-enter-active { transition: opacity 0.3s ease; }
+.mailbox-fade-leave-active { transition: opacity 0.3s ease; }
 .mailbox-fade-enter-from,
 .mailbox-fade-leave-to { opacity: 0; }
 
-.panel-fade-enter-active { transition: all 0.28s cubic-bezier(0.4, 0, 0.2, 1); }
-.panel-fade-leave-active { transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1); }
+.panel-fade-enter-active { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+.panel-fade-leave-active { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
 .panel-fade-enter-from { opacity: 0; transform: translateY(8px); }
 .panel-fade-leave-to { opacity: 0; transform: translateY(-4px); }
 
 .letter-list-enter-active,
-.letter-list-leave-active { transition: opacity 0.2s ease; }
+.letter-list-leave-active { transition: opacity 0.3s ease; }
 .letter-list-enter-from,
 .letter-list-leave-to { opacity: 0; }
 .letter-list-move { transition: transform 0.2s ease; }
 
-.popup-fade-enter-active { transition: opacity 0.2s ease; }
-.popup-fade-leave-active { transition: opacity 0.15s ease; }
+.popup-fade-enter-active { transition: opacity 0.3s ease; }
+.popup-fade-leave-active { transition: opacity 0.3s ease; }
 .popup-fade-enter-from,
 .popup-fade-leave-to { opacity: 0; }
 
@@ -550,6 +561,7 @@ async function onDeleteLetter(id) {
 .card-status.status-completed { color: #7FA88A; background: rgba(127, 168, 138, 0.07); }
 .card-status.status-pending   { color: #B89A68; background: rgba(184, 154, 104, 0.07); }
 .card-status.status-processing { color: #7D98B8; background: rgba(125, 152, 184, 0.07); }
+.card-status.status-failed { color: var(--danger, #c0504a); background: rgba(226,92,92,0.09); }
 .card-preview {
   font-size: 12px; color: #9a8a7a;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -734,4 +746,20 @@ async function onDeleteLetter(id) {
 
 /* ── Write panel fills available space ── */
 .write-panel { height: 100%; }
+
+@media (max-width: 600px) {
+  .mailbox-header { padding: 12px; gap: 8px; }
+  .header-left { gap: 6px; }
+  .header-subtitle { display: none; }
+  .header-actions { gap: 4px; }
+  .mailbox-body { flex-direction: column; }
+  .mailbox-sidebar { width: 100%; max-height: 22vh; border-right: 0; border-bottom: 1px solid rgba(0,0,0,0.04); }
+  .mailbox-main { min-height: 0; }
+  .detail-panel { padding: 16px; }
+  .detail-header { gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .detail-header-left { min-width: 0; gap: 8px; }
+  .reading-content { padding: 16px; }
+  .reading-snippet { padding: 16px 8px; }
+  .sidebar-empty { padding: 16px; }
+}
 </style>

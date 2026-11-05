@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { assertDatabaseAvailable } from './maintenance.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -108,6 +109,7 @@ export function resetDbReopenWarning() {
 }
 
 export function getDb() {
+  assertDatabaseAvailable();
   // 2026-10-02 自愈（真机日志：某个路径直接 `db.close()` 之后，调度器每分钟刷一条
   // `The database connection is not open`）：这里是**唯一入口**，句柄被关掉就地重开，
   // 而不是让每个调用方自己判断。只提醒一次，避免刷屏（根因仍应在调用方查）。
@@ -3384,7 +3386,7 @@ export function migrateIntimateSceneSchema(db) {
  *     status 取值：'pending'（隐式，等下一轮 chat.js 注入）/ 'injected'（已注入那一轮）/ 'done'（即时反应已发出）
  *
  * 纯新增表（只 CREATE TABLE IF NOT EXISTS，不参与 ALTER 补列），幂等；首次建表打一行启动日志。
- * 口径见 docs/touch-system.md §3.2 与 目标/规划/专题-SLG动作系统.md §四。
+ * 口径见 docs/characters/touch-system.md §3.2 与 目标/规划/专题-SLG动作系统.md §四。
  */
 export function migrateTouchSchema(db) {
   try {

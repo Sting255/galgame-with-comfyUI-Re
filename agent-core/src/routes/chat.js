@@ -91,7 +91,7 @@ import {
   buildAntiRepetitionInjection, buildRecentSelfOutputNote, shouldInjectRecentSelfOutputNote,
   fetchRecentAssistantTurns, fetchRecentEmotionSnapshots, formatAntiRepetitionLog,
   buildAntiRepetitionMetrics,
-  // D2 · 重写兜底：判定 + 指令块 + 替换事件（口径见 docs/anti-repetition.md §十二）
+  // D2 · 重写兜底：判定 + 指令块 + 替换事件（口径见 docs/chat/anti-repetition.md §十二）
   shouldReroll, buildRerollInstruction, buildReplaceLastAssistantEvent,
 } from '../services/antiRepetition.js';
 // 拒答守卫（2026-10-22）：模型把「我无法给到相关内容」当台词返回时，重写一次；仍拒则走兜底，
@@ -1924,7 +1924,7 @@ ${coreRules}
     // 达到阈值后下一轮自然升档（见 antiRepetition.detectRepetitionWithEscalation）。
     // 注意：这里只做检测 + 记录。超阈值**再请求一次 LLM 替换已流式输出**（专题 L4 的重写兜底）
     // 默认关且尚未实现接线：本项目流式协议没有"替换已输出内容"的语义，
-    // 要启用必须同时解决前端替换与额外调用授权两件事 —— 见 docs/anti-repetition.md §十。
+    // 要启用必须同时解决前端替换与额外调用授权两件事 —— 见 docs/chat/anti-repetition.md §十。
     // 也正因如此，"她刚说的这句"是在下一轮检测时才进入比较（本轮无法自查）。
     if (antiRepetitionResult) {
       try {
@@ -1955,7 +1955,7 @@ ${coreRules}
     const displayContent = parsedSegments.map(p => p.content).filter(Boolean).join('\n\n');
 
     // ── D2 · 重写成功 → 通知前端"换掉刚显示的那条" ──
-    // 事件 replace_last_assistant（字段与语义见 docs/anti-repetition.md §十二；前端由 hires-ui 接）：
+    // 事件 replace_last_assistant（字段与语义见 docs/chat/anti-repetition.md §十二；前端由 hires-ui 接）：
     // 必须**在重写成功后**才发 —— 失败时保留原输出，用户不该看到空白（见上面的 catch 分支）。
     // 用 segments 而不是纯 content：替换后表情包/图片气泡不能丢。
     if (rerollSucceeded || refusalReplaced) {

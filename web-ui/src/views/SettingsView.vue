@@ -9,6 +9,7 @@
     </div>
 
     <div class="settings-grid">
+      <DeviceAccessPanel />
       <!-- ComfyUI params: 对话配图 / 朋友圈配图 / 奇遇配图（Tab 切换） -->
       <div class="card comfy-params-card">
         <h3>画师串 & 分辨率</h3>
@@ -369,8 +370,8 @@
             ref="freeEggBtn"
             role="button"
             tabindex="0"
-            :class="['free-egg-btn', { active: freeEgg, 'is-disabled': freeEggBusy }]"
-            :aria-disabled="freeEggBusy"
+            :class="['free-egg-btn', { active: freeEgg, 'is-disabled': llmBusy }]"
+            :aria-disabled="llmBusy"
             :title="freeEgg ? '点击关闭，恢复自有 LLM 配置' : '点击开启：免 Key 使用 opencode 免费模型（按 IP 限流，上游限速会调整）'"
             @click="onFreeEggClick"
             @keydown.enter.prevent="onFreeEggClick"
@@ -397,7 +398,7 @@
           @configure="openFullLlmSetup"
           @start-chat="router.push('/chat')"
         />
-        <div v-else-if="!freeEgg" key="llm-custom" class="llm-api-switch-body">
+        <div v-else-if="!freeEgg" key="llm-custom" class="llm-api-switch-body" :inert="llmBusy" :aria-busy="llmBusy">
         <div class="llm-setup-intro-row">
           <p class="fd" style="margin:0">配置 AI 对话和角色生成所使用的 LLM 接口</p>
           <div class="llm-setup-intro-actions">
@@ -450,54 +451,10 @@
           <p class="fd">默认 global，模型可用性取决于项目权限和地区。</p>
         </template>
 
-        <!-- LLM Profile 切换 -->
-        <div class="llm-profiles-bar">
-          <div v-for="p in llmProfiles" :key="p.id" class="profile-item-row">
-            <div
-              role="button"
-              tabindex="0"
-              :class="['profile-tag', { active: p.id === activeLlmProfileId }]"
-              @click="switchProfile(p.id)"
-              @keydown.enter.prevent="switchProfile(p.id)"
-              @keydown.space.prevent="switchProfile(p.id)"
-              :title="(p.preview || '未设置Key') + ' · ' + (p.model || '?')"
-            >
-              <span class="profile-name">{{ p.name }}</span>
-              <span v-if="p.id === activeLlmProfileId" class="profile-dot"></span>
-            </div>
-            <div
-              v-if="llmProfiles.length > 1 && p.id !== activeLlmProfileId"
-              role="button"
-              tabindex="0"
-              class="profile-tag profile-delete-btn"
-              @click="removeProfile(p.id)"
-              @keydown.enter.prevent="removeProfile(p.id)"
-              @keydown.space.prevent="removeProfile(p.id)"
-              title="删除该配置"
-            >
-              <span class="profile-x">×</span>
-            </div>
-          </div>
-          <div role="button" tabindex="0" class="profile-tag profile-add" @click="showAddProfile = true" @keydown.enter.prevent="showAddProfile = true" @keydown.space.prevent="showAddProfile = true">
-            <span>+ 新增配置</span>
-          </div>
-        </div>
-
-        <!-- 新增 Profile 弹窗 -->
-        <linshe-modal v-model="showAddProfile" title="新增配置">
-          <p class="fd">将当前 LLM 配置（地址、模型、自定义开关等）保存为一个新的配置快照（不含 API Key）</p>
-          <linshe-input
-            v-model="newProfileName"
-            class="fi"
-            placeholder="输入配置名称，如：我的OpenAI、本地LLM"
-            @keyup.enter="addProfile"
-            ref="newProfileInput"
-          />
-          <template #footer>
-            <linshe-button variant="secondary" @click="showAddProfile = false">取消</linshe-button>
-            <linshe-button variant="primary" :disabled="!newProfileName.trim()" @click="addProfile">确定</linshe-button>
-          </template>
-        </linshe-modal>
+        <LlmProfilesPanel
+          :profiles="llmProfiles" :active-id="activeLlmProfileId"
+          :busy="llmBusy" :select="switchProfile" :remove="removeProfile" :create="addProfile"
+        />
         <!-- API Key / API 地址：仅 OpenAI 兼容接口需要（Vertex 走服务账号） -->
         <template v-if="llmConnectionType === 'openai'">
         <!-- API Key -->
@@ -897,7 +854,7 @@ type="range" min="0" max="1" step="0.1"
       <!-- 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）
            顶上三个开关是纯 prompt 增强（零额外 LLM 调用），默认开；关闭后与加功能前逐字节一致。
            「重写兜底」antiRepetitionReroll（专题 L4 / D2）**已接线**：默认关，打开后每触发一次会**多消耗一次模型调用**，
-           故说明里写明代价；替换语义见 stores/chat.js 与 docs/anti-repetition.md。 -->
+           故说明里写明代价；替换语义见 stores/chat.js 与 docs/chat/anti-repetition.md。 -->
       <div class="card anti-rep-card">
         <h3>反重复与话题推进</h3>
         <p class="fd">角色连续几轮围绕同一话题打转时，动态提示她换角度、引入新信息或推进事件；同一情绪持续多轮时提示她像真人一样打断自己。全部是提示词层的增强，不额外调用模型。</p>
@@ -1500,90 +1457,8 @@ type="range" min="0" max="1" step="0.1"
         <TimeControlPanel />
       </div>
 
-      <!-- 数据备份：一键导出全部数据 / 一键导入（导入是覆盖式操作，导入前自动备份） -->
-      <div class="card card-full memory-settings-card data-backup-card">
-        <div class="memory-settings-header">
-          <div>
-            <h3>数据备份</h3>
-            <p>把角色、聊天记录、群聊、记忆与图片打包成一个 .tar.gz；换电脑或重装后用同一个归档一键恢复</p>
-          </div>
-        </div>
-
-        <div class="data-backup-info" role="status" aria-live="polite">
-          <span class="data-backup-info-label">当前数据</span>
-          <span class="data-backup-info-text">{{ exportInfoLoading ? '读取中…' : exportInfoText }}</span>
-        </div>
-
-        <div class="toggle-row">
-          <div>
-            <div class="tl">包含模型配置（含 API Key）</div>
-            <div class="td">归档里会带上 config\.env；里面有你的密钥，这份备份不要发给别人</div>
-          </div>
-          <linshe-switch
-            v-model="exportIncludeConfig"
-            aria-label="导出时包含模型配置（含 API Key）"
-          />
-        </div>
-
-        <div class="data-backup-actions">
-          <linshe-button
-            variant="secondary"
-            size="sm"
-            :loading="exportBusy"
-            :disabled="exportBusy || importBusy"
-            @click="onExportData"
-          >
-            {{ exportBusy ? '导出中…' : '一键导出全部数据' }}
-          </linshe-button>
-          <linshe-button
-            variant="secondary"
-            size="sm"
-            :disabled="exportBusy || importBusy"
-            @click="pickImportFile"
-          >
-            一键导入
-          </linshe-button>
-          <span class="data-backup-tip">导入会覆盖当前数据库与资产文件；导入前会自动备份到 data\backups\</span>
-        </div>
-
-        <Transition name="backup-notice-fade">
-          <p v-if="importNotice" class="data-backup-notice" :class="`is-${importNotice.type}`" role="status">
-            {{ importNotice.text }}
-          </p>
-        </Transition>
-
-        <!-- 唯一允许的裸 input：隐藏的文件选择器（AGENTS.md 特殊交互元素白名单），
-             真正可点的控件是上面的 LinsheButton，因此这里不进 tab 序列也不读给读屏 -->
-        <input
-          ref="importFileEl"
-          class="data-backup-file"
-          type="file"
-          accept=".gz,.tar.gz,application/gzip"
-          tabindex="-1"
-          aria-hidden="true"
-          @change="onImportFilePicked"
-        />
-      </div>
+      <DataBackupPanel />
 </div>
-
-    <!-- 导入二次确认：覆盖式破坏操作，必须让用户看清后果再上传 -->
-    <linshe-modal v-model="importDialog.show" title="确认导入备份？" panel-class="data-backup-modal">
-      <p class="data-backup-modal-line">
-        导入会<strong>覆盖当前数据库与资产文件</strong>；导入前会自动备份到
-        <code>data\backups\</code>，万一不满意可以用那份备份回滚。
-      </p>
-      <p class="data-backup-modal-line">
-        选中的文件：<strong>{{ importDialog.fileName }}</strong>
-        <span v-if="importDialog.fileSize" class="data-backup-modal-size">（{{ importDialog.fileSize }}）</span>
-      </p>
-      <p class="data-backup-modal-line">确认后开始上传，中途请不要关闭页面或退出程序。</p>
-      <template #footer>
-        <linshe-button variant="secondary" :disabled="importBusy" @click="importDialog.show = false">取消</linshe-button>
-        <linshe-button variant="danger" :loading="importBusy" :disabled="importBusy" @click="confirmImport">
-          {{ importBusy ? '导入中…' : '确认导入' }}
-        </linshe-button>
-      </template>
-    </linshe-modal>
 
     <!-- 收藏画师串弹窗 -->
     <linshe-modal v-model="favDialog.show" title="收藏画师串">
@@ -1793,8 +1668,12 @@ import { useRouter } from 'vue-router'
 import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/modelCapabilities.js'
 import { validateVertexServiceAccount } from '../api/index.js'
 import DeepseekSetup from '../components/DeepseekSetup.vue'
+import DeviceAccessPanel from '../components/settings/DeviceAccessPanel.vue'
+import DataBackupPanel from '../components/settings/DataBackupPanel.vue'
+import LlmProfilesPanel from '../components/settings/LlmProfilesPanel.vue'
+import { useLlmProfiles } from '../composables/useLlmProfiles.js'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, downloadDataArchive, getDataExportInfo, importDataArchive, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
@@ -1816,14 +1695,7 @@ import MemoryHealthPanel from '../components/MemoryHealthPanel.vue'
 import TimeControlPanel from '../components/TimeControlPanel.vue'
 import UpdateTag from '../components/UpdateTag.vue'
 import { CHANGELOG_ENTRIES } from '../data/changelog.js'
-import {
-  formatBytes,
-  formatExportSummary,
-  importFailureText,
-  importSuccessText,
-  restoredText,
-  validateImportFile,
-} from '../utils/dataBackup.js'
+
 
 const settingsStore = useSettingsStore()
 const themeModes = THEME_MODES
@@ -1840,103 +1712,6 @@ const changelogTotal = computed(() => CHANGELOG_ENTRIES.length)
 function openChangelog() {
   if (showChangelogFn) showChangelogFn()
   else toastFn?.('更新说明弹窗未就绪，请刷新页面重试', 'info')
-}
-
-// ── 数据备份：一键导出 / 一键导入 ──
-//
-// 导出：GET /api/data/export 拿二进制 tar.gz，前端直接触发下载（不经过 JSON 层）。
-// 导入：POST /api/data/import 发原始字节，属于覆盖式破坏操作，必须先过二次确认弹窗。
-const exportIncludeConfig = ref(false)
-const exportBusy = ref(false)
-const importBusy = ref(false)
-const exportInfoLoading = ref(false)
-const exportInfo = ref(null)
-/** 导入/导出的结果提示：留在页面上（失败时带上可回滚的备份路径，toast 装不下） */
-const importNotice = ref(null)
-const importFileEl = ref(null)
-/** 选中的文件本体不放 reactive：File 不需要响应式，也避免被代理后传给 fetch */
-let pendingImportFile = null
-const importDialog = reactive({ show: false, fileName: '', fileSize: '' })
-
-/** 一行摘要：角色/消息/群聊/记忆条数 + 预计大小（后端 dbBytes 只是估算上界） */
-const exportInfoText = computed(() => formatExportSummary(exportInfo.value))
-
-async function refreshExportInfo() {
-  exportInfoLoading.value = true
-  try {
-    exportInfo.value = await getDataExportInfo()
-  } catch (err) {
-    // 摘要读不到不影响导出/导入本身，静默降级成「暂无可用数据」
-    exportInfo.value = null
-    console.warn('[数据备份] 读取导出摘要失败:', err?.message || err)
-  } finally {
-    exportInfoLoading.value = false
-  }
-}
-
-async function onExportData() {
-  if (exportBusy.value || importBusy.value) return
-  exportBusy.value = true
-  importNotice.value = null
-  try {
-    const { fileName, bytes } = await downloadDataArchive(exportIncludeConfig.value)
-    toastFn?.(`已导出 ${fileName}（${formatBytes(bytes)}）`, 'success')
-    await refreshExportInfo()
-  } catch (err) {
-    toastFn?.(`导出失败：${err?.message || '未知错误'}`, 'error')
-  } finally {
-    exportBusy.value = false
-  }
-}
-
-/** 触发隐藏 file input 的系统文件选择框（真正的可访问控件是那个 LinsheButton） */
-function pickImportFile() {
-  if (exportBusy.value || importBusy.value) return
-  importFileEl.value?.click()
-}
-
-function onImportFilePicked(event) {
-  const input = event?.target
-  const file = input?.files?.[0] || null
-  // 清空 value，否则连续选同一个文件不会再触发 change
-  if (input) input.value = ''
-
-  // 本地预检：后缀 / 空文件 / 超过 2GB 直接拒绝，不上传
-  const check = validateImportFile(file)
-  if (!check.ok) {
-    importNotice.value = { type: 'error', text: check.reason }
-    toastFn?.(check.reason, 'error')
-    return
-  }
-
-  pendingImportFile = file
-  importDialog.fileName = file.name
-  importDialog.fileSize = formatBytes(file.size)
-  importDialog.show = true
-}
-
-async function confirmImport() {
-  const file = pendingImportFile
-  if (!file || importBusy.value) return
-  importBusy.value = true
-  importNotice.value = null
-  try {
-    const result = await importDataArchive(file)
-    const restored = restoredText(result?.restored)
-    const text = restored ? `${importSuccessText(result)}（${restored}）` : importSuccessText(result)
-    importNotice.value = { type: 'success', text }
-    toastFn?.(text, 'success')
-    importDialog.show = false
-    await refreshExportInfo()
-  } catch (err) {
-    // 500 时后端会带回导入前的自动备份路径：一并写进页面，用户可按它回滚
-    const text = importFailureText(err)
-    importNotice.value = { type: 'error', text }
-    toastFn?.(text, 'error')
-    importDialog.show = false
-  } finally {
-    importBusy.value = false
-  }
 }
 
 // ── 移动端滚动方向感知：下滑隐藏标题，上滑显示 ──
@@ -2574,7 +2349,7 @@ const llmContextWindowText = ref('')
 const llmContextWindowValid = computed(() => {
   const raw = String(llmContextWindowText.value ?? '').trim()
   if (!raw) return true   // 留空 = 自动探测，合法
-  return /^\d+$/.test(raw) && Number(raw) > 0
+  return /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) && Number(raw) > 0
 })
 /** 保存口径：留空传 null（服务端清掉声明），否则传整数 token */
 const llmContextWindowValue = computed(() => {
@@ -2632,7 +2407,7 @@ const llmHeadersEnabled = ref(false)
 const llmHeadersText = ref('{}')
 const llmHeadersValid = computed(() => {
   if (!llmHeadersEnabled.value) return true
-  try { JSON.parse(llmHeadersText.value); return true } catch { return false }
+  try { const value = JSON.parse(llmHeadersText.value); return !!value && typeof value === 'object' && !Array.isArray(value) } catch { return false }
 })
 const llmExtraBodyEnabled = ref(false)
 const llmExtraBodyText = ref('{}')
@@ -2642,13 +2417,14 @@ const llmExtraBodyPlaceholder = computed(() => JSON.stringify(llmConnectionType.
   : { agent: 'my-agent', agentName: 'Nova' }))
 const llmExtraBodyValid = computed(() => {
   if (!llmExtraBodyEnabled.value) return true
-  try { JSON.parse(llmExtraBodyText.value); return true } catch { return false }
+  try { const value = JSON.parse(llmExtraBodyText.value); return !!value && typeof value === 'object' && !Array.isArray(value) } catch { return false }
 })
 const showApiKey = ref(false)
 const llmDirty = ref(false)
 const llmSaved = ref(false)
 const llmTesting = ref(false)
-function markLlmDirty() { llmDirty.value = true; llmSaved.value = false }
+let llmDraftRevision = 0
+function markLlmDirty() { llmDraftRevision++; llmDirty.value = true; llmSaved.value = false }
 
 // 高级设置抽屉
 const llmAdvancedOpen = ref(false)
@@ -2700,46 +2476,20 @@ function uniqueProfileName(baseName) {
 }
 
 async function applyRelayConfig(station) {
-  if (relayConfigBusy.value) return
+  if (llmBusy.value || relayConfigBusy.value) return
   relayConfigBusy.value = true
   try {
-    isCustomBaseURL.value = true
-    llmBaseURL.value = station.url
-    llmModel.value = 'deepseek-flash'
-    // 一键接入中转站：同样走默认「关」（与全局口径一致）；若该站不认 thinking 字段
-    // 而返回 400，后端会自动去掉可选参数重试一次，用户也可手动改「不传」。
-    llmThinkingMode.value = 'disabled'
-    applyLlmContextWindow(null)   // 中转站不声明窗口，交给服务端探测
-    llmHeadersEnabled.value = false
-    llmHeadersText.value = '{}'
-    llmExtraBodyEnabled.value = false
-    llmExtraBodyText.value = '{}'
     const name = uniqueProfileName(station.name)
-    const result = await addLlmProfile(name, {
-      apiKey: '',
-      baseURL: station.url,
-      model: 'deepseek-flash',
-      thinkingMode: 'disabled',
-      headers: {},
-      extraBody: {},
-      serializeBackgroundLLM: false,
-      mergeMessages: false,
-      backgroundConcurrency: 3,
-    })
-    if (!result.ok) throw new Error(result.error || '新增配置失败')
-    const profiles = result.profiles || []
-    llmProfiles.value = profiles
-    const created = profiles.find(p => p.name === name)
-    if (!created) throw new Error('未找到新增配置')
-    await switchProfile(created.id)
-    if (activeLlmProfileId.value !== created.id) throw new Error('启用新配置失败')
-    showRelayModal.value = false
-    toastFn?.(`已新增并启用「${name}」`, 'success')
-  } catch (err) {
-    toastFn?.('快速配置失败: ' + (err.message || '未知错误'), 'error')
-  } finally {
-    relayConfigBusy.value = false
-  }
+    const success = await addProfile(name, {
+      connectionType: 'openai', apiKey: '', baseURL: station.url, model: 'deepseek-flash',
+      thinkingMode: 'disabled', headers: {}, extraBody: {},
+      serializeBackgroundLLM: false, mergeMessages: false, backgroundConcurrency: 3,
+    }, { activateNew: true })
+    if (success) {
+      showRelayModal.value = false
+      toastFn?.('已新增并启用「' + name + '」', 'success')
+    }
+  } finally { relayConfigBusy.value = false }
 }
 
 // 每日免费鸡蛋：点击按钮开/关；开 = 走 opencode zen 免费端点（免 Key、强制关思考），关 = 恢复自有配置
@@ -2813,30 +2563,28 @@ function burstEggSplash() {
 }
 
 function onFreeEggClick() {
-  if (freeEggBusy.value) return
+  if (llmBusy.value) return
   burstEggSplash()
   toggleFreeEgg()
 }
 async function toggleFreeEgg() {
-  if (freeEggBusy.value) return
+  if (llmBusy.value) return
   freeEggBusy.value = true
-  freeEgg.value = !freeEgg.value
   try {
-    const result = await setLlmFreeEgg(freeEgg.value)
-    if (result.ok) {
-      llmPreview.value = { ...result }
-      settingsStore.setHasApiKey(result.hasApiKey)
-      llmApiKey.value = ''
-      llmDirty.value = false
-      llmSaved.value = false
-      toastFn?.(freeEgg.value ? '已开启每日免费鸡蛋 🥚' : '已恢复自有 LLM 配置', 'success')
+    if (llmDirty.value) {
+      const options = { title: '切换免费模式', message: '当前修改尚未保存，切换会放弃这些修改。', okText: '放弃修改并切换' }
+      const accepted = confirmFn ? await confirmFn(options) : window.confirm(options.message)
+      if (!accepted) return
     }
+    const next = !freeEgg.value
+    const result = await setLlmFreeEgg(next)
+    if (!result.ok) throw new Error(result.error || '服务端未完成切换')
+    freeEgg.value = next
+    applyLlmConfig(result)
+    toastFn?.(next ? '已开启每日免费鸡蛋 🥚' : '已恢复自有 LLM 配置', 'success')
   } catch (err) {
-    freeEgg.value = !freeEgg.value
     toastFn?.('切换免费鸡蛋失败: ' + (err.message || '未知错误'), 'error')
-  } finally {
-    freeEggBusy.value = false
-  }
+  } finally { freeEggBusy.value = false }
 }
 
 function copyTextToClipboard(text) {
@@ -2955,138 +2703,52 @@ function onGuidedLlmConnected(result) {
   writeLlmSetupPreference(localStorage, 'guided')
 }
 
-const llmProfiles = ref([])
-const activeLlmProfileId = ref('')
-const showAddProfile = ref(false)
-const newProfileName = ref('')
-const newProfileInput = ref(null)
-watch(() => showAddProfile.value, async (v) => {
-  if (v) {
-    newProfileName.value = ''
-    await nextTick()
-    newProfileInput.value?.focus()
-  }
+const profileManager = useLlmProfiles({
+  api: { addLlmProfile, deleteLlmProfile, activateLlmProfile },
+  notify: (message, type) => toastFn?.(message, type),
+  confirm: options => confirmFn ? confirmFn(options) : window.confirm(options.title + '\n\n' + options.message),
+  isDirty: () => llmDirty.value,
+  isBlocked: () => llmSaving.value || freeEggBusy.value,
+  applyConfig: applyLlmConfig,
+  refreshFeatures: async () => {
+    const cfg = await getConfig()
+    // Profile changes own only these options. Unrelated settings may have local drafts.
+    features.serializeBackgroundLLM = cfg.features.serializeBackgroundLLM ?? false
+    features.mergeMessages = cfg.features.mergeMessages ?? false
+    backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
+    restoreLlmCustomMode()
+  },
 })
+const { profiles: llmProfiles, activeId: activeLlmProfileId, busy: profileBusy,
+  load: loadLlmProfiles, switchProfile, addProfile, removeProfile } = profileManager
+const llmBusy = computed(() => profileBusy.value || llmSaving.value || freeEggBusy.value)
 
-async function loadLlmProfiles(data) {
-  if (data) {
-    llmProfiles.value = data.llmProfiles || []
-    activeLlmProfileId.value = data.activeLlmProfileId || ''
-  } else {
-    const res = await getLlmProfiles()
-    llmProfiles.value = res.profiles || []
-    activeLlmProfileId.value = res.activeProfileId || ''
-  }
+function restoreLlmCustomMode() {
+  isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || llmHeadersEnabled.value || llmExtraBodyEnabled.value
+    || Boolean(features.mergeMessages || features.serializeBackgroundLLM)
 }
 
-async function switchProfile(id) {
-  if (id === activeLlmProfileId.value) return
-  try {
-    const result = await activateLlmProfile(id)
-    if (result.ok) {
-      activeLlmProfileId.value = result.activeProfileId
-      llmProfiles.value = result.profiles || []
-      if (result.llmConfig) {
-        llmPreview.value = { ...result.llmConfig }
-        llmBaseURL.value = result.llmConfig.baseURL || 'https://api.deepseek.com'
-        llmModel.value = result.llmConfig.model || 'deepseek-chat'
-        llmThinkingMode.value = result.llmConfig.thinkingMode || 'disabled'
-        restoreLlmMaxTokens(result.llmConfig)
-        applyLlmContextWindow(result.llmConfig.contextWindow)
-        const hasCustom = (result.llmConfig.headers && Object.keys(result.llmConfig.headers).length > 0)
-          || (result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length > 0)
-        isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
-        llmHeadersEnabled.value = Boolean(result.llmConfig.headers && Object.keys(result.llmConfig.headers).length)
-        llmExtraBodyEnabled.value = Boolean(result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length)
-        llmHeadersText.value = result.llmConfig.headers && Object.keys(result.llmConfig.headers).length
-          ? JSON.stringify(result.llmConfig.headers, null, 2) : '{}'
-        llmExtraBodyText.value = result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length
-          ? JSON.stringify(result.llmConfig.extraBody, null, 2) : '{}'
-        settingsStore.setHasApiKey(result.llmConfig.hasApiKey)
-        llmApiKey.value = ''
-        llmDirty.value = false
-        llmSaved.value = false
-        // 刷新完整的 features 和 concurrency（profile 切换会影响这些）
-        const cfg = await getConfig()
-        Object.assign(features, cfg.features)
-        normalizeIntimateFlags(cfg.features)
-        backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
-        freqSlider.value = cfg.features.proactiveChatFreq ?? 0.5
-        eventFreqSlider.value = cfg.features.eventFreq ?? 1
-        momentFreqStepIdx.value = momentStepFromValue(cfg.features.momentFreq, cfg.features.momentFreqMode)
-      }
-    }
-  } catch (err) {
-    console.error('[llm] switch profile failed:', err)
-  }
-}
-
-async function addProfile() {
-  const name = newProfileName.value.trim()
-  if (!name) return
-  try {
-    await addLlmProfile(name)
-    showAddProfile.value = false
-    newProfileName.value = ''
-    await loadLlmProfiles()
-  } catch (err) {
-    console.error('[llm] add profile failed:', err)
-  }
-}
-
-async function removeProfile(id) {
-  const profile = llmProfiles.value.find(p => p.id === id)
-  const name = profile?.name || '该配置'
-  const title = `删除「${name}」`
-  const body = llmProfiles.value.length <= 1
-    ? '这是最后一套配置，不可删除'
-    : `将删除该配置快照，当前正在使用的配置不受影响，此操作不可撤销`
-
-  if (!confirmFn) {
-    if (!window.confirm(`${title}\n\n${body}`)) return
-  } else {
-    const ok = await confirmFn({ title, message: body, danger: true, okText: '删除' })
-    if (!ok) return
-  }
-  if (llmProfiles.value.length <= 1) return
-  try {
-    const result = await deleteLlmProfile(id)
-    if (result.ok) {
-      llmProfiles.value = result.profiles || []
-      activeLlmProfileId.value = result.activeProfileId || ''
-      // 如果删除的是激活的，需要刷新当前配置
-      const cfg = await getConfig()
-      llmPreview.value = { ...cfg.llm }
-      llmBaseURL.value = cfg.llm.baseURL || 'https://api.deepseek.com'
-      llmModel.value = cfg.llm.model || 'deepseek-chat'
-      llmThinkingMode.value = cfg.llm.thinkingMode || 'disabled'
-      applyLlmContextWindow(cfg.llm.contextWindow)
-      const hasCustom = (cfg.llm.headers && Object.keys(cfg.llm.headers).length > 0)
-        || (cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length > 0)
-        || cfg.features?.mergeMessages
-      isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
-      llmHeadersEnabled.value = Boolean(cfg.llm.headers && Object.keys(cfg.llm.headers).length)
-      llmExtraBodyEnabled.value = Boolean(cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length)
-      llmHeadersText.value = cfg.llm.headers && Object.keys(cfg.llm.headers).length
-        ? JSON.stringify(cfg.llm.headers, null, 2) : '{}'
-      llmExtraBodyText.value = cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length
-        ? JSON.stringify(cfg.llm.extraBody, null, 2) : '{}'
-      Object.assign(features, cfg.features)
-      normalizeIntimateFlags(cfg.features)
-      backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
-      settingsStore.setHasApiKey(cfg.llm.hasApiKey)
-      llmApiKey.value = ''
-      llmDirty.value = false
-      llmSaved.value = false
-    }
-  } catch (err) {
-    console.error('[llm] delete profile failed:', err)
-  }
+function applyLlmConfig(saved) {
+  llmPreview.value = { ...saved }
+  llmBaseURL.value = saved.baseURL || 'https://api.deepseek.com'
+  llmModel.value = saved.model || 'deepseek-chat'
+  llmThinkingMode.value = saved.thinkingMode || 'disabled'
+  restoreLlmMaxTokens(saved)
+  applyLlmContextWindow(saved.contextWindow)
+  llmHeadersEnabled.value = Boolean(saved.headers && Object.keys(saved.headers).length)
+  llmExtraBodyEnabled.value = Boolean(saved.extraBody && Object.keys(saved.extraBody).length)
+  restoreLlmCustomMode()
+  llmHeadersText.value = JSON.stringify(saved.headers || {}, null, 2)
+  llmExtraBodyText.value = JSON.stringify(saved.extraBody || {}, null, 2)
+  settingsStore.setHasApiKey(saved.hasApiKey)
+  llmApiKey.value = ''
+  llmApiKeyTouched.value = false
+  llmDirty.value = false
+  llmSaved.value = false
 }
 
 onMounted(async () => {
   // 数据备份摘要独立加载：读失败只影响这一行，不阻塞设置页其它配置
-  refreshExportInfo()
   loadPoseControl()
   try {
     const data = await getConfig()
@@ -3506,6 +3168,8 @@ async function fetchNovelaiModels() {
 }
 
 function buildLlmPayload() {
+  if (!llmContextWindowValid.value) throw new Error('上下文窗口必须为正整数，或留空自动探测')
+  if (!llmHeadersValid.value || !llmExtraBodyValid.value) throw new Error('自定义请求头与请求体必须为 JSON 对象')
   // 接入方式（上游 v3.10.0）：Vertex 走服务账号，不下发 apiKey
   const payload = { connectionType: llmConnectionType.value }
   if (llmConnectionType.value === 'vertexai') {
@@ -3559,62 +3223,41 @@ async function runLlmConnectionTest() {
 }
 
 async function saveLlmConfig() {
-  if (llmSaving.value) return
+  if (llmBusy.value) return
   llmSaving.value = true
-
+  const revision = llmDraftRevision
   try {
     const payload = buildLlmPayload()
-    const result = await updateLlmConfig(payload)
-    if (result.ok) {
-      settingsStore.setHasApiKey(result.hasApiKey)
-      llmPreview.value = { ...result }
-      llmBaseURL.value = result.baseURL || llmBaseURL.value
-      llmModel.value = result.model || llmModel.value
-      llmThinkingMode.value = result.thinkingMode || 'disabled'
-      // 回填输出额度 + 接入方式/Vertex 公开字段（账号明文永远不回显）
-      restoreLlmMaxTokens(result)
-      // contextWindow 走 result（服务端可能把 null 解析成探测到的真实窗口）
-      if ('contextWindow' in result) applyLlmContextWindow(result.contextWindow)
-      llmHeadersEnabled.value = Boolean(result.headers && Object.keys(result.headers).length)
-      llmExtraBodyEnabled.value = Boolean(result.extraBody && Object.keys(result.extraBody).length)
-      llmHeadersText.value = result.headers && Object.keys(result.headers).length
-        ? JSON.stringify(result.headers, null, 2) : '{}'
-      llmExtraBodyText.value = result.extraBody && Object.keys(result.extraBody).length
-        ? JSON.stringify(result.extraBody, null, 2) : '{}'
-      if (payload.apiKey) llmApiKey.value = ''
-      llmApiKeyTouched.value = false
-
-      // 保存后台 LLM 任务队列设置（仅自定义 API 时有效，否则强制关闭）
-      if (isCustomBaseURL.value) {
-        await updateFeatureFlag('serializeBackgroundLLM', features.serializeBackgroundLLM)
-        if (features.serializeBackgroundLLM) {
-          await updateBackgroundConcurrency(backgroundConcurrency.value)
-        }
-        await updateFeatureFlag('mergeMessages', features.mergeMessages)
-      } else {
-        features.serializeBackgroundLLM = false
-        backgroundConcurrency.value = 3
-        await updateFeatureFlag('serializeBackgroundLLM', false)
-        features.mergeMessages = false
-        await updateFeatureFlag('mergeMessages', false)
-      }
-
-      await syncActiveLlmProfile()
-
-      llmDirty.value = false
+    const custom = isCustomBaseURL.value
+    const queue = custom && features.serializeBackgroundLLM
+    const concurrency = custom ? backgroundConcurrency.value : 3
+    const merge = custom && features.mergeMessages
+    const requireSaved = result => {
+      if (!result?.ok) throw new Error(result?.error || result?.message || '服务端未确认保存')
+      return result
+    }
+    const result = requireSaved(await updateLlmConfig(payload))
+    if (!result?.ok) throw new Error('服务端未确认保存')
+    // Keep the draft until all steps finish, so a failed secondary setting can be retried.
+    requireSaved(await updateFeatureFlag('serializeBackgroundLLM', queue))
+    if (queue) requireSaved(await updateBackgroundConcurrency(concurrency))
+    requireSaved(await updateFeatureFlag('mergeMessages', merge))
+    requireSaved(await syncActiveLlmProfile())
+    settingsStore.setHasApiKey(result.hasApiKey)
+    if (revision === llmDraftRevision) {
+      applyLlmConfig(result)
+      isCustomBaseURL.value = custom
+      features.serializeBackgroundLLM = queue
+      features.mergeMessages = merge
+      backgroundConcurrency.value = concurrency
       llmSaved.value = true
-      setTimeout(() => llmSaved.value = false, 2000)
+      setTimeout(() => { llmSaved.value = false }, 2000)
     } else {
-      // 服务端拒绝了这次保存（字段校验/凭据无效）：以前这里什么都不做，
-      // 界面停在「未保存」但没有任何原因，用户只会反复点。
-      toastFn?.(`模型配置保存失败：${result.error || result.message || '服务端拒绝了这次保存'}`, 'error')
+      toastFn?.('提交的配置已保存，之后的修改仍待保存。', 'info')
     }
   } catch (err) {
-    console.error('[llm] save failed:', err)
-    toastFn?.(`模型配置保存失败：${err?.message || '网络或服务异常'}`, 'error')
-  } finally {
-    llmSaving.value = false
-  }
+    toastFn?.('模型配置未全部保存：' + (err?.message || '网络或服务异常') + '，草稿已保留，可重试。', 'error')
+  } finally { llmSaving.value = false }
 }
 
 function isPresetActive(p) {
@@ -4304,89 +3947,6 @@ function resetTestPrompts() {
 /* ── 程序时间（面板自带皮肤，这里只负责与卡片头的间距） ── */
 .time-control-card .memory-settings-header { margin-bottom: 12px; }
 
-/* ── 数据备份（一键导出 / 一键导入） ── */
-.data-backup-card .toggle-row { border-bottom: none; }
-.data-backup-info {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 4px 0 2px;
-}
-.data-backup-info-label { font-size: 12px; color: var(--text-secondary); flex-shrink: 0; }
-.data-backup-info-text {
-  font-size: 13px;
-  color: var(--text-bright);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.6;
-}
-.data-backup-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding-top: 14px;
-}
-.data-backup-tip {
-  flex: 1;
-  min-width: 200px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-.data-backup-notice {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 1.7;
-  word-break: break-all;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-sunken);
-  color: var(--text-primary);
-}
-.data-backup-notice.is-success {
-  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
-  color: var(--success);
-}
-.data-backup-notice.is-error {
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-  color: var(--danger);
-}
-/* 导入结果提示的出现 / 消失：与全局口径一致的 0.3s 淡入淡出 */
-.backup-notice-fade-enter-active,
-.backup-notice-fade-leave-active {
-  transition: opacity 0.3s var(--ease-standard);
-}
-.backup-notice-fade-enter-from,
-.backup-notice-fade-leave-to { opacity: 0; }
-/* 隐藏的文件选择器：不进布局、不进 tab 序列（可点入口是旁边的 LinsheButton） */
-.data-backup-file {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  border: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-.data-backup-modal-line {
-  font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.75;
-  margin: 0 0 8px;
-}
-.data-backup-modal-line code {
-  font-size: 12px;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-  color: var(--text-bright);
-}
-.data-backup-modal-size { color: var(--text-secondary); font-size: 12px; }
 .maibot-settings-card .memory-settings-entry { margin-top: 14px; }
 .memory-settings-header h3 { margin-bottom: 4px; }
 .memory-settings-header p {

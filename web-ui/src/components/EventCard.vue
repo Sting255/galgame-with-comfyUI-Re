@@ -157,7 +157,7 @@
                 <!-- 排队中（尚未发送 HTTP，可取消重新选择） -->
                 <div v-else-if="event._queued" class="choice-loading is-queued">
                   <div class="loading-spinner"></div>
-                  <span>故事推进中…</span>
+                  <span>正在排队，轮到后自动推进…</span>
                   <div class="queued-back-btn" role="button" tabindex="0" @click.stop="onCancelQueue" @keydown.enter.prevent="onCancelQueue" @keydown.space.prevent="onCancelQueue">← 返回重选</div>
                 </div>
                 <div v-else class="vn-choices">
@@ -222,6 +222,7 @@ import LinsheButton from './ui/LinsheButton.vue'
 import TownBuildingFeatureContent from './town/TownBuildingFeatureContent.vue'
 
 const confirmFn = inject('confirm')
+const toastFn = inject('toast', () => {})
 const router = useRouter()
 
 const props = defineProps({
@@ -398,14 +399,17 @@ function openDetail() {
 function closeDetail() {
   detailOpen.value = false
   emit('closed')
-  choosing.value = false // 关闭详情时重置选择状态
 }
 
 async function onDelete() {
   showMenu.value = false
   const ok = await confirmFn({ title: '删除奇遇', message: '确定要删除这条奇遇吗？', okText: '删除', danger: true })
   if (!ok) return
-  await store.deleteEvent(props.event.id)
+  try {
+    await store.deleteEvent(props.event.id)
+  } catch (err) {
+    toastFn(`删除失败：${err?.message || '请稍后重试'}`, 'error')
+  }
 }
 
 function formatTime(dt) {
@@ -433,25 +437,15 @@ function onWheelScroll(e) {
 }
 
 async function onChoose(choice) {
-  if (choosing.value) return
-  // vn-submit 改为 div 后的禁用守卫（原 :disabled="!customText.trim()"，模板中 ref 自动解包，脚本内需 .value）
+  if (choosing.value || props.event.processing) return
   if (choice === 'C' && !customText.value.trim()) return
   const eventId = props.event.id
+  const draft = customText.value
   choosing.value = true
-  const customTextValue = customText.value
-  customText.value = ''
-  console.log(`[EventCard] onChoose START event=${eventId} choice=${choice} customText="${customTextValue}"`)
-
   try {
-    const result = await store.makeChoice(eventId, choice, choice === 'C' ? customTextValue : '')
-    console.log(`[EventCard] onChoose DONE event=${eventId} concluded=${result?.concluded} queued=${result === null}`)
-    if (!result) {
-      // 已排队：choosing 重置（本地状态），但 event.processing 为 true（store 状态）
-      // 模板 v-if="choosing || event.processing" → 仍然显示 loading
-      // SSE event_update 到达后 event.processing=false → loading 消失 + 新选项出现
-      choosing.value = false
-      return
-    }
+    const result = await store.makeChoice(eventId, choice, choice === 'C' ? draft : '')
+    if (!result || result.cancelled) return
+    if (choice === 'C' && customText.value === draft) customText.value = ''
     if (result.concluded) {
       emit('updated', { concluded: true })
       closeDetail()
@@ -462,11 +456,10 @@ async function onChoose(choice) {
       })
     }
   } catch (err) {
-    console.error(`[EventCard] onChoose ERROR event=${eventId}:`, err?.message || err)
+    toastFn(`推进失败：${err?.message || '请稍后重试'}，可重新选择`, 'error')
+  } finally {
+    choosing.value = false
   }
-
-  choosing.value = false
-  console.log(`[EventCard] onChoose END event=${eventId} choosing reset`)
 }
 
 /** 取消排队中的选择：从队列移除 + 恢复可点击状态 */
@@ -474,7 +467,6 @@ function onCancelQueue() {
   const eventId = props.event.id
   console.log(`[EventCard] cancelQueue event=${eventId}`)
   store.cancelQueuedChoice(eventId)
-  choosing.value = false
 }
 
 /** 撤回上一次分支选择，回到上一步 */
@@ -494,7 +486,7 @@ async function onUndo() {
       })
     }
   } catch (err) {
-    console.error(`[EventCard] undo ERROR event=${eventId}:`, err?.message || err)
+    toastFn(`撤销失败：${err?.message || '请稍后重试'}`, 'error')
   }
 
   undoing.value = false
@@ -502,13 +494,16 @@ async function onUndo() {
 
 // 到期自动触发结局（非 compact 模式，即活跃事件到期时主动调用后端生成结局）
 let _expiredTriggered = false
+let concludeTimer = null
+onUnmounted(() => clearTimeout(concludeTimer))
 watch(isExpired, (val) => {
   console.log(`[EventCard] isExpired changed to ${val} for "${props.event?.title}" (compact=${props.compact}, alreadyTriggered=${_expiredTriggered})`)
   if (val && !props.compact && !_expiredTriggered) {
     _expiredTriggered = true
     const eventId = props.event.id
     console.log(`[EventCard] Scheduling auto-conclude for event ${eventId} in 2s...`)
-    setTimeout(async () => {
+    concludeTimer = setTimeout(async () => {
+      if (props.event.processing || !isExpired.value) { _expiredTriggered = false; return }
       try {
         console.log(`[EventCard] Calling concludeEvent API for ${eventId}`)
         const res = await api.concludeEvent(eventId)

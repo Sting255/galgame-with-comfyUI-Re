@@ -589,46 +589,15 @@ async function main() {
         "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
         "--trusted-host", "pypi.tuna.tsinghua.edu.cn"], { print: true, timeout: 300000 });
       if (!r.ok) {
-        warn("构建 venv 安装失败，尝试系统 pip...");
-        const r2 = await exec("pip", ["install", "PySide6", "psutil", "pyinstaller"], { print: true });
-        if (!r2.ok) { fail("PyInstaller 依赖安装失败!"); process.exit(1); }
+        fail("构建 venv 依赖安装失败，请修复该环境后重试；不回退系统 pip。");
+        process.exit(1);
       }
     }
 
-    // 优先使用构建 venv 运行 PyInstaller，失败则回退系统 pyinstaller
-    let r = await exec(BUILD_VENV_PY, ["-m", "PyInstaller",
-      "--onefile", "--windowed",
-      "--name", "邻舍.EXE",
-      "--icon", "assets/icon.ico",
-      "--add-data", "assets/launchHeader.jpg;assets",
-      "--add-data", "assets/icon.ico;assets",
-      "--add-data", "assets/MiSans-Regular.ttf;assets",
-      "--add-data", "assets/navbar-title.png;assets",
-      "--hidden-import", "PySide6.QtCore",
-      "--hidden-import", "PySide6.QtGui",
-      "--hidden-import", "PySide6.QtWidgets",
-      "--hidden-import", "PySide6.QtNetwork",
-      "--clean", "--noconfirm",
-      "main.py",
-    ], { cwd: launcherDir, print: true, timeout: 300000 });
-    if (!r.ok) {
-      warn("捆绑 Python PyInstaller 失败，尝试系统 pyinstaller...");
-      r = await exec("pyinstaller", [
-        "--onefile", "--windowed",
-        "--name", "邻舍.EXE",
-        "--icon", "assets/icon.ico",
-        "--add-data", "assets/launchHeader.jpg;assets",
-        "--add-data", "assets/icon.ico;assets",
-        "--add-data", "assets/MiSans-Regular.ttf;assets",
-        "--add-data", "assets/navbar-title.png;assets",
-        "--hidden-import", "PySide6.QtCore",
-        "--hidden-import", "PySide6.QtGui",
-        "--hidden-import", "PySide6.QtWidgets",
-        "--hidden-import", "PySide6.QtNetwork",
-        "--clean", "--noconfirm",
-        "main.py",
-      ], { cwd: launcherDir, print: true });
-    }
+    // 所有入口共用隔离 DLL 搜索路径与实际窗口自检，禁止回退到污染的系统环境。
+    const r = await exec(BUILD_VENV_PY, ["build_launcher.py"], {
+      cwd: launcherDir, print: true, timeout: 300000,
+    });
     if (!r.ok) { fail("PyInstaller 打包失败!"); process.exit(1); }
     ok("PyInstaller 打包完成");
   }
@@ -680,7 +649,7 @@ async function main() {
     //   e2e\node_modules 由 node_modules 这个目录名整体覆盖）
     const robocopyExclude = [".git", "node_modules", "release", "__pycache__", ".cache", ".mimosa", "logs"];
     // 运行时临时快照（如 agent-core/townstate.tmp.json）不属于发布内容，别带进用户包里
-    const robocopyExcludeFiles = ["*.tmp.json"];
+    const robocopyExcludeFiles = ["*.tmp.json", ".access-token"];
     const rcOk = await robocopy(ROOT, RELEASE_DIR, robocopyExclude, robocopyExcludeFiles);
     if (!rcOk) { fail("文件复制失败!"); process.exit(1); }
   } else {
@@ -800,6 +769,7 @@ async function main() {
   // 三项分别对应 7z 的 -xr'!*.mimosa' / -xr'!e2e\node_modules' / -xr'!logs'。
   // **不含 .git** —— 交付包要保留 .git（审查 §六 第 1 条）。
   for (const stray of [
+    resolve(RELEASE_DIR, "agent-core", "data", ".access-token"),
     resolve(RELEASE_DIR, ".mimosa"),
     resolve(RELEASE_DIR, "logs"),
     resolve(RELEASE_DIR, "e2e", "node_modules"),

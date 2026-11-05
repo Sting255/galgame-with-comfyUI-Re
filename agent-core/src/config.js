@@ -2,7 +2,9 @@ import dotenv from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { randomUUID } from 'node:crypto';
 import { resolveServicePort } from './utils/servicePort.js';
+import { resolveEnvPath, persistEnvValues } from './utils/envFile.js';
 // 设置读写走独立的 db/settings 模块（不经过 db/index.js，避免形成 config ↔ db 循环依赖）
 import { setSetting, getSetting } from './db/settings.js';
 import { notifyWeatherSourceChange } from './services/weatherSource.js';
@@ -14,7 +16,7 @@ import { defaultMaxTokens, isValidMaxTokens } from './llm/modelCapabilities.js';
 import { parseServiceAccount, normalizeVertexRegion } from './llm/vertex-client.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const envPath = resolve(__dirname, '..', '.env');
+const envPath = resolveEnvPath();
 dotenv.config({ path: envPath });
 
 // 每日免费鸡蛋：opencode zen 免费端点（无需 API Key，按 IP 限流）
@@ -537,22 +539,6 @@ if (config.comfyui.tlsVerify === false) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
-function persistEnv(key, value) {
-  let envContent = '';
-  if (fs.existsSync(envPath)) {
-    envContent = fs.readFileSync(envPath, 'utf8');
-  } else {
-    envContent = '# 此文件由系统自动管理，通过 Settings 页面修改配置即可\n';
-  }
-  const line = `${key}=${String(value)}`;
-  if (envContent.includes(`${key}=`)) {
-    envContent = envContent.replace(new RegExp(`^${key}=.*$`, 'm'), line);
-  } else {
-    envContent += `\n${line}`;
-  }
-  fs.writeFileSync(envPath, envContent, 'utf8');
-}
-
 // 同步写入 DB（内存已更新，DB 写入由 setSetting 同步完成）
 function persistSettingSync(key, value) {
   try {
@@ -568,6 +554,10 @@ export function getNovelaiApiKey() {
 }
 
 export function updateComfyConfig({ artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiProxyUrl, novelaiUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey }) {
+  const envUpdates = {};
+  if (url !== undefined) envUpdates.COMFYUI_URL = String(url).trim().replace(/\/+$/, '');
+  if (tlsVerify !== undefined) envUpdates.COMFYUI_TLS_VERIFY = String(tlsVerify === true || tlsVerify === 'true');
+  persistEnvValues(envPath, envUpdates);
   if (imageProvider !== undefined) {
     const provider = imageProvider === 'novelai' ? 'novelai' : 'comfyui';
     config.comfyui.imageProvider = provider;
@@ -666,7 +656,7 @@ export function updateComfyConfig({ artist, width, height, url, momentsArtist, m
   }
   if (width !== undefined) { config.comfyui.width = parseInt(width, 10) || config.comfyui.width; persistSettingSync('comfy_width', config.comfyui.width); }
   if (height !== undefined) { config.comfyui.height = parseInt(height, 10) || config.comfyui.height; persistSettingSync('comfy_height', config.comfyui.height); }
-  if (url !== undefined) { const n = String(url).replace(/\/+$/, ''); config.comfyui.url = n; persistEnv('COMFYUI_URL', n); }
+  if (url !== undefined) config.comfyui.url = envUpdates.COMFYUI_URL;
   if (momentsArtist !== undefined) { config.comfyui.momentsArtist = momentsArtist; persistSettingSync('comfy_moments_artist', momentsArtist); }
   if (momentsWidth !== undefined) { config.comfyui.momentsWidth = parseInt(momentsWidth, 10) || config.comfyui.momentsWidth; persistSettingSync('comfy_moments_width', config.comfyui.momentsWidth); }
   if (momentsHeight !== undefined) { config.comfyui.momentsHeight = parseInt(momentsHeight, 10) || config.comfyui.momentsHeight; persistSettingSync('comfy_moments_height', config.comfyui.momentsHeight); }
@@ -675,7 +665,6 @@ export function updateComfyConfig({ artist, width, height, url, momentsArtist, m
   if (eventHeight !== undefined) { config.comfyui.eventHeight = parseInt(eventHeight, 10) || config.comfyui.eventHeight; persistSettingSync('comfy_event_height', config.comfyui.eventHeight); }
   if (tlsVerify !== undefined) {
     config.comfyui.tlsVerify = tlsVerify === true || tlsVerify === 'true';
-    persistEnv('COMFYUI_TLS_VERIFY', String(config.comfyui.tlsVerify));
     if (!config.comfyui.tlsVerify) {
       process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     } else {
@@ -1051,8 +1040,7 @@ function resolveLlmApiKey() {
   try {
     if (fs.existsSync(envPath)) {
       const raw = fs.readFileSync(envPath, 'utf8');
-      const m = raw.match(/^LLM_API_KEY=(.+)$/m);
-      if (m) envKey = m[1].trim();
+      envKey = dotenv.parse(raw).LLM_API_KEY || '';
     }
   } catch {}
   // 优先用内存值（可能通过 UI 刚保存但还没写盘），回退到 .env 文件值
@@ -1114,13 +1102,16 @@ export function updateFreeEggEnabled(enabled) {
  */
 function parseContextWindow(value) {
   if (value === null || value === undefined || value === '') return null;
-  const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined; // undefined = 非法值
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim()))) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined; // undefined = 非法值
   return parsed;
 }
 
 export function updateLlmConfig({ apiKey, baseURL, model, thinkingMode, reasoningEffort, maxTokens, headers, extraBody, connectionType, vertexRegion, vertexServiceAccount, contextWindow, contextWindowSource }) {
-  const previousModel = config.llm.model;
+  const previousModel = config.llm._model;
+  const next = {};
+  const envUpdates = {};
   // ── 先校验全部入参，再落任何字段 ──
   // 上游 v3.10.0 口径：非法输入必须整体拒绝，不能留"改了一半"的状态（有测试钉住 before/after 相等）
   let headersValue;
@@ -1154,78 +1145,82 @@ export function updateLlmConfig({ apiKey, baseURL, model, thinkingMode, reasonin
     return { ok: false, error: 'API Key cannot be empty' };
   }
 
-  // ── 校验通过，开始落库 ──
+  const parsedWindow = contextWindow === undefined ? undefined : parseContextWindow(contextWindow);
+  if (contextWindow !== undefined && parsedWindow === undefined) {
+    return { ok: false, error: 'contextWindow must be a positive integer' };
+  }
+
+  // 先准备全部字段，文件保存成功后才发布运行状态与数据库设置。
   if (connectionType !== undefined) {
-    config.llm.connectionType = connectionType;
-    persistSettingSync('llm_connection_type', connectionType);
+    next.connectionType = connectionType;
   }
   if (vertexRegion !== undefined) {
-    config.llm.vertexRegion = vertexRegion;
-    persistSettingSync('llm_vertex_region', vertexRegion);
+    next.vertexRegion = vertexRegion;
   }
   if (vertexServiceAccount) {
     // 空串表示"保留已保存的凭证"（前端回显时永远拿不到明文，只回 hasVertexServiceAccount）
-    config.llm.vertexServiceAccount = vertexServiceAccount;
-    persistSettingSync('llm_vertex_service_account', vertexServiceAccount);
+    next.vertexServiceAccount = vertexServiceAccount;
   }
   if (apiKey !== undefined) {
-    config.llm.apiKey = apiKey.trim();
-    persistEnv('LLM_API_KEY', config.llm.apiKey);
+    next.apiKey = apiKey.trim();
+    envUpdates.LLM_API_KEY = next.apiKey;
   }
   if (baseURL !== undefined) {
-    config.llm.baseURL = baseURL;
-    persistEnv('LLM_BASE_URL', baseURL);
+    next.baseURL = baseURL;
+    envUpdates.LLM_BASE_URL = baseURL;
   }
   if (model !== undefined) {
-    config.llm.model = model;
-    persistEnv('LLM_MODEL', model);
+    next.model = model;
+    envUpdates.LLM_MODEL = model;
   }
   if (thinkingMode !== undefined) {
-    config.llm.thinkingMode = thinkingMode;
-    persistEnv('LLM_THINKING_MODE', thinkingMode);
+    next.thinkingMode = thinkingMode;
+    envUpdates.LLM_THINKING_MODE = thinkingMode;
   }
   if (reasoningEffort !== undefined) {
     // 用户口径"默认一定要关掉思考"：low/high/max 照传，**空串与非法值一律归一回 low**
     // （不提供"置空 = 不发字段"的出口 —— 那会让 deepseek 系退回开着思考跑）。
     const effort = ['low', 'high', 'max'].includes(String(reasoningEffort)) ? String(reasoningEffort) : 'low';
-    config.llm.reasoningEffort = effort;
-    persistEnv('LLM_REASONING_EFFORT', effort);
+    next.reasoningEffort = effort;
+    envUpdates.LLM_REASONING_EFFORT = effort;
   }
   if (maxTokens !== undefined || baseURL !== undefined || model !== undefined) {
     // 换地址/换模型时也要重算默认额度（显式 maxTokens 优先）
-    config.llm.maxTokens = maxTokens ?? defaultMaxTokens(
-      config.llm.connectionType === 'vertexai' ? '' : config.llm.baseURL,
-      config.llm.model,
+    next.maxTokens = maxTokens ?? defaultMaxTokens(
+      (next.connectionType ?? config.llm._connectionType) === 'vertexai' ? '' : (next.baseURL ?? config.llm._baseURL),
+      next.model ?? config.llm._model,
     );
-    persistEnv('LLM_MAX_TOKENS', String(config.llm.maxTokens));
+    envUpdates.LLM_MAX_TOKENS = String(next.maxTokens);
   }
   if (headersValue !== undefined) {
-    config.llm.headers = headersValue;
-    persistEnv('LLM_HEADERS', JSON.stringify(config.llm.headers));
+    next.headers = headersValue;
+    envUpdates.LLM_HEADERS = JSON.stringify(next.headers);
   }
   if (extraBodyValue !== undefined) {
-    config.llm.extraBody = extraBodyValue;
-    persistEnv('LLM_EXTRA_BODY', JSON.stringify(config.llm.extraBody));
+    next.extraBody = extraBodyValue;
+    envUpdates.LLM_EXTRA_BODY = JSON.stringify(next.extraBody);
   }
   if (contextWindow !== undefined) {
-    const value = parseContextWindow(contextWindow);
-    if (value === undefined) {
-      return { ok: false, error: 'contextWindow must be a positive integer' };
-    }
-    config.llm.contextWindow = value;
+    const value = parsedWindow;
+    next.contextWindow = value;
     // 填了值即视为用户声明；清空则连来源一起清空，交给上游探测/默认值回退
-    config.llm.contextWindowSource = value === null
+    next.contextWindowSource = value === null
       ? null
       : (['provider', 'default'].includes(contextWindowSource) ? contextWindowSource : 'declared');
-    persistEnv('LLM_CONTEXT_WINDOW', value === null ? '' : String(value));
-    persistEnv('LLM_CONTEXT_WINDOW_SOURCE', config.llm.contextWindowSource || '');
+    envUpdates.LLM_CONTEXT_WINDOW = value === null ? '' : String(value);
+    envUpdates.LLM_CONTEXT_WINDOW_SOURCE = next.contextWindowSource || '';
   } else if (model !== undefined && model !== previousModel) {
     // 换模型后旧窗口不再成立（无论来自用户声明还是上游探测）：清空，等新模型重新声明/探测
-    config.llm.contextWindow = null;
-    config.llm.contextWindowSource = null;
-    persistEnv('LLM_CONTEXT_WINDOW', '');
-    persistEnv('LLM_CONTEXT_WINDOW_SOURCE', '');
+    next.contextWindow = null;
+    next.contextWindowSource = null;
+    envUpdates.LLM_CONTEXT_WINDOW = '';
+    envUpdates.LLM_CONTEXT_WINDOW_SOURCE = '';
   }
+  persistEnvValues(envPath, envUpdates);
+  Object.assign(config.llm, next);
+  if (connectionType !== undefined) persistSettingSync('llm_connection_type', connectionType);
+  if (vertexRegion !== undefined) persistSettingSync('llm_vertex_region', vertexRegion);
+  if (vertexServiceAccount) persistSettingSync('llm_vertex_service_account', vertexServiceAccount);
   console.log('[config] LLM settings saved');
   return { ok: true };
 }
@@ -1412,7 +1407,7 @@ export function getActiveProfileId() {
 
 export function addLlmProfile(name, overrides = {}) {
   const profiles = readProfilesFromDb();
-  const id = 'p_' + Date.now();
+  const id = 'p_' + randomUUID();
   const now = new Date().toISOString();
   const profile = {
     id,
@@ -1458,55 +1453,60 @@ export function deleteLlmProfile(id) {
   }
   const activeId = getActiveProfileId();
   profiles = profiles.filter(p => p.id !== id);
-  writeProfilesToDb(profiles);
-
   if (activeId === id) {
     const first = profiles[0];
-    setSetting('active_llm_profile_id', first.id);
     _applyProfileToConfig(first);
+    setSetting('active_llm_profile_id', first.id);
   }
+  writeProfilesToDb(profiles);
   return { ok: true };
 }
 
 function _applyProfileToConfig(profile) {
-  config.llm.apiKey = profile.apiKey || '';
-  persistEnv('LLM_API_KEY', config.llm.apiKey);
+  const next = {};
+  const envUpdates = {};
+  next.apiKey = profile.apiKey || '';
+  envUpdates.LLM_API_KEY = next.apiKey;
   if (profile.baseURL !== undefined) {
-    config.llm.baseURL = profile.baseURL;
-    persistEnv('LLM_BASE_URL', profile.baseURL);
+    next.baseURL = profile.baseURL;
+    envUpdates.LLM_BASE_URL = profile.baseURL;
   }
   if (profile.model !== undefined) {
-    config.llm.model = profile.model;
-    persistEnv('LLM_MODEL', profile.model);
+    next.model = profile.model;
+    envUpdates.LLM_MODEL = profile.model;
   }
-  config.llm.thinkingMode = ['enabled', 'disabled', 'omit'].includes(profile.thinkingMode)
+  next.thinkingMode = ['enabled', 'disabled', 'omit'].includes(profile.thinkingMode)
     ? profile.thinkingMode
     : 'disabled';
-  persistEnv('LLM_THINKING_MODE', config.llm.thinkingMode);
+  envUpdates.LLM_THINKING_MODE = next.thinkingMode;
   // 接入方式 / Vertex 凭证随配置切换；旧配置没有这些字段 → 回落到 openai + 空凭证
-  config.llm.connectionType = profile.connectionType === 'vertexai' ? 'vertexai' : 'openai';
-  config.llm.vertexRegion = profile.vertexRegion || 'global';
-  config.llm.vertexServiceAccount = profile.vertexServiceAccount || '';
+  next.connectionType = profile.connectionType === 'vertexai' ? 'vertexai' : 'openai';
+  next.vertexRegion = profile.vertexRegion || 'global';
+  next.vertexServiceAccount = profile.vertexServiceAccount || '';
   // 输出额度：配置里有就用，没有就按新模型算
-  config.llm.maxTokens = isValidMaxTokens(profile.maxTokens)
+  next.maxTokens = isValidMaxTokens(profile.maxTokens)
     ? profile.maxTokens
-    : defaultMaxTokens(config.llm.connectionType === 'vertexai' ? '' : config.llm.baseURL, config.llm.model);
-  persistEnv('LLM_MAX_TOKENS', String(config.llm.maxTokens));
-  config.llm.reasoningEffort = ['low', 'high', 'max'].includes(profile.reasoningEffort)
+    : defaultMaxTokens(next.connectionType === 'vertexai' ? '' : (next.baseURL ?? config.llm._baseURL), next.model ?? config.llm._model);
+  envUpdates.LLM_MAX_TOKENS = String(next.maxTokens);
+  next.reasoningEffort = ['low', 'high', 'max'].includes(profile.reasoningEffort)
     ? profile.reasoningEffort
     : 'low';
-  persistEnv('LLM_REASONING_EFFORT', config.llm.reasoningEffort);  config.llm.headers = profile.headers || {};
-  persistEnv('LLM_HEADERS', JSON.stringify(config.llm.headers));
-  config.llm.extraBody = profile.extraBody || {};
-  persistEnv('LLM_EXTRA_BODY', JSON.stringify(config.llm.extraBody));
+  envUpdates.LLM_REASONING_EFFORT = next.reasoningEffort;
+  next.headers = profile.headers || {};
+  envUpdates.LLM_HEADERS = JSON.stringify(next.headers);
+  next.extraBody = profile.extraBody || {};
+  envUpdates.LLM_EXTRA_BODY = JSON.stringify(next.extraBody);
   // 上下文窗口随配置一起切换（旧配置可能没有该字段 → 清空，由上游探测/默认值回退）。
   // 来源只认三个合法值：config 里的值可能是用户声明也可能是上游查到的，写错来源会误导面板。
-  config.llm.contextWindow = parseContextWindow(profile.contextWindow) ?? null;
-  config.llm.contextWindowSource = config.llm.contextWindow
+  next.contextWindow = parseContextWindow(profile.contextWindow) ?? null;
+  next.contextWindowSource = next.contextWindow
     ? (['declared', 'provider', 'default'].includes(profile.contextWindowSource) ? profile.contextWindowSource : 'declared')
     : null;
-  persistEnv('LLM_CONTEXT_WINDOW', config.llm.contextWindow === null ? '' : String(config.llm.contextWindow));
-  persistEnv('LLM_CONTEXT_WINDOW_SOURCE', config.llm.contextWindowSource || '');
+  envUpdates.LLM_CONTEXT_WINDOW = next.contextWindow === null ? '' : String(next.contextWindow);
+  envUpdates.LLM_CONTEXT_WINDOW_SOURCE = next.contextWindowSource || '';
+
+  persistEnvValues(envPath, envUpdates);
+  Object.assign(config.llm, next);
 
   if (profile.serializeBackgroundLLM !== undefined) {
     updateFeatureFlag('serializeBackgroundLLM', profile.serializeBackgroundLLM);
@@ -1525,8 +1525,8 @@ export function activateLlmProfile(id) {
   if (!profile) {
     return { ok: false, error: '配置不存在' };
   }
-  setSetting('active_llm_profile_id', id);
   _applyProfileToConfig(profile);
+  setSetting('active_llm_profile_id', id);
 
   // resetClient is imported dynamically to avoid circular dependency at module level
   return { ok: true };
@@ -1538,21 +1538,22 @@ export function syncActiveLlmProfile() {
   const profiles = readProfilesFromDb();
   const idx = profiles.findIndex(p => p.id === activeId);
   if (idx === -1) return;
+  // 免费模式的 getter 是临时运行视图；档案始终保存用户自己的配置。
   profiles[idx] = {
     ...profiles[idx],
-    apiKey: config.llm.apiKey || '',
-    baseURL: config.llm.baseURL || '',
-    model: config.llm.model || '',
-    connectionType: config.llm.connectionType || 'openai',
+    apiKey: config.llm._apiKey || '',
+    baseURL: config.llm._baseURL || '',
+    model: config.llm._model || '',
+    connectionType: config.llm._connectionType || 'openai',
     vertexRegion: config.llm.vertexRegion || 'global',
     vertexServiceAccount: config.llm.vertexServiceAccount || '',
-    maxTokens: config.llm.maxTokens ?? null,
-    thinkingMode: config.llm.thinkingMode || 'disabled',
-    reasoningEffort: config.llm.reasoningEffort || 'low',
-    headers: config.llm.headers || {},
-    extraBody: config.llm.extraBody || {},
-    contextWindow: config.llm.contextWindow ?? null,
-    contextWindowSource: config.llm.contextWindowSource || null,
+    maxTokens: config.llm._maxTokens ?? defaultMaxTokens(config.llm._connectionType === 'vertexai' ? '' : config.llm._baseURL, config.llm._model),
+    thinkingMode: config.llm._thinkingMode || 'disabled',
+    reasoningEffort: config.llm._reasoningEffort || 'low',
+    headers: config.llm._headers || {},
+    extraBody: config.llm._extraBody || {},
+    contextWindow: config.llm._contextWindow ?? null,
+    contextWindowSource: config.llm._contextWindowSource || null,
     serializeBackgroundLLM: config.features.serializeBackgroundLLM || false,
     mergeMessages: config.features.mergeMessages || false,
     backgroundConcurrency: config.features.backgroundLLMMaxConcurrency || 3,

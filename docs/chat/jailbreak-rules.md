@@ -279,6 +279,6 @@ $env:DB_PATH = ':memory:'; $env:LOG_TO_FILE = 'false'
 
 配套的另一半（不看破限词、只判输出）在 `services/imagePromptResponse.js` 的
 `needsExplicitImageRewrite`：对话露骨 + 画面描述一个露骨词都没有 ⇒ 追加一条重写要求再要一次。
-两件事的完整口径见 `docs/chat-image-no-filter.md`。
+两件事的完整口径见 `docs/images/chat-image-no-filter.md`。
 测试：`promptShield.test.js` ④ 组（生图用完整版 / 普通链仍紧凑 / 用户规则集不被覆盖）
 + `chatImageExplicitRewrite.test.js`。

@@ -8,7 +8,7 @@ import {
 /**
  * 触摸动作统计聚合（task-19 · 阶段三）——**只读**，供前端统计面板用。
  *
- * 口径（docs/touch-system.md §3.6 为唯一契约说明）：
+ * 口径（docs/characters/touch-system.md §3.6 为唯一契约说明）：
  *   · 数据源：`touch_events`（明细）+ `character_touch_state`（每动作当前腻烦/偏好）
  *     + `character_intimate_log`（Lv3 的看板记账，`source_uid LIKE 'touch:%'`）
  *     + `image_tasks`（配图，`style = 'touch-action'`，只统计私聊会话 `char_<id>`）；
@@ -41,7 +41,7 @@ function levelLabel(level) {
 /**
  * @param {number|string} characterId
  * @param {{days?:number, recent?:number, db?:object}} [options]
- * @returns {object} 形状见 docs/touch-system.md §3.6
+ * @returns {object} 形状见 docs/characters/touch-system.md §3.6
  */
 export function getTouchStats(characterId, { days = DEFAULT_DAYS, recent = DEFAULT_RECENT, db = getDb() } = {}) {
   const id = Number(characterId);

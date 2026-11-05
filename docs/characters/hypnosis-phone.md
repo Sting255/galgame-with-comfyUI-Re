@@ -742,4 +742,4 @@ $env:DB_PATH=':memory:'; node --test --test-concurrency=1 test/hypnosisForceToy.
 ```
 
 `hypnosisForceToy.test.js` 含**全玩具巡检**（首期 5 件逐一过）—— 这也是 §0 说的
-「`TOY_KEYS` 顺序与内容被测试逐项钉住」的三处之一（另两处见 `docs/toys.md` §0.2）。
+「`TOY_KEYS` 顺序与内容被测试逐项钉住」的三处之一（另两处见 `docs/characters/toys.md` §0.2）。

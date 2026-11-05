@@ -30,6 +30,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 process.env.DB_PATH = ':memory:';
+process.env.LLM_API_KEY = 'fixture-reasoning-key'; // 仅发送到本机 HTTP 桩
 
 const { config, getLlmConfig } = await import('../src/config.js');
 config.dbPath = ':memory:';

@@ -2,15 +2,15 @@
   <div class="mailbox-view">
     <!-- ══ Top Bar ══ -->
     <div class="mailbox-topbar" :class="{ 'topbar-hidden': isMobile && !headerVisible }">
-      <linshe-button variant="icon" class="topbar-btn" @click="onBack">
+      <linshe-button variant="icon" class="topbar-btn" aria-label="返回" :disabled="sending" @click="onBack">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="15 18 9 12 15 6"/>
+          <polyline points="15 18 9 12 15 6" />
         </svg>
       </linshe-button>
       <span class="topbar-title">信箱</span>
-      <linshe-button variant="icon" class="topbar-btn" @click="startWrite">
+      <linshe-button variant="icon" class="topbar-btn" aria-label="写信" :disabled="sending" @click="startWrite">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+          <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
         </svg>
       </linshe-button>
     </div>
@@ -32,7 +32,7 @@
 
         <div v-else-if="store.letters.length === 0" class="state-empty">
           <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#8a7a6a" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.12">
-            <rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 7l-10 6L2 7"/>
+            <rect x="2" y="4" width="20" height="16" rx="2" /><path d="M22 7l-10 6L2 7" />
           </svg>
           <p class="empty-title">还没有任何通信</p>
           <p class="empty-hint">写下第一封信吧</p>
@@ -50,10 +50,10 @@
             <div class="card-env-col">
               <div class="card-envelope">
                 <svg width="48" height="36" viewBox="0 0 48 36" fill="none">
-                  <rect x="2" y="8" width="44" height="26" rx="2" fill="#f5e6d3" stroke="#c4a882" stroke-width="1.2"/>
-                  <path d="M2 8 L24 22 L46 8" fill="#e8d5c0" stroke="#c4a882" stroke-width="1.2"/>
-                  <line x1="2" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2"/>
-                  <line x1="46" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2"/>
+                  <rect x="2" y="8" width="44" height="26" rx="2" fill="#f5e6d3" stroke="#c4a882" stroke-width="1.2" />
+                  <path d="M2 8 L24 22 L46 8" fill="#e8d5c0" stroke="#c4a882" stroke-width="1.2" />
+                  <line x1="2" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2" />
+                  <line x1="46" y1="8" x2="24" y2="22" stroke="#c4a882" stroke-width="1.2" />
                 </svg>
                 <img v-if="letter.avatar_path" :src="letter.avatar_path" class="card-mini-avatar" alt="" />
                 <span v-else class="card-mini-avatar card-mini-fallback">{{ (letter.display_name || '?')[0] }}</span>
@@ -86,13 +86,14 @@
                 <div class="detail-header-meta" :class="statusTimeClass(activeLetter)">{{ statusTimeText(activeLetter) }}</div>
               </div>
             </div>
-            <linshe-button variant="danger" class="btn-delete" @click="onDeleteLetter(activeLetter.id)">删除信件</linshe-button>
+            <linshe-button variant="danger" class="btn-delete" :disabled="activeLetter.status === 'processing' || deletingId !== null || retryingId !== null" :loading="deletingId === activeLetter.id" @click="onDeleteLetter(activeLetter.id)">删除信件</linshe-button>
           </div>
 
           <!-- Content -->
           <div class="detail-card">
+            <LetterFailure v-if="activeLetter.status === 'failed'" :letter="activeLetter" :busy="retryingId === activeLetter.id" :disabled="deletingId !== null" @retry="onRetryLetter" />
             <!-- 未回复：用户寄出的信 -->
-            <div v-if="!isReplied(activeLetter) && activeLetter.status !== 'processing'" class="detail-content detail-outgoing">
+            <div v-if="!isReplied(activeLetter) && !['processing', 'failed'].includes(activeLetter.status)" class="detail-content detail-outgoing">
               <div class="detail-text" :style="writeFontStyle">{{ activeLetter.content }}</div>
             </div>
 
@@ -120,20 +121,6 @@
               <span class="spinner"></span>
               <p class="waiting-text">正在等待角色回信...</p>
               <p v-if="activeLetter.reply_at" class="waiting-estimate">预计 {{ estimateReply(activeLetter) }}</p>
-            </div>
-
-            <!-- 失败终态（2026-10-17 §P2-1）：不再自动重试，给用户一个人话解释 + 重新投递入口 -->
-            <div v-else-if="activeLetter.status === 'failed'" class="detail-failed">
-              <p class="failed-title">这封信没能送到</p>
-              <p class="failed-hint">
-                连续 {{ activeLetter.retry_count || 5 }} 次尝试都失败了，已停止自动重试（免得一直消耗额度）。
-                常见原因是 LLM 配置不通或生图服务没开 —— 处理完后可以点下面重新投递。
-              </p>
-              <linshe-button
-                variant="primary"
-                :loading="retryingId === activeLetter.id"
-                @click="onRetryLetter(activeLetter.id)"
-              >重新投递</linshe-button>
             </div>
 
             <!-- 配图：放在信纸下方 -->
@@ -175,9 +162,9 @@
       <Transition name="compose-slide">
         <div v-if="writing && selectedChar" class="compose-panel" :style="composePanelStyle">
           <div class="compose-header">
-            <linshe-button variant="ghost" class="compose-back" @click="cancelWrite">
+            <linshe-button variant="ghost" class="compose-back" :disabled="sending" @click="cancelWrite">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="15 18 9 12 15 6"/>
+                <polyline points="15 18 9 12 15 6" />
               </svg>
               返回
             </linshe-button>
@@ -191,6 +178,7 @@
                 <textarea
                   ref="composeTextareaRef"
                   v-model="composeContent"
+                  :disabled="sending"
                   class="paper-textarea"
                   placeholder="写下想对TA说的话..."
                   :style="{ fontFamily: WRITE_FONT }"
@@ -204,12 +192,13 @@
             <linshe-switch
               v-if="ttsEnabled"
               v-model="autoRead"
+              :disabled="sending"
               size="sm"
               on-text="自动阅读"
               class="compose-auto-read"
             />
             <div class="compose-actions-btns">
-              <linshe-button variant="secondary" @click="cancelWrite">取消</linshe-button>
+              <linshe-button variant="secondary" :disabled="sending" @click="cancelWrite">取消</linshe-button>
               <linshe-button variant="primary" :disabled="!composeContent.trim() || sending" :loading="sending" @click="doSend">
                 {{ sending ? '寄送中...' : '寄出' }}
               </linshe-button>
@@ -243,18 +232,19 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, inject, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, inject, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
 import { useMailboxStore } from '../stores/mailbox.js'
 import { getFontFamily, loadFont, getPageDefaultFontFamily, getWriteFontFamily } from '../composables/useHandwritingFont.js'
+import LetterFailure from '../components/LetterFailure.vue'
+import { useMailboxActions } from '../composables/useMailboxActions.js'
 import LetterViewer from '../components/LetterViewer.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
 import { ttsApi } from '../api/tts.js'
-import { emitLetterReopened } from '../utils/characterReactionProducers.js'
 
 const router = useRouter()
 const chatStore = useChatStore()
@@ -280,15 +270,14 @@ const panelIndex = ref(0)
 const panelOffset = computed(() => panelIndex.value === 1 ? '-50%' : '0%')
 
 // ── Letter selection ──
-const activeLetter = ref(null)
 const activeLetterId = ref(null)
+const activeLetter = computed(() => store.letters.find(l => l.id === activeLetterId.value) || null)
 
 function selectLetter(letter) {
-  activeLetter.value = letter
   activeLetterId.value = letter.id
   panelIndex.value = 1
   if (letter.handwriting_font) loadFont(letter.handwriting_font)
-  if (letter.direction === 'char_to_user' && !letter.is_read) store.markRead(letter.id)
+  if (letter.direction === 'char_to_user' && !letter.is_read) store.markRead(letter.id).catch(err => toast?.(err?.message || '标记已读失败', 'error'))
 }
 
 const activeHandwritingFontStyle = computed(() => {
@@ -353,11 +342,13 @@ async function loadTtsEnabled() {
 }
 
 function startWrite() {
+  if (sending.value) return
   loadTtsEnabled()
   showCharPicker.value = true
 }
 
 function pickCharacter(char) {
+  if (sending.value) return
   selectedChar.value = char
   showCharPicker.value = false
   writing.value = true
@@ -367,6 +358,7 @@ function pickCharacter(char) {
 }
 
 function cancelWrite() {
+  if (sending.value) return
   onComposeBlur()
   writing.value = false
   selectedChar.value = null
@@ -376,19 +368,20 @@ function cancelWrite() {
 
 async function doSend() {
   const text = composeContent.value.trim()
-  if (!text || sending.value) return
+  if (!text || sending.value || !selectedChar.value) return
   sending.value = true
   try {
     await store.sendLetter(selectedChar.value.id, '', text, {
       auto_read: ttsEnabled.value && autoRead.value,
     })
+    onComposeBlur()
     writing.value = false
     selectedChar.value = null
     composeContent.value = ''
     autoRead.value = false
     await store.fetchLetters()
   } catch (err) {
-    console.error('[MailboxView] send error:', err)
+    toast?.(err?.message || '寄送失败，信件内容已保留', 'error')
   } finally {
     sending.value = false
   }
@@ -432,47 +425,25 @@ function openDetailImage(type) {
 
 // ── Delete ──
 const confirmRef = ref(null)
+const { deletingId, retryingId, remove: removeLetter, retry: onRetryLetter } = useMailboxActions(
+  store, options => confirmRef.value.show(options), toast,
+)
+watch(() => activeLetter.value?.handwriting_font, font => { if (font) loadFont(font) })
 
 async function onDeleteLetter(id) {
-  const confirmed = await confirmRef.value.show({
-    title: '删除信件',
-    message: '确定要删除这封信件吗？此操作无法撤销。',
-    okText: '删除',
-    cancelText: '取消',
-    danger: true,
-  })
-  if (!confirmed) return
-  viewingLetterId.value = null
-  viewerSourceRect.value = null
-  await store.deleteLetter(id)
-  activeLetter.value = null
-  activeLetterId.value = null
-  panelIndex.value = 0
-}
-
-// ── 失败重投（2026-10-17 §P2-1）──
-// 失败终态的信不再自动重试，这里是用户手动救回它的唯一入口。
-const retryingId = ref(null)
-
-async function onRetryLetter(id) {
-  if (retryingId.value) return           // 防连点：一次只放一封
-  retryingId.value = id
-  try {
-    await store.retryLetter(id)
-    toast?.show?.('已重新投递，稍等片刻她会回信', 'success')
-  } catch (err) {
-    // 后端 409 是语义化拒绝（正在回信 / 已经回过了），原样把人话透给用户
-    toast?.show?.(err?.message || '重新投递失败，请稍后再试', 'error')
-  } finally {
-    retryingId.value = null
+  if (!await removeLetter(id)) return
+  if (viewingLetterId.value === id) onViewerClosed()
+  if (activeLetterId.value === id) {
+    activeLetterId.value = null
+    panelIndex.value = 0
   }
 }
 
 // ── Navigation ──
 function onBack() {
+  if (sending.value) return
   if (panelIndex.value === 1) {
     panelIndex.value = 0
-    activeLetter.value = null
     activeLetterId.value = null
   } else {
     router.back()
@@ -544,7 +515,6 @@ function estimateReply(letter) {
 // ── Lifecycle ──
 onMounted(() => {
   store.startPolling()
-  if (store.letters.length === 0) store.fetchLetters()
   loadTtsEnabled()
 })
 
@@ -824,15 +794,6 @@ onUnmounted(() => {
 }
 .waiting-text { font-size: 14px; color: #6a5a4a; margin: 0; }
 .waiting-estimate { font-size: 12px; color: #aaa; margin: 0; }
-
-/* 失败终态（2026-10-17 §P2-1）：与主题 token 走同一套暖纸配色 */
-.detail-failed {
-  width: 100%;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; padding: 48px 24px; text-align: center;
-}
-.failed-title { font-size: 15px; font-weight: 600; color: var(--danger, #c0504a); margin: 0; }
-.failed-hint { font-size: 12.5px; line-height: 1.9; color: #8a7a6a; margin: 0; max-width: 420px; }
 
 /* ═══════════════════════════════════════
    Character Picker

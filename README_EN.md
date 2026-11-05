@@ -2,10 +2,12 @@
 
 [中文](./README.md) · [Download](https://github.com/Sting255/galgame-with-comfyUI-Re/releases)
 
+Maintenance: [Current status](docs/项目现状.md) · [Documentation](docs/README.md) · [Project structure](docs/operations/project-structure.md) · [Tests](docs/testing.md) (Chinese).
+
 A local-first AI character companion inspired by visual novels. Create characters and worlds whose conversations, memories, emotions, schedules, and generated images evolve together.
 
 > [!NOTE]
-> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v4.0.0, current version **v4.0.0**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. Upstream v4.0.0 (TTS voice synthesis, moments scheduling & tone rework, multi-profile NovelAI config) is fully merged in. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
+> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v4.1.1, current version **v4.1.1**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. Upstream v4.1.1 (TTS voice synthesis, moments scheduling & tone rework, multi-profile NovelAI config) is fully merged in. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
 
 ## Project demo video (Chinese)
 
@@ -27,9 +29,9 @@ Chat with scene backgrounds, character portraits, changing expressions, and type
 
 ![Immersive visual novel chat](https://github.com/user-attachments/assets/f5e7183c-f385-4e8b-b415-f6738b05b6e5)
 
-### Town interactions
+### Upstream town interactions (historical screenshot)
 
-Meet residents on the map, catch up through dialogue, accept adventure invitations, take on work, or trade.
+This screenshot shows a historical upstream feature. The town page has been removed in this fork.
 
 ![Town resident interactions](https://github.com/user-attachments/assets/5cd70530-a961-4770-84c7-bcc9d9aa7a09)
 
@@ -59,7 +61,7 @@ Meet residents on the map, catch up through dialogue, accept adventure invitatio
 
 - **Character companionship**: private and group chats, relationships, emotions, and affinity, with recent conversations, rolling summaries, and long-term memory informing replies.
 - **Daily life**: proactive messages, schedules, social posts, letters, gifts, and inventory.
-- **Town & adventures**: explore the town, talk to NPCs, and accept invitations. Choices on the Adventures page advance stories and building services; coins, gifting, and trading are also supported.
+- **Adventures**: advance character stories through choices on the Adventures page. The town world page has been removed.
 - **Scene images**: generate images from conversations and character appearances through ComfyUI or NovelAI, with galleries, standing portraits, and upscaling tools.
 - **Customization & devices**: editable personas, world settings, and model profiles; warm and dark themes with time-based switching; browser and Android WebView access.
 
@@ -83,7 +85,7 @@ The commands below use **Windows PowerShell**. Use **Node.js 22.18+ (22.x)**, **
 
 ```powershell
 git clone https://github.com/Sting255/linshe-gai.git
-cd galgame-with-comfyUI-Re
+cd linshe-gai
 
 npm --prefix agent-core install
 npm --prefix web-ui install
@@ -128,13 +130,13 @@ Remove-Item Env:DB_PATH
 
 | Directory | Purpose |
 | --- | --- |
-| `web-ui/` | Vue 3 + Pinia + Vite frontend, Three.js town renderer |
+| `web-ui/` | Vue 3 + Pinia + Vite frontend, pages loaded on demand |
 | `agent-core/` | Node.js + Express backend, SQLite / FTS5, LLM calls, and scheduling |
 | `vector-service/` | FastAPI + ChromaDB + ONNX semantic memory retrieval |
 | `launcher/` / `android-shell/` | PySide6 launcher / Android WebView client |
 | `scripts/` | Development, build, and release scripts |
 
-Read the [contribution conventions](./AGENTS.md) before making changes; start from [project status](./docs/项目现状.md); UI changes follow the [design system](./docs/design-system.md). Further guides (Chinese): [Testing](./docs/testing.md) · [Upscaling](./docs/hiresfix.md).
+Read the [contribution conventions](./AGENTS.md) before making changes; start from [project status](./docs/项目现状.md); UI changes follow the [design system](./docs/design-system.md). Further guides (Chinese): [Testing](./docs/testing.md) · [Upscaling](./docs/images/hiresfix.md).
 
 ## License
 

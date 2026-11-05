@@ -68,24 +68,12 @@ test('④ 选好了 ⇒ 返回那个人的 id（数字与字符串两种写法�
   assert.equal(resolveGroupPanelTarget({}).ok, false)
 })
 
-test('⑤ 群聊视图挂了两个入口：与私聊同款 class、同款 aria-label、role=button 可键盘触发', () => {
-  const labels = [...stripped.matchAll(/aria-label="(玩具|推进)"/g)].map((m) => m[1])
-  // ⚠️ 别用 Array.sort 比中文（按码位排，"推进"会排在"玩具"前面）—— 用集合口径，意图也更清楚
-  assert.equal(new Set(labels).size, 2, '两个入口都要在（缺一个用户就会说"还是没有按钮"）')
-  assert.ok(labels.includes('玩具') && labels.includes('推进'), `实际只有：${labels.join('/')}`)
-  assert.match(stripped, /class="touch-icon-btn toy-icon-btn"/, '玩具入口要用与私聊同一个图标钮皮肤')
-  assert.match(stripped, /class="touch-icon-btn intimate-icon-btn"/, '推进入口同上')
-  // 键盘可达（本仓对"图标钮"的要求：div + role=button + tabindex + aria-label）
-  for (const key of ['玩具', '推进']) {
-    const block = stripped.slice(Math.max(0, stripped.indexOf(`aria-label="${key}"`) - 420), stripped.indexOf(`aria-label="${key}"`) + 60)
-    assert.match(block, /role="button"/, `${key} 入口要 role=button`)
-    assert.match(block, /tabindex="0"/, `${key} 入口要 tabindex=0`)
-    assert.match(block, /@keydown\.enter/, `${key} 入口要能键盘触发`)
-  }
-  // 与私聊同样的 class 名（不新造视觉体系）
-  assert.match(chat, /class="touch-icon-btn toy-icon-btn"/, '私聊也应当是同一套 class（两处对齐的锚点）')
-  assert.match(chat, /class="touch-icon-btn intimate-icon-btn"/, '同上')
-})
+test('⑤ 私聊和群聊复用同一工具栏与 Linshe 按钮', () => {
+  for (const view of [stripped, chat]) assert.match(view, /<ChatActionToolbar/);
+  const toolbar = fs.readFileSync(new URL('../src/components/chat/ChatActionToolbar.vue', import.meta.url), 'utf8');
+  for (const label of ['动作', '玩具', '亲密']) assert.ok(toolbar.includes('aria-label="' + label + '"'));
+  assert.match(toolbar, /import LinsheButton/);
+});
 
 test('⑥ 选中后把成员 id 喂进两个面板，并补上 ToyPanel 需要父组件做的那一半', () => {
   assert.match(stripped, /<ToyPanel[\s\S]{0,600}?:character-id="panelCharacterId"/, 'ToyPanel 要拿到选中成员的 id')
@@ -122,11 +110,9 @@ test('⑦ 点击处理走纯函数：未选目标时不打开面板（而不是�
   const body = fn[0]
   assert.match(body, /resolveGroupPanelTarget\(/, '判定要用纯函数（口径可测）')
   assert.match(body, /if \(!r\.ok\)[\s\S]{0,120}?return/, '不通过就返回，不能继续打开面板')
-  assert.match(body, /toast\?\.\(r\.message/, '不通过要给一句人话（不默默无反应）')
+  assert.match(body, /openTargetPicker\(kind\)/, '未选目标时打开选人列表，选好后继续原入口')
   assert.ok(body.indexOf('if (!r.ok)') < body.indexOf('showToyPanel.value ='), '先判定再打开，顺序不能反')
-  // 两个入口都真的调它
-  assert.equal((stripped.match(/openGroupPanel\('toy'\)/g) || []).length, 3, '玩具入口的 click + 两个 keydown')
-  assert.equal((stripped.match(/openGroupPanel\('intimate'\)/g) || []).length, 3, '推进入口的 click + 两个 keydown')
+  assert.match(stripped, /@toggle="openGroupPanel"/, '共享工具栏的所有入口都经过目标校验')
 })
 
 test('⑧ 换目标时把面板收起来（否则面板还在对上一个成员生效）', () => {
@@ -149,10 +135,13 @@ test('⑧ 换目标时把面板收起来（否则面板还在对上一个成员�
   }
 })
 
-test('⑨ 面板开着时入口高亮（0.3s 过渡，与设计系统同节奏）', () => {
-  assert.match(stripped, /\.touch-icon-btn\.is-open\s*\{[\s\S]{0,300}?0\.3s/, '入口自己就是开关，要有 is-open 高亮 + 0.3s')
-  assert.match(stripped, /'is-open': showToyPanel/, '玩具入口要绑 is-open')
-  assert.match(stripped, /'is-open': showIntimatePanel/, '推进入口要绑 is-open')
+test('⑨ 面板开着时通过统一按钮反馈选中与展开状态', () => {
+  const toolbar = fs.readFileSync(path.join(here, '../src/components/chat/ChatActionToolbar.vue'), 'utf8')
+  for (const [prop, state] of [['toy', 'Toy'], ['intimate', 'Intimate'], ['touch', 'Touch']]) {
+    assert.ok(stripped.includes(`:${prop}-open="show${state}Panel"`))
+    assert.ok(toolbar.includes(`:active="${prop}Open"`))
+    assert.ok(toolbar.includes(`:aria-expanded="${prop}Open"`))
+  }
 })
 
 test('⑩ 群聊视图仍然能编译（脚本 + 模板），且模板调用的处理函数都存在', () => {
@@ -162,7 +151,8 @@ test('⑩ 群聊视图仍然能编译（脚本 + 模板），且模板调用的�
   const bindings = out.bindings || {}
   const handlers = [...descriptor.template.content.matchAll(/@[\w:.-]+="([^"]+)"/g)].map((m) => m[1])
   const called = new Set()
-  for (const expr of handlers) for (const m of expr.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1])
+  // 成员调用检查根绑定（store.method），不能把 method 误当成顶层函数。
+  for (const expr of handlers) for (const m of expr.matchAll(/([A-Za-z_$][\w$]*)(?:\??\.[A-Za-z_$][\w$]*)*\s*\(/g)) called.add(m[1])
   // 模板里允许写内联语句（例如 `@click="if (x) y()"`）⇒ `if(` 会被上面那条正则当成"调用了 if"。
   // 关键字不是处理函数，跳过；其余每个真函数都必须在 <script setup> 里有绑定。
   const KEYWORDS = new Set(['if', 'else', 'for', 'while', 'switch', 'case', 'return', 'typeof',
@@ -176,14 +166,10 @@ test('⑩ 群聊视图仍然能编译（脚本 + 模板），且模板调用的�
   assert.match(stripped, /import IntimateActionPanel from '\.\.\/components\/IntimateActionPanel\.vue'/, '要 import IntimateActionPanel')
 })
 
-test('⑪ 两个入口的文案与实际行为对得上（标题里要提醒"先选一个人"）', () => {
-  assert.equal(GROUP_PANEL_META.toy.ariaLabel, '玩具')
-  assert.equal(GROUP_PANEL_META.intimate.ariaLabel, '推进')
-  assert.match(GROUP_PANEL_META.toy.titleClosed, /先选一个人/)
-  assert.match(GROUP_PANEL_META.intimate.titleClosed, /先选一个人/)
-  // 视图里的 title 也要带上"先选一个人"，并且**选中之后要显示对谁**（否则用户不知道这一下作用在谁身上）
-  assert.match(stripped, /:title="showToyPanel \? '收起玩具面板' : \(touchTarget \? '玩具（对 ' \+ touchTarget\.display_name \+ '）' : '玩具（先选一个人）'\)"/,
-    '玩具入口的 title：未选=提示先选，已选=显示对谁')
-  assert.match(stripped, /:title="showIntimatePanel \? '收起推进面板' : \(touchTarget \? '推进（对 ' \+ touchTarget\.display_name \+ '）/,
-    '推进入口的 title：同上')
-})
+test('⑪ 工具栏展示群聊对象，两个面板也显示对象名称', () => {
+  assert.match(stripped, /<ChatActionToolbar[^]*?:target-name="touchTarget\?\.display_name/);
+  for (const panel of ['ToyPanel', 'IntimateActionPanel']) {
+    const block = stripped.slice(stripped.indexOf('<' + panel), stripped.indexOf('/>', stripped.indexOf('<' + panel)));
+    assert.match(block, /:target-name="touchTarget\?\.display_name/);
+  }
+});

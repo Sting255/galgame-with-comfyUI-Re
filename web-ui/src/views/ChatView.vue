@@ -30,6 +30,7 @@
             </span>
           </div>
           <div class="chat-header-schedule" v-if="currentScheduleText">{{ currentScheduleText }}</div>
+          <ChatSleepStatus :states="[charSleepState]" :loaded="scheduleStore.overviewLoaded" :error="scheduleStore.overviewError" @retry="scheduleStore.fetchOverview(true)" />
         </div>
         <div class="chat-header-right">
           <linshe-button class="standing-entry-desktop" variant="ghost" size="sm" @click="openStandingDisplayPage">同步形象展示 ↗</linshe-button>
@@ -238,6 +239,7 @@
         @close="showIntimatePanel = false"
       />
 
+
       <div class="input-area">
         <div class="force-img-wrap">
           <div
@@ -267,68 +269,17 @@
         <div v-else v-show="!(isMobile && inputFocused)" role="button" tabindex="0" class="gift-btn" @keydown.enter.prevent="showGiftPanel = true" @keydown.space.prevent="showGiftPanel = true" @click="showGiftPanel = true" title="送礼物">
           <svg class="gift-btn-icon" viewBox="0 0 1138 1024" width="20" height="18" fill="#fff"><path d="M57.242236 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM683.272405 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM0 284.393966l455.212067 0 0 284.393966-455.212067 0 0-284.393966zM1137.575865 284.393966l0 284.393966-454.303461 0 0-284.393966 454.303461 0zM512.454303 284.393966l113.575865 0 0 739.606034-113.575865 0 0-739.606034zM683.272405 228.060337l-228.060337 0 0-170.818101 228.060337 0 0 170.818101zM1024 228.060337l-284.393966 0 111.758651-228.060337 172.635315 0 0 228.060337zM398.878438 228.060337l-284.393966 0 0-228.060337 169.909494 0z"/></svg>
         </div>
+      <ChatActionToolbar
+        :touch-open="showTouchPanel" :toy-open="showToyPanel" :intimate-open="showIntimatePanel"
+        :toys-enabled="toysEnabled" :pending-count="touchPendingCount" :pending-hint="touchPendingHint"
+        :toy-count="wornToys.length" @toggle="togglePanel"
+      />
         <!-- 撤回气泡：长按发送按钮浮现 -->
         <Transition name="undo-bubble">
           <div v-if="showUndoBubble" role="button" tabindex="0" class="undo-bubble-btn" @keydown.enter.prevent="undoLastRound" @keydown.space.prevent="undoLastRound" @click.stop="undoLastRound">
             ↩ 撤回上一轮对话
           </div>
         </Transition>
-        <!-- ✋ 动作入口（用户裁决「放在最右边」）：紧贴发送按钮左侧 = 图标排最右区段。
-             移动端键盘弹起时与礼物按钮同规则隐藏，别挡输入；pendingCount>0 显示数字角标。 -->
-        <div
-          v-show="!(isMobile && inputFocused)"
-          role="button"
-          tabindex="0"
-          class="touch-icon-btn"
-          :title="touchPendingHint || '动作'"
-          aria-label="动作"
-          @keydown.enter.prevent="showTouchPanel = true"
-          @keydown.space.prevent="showTouchPanel = true"
-          @click="showTouchPanel = true"
-        >
-          <svg viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5" /><path d="M14 10V4a2 2 0 0 0-4 0v6" /><path d="M10 10.5V6a2 2 0 0 0-4 0v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></svg>
-          <span v-if="touchPendingCount > 0" class="touch-icon-badge">{{ touchPendingCount }}</span>
-        </div>
-        <!-- 🧸 玩具入口（用户要求：玩具要有**独立按钮模块**）：与 ✋ 同样式同样例，
-             **未解锁就不渲染**（不是灰按钮）—— 解锁与否只看服务端 GET /toys 的 unlocked。 -->
-        <div
-          v-if="toysEnabled"
-          v-show="!(isMobile && inputFocused)"
-          role="button"
-          tabindex="0"
-          class="touch-icon-btn toy-icon-btn"
-          :class="{ 'is-open': showToyPanel }"
-          :title="showToyPanel ? '收起玩具面板' : (wornToys.length ? '玩具（她正戴着 ' + wornToys.length + ' 件）' : '玩具')"
-          aria-label="玩具"
-          @keydown.enter.prevent="showToyPanel = !showToyPanel"
-          @keydown.space.prevent="showToyPanel = !showToyPanel"
-          @click="showToyPanel = !showToyPanel"
-        >
-          <svg viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
-            <path d="M5 21c0-3.9 3.1-7 7-7s7 3.1 7 7" />
-          </svg>
-          <span v-if="wornToys.length > 0" class="touch-icon-badge">{{ wornToys.length }}</span>
-        </div>
-        <!-- ❤ 推进入口（2026-10-01）：与 ✋ / 🧸 同款式同样例。
-             不做"未解锁就不渲染"—— 是否进入过亲密场景由面板自己读状态并说明（面板里有明确的门控文案），
-             藏掉入口会让用户以为功能不存在。 -->
-        <div
-          v-show="!(isMobile && inputFocused)"
-          role="button"
-          tabindex="0"
-          class="touch-icon-btn intimate-icon-btn"
-          :class="{ 'is-open': showIntimatePanel }"
-          :title="showIntimatePanel ? '收起推进面板' : '推进（继续抽插 / 加速 / 换姿势）'"
-          aria-label="推进"
-          @keydown.enter.prevent="showIntimatePanel = !showIntimatePanel"
-          @keydown.space.prevent="showIntimatePanel = !showIntimatePanel"
-          @click="showIntimatePanel = !showIntimatePanel"
-        >
-          <svg viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8z" />
-          </svg>
-        </div>
         <div role="button" tabindex="0" class="send-btn" :class="{ 'is-disabled': sendDisabled }" :aria-disabled="sendDisabled"
           @keydown.enter.prevent="onSendClick"
           @keydown.space.prevent="onSendClick"
@@ -766,6 +717,8 @@ import ChatBgPanel from '../components/ChatBgPanel.vue'
 import RelationshipGraph from '../components/RelationshipGraph.vue'
 import CharacterDetailModal from '../components/CharacterDetailModal.vue'
 import GiftPanel from '../components/GiftPanel.vue'
+import ChatActionToolbar from '../components/chat/ChatActionToolbar.vue'
+import { useChatActionPanels } from '../composables/useChatActionPanels.js'
 import TouchActionPanel from '../components/TouchActionPanel.vue'
 import ToyPanel from '../components/ToyPanel.vue'
 // 性爱交互姿势面板（2026-10-01，task-1）：自包含（自己读状态、自己发动作），父组件只持显隐
@@ -795,7 +748,8 @@ async function openStandingDisplayPage() {
 import { getCharacterPortrait, addPortrait, updatePortrait, deletePortrait } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { useEventsStore } from '../stores/events.js'
-import { useScheduleStore } from '../stores/schedule.js'
+import { useChatSchedule } from '../composables/useChatSchedule.js'
+import ChatSleepStatus from '../components/chat/ChatSleepStatus.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -919,19 +873,19 @@ function onDetailEventUpdated(update) {
   }
 }
 const settings = useSettingsStore()
-const scheduleStore = useScheduleStore()
+const scheduleStore = useChatSchedule(() => chat.activeCharId, () => chat.streaming, () => chat.messages.length)
 
 // 当前角色的日程活动文本
 const currentScheduleText = computed(() => {
   if (!chat.activeCharId) return ''
-  const sc = scheduleStore.characters.find(c => c.id === chat.activeCharId)
+  const sc = scheduleStore.characters.find(c => String(c.id) === String(chat.activeCharId))
   if (!sc || !sc.current_activity || sc.current_activity === '未设置日程') return ''
   return sc.current_activity
 })
 // 从 schedule store 获取当前角色睡眠状态（实时更新）
 const charSleepState = computed(() => {
   if (!chat.activeCharId) return null
-  return scheduleStore.characters.find(c => c.id === chat.activeCharId) || null
+  return scheduleStore.characters.find(c => String(c.id) === String(chat.activeCharId)) || null
 })
 const isCharSleeping = computed(() => {
   const s = charSleepState.value
@@ -941,7 +895,7 @@ const isCharSleeping = computed(() => {
 // ── SLG 动作系统（阶段一·前端）：私聊动作条（task-15 接线）──
 // **门控以服务端为准**：GET /api/characters/:id/touch/actions 里逐 key 的 gate 就是 getTouchGate
 // 的真实结果（含催眠豁免、Lv3 亲密看板授权），前端零翻译、零自算。
-// 下面的 touchGateState 只是**端点不可用时的镜像兜底**（见 docs/touch-system.md §6.3 / §4）。
+// 下面的 touchGateState 只是**端点不可用时的镜像兜底**（见 docs/characters/touch-system.md §6.3 / §4）。
 const touchServerGroups = ref([])
 
 async function loadTouchActions() {
@@ -968,17 +922,15 @@ const touchPendingByMode = ref({})
 /** 入口角标标题 / 面板提示行同源文案 */
 const touchPendingHint = computed(() => pendingHintByMode({ count: touchPendingCount.value, byMode: touchPendingByMode.value }))
 /** 动作面板显隐（✋ 入口点开） */
-const showTouchPanel = ref(false)
+const { showTouchPanel, showToyPanel, showIntimatePanel, togglePanel } = useChatActionPanels(() => chat.activeCharId)
 /** 每动作的耐受 / 偏好（GET /touch/state 的 states）→ 面板卡片状态行与偏好角标 */
 const touchStates = ref({})
 
-// ── 玩具系统（2026-09-30 三期，契约见 docs/toys.md）────────────────────────────
+// ── 玩具系统（2026-09-30 三期，契约见 docs/characters/toys.md）────────────────────────────
 // 门控**一律服务端说了算**（gate.allowed / gate.message 原样吃），前端不算门槛；
 // 未解锁或端点不可用 ⇒ 整块不渲染（不伪造数据）。修复真机反馈：之前父组件漏传这两个 prop、
 // 也漏接三个事件 ⇒ 面板玩具区永远不出现。
-const showToyPanel = ref(false)
-// 性爱交互姿势面板显隐（入口是输入区那颗 ❤；面板自包含状态与请求）
-const showIntimatePanel = ref(false)
+
 const toysEnabled = ref(false)
 const wornToys = ref([])
 /**
@@ -2037,7 +1989,6 @@ function teardownResizeObserver() {
 onMounted(async () => {
   await Promise.all([chat.loadCharacters(), loadUserAvatar(), settings.loadComfyConfig()])
   if (chat.activeCharId) loadSpeech(chat.activeCharId).catch(() => {})
-  scheduleStore.fetchOverview(true) // silent: 获取日程概览用于 header 显示
   const targetId = route.params.id ? parseInt(route.params.id) : (chat.characters.length > 0 ? chat.characters[0].id : null)
   if (targetId && targetId !== chat.activeCharId) {
     if (route.params.id) selectStandingCharacter(targetId)
@@ -2081,8 +2032,6 @@ watch(() => chat.activeCharId, (id, oldId) => {
     pendingCharSwitch = true
     userScrolledUp = false
     if (msgList.value) msgList.value.style.visibility = 'hidden'
-    // 静默刷新日程，确保 header 显示最新状态
-    scheduleStore.fetchOverview(true)
   }
 })
 
@@ -2526,7 +2475,7 @@ function renderContent(text) {
   -webkit-backdrop-filter: blur(18px);
 }
 .chat-input {
-  flex:1; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
+  flex:1; min-width:0; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
   background: var(--bg-secondary);
   border-radius: 14px; color:var(--text-bright); outline:none; resize:none;
   overflow: hidden; caret-color: var(--accent);
@@ -2562,42 +2511,13 @@ function renderContent(text) {
 .gift-btn:hover .gift-btn-icon { transform: rotate(12deg) scale(1.1); }
 .gift-btn:active { transform: scale(0.94); }
 
-/* ── ✋ 动作入口：与礼物按钮同尺寸同位置语言（输入区图标排最右，紧贴发送） ── */
-.touch-icon-btn {
-  position: relative;
-  width: 42px; height: 42px; flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  color: var(--accent);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  user-select: none;
-}
-.touch-icon-btn:hover { transform: scale(1.08); border-color: var(--accent); box-shadow: 0 4px 16px rgba(var(--accent-rgb), 0.25); }
-.touch-icon-btn:active { transform: scale(0.94); }
-.touch-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* 面板开着时按钮高亮（2026-10-02 用户反馈："点开面板后只能点右上角的 × 关掉"）：
    入口现在自己就是开关，所以它必须让人一眼看出"面板是我开着的、再点一下就收"。
    渐变 + 0.3s 过渡，与设计系统的其它状态变化同节奏。 */
-.touch-icon-btn.is-open {
-  background: linear-gradient(135deg, var(--accent), rgba(var(--accent-rgb), 0.72));
-  border-color: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.32);
-  transition: background 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
+
 /* 待回应角标：pendingCount>0 才出现 */
-.touch-icon-badge {
-  position: absolute; top: -3px; right: -3px;
-  min-width: 16px; height: 16px; padding: 0 4px;
-  border-radius: 999px;
-  background: var(--accent); color: #fff;
-  font-size: 10px; line-height: 16px; font-weight: 600;
-  text-align: center;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-}
+
 
 /* ── 叫醒按钮（覆盖送礼按钮样式） ── */
 .wake-btn {
@@ -3656,5 +3576,14 @@ function renderContent(text) {
   }
   .btn-header-settings { flex-shrink: 0; }
 }
+
+
+/* 文本独占一行；工具在输入区底部，对话推测保留在输入区之外。 */
+.input-area { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.input-area > .chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; box-sizing: border-box; }
+.input-area > .force-img-wrap { grid-column: 1; grid-row: 2; }
+.input-area > .gift-btn { grid-column: 2; grid-row: 2; }
+.input-area > .chat-action-toolbar { grid-column: 3; grid-row: 2; justify-self: end; }
+.input-area > .send-btn { grid-column: 4; grid-row: 2; }
 
 </style>

@@ -142,8 +142,11 @@ test('④ 定时器起停幂等，且 app.js / 路由真的接上了', () => {
   assert.equal(tick.isIntimateAutoThrustRunning(), false)
 
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8')
-  assert.match(app, /import \{ startIntimateAutoThrust \} from '\.\/src\/services\/intimateAutoThrust\.js'/, 'app.js 要导入 ticker')
-  assert.match(app, /startIntimateAutoThrust\(\)/, 'app.js 要真的启动它（不启动 = 又变回"只是点一下"）')
+  const services = fs.readFileSync(path.join(ROOT, 'src', 'server', 'backgroundServices.js'), 'utf8')
+  assert.match(app, /startBackgroundServices\(\)/, 'app.js 要启动后台服务注册表')
+  assert.match(app, /stopBackgroundServices\(\)/, '退出时要停止后台服务')
+  assert.match(services, /import \{ startIntimateAutoThrust, stopIntimateAutoThrust \} from '\.\.\/services\/intimateAutoThrust\.js'/)
+  assert.match(services, /\[startIntimateAutoThrust, stopIntimateAutoThrust\]/, 'ticker 必须成对登记起停')
 
   const route = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'intimateActions.js'), 'utf8')
   assert.match(route, /import \{ noteScene, noteReaction \} from '\.\.\/services\/intimateAutoThrust\.js'/,

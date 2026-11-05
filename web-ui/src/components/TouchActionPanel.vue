@@ -23,7 +23,7 @@
             <span v-if="hypnosisBadge" class="hypnosis-badge" :class="'is-' + hypnosisBadge.key" :title="'当前催眠状态：' + hypnosisBadge.label">{{ hypnosisBadge.label }}</span>
             <span class="touch-title">
               <svg class="touch-title-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5" /><path d="M14 10V4a2 2 0 0 0-4 0v6" /><path d="M10 10.5V6a2 2 0 0 0-4 0v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></svg>
-              摸摸她
+              动作
             </span>
             <linshe-button
               v-if="requiresTarget"
@@ -32,15 +32,19 @@
               :active="!!targetName"
               :title="targetName ? '更换动作对象' : '选择动作对象'"
               @click="emit('pick-target')"
-            >对 {{ targetName || '谁？' }}</linshe-button>
-            <linshe-button variant="icon" aria-label="关闭动作面板" @click="requestClose">✕</linshe-button>
+            >
+<span class="touch-target-name">对 {{ targetName || '谁？' }}</span>
+</linshe-button>
+            <linshe-button class="touch-close" touch-target variant="icon" aria-label="关闭动作面板" @click="requestClose">✕</linshe-button>
           </div>
 
           <!-- 待回应提示：与入口角标同源同文案（pendingCount>0 才出现） -->
           <p v-if="pendingHint" class="touch-pending">{{ pendingHint }}</p>
 
+          <linshe-tabs v-if="groups.length > 1" v-model="selectedLevel" class="touch-filters" size="sm" :options="levelOptions" aria-label="动作分类" />
+
           <div class="touch-body">
-            <section v-for="group in groups" :key="group.level" class="touch-group">
+            <section v-for="group in visibleGroups" :key="group.level" class="touch-group">
               <h4 class="touch-group-title">{{ group.label }}</h4>
               <div class="touch-grid">
                 <div
@@ -71,8 +75,7 @@
               </div>
             </section>
           </div>
-
-        </div>
+</div>
       </div>
     </Transition>
   </Teleport>
@@ -104,6 +107,7 @@
  */
 import { computed, inject, ref, watch } from 'vue'
 import LinsheButton from './ui/LinsheButton.vue'
+import LinsheTabs from './ui/LinsheTabs.vue'
 import {
   TOUCH_ACTIONS,
   WAKE_WARNING_TEXT,
@@ -159,6 +163,11 @@ const groups = computed(() =>
     ? props.serverGroups
     : buildActionGroups(props.state, props.actions),
 )
+const selectedLevel = ref('all')
+const levelOptions = computed(() => [{ label: '全部', value: 'all' }, ...groups.value.map(group => ({ label: group.label, value: group.level }))])
+const visibleGroups = computed(() => groups.value.filter(group => selectedLevel.value === 'all' || group.level === selectedLevel.value))
+watch(groups, () => { if (!levelOptions.value.some(option => option.value === selectedLevel.value)) selectedLevel.value = 'all' })
+watch(() => props.open, open => { if (open) selectedLevel.value = 'all' })
 
 // 待回应提示行（mode 感知）：有隐式待回应就提醒用户去说句话（专题 §七 问题 3）
 const pendingHint = computed(() => pendingHintByMode({ count: props.pendingCount, byMode: props.pendingByMode }))
@@ -338,7 +347,7 @@ function onPick(action) {
      这一层只承担「把面板摆在底部居中」的定位，**不吃任何指针事件**（点外面不关闭，只有 ✕ 关）。 */
   position: fixed; inset: auto 0 0 0; z-index: 2000;
   display: flex; align-items: flex-end; justify-content: center;
-  padding: 0 16px 100px;
+  padding: 0 16px 140px;
   pointer-events: none;
 }
 .touch-panel {
@@ -366,7 +375,7 @@ function onPick(action) {
 .touch-header {
   flex: 0 0 auto;        /* 常驻：不参与滚动 */
   padding: 0 20px;
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
   cursor: grab;          /* §4.2：标题栏是拖动把手 */
   user-select: none;
   touch-action: none;    /* 只有把手不吃滚动，面板本体照常可滚 */
@@ -397,7 +406,15 @@ function onPick(action) {
   margin-right: auto;
   font-size: 16px; font-weight: 600;
   color: var(--text-bright);
+  order: 1;
 }
+.touch-close { order: 2; }
+.hypnosis-badge { order: 3; }
+.touch-header > .ls-btn:not(.touch-close) { order: 4; }
+.touch-target-name { display: block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.touch-filters { flex: 0 0 auto; margin: 12px 14px 0; max-width: calc(100% - 28px); overflow-x: auto; }
+.touch-group { animation: touch-category-in 0.3s ease; }
+@keyframes touch-category-in { from { opacity: 0; } to { opacity: 1; } }
 .touch-title-icon { flex-shrink: 0; }
 .touch-pending { flex: 0 0 auto; margin: 6px 20px 0; font-size: 12px; color: var(--text-secondary); }
 
@@ -470,9 +487,15 @@ function onPick(action) {
 }
 
 @media (max-width: 767px) {
-  .touch-overlay { padding: 0 10px 84px; }
-  .touch-panel { padding: 14px 14px 16px; max-height: 70dvh; }
+  .touch-overlay { padding: 0 10px calc(140px + env(safe-area-inset-bottom, 0px)); }
+  .touch-panel { padding: 14px 0 0; max-height: min(62dvh, calc(100dvh - 160px)); }
+  .touch-header { padding: 0 14px; }
+  .touch-body { padding: 12px 14px 16px; }
   .touch-grid { gap: 8px; }
   .touch-card { padding: 10px 6px 8px; border-radius: 12px; }
+}
+@media (max-width: 380px) {
+  .touch-overlay { padding-bottom: calc(180px + env(safe-area-inset-bottom, 0px)); }
+  .touch-panel { max-height: calc(100dvh - 200px); }
 }
 </style>

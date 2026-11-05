@@ -1,3 +1,4 @@
+import { withEventProcessing } from './eventProcessing.js';
 /**
  * 生活片段生成器
  *
@@ -1325,7 +1326,12 @@ export function recordIntimateForEvent({
 /**
  * 生成结局并存入记忆
  */
-export async function concludeEvent(character, event, outcome) {
+export async function concludeEvent(character, event, outcome, deps = {}) {
+  return withEventProcessing('character_events', event.id,
+    current => concludeLockedEvent(character, current, outcome, deps));
+}
+
+async function concludeLockedEvent(character, event, outcome, deps) {
   const db = getDb();
   console.log(`[eventGen] Concluding event "${event.title}" for ${character.display_name} (engaged=${event.engaged}, outcome=${outcome})`);
 
@@ -1401,7 +1407,7 @@ ${taskPrompt}`
 
   let conclusionData;
   try {
-    const result = await chatSync(msgs, { temperature: 0.7, max_tokens: 1024, response_format: { type: 'json_object' }, label: '事件结局' });
+    const result = await (deps.chatSync || chatSync)(msgs, { temperature: 0.7, max_tokens: 1024, response_format: { type: 'json_object' }, label: '事件结局' });
     const jsonStr = extractFirstJson(result);
     if (!jsonStr) throw new Error('No JSON found');
     conclusionData = JSON.parse(repairJson(jsonStr));
@@ -1416,63 +1422,65 @@ ${taskPrompt}`
     };
   }
 
-  // 2. 存入记忆
-  const conversationId = `char_${character.id}`;
+  db.transaction(() => {
+    // 2. 存入记忆
+    const conversationId = `char_${character.id}`;
 
-  try {
-    const parsedHistory = JSON.parse(event.choice_history || '[]');
-    const branchReasoning = parsedHistory
-      .filter(item => item.branch !== 0)
-      .map(item => `选择「${item.choice_label}」后：${item.summary}`)
-      .join('；');
-    if (!event.engaged) {
-      const oldRows = db.prepare(`
-        SELECT memory_id FROM memory_fragments
-        WHERE conversation_id = ? AND memory_type = 'event' AND subject = 'character'
-          AND status = 'active' AND judgment LIKE '未互动事件：%'
-      `).all(conversationId);
-      for (const row of oldRows) softDeleteMemory(row.memory_id);
+    try {
+      const parsedHistory = JSON.parse(event.choice_history || '[]');
+      const branchReasoning = parsedHistory
+        .filter(item => item.branch !== 0)
+        .map(item => `选择「${item.choice_label}」后：${item.summary}`)
+        .join('；');
+      if (!event.engaged) {
+        const oldRows = db.prepare(`
+          SELECT memory_id FROM memory_fragments
+          WHERE conversation_id = ? AND memory_type = 'event' AND subject = 'character'
+            AND status = 'active' AND judgment LIKE '未互动事件：%'
+        `).all(conversationId);
+        for (const row of oldRows) softDeleteMemory(row.memory_id);
+      }
+      const skipUnengaged = !event.engaged && !getMemorySettings().recordUnengagedEvents;
+      if (!skipUnengaged) {
+        applyMemoryActions({
+          conversationId,
+          sourceRawStartId: null,
+          sourceRawEndId: null,
+          actions: [{
+            action: 'create',
+            sourceMemoryIds: [],
+            memory: {
+              memoryType: 'event',
+              subject: 'character',
+              judgment: `${event.engaged ? '已完成事件' : '未互动事件'}：${event.title}。${conclusionData.summary}`,
+              reasoning: [event.description, branchReasoning].filter(Boolean).join('；'),
+              tags: [character.display_name, event.title, '事件'],
+            },
+          }],
+        });
+      }
+    } catch (memErr) {
+      console.error(`[eventGen] Memory save failed:`, memErr.message);
     }
-    const skipUnengaged = !event.engaged && !getMemorySettings().recordUnengagedEvents;
-    if (!skipUnengaged) {
-      applyMemoryActions({
-        conversationId,
-        sourceRawStartId: null,
-        sourceRawEndId: null,
-        actions: [{
-          action: 'create',
-          sourceMemoryIds: [],
-          memory: {
-            memoryType: 'event',
-            subject: 'character',
-            judgment: `${event.engaged ? '已完成事件' : '未互动事件'}：${event.title}。${conclusionData.summary}`,
-            reasoning: [event.description, branchReasoning].filter(Boolean).join('；'),
-            tags: [character.display_name, event.title, '事件'],
-          },
-        }],
-      });
-    }
-  } catch (memErr) {
-    console.error(`[eventGen] Memory save failed:`, memErr.message);
-  }
 
-  // 3. 移到 event_history（保留原始 ID，确保分享卡片等引用不失效）
-  db.prepare(`
-    INSERT INTO event_history (id, character_id, event_type_key, title, description, final_image, summary, conclusion, choice_history, total_branches, engaged, outcome, referenced_character_ids)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    event.id,
-    character.id, event.event_type_key,
-    event.title, event.description, event.image,
-    conclusionData.summary,
-    conclusionData.conclusion || null,
-    event.choice_history, event.current_branch || 0,
-    event.engaged, outcome,
-    event.referenced_character_ids || '[]'
-  );
+    // 3. 移到 event_history（保留原始 ID，确保分享卡片等引用不失效）
+    db.prepare(`
+      INSERT INTO event_history (id, character_id, event_type_key, title, description, final_image, summary, conclusion, choice_history, total_branches, engaged, outcome, referenced_character_ids, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.id,
+      character.id, event.event_type_key,
+      event.title, event.description, event.image,
+      conclusionData.summary,
+      conclusionData.conclusion || null,
+      event.choice_history, event.current_branch || 0,
+      event.engaged, outcome,
+      event.referenced_character_ids || '[]', event.created_at
+    );
 
-  // 4. 删除活跃事件
-  db.prepare(`DELETE FROM character_events WHERE id = ?`).run(event.id);
+    // 4. 删除活跃事件
+    db.prepare(`DELETE FROM character_events WHERE id = ?`).run(event.id);
+  })();
 
   // 5. 亲密看板：奇遇场景记账（零 LLM，只用内存里这份 event.prompt 做确定性词表归类）
   //    放在事件行删除之后、广播之前：event 对象已经拿全，不再额外查库；
@@ -1493,6 +1501,7 @@ ${taskPrompt}`
 
   // 6. SSE 广播
   broadcastEventConclusion({
+    event_id: event.id,
     character_id: character.id,
     character_name: character.display_name,
     event_title: event.title,

@@ -16,15 +16,16 @@
  *   data/avatars/...
  *   data/town/...
  *   data/images/...
+ *   data/audio/...       ← 支持 TTS_AUDIO_DIR 映射
  *   [config/.env]        ← 仅 includeConfig=1 且磁盘上确实有 .env
  *
  * 安全口径（导入）：
  *   1) **先全部校验、解到临时 staging 目录**，任何一项不过就整单拒绝，绝不碰现有数据；
  *   2) 校验：gunzip → tar → manifest 存在 / format / version → 每个文件 bytes+sha256 与 manifest 一致
  *      → 路径安全（拒绝绝对路径、`..`、反斜杠、盘符、超长、符号链接/硬链接/设备/FIFO）
- *      → 只允许 `data/**` 与（仅 includeConfig 时）`config/.env`
+ *      → 只允许数据库、avatars/town/images/audio 与（仅 includeConfig 时）config/.env
  *      → 总解压大小上限（默认 2GB，LINSHE_BACKUP_MAX_BYTES 覆盖）；
- *   3) 校验通过后才：备份现有 data/ → 关库 → 换 agent.db（并清 -wal/-shm）→ 合并 avatars/town/images → 重开库。
+ *   3) 校验通过后加维护锁 → checkpoint/关库 → 备份 → 换库与合并素材；失败回滚，HTTP 成功后保持锁定直到重启。
  *
  * 测试接缝（生产不需要设）：
  *   LINSHE_DATA_DIR   覆盖 data 根目录（测试用临时目录，绝不碰真实库）
@@ -38,8 +39,12 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { config } from '../config.js';
+import { resolveEnvPath } from '../utils/envFile.js';
 import { getDb, closeDb } from '../db/index.js';
 import { refresh as refreshCharSearch } from './characterSearch.js';
+import { withDatabaseMaintenance, requireDatabaseRecovery } from '../db/maintenance.js';
+import { validateBackupDatabase } from './backup/databaseValidation.js';
+import { createRestoreJournal } from './backup/restoreFiles.js';
 import {
   TYPE_DIR, TYPE_FILE,
   writeTarGz, readTarGzStream, isGzip,
@@ -96,9 +101,8 @@ export function resolveRoots() {
       ? path.resolve(process.env.LINSHE_DATA_DIR)
       : path.join(AGENT_CORE_DIR, 'data'),
     dbPath: config.dbPath,
-    envPath: process.env.LINSHE_ENV_PATH
-      ? path.resolve(process.env.LINSHE_ENV_PATH)
-      : path.join(AGENT_CORE_DIR, '.env'),
+    audioDir: process.env.TTS_AUDIO_DIR ? path.resolve(process.env.TTS_AUDIO_DIR) : null,
+    envPath: resolveEnvPath(),
   };
 }
 
@@ -319,6 +323,7 @@ async function buildBackupInto(workDir, { includeConfig, roots, started, cleanup
   walkTree(path.join(roots.dataDir, 'avatars'), 'data/avatars', tree);
   walkTree(path.join(roots.dataDir, 'town'), 'data/town', tree);
   walkTree(path.join(roots.dataDir, 'images'), 'data/images', tree);
+  walkTree(roots.audioDir || path.join(roots.dataDir, 'audio'), 'data/audio', tree);
 
   const manifestFiles = [{ path: 'data/agent.db', bytes: dbBytes, sha256: await sha256File(snapshotFile) }];
   for (const file of tree.files) {
@@ -423,6 +428,9 @@ function classifyEntryPath(rawPath, type) {
   for (const segment of segments) {
     if (segment === '') continue; // 目录条目的尾斜杠之类
     if (segment === '.' || segment === '..') throw bad('归档包含路径穿越', name);
+    if (/[<>:"|?*\x00-\x1f]/.test(segment) || /[. ]$/.test(segment) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment)) {
+      throw bad('归档路径不是可移植的文件名', name);
+    }
     cleaned.push(segment);
   }
   if (cleaned.length === 0) throw bad('归档包含空路径条目', name);
@@ -437,13 +445,20 @@ function classifyEntryPath(rawPath, type) {
     return { kind: 'env', rel };
   }
   if (rel === 'data' || rel.startsWith('data/')) {
-    if (rel === 'data/backups' || rel.startsWith('data/backups/')) {
+    const lower = rel.toLowerCase();
+    if (lower === 'data/.access-token') throw bad('归档不得替换本机设备配对凭证', name);
+    if (lower === 'data/backups' || lower.startsWith('data/backups/')) {
       throw bad('归档不允许包含 data/backups（备份自身）', name);
     }
-    if (rel === 'data/agent.db-wal' || rel === 'data/agent.db-shm') {
+    if (lower === 'data/agent.db-wal' || lower === 'data/agent.db-shm') {
       throw bad('归档不允许包含 SQLite WAL 文件', `${name} —— 导出用的是 VACUUM INTO 快照，正常归档不会有它`);
     }
-    return { kind: 'data', rel };
+    if (rel === 'data/agent.db' && !isDir) return { kind: 'data', rel };
+    if (rel === 'data' && isDir) return { kind: 'data', rel };
+    if (/^data\/(avatars|town|images|audio)\//.test(rel) || (isDir && /^data\/(avatars|town|images|audio)$/.test(rel))) {
+      return { kind: 'data', rel };
+    }
+    throw bad('归档数据路径不在允许范围内', name);
   }
   throw bad('归档路径不在允许范围内', `${name} —— 只允许 data/** 与（includeConfig=1 时）config/.env`);
 }
@@ -609,6 +624,11 @@ async function extractAndValidate(gzipBuffer, stagingRoot, maxBytes) {
   if (head.toString('latin1') !== 'SQLite format 3\0') {
     throw bad('data/agent.db 不是 SQLite 数据库', `文件头: ${JSON.stringify(head.subarray(0, 16).toString('latin1'))}`);
   }
+  try {
+    validateBackupDatabase(dbStaged);
+  } catch (error) {
+    throw bad('备份数据库损坏或不是邻舍数据库', error.message);
+  }
 
   return { manifest, files, dirs, includeConfig, totalBytes: state.totalBytes };
 }
@@ -621,11 +641,8 @@ async function extractAndValidate(gzipBuffer, stagingRoot, maxBytes) {
  * 只拷主文件会得到一个"少了最近写入"的假备份。checkpoint(TRUNCATE) 把 WAL 全并回主文件。
  */
 function checkpointAndCloseDb() {
-  try {
-    getDb().pragma('wal_checkpoint(TRUNCATE)');
-  } catch (err) {
-    console.warn('[backup] 关库前 WAL checkpoint 失败（继续，closeDb 内部仍会 checkpoint）:', err.message);
-  }
+  const result = getDb().pragma('wal_checkpoint(TRUNCATE)');
+  if (result.some(row => row.busy)) throw new Error('数据库仍被其他进程占用，暂时无法恢复');
   closeDb();
 }
 
@@ -648,6 +665,14 @@ async function backupExistingData(roots) {
   }
   const counter = { files: 0, bytes: 0 };
   await copyTreeInto(roots.dataDir, dir, { skipRoot: new Set(['backups']), counter });
+  // DB_PATH / TTS_AUDIO_DIR 可以独立于 dataDir；回滚目录始终使用统一归档布局。
+  if (path.resolve(roots.dbPath) !== path.resolve(roots.dataDir, 'agent.db')) {
+    await fs.promises.copyFile(roots.dbPath, path.join(dir, 'agent.db'));
+  }
+  if (roots.audioDir && path.resolve(roots.audioDir) !== path.resolve(roots.dataDir, 'audio') && fs.existsSync(roots.audioDir)) {
+    await copyTreeInto(roots.audioDir, path.join(dir, 'audio'));
+  }
+  if (fs.existsSync(roots.envPath)) await fs.promises.copyFile(roots.envPath, path.join(dir, 'config.env'));
   console.log(`[backup] 导入前备份: ${dir}（${counter.files} 个文件 / ${counter.bytes} 字节）`);
   return dir;
 }
@@ -683,12 +708,17 @@ function swapDatabase(stagingDbFile, roots) {
 }
 
 /** 把 staging/data/** 合并回真实 data/（agent.db 已在关键区单独处理） */
-async function applyDataTree(stagingRoot, roots) {
+async function applyDataTree(stagingRoot, roots, checked, journal) {
   const counter = { files: 0, bytes: 0 };
-  await copyTreeInto(path.join(stagingRoot, 'data'), roots.dataDir, {
-    skipRoot: new Set(['agent.db']),
-    counter,
-  });
+  for (const [rel, file] of checked.files) {
+    if (!rel.startsWith('data/') || rel === 'data/agent.db') continue;
+    const audio = rel.startsWith('data/audio/');
+    const root = audio ? (roots.audioDir || path.join(roots.dataDir, 'audio')) : roots.dataDir;
+    const local = rel.slice(audio ? 'data/audio/'.length : 'data/'.length);
+    await journal.copy(path.join(stagingRoot, rel), path.join(root, local), root);
+    counter.files++;
+    counter.bytes += file.bytes;
+  }
   return counter;
 }
 
@@ -714,7 +744,7 @@ export function importBackup(gzipBuffer, options = {}) {
   return run;
 }
 
-async function runImport(gzipBuffer, { maxBytes = getMaxArchiveBytes(), roots = resolveRoots() } = {}) {
+async function runImport(gzipBuffer, { maxBytes = getMaxArchiveBytes(), roots = resolveRoots(), holdUntilRestart = false } = {}) {
   if (!Buffer.isBuffer(gzipBuffer) || gzipBuffer.length === 0) {
     throw bad('请求体为空', 'POST /api/data/import 的 body 必须是 .tar.gz 的原始字节');
   }
@@ -724,6 +754,7 @@ async function runImport(gzipBuffer, { maxBytes = getMaxArchiveBytes(), roots = 
   if (!isGzip(gzipBuffer)) {
     throw bad('不是 gzip 归档', '文件头不是 1f 8b，本接口只接受 .tar.gz');
   }
+  if (roots.dbPath === ':memory:') throw bad('内存数据库不能导入磁盘备份', '请在使用磁盘数据库的实例中恢复');
 
   const stagingRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'linshe-import-'));
   let backupPath = null;
@@ -731,94 +762,124 @@ async function runImport(gzipBuffer, { maxBytes = getMaxArchiveBytes(), roots = 
     // 1) 校验（解到 staging，绝不碰现有数据）
     const checked = await extractAndValidate(gzipBuffer, stagingRoot, maxBytes);
 
-    // 2) 关库（把 WAL 全并回主文件）→ 备份现状。备份必须是"干净完整"的一份，
-    //    所以 checkpoint 一定在复制之前；失败时无论如何都把库重新打开。
-    await fs.promises.mkdir(roots.dataDir, { recursive: true });
-    checkpointAndCloseDb();
-    let swap;
-    try {
-      backupPath = await backupExistingData(roots);
+    return await withDatabaseMaintenance(async () => {
+      const journal = createRestoreJournal(path.join(stagingRoot, 'rollback'));
 
-      // 3) 落地
+      // 2) 关库（把 WAL 全并回主文件）→ 备份现状。备份必须是"干净完整"的一份，
+      //    所以 checkpoint 一定在复制之前；失败时无论如何都把库重新打开。
+      await fs.promises.mkdir(roots.dataDir, { recursive: true });
+      checkpointAndCloseDb();
+      let swap;
       try {
-        swap = swapDatabase(path.join(stagingRoot, 'data', 'agent.db'), roots);
+        backupPath = await backupExistingData(roots);
+
+        // 3) 落地
+        try {
+          swap = swapDatabase(path.join(stagingRoot, 'data', 'agent.db'), roots);
+        } catch (err) {
+          try {
+            swapDatabase(path.join(backupPath, 'agent.db'), roots);
+            err.message = '替换数据库失败，已自动恢复导入前数据库';
+          } catch (rollbackError) {
+            requireDatabaseRecovery('自动回滚失败，请使用导入前备份恢复数据库后重启');
+            closeDb();
+            err.message = '替换数据库失败，自动回滚未完成，请使用备份恢复';
+            err.detail = `${err.detail || ''}; ${rollbackError.message}`;
+          }
+          if (err instanceof BackupError) err.backupPath = backupPath;
+          throw err;
+        }
       } catch (err) {
-        if (err instanceof BackupError) err.backupPath = backupPath;
-        throw err;
+        // 备份或换库阶段失败：保证进程里一定有一个可用的库句柄
+        try { getDb(); } catch { /* 重开也失败时交给上层 500，并给出 backupPath */ }
+        if (err instanceof BackupError) {
+          if (!err.backupPath) err.backupPath = backupPath;
+          throw err;
+        }
+        throw new BackupError('导入过程中出错', { status: 500, detail: err.message, backupPath });
       }
-    } catch (err) {
-      // 备份或换库阶段失败：保证进程里一定有一个可用的库句柄
-      try { getDb(); } catch { /* 重开也失败时交给上层 500，并给出 backupPath */ }
-      if (err instanceof BackupError) {
-        if (!err.backupPath) err.backupPath = backupPath;
-        throw err;
+
+      let envApplied = false;
+      let copied;
+      try {
+        copied = await applyDataTree(stagingRoot, roots, checked, journal);
+        if (checked.includeConfig) {
+          await journal.copy(path.join(stagingRoot, 'config', '.env'), roots.envPath, path.dirname(roots.envPath));
+          envApplied = true;
+        }
+      } catch (error) {
+        const rollbackErrors = [];
+        try { await journal.rollback(); } catch (e) { rollbackErrors.push(e.message); }
+        try { swapDatabase(path.join(backupPath, 'agent.db'), roots); } catch (e) { rollbackErrors.push(e.message); }
+        if (rollbackErrors.length) {
+          requireDatabaseRecovery('自动回滚失败，请使用导入前备份恢复数据后重启');
+          closeDb();
+        }
+        throw new BackupError(rollbackErrors.length ? '导入失败，自动回滚未完成，请使用备份恢复' : '导入失败，已自动恢复导入前数据', {
+          status: 500, backupPath, detail: [error.message, ...rollbackErrors].join('; '),
+        });
       }
-      throw new BackupError('导入过程中出错', { status: 500, detail: err.message, backupPath });
-    }
 
-    const copied = await applyDataTree(stagingRoot, roots);
+      // 角色名注册表是启动时灌进内存的，导入后必须重建，否则交叉引用检索还按旧名单走
+      try {
+        refreshCharSearch();
+      } catch (err) {
+        console.warn('[backup] 导入后重建角色名注册表失败:', err.message);
+      }
 
-    let envApplied = false;
-    if (checked.includeConfig) {
-      await fs.promises.copyFile(path.join(stagingRoot, 'config', '.env'), roots.envPath);
-      envApplied = true;
-    }
+      let counts = null;
+      try {
+        counts = collectCounts(getDb());
+      } catch (err) {
+        console.warn('[backup] 导入后统计失败:', err.message);
+      }
 
-    // 角色名注册表是启动时灌进内存的，导入后必须重建，否则交叉引用检索还按旧名单走
-    try {
-      refreshCharSearch();
-    } catch (err) {
-      console.warn('[backup] 导入后重建角色名注册表失败:', err.message);
-    }
+      // 图片引用自检（2026-10-01 补）：库里的图有多少在磁盘上真的存在
+      let imageCheck = null;
+      try {
+        imageCheck = countMissingImageRefs(getDb(), roots.dataDir);
+        if (imageCheck.total > 0 && imageCheck.missing > 0) {
+          const pct = Math.round((imageCheck.missing / imageCheck.total) * 100);
+          console.warn(`[backup] 图片引用自检：${imageCheck.missing}/${imageCheck.total} 条（${pct}%）在磁盘上不存在`);
+        }
+      } catch (err) {
+        console.warn('[backup] 图片引用自检失败:', err.message);
+      }
 
-    let counts = null;
-    try {
-      counts = collectCounts(getDb());
-    } catch (err) {
-      console.warn('[backup] 导入后统计失败:', err.message);
-    }
-
-    // 图片引用自检（2026-10-01 补）：库里的图有多少在磁盘上真的存在
-    let imageCheck = null;
-    try {
-      imageCheck = countMissingImageRefs(getDb(), roots.dataDir);
-      if (imageCheck.total > 0 && imageCheck.missing > 0) {
+      const restartRecommended = holdUntilRestart || Boolean(envApplied) || !swap.applied;
+      const parts = [
+        `已恢复 ${checked.files.size} 个文件 / ${checked.totalBytes} 字节`,
+        `导入前数据已备份到 ${backupPath}`,
+      ];
+      if (copied.files > 0) parts.push(`data/ 内合并了 ${copied.files} 个资产文件`);
+      if (imageCheck && imageCheck.missing > 0) {
         const pct = Math.round((imageCheck.missing / imageCheck.total) * 100);
-        console.warn(`[backup] 图片引用自检：${imageCheck.missing}/${imageCheck.total} 条（${pct}%）在磁盘上不存在`);
+        parts.push(pct >= 20
+          ? `⚠️ 有 ${imageCheck.missing}/${imageCheck.total} 条图片引用找不到文件（聊天图会显示「图片不可用」、朋友圈配图会整块消失）。旧版本的导出不带 data/images，若这份归档来自旧版本，请用新版本重新导出一次`
+          : `有 ${imageCheck.missing}/${imageCheck.total} 条图片引用找不到文件（多为历史上被清理过的旧图）`);
       }
-    } catch (err) {
-      console.warn('[backup] 图片引用自检失败:', err.message);
-    }
+      if (!swap.applied) {
+        parts.push(`当前使用 ${roots.dbPath}，数据库未换文件，需要重启才能生效`);
+      } else if (holdUntilRestart) {
+        parts.push('恢复已完成，数据库已暂停访问；请重启邻舍后继续使用');
+      } else {
+        parts.push('数据库已在当前进程内重新打开，可以立即继续使用');
+      }
+      if (envApplied) parts.push('config/.env 已写入，其中的配置（如 LLM_API_KEY）需重启进程才会加载');
 
-    const restartRecommended = Boolean(envApplied) || !swap.applied;
-    const parts = [
-      `已恢复 ${checked.files.size} 个文件 / ${checked.totalBytes} 字节`,
-      `导入前数据已备份到 ${backupPath}`,
-    ];
-    if (copied.files > 0) parts.push(`data/ 内合并了 ${copied.files} 个资产文件`);
-    if (imageCheck && imageCheck.missing > 0) {
-      const pct = Math.round((imageCheck.missing / imageCheck.total) * 100);
-      parts.push(pct >= 20
-        ? `⚠️ 有 ${imageCheck.missing}/${imageCheck.total} 条图片引用找不到文件（聊天图会显示「图片不可用」、朋友圈配图会整块消失）。旧版本的导出不带 data/images，若这份归档来自旧版本，请用新版本重新导出一次`
-        : `有 ${imageCheck.missing}/${imageCheck.total} 条图片引用找不到文件（多为历史上被清理过的旧图）`);
-    }
-    if (!swap.applied) {
-      parts.push(`当前使用 ${roots.dbPath}，数据库未换文件，需要重启才能生效`);
-    } else {
-      parts.push('数据库已在当前进程内重新打开，可以立即继续使用');
-    }
-    if (envApplied) parts.push('config/.env 已写入，其中的配置（如 LLM_API_KEY）需重启进程才会加载');
-
-    return {
-      restored: {
-        files: checked.files.size,
-        bytes: checked.totalBytes,
-        counts,
-      },
-      backupPath,
-      restartRecommended,
-      message: parts.join('；'),
-    };
+      if (holdUntilRestart) closeDb();
+      return {
+        restored: {
+          files: checked.files.size,
+          bytes: checked.totalBytes,
+          counts,
+        },
+        backupPath,
+        restartRecommended,
+        restartRequired: holdUntilRestart,
+        message: parts.join('；'),
+      };
+    }, { holdUntilRestart });
   } catch (err) {
     if (err instanceof BackupError) {
       if (!err.backupPath) err.backupPath = backupPath;

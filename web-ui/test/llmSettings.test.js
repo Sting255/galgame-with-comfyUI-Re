@@ -1,25 +1,4 @@
-/**
- * ⚠️ 整文件 skip（2026-10-19 合并上游 v3.10.0 时判定）
- *
- * 本文件测的是上游 v3.10.0 给设置页新增的「输出额度（MAX_tokens）」设置项：
- *   llmMaxTokens / llmMaxTokensValid / llmMaxTokensHint
- *   fillLlmMaxTokens / restoreLlmMaxTokens / onLlmMaxTokensInput
- *   buildLlmPayload 里的 maxTokens 字段
- * 它从 SettingsView.vue 截源码片段在 new Function 里跑（锚点：
- *   `const llmBaseURL = ref(` → `// 推荐第三方 LLM 中转站`），
- * 而本地 SettingsView.vue **一处 llmMaxTokens 都没有**（上游 26 处）。
- * ⇒ `llmMaxTokens is not defined`。
- *
- * 要恢复：把上游那段设置项（ref/computed/hint/三个函数 + 模板里的数字输入框
- * + 保存按钮的 disabled 条件 + payload 字段）并入 SettingsView.vue，
- * 这属于前端 CONFLICT 批次（SettingsView.vue 本身有 12 块冲突）。
- *
- * __MERGE_SKIP_NOTE__ —— 别误以为这是产品功能缺失：后端已经全绿，
- * 这 3 个文件失败纯粹是「上游测试先到、前端实现尚未合并」。
- * 恢复条件：前端 CONFLICT 批次（9 个文件）合并完成后，删掉本段与下面的 test 包装即可。
- */
 import nodeTest from 'node:test';
-// 单点 skip：见文件头说明
 const test = nodeTest;
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -39,7 +18,8 @@ function fixture(fetchLlmModels = async () => ({ models: [], capabilities: {} })
     return { llmBaseURL, llmModel, llmModelSelectVal, llmBaseURLSelectVal, llmMaxTokens, llmThinkingMode,
       llmMaxTokensValid, llmModels, llmModelsLoading, loadAvailableModels, restoreLlmMaxTokens,
       onLlmMaxTokensInput, buildLlmPayload, llmConnectionType, onLlmConnectionChange,
-      vertexServiceAccount, vertexRegion, hasVertexServiceAccount, restoreVertexSettings, llmModelsError };
+      vertexServiceAccount, vertexRegion, hasVertexServiceAccount, restoreVertexSettings, llmModelsError, llmContextWindowText, llmContextWindowValid,
+      llmHeadersEnabled, llmHeadersText, llmHeadersValid, llmExtraBodyEnabled, llmExtraBodyText, llmExtraBodyValid };
   `)(ref, computed, defaultMaxTokens, isValidMaxTokens, fetchLlmModels);
 }
 
@@ -109,4 +89,28 @@ test('slow discovery cannot overwrite a manual edit or a different endpoint/prof
   assert.equal(ui.llmMaxTokens.value, 65536);
   assert.deepEqual(ui.llmModels.value, []);
   assert.equal(ui.llmModelsLoading.value, false);
+});
+
+
+test('context window rejects unsafe integers and JSON options require objects', () => {
+  const ui = fixture();
+  for (const value of ['0', '-1', '1.5', '9007199254740993']) {
+    ui.llmContextWindowText.value = value;
+    assert.equal(ui.llmContextWindowValid.value, false);
+    assert.throws(() => ui.buildLlmPayload(), /上下文窗口/);
+  }
+  ui.llmContextWindowText.value = '';
+  assert.equal(ui.buildLlmPayload().contextWindow, null);
+  ui.llmContextWindowText.value = '128000';
+  assert.equal(ui.buildLlmPayload().contextWindow, 128000);
+  for (const prefix of ['llmHeaders', 'llmExtraBody']) {
+    ui[prefix + 'Enabled'].value = true;
+    for (const value of ['null', '[]', '42', 'true', '"text"', '{']) {
+      ui[prefix + 'Text'].value = value;
+      assert.equal(ui[prefix + 'Valid'].value, false);
+      assert.throws(() => ui.buildLlmPayload(), /JSON 对象/);
+    }
+    ui[prefix + 'Text'].value = '{}';
+    assert.equal(ui[prefix + 'Valid'].value, true);
+  }
 });

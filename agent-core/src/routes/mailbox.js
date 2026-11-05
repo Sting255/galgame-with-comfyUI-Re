@@ -56,7 +56,8 @@ router.post('/send', (req, res) => {
   try {
     const { character_id, title, content, auto_read } = req.body;
     if (!character_id) return res.status(400).json({ error: '缺少 character_id' });
-    if (!content || !content.trim()) return res.status(400).json({ error: '信件内容不能为空' });
+    if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '信件内容不能为空，且必须是文本' });
+    if (title != null && typeof title !== 'string') return res.status(400).json({ error: '信件标题必须是文本' });
 
     const db = getDb();
 
@@ -109,6 +110,7 @@ router.get('/:id', (req, res) => {
     // 标记已读
     if (!letter.is_read) {
       db.prepare('UPDATE mailbox_letters SET is_read = 1 WHERE id = ?').run(req.params.id);
+      letter.is_read = 1;
     }
 
     res.json({
@@ -156,6 +158,9 @@ router.post('/:id/retry', (req, res) => {
     if (letter.status === 'completed') {
       return res.status(409).json({ error: '这封信已经回过了；要重写请删掉后重新寄一封' });
     }
+    if (!['failed', 'pending'].includes(letter.status)) {
+      return res.status(409).json({ error: '当前信件状态不能重新投递' });
+    }
 
     const replyAt = new Date(Date.now() + 5000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
     db.prepare(`UPDATE mailbox_letters SET status = 'pending', retry_count = 0, reply_at = ? WHERE id = ?`)
@@ -183,6 +188,9 @@ router.delete('/:id', (req, res) => {
     const db = getDb();
     const letter = db.prepare('SELECT * FROM mailbox_letters WHERE id = ?').get(req.params.id);
     if (!letter) return res.status(404).json({ error: '信件不存在' });
+    if (letter.status === 'processing') {
+      return res.status(409).json({ error: '这封信正在回信中，请等处理结束后再删除' });
+    }
 
     db.prepare('DELETE FROM mailbox_letters WHERE id = ?').run(req.params.id);
     res.json({ ok: true });

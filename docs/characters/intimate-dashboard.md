@@ -176,7 +176,7 @@
 | `event` | `user` | `eventGenerator.js` 的 `recordIntimateForEvent()`，在 `concludeEvent()` 删掉事件行之后、SSE 广播之前调用（角色奇遇，`character_events`） | 显式 `sourceUid = event:<eventId>:<actKey>:<positionKey>` |
 | `event` | `npc`（环境奇遇，两位镇民同框）/ `user`（常规奇遇，镇民 + 玩家） | `services/town/townNpcEventGenerator.js` → `services/town/townIntimateRecord.js` 的 `recordIntimateForTownEvent()`（镇民奇遇落在 `town_npc_events`——建表见 `agent-core/src/db/townNpcEventSchema.js`——**不走** `concludeEvent`，所以必须单独挂一条） | 显式 `sourceUid = town:<eventId>:<actKey>:<positionKey>` |
 | `manual` | 请求里的 `partnerKind`（默认 `user`） | 面板人工补录 `POST …/intimate/log`（`source='manual'`，绕过权限闸门） | `manual:<uuid>` |
-| `hypnosis` | `user` | `hypnosisService.js` 的 `recordForcedClimax()`——面板「强制高潮」按钮的服务端确定性记账（`source='manual'`，绕过权限闸门），另触发情绪快照与一次性指令；详见 `docs/hypnosis-phone.md` §4 | `hypnosis:<started_at>:forced_climax`（幂等锚点 = 本次催眠会话） |
+| `hypnosis` | `user` | `hypnosisService.js` 的 `recordForcedClimax()`——面板「强制高潮」按钮的服务端确定性记账（`source='manual'`，绕过权限闸门），另触发情绪快照与一次性指令；详见 `docs/characters/hypnosis-phone.md` §4 | `hypnosis:<started_at>:forced_climax`（幂等锚点 = 本次催眠会话） |
 
 - 四条自动路径都是**零额外 LLM 调用**：直接拿已有的生图 prompt 串过 `tagsFromPromptString()` + `classifyPromptTags()`，拿不到 prompt 或没有成人 tag 就走**正文兜底**（命中成人内容判定记一笔「未归类」，见第 13 节），两者都没有才什么都不记（不猜）；都先看 `config.features.intimate === false` 直接返回，并把异常吞成 `console.warn`（记账是旁路，绝不能影响聊天 / 群聊 / 奇遇主流程）。
 - 为什么两条"事件"路径都不用 `raw_id`：`raw_id` 在本项目语义固定指向 `raw_messages.id`，塞事件 id 会污染撤回链路（撤回一轮按 `raw_id` 删流水，事件流水会被误删）。所以都走 `recordIntimateActs` 的显式 `sourceUid`，`raw_id` 保持 0，同一事件重放多少次都只落一行。两条路径的 `sourceUid` 前缀不同（`event:` / `town:`），不会互相覆盖。
@@ -557,7 +557,7 @@ npx vite build
 
 - 只回答"有没有"，不回答"是什么"：正文命中的轮次统一显示「未归类」。**旧数据回填后 `totalActs` 会跳一次**（补的是历史事实，不是 bug），不想要就把口径收窄或删掉那几条流水。
 - 判定是词表二值判断，两个方向都会错：含蓄写法（不含词表任何词）仍然漏；含这些词但非性场景（例如剧情里的"高潮"）会记成「未归类」。宁可漏/粗，也不猜具体行为。
-- 扩词要走 `imagePromptKnowledgePolicy.EXPLICIT_ADULT_PATTERN`（与生图侧的 **tag 归类** 同源），改它要连带回归生图侧（`imagePromptTagKnowledgeData.js:351` 用它决定每个 tag 归到 `adult_*` 还是普通类目）。⚠️ **2026-10-21 起它不再决定"要不要召回成人 tag"**：生图知识库的成人闸门（旧 `imagePromptKnowledge.js` 的 `queryAllowsCategory`）已整条拆除，见 `docs/chat-image-no-filter.md`。task-9 的口语补充实跑：正例 **39 / 漏 0**、日常反例 **33 / 误报 0**；生图侧连带回归（拿 `git show HEAD` 的旧正则与新正则逐个比对 `src/db/data/imagePromptTags.yaml` 的全部标签）：**2985 个标签里只有 1 个翻转** —— `penetration gesture = 暗示做爱`（原 `expression_pose_vocabulary` → 新 `adult_expression_pose_vocabulary`）。这一条语义上本来就该算成人，方向正确；除此之外没有生图类目变化。
+- 扩词要走 `imagePromptKnowledgePolicy.EXPLICIT_ADULT_PATTERN`（与生图侧的 **tag 归类** 同源），改它要连带回归生图侧（`imagePromptTagKnowledgeData.js:351` 用它决定每个 tag 归到 `adult_*` 还是普通类目）。⚠️ **2026-10-21 起它不再决定"要不要召回成人 tag"**：生图知识库的成人闸门（旧 `imagePromptKnowledge.js` 的 `queryAllowsCategory`）已整条拆除，见 `docs/images/chat-image-no-filter.md`。task-9 的口语补充实跑：正例 **39 / 漏 0**、日常反例 **33 / 误报 0**；生图侧连带回归（拿 `git show HEAD` 的旧正则与新正则逐个比对 `src/db/data/imagePromptTags.yaml` 的全部标签）：**2985 个标签里只有 1 个翻转** —— `penetration gesture = 暗示做爱`（原 `expression_pose_vocabulary` → 新 `adult_expression_pose_vocabulary`）。这一条语义上本来就该算成人，方向正确；除此之外没有生图类目变化。
 - **"并入用户消息"只在催眠轮**（`isBodyControlled`，且异常一律当"不是催眠轮"）：普通轮逐字节不变是有意为之（本轮验收口径）。通用口径（所有轮都把用户消息并进来）理由同样成立——AI 判断送的本来就是 `[用户消息, 她的回复]`——但会改变普通轮的记录结果，要放开得先经用户裁决。
 - **自动触发轮的兜底仍是"最后一条 assistant raw"**：`forceTextFallback` 轮没有 prompt 时锚点退到会话最后一条 assistant raw，成立的前提是调用方紧接着落库就调用它（`proactiveChatScheduler` 就是这么用的）。若有别处复用这个开关而中间又插了别的 raw，锚点会错到上一条——新增调用方时要么保证时序，要么改成显式传 `rawId`（当前没有这个参数）。
 

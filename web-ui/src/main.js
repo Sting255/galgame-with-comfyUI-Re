@@ -20,25 +20,26 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './AppRoot.vue'
-import StandingDisplayView from './views/StandingDisplayView.vue'
-import ChatView from './views/ChatView.vue'
-import MomentsView from './views/MomentsView.vue'
-import EventsView from './views/EventsView.vue'
-import ScheduleView from './views/ScheduleView.vue'
-import GalleryView from './views/GalleryView.vue'
-import WorldMapView from './views/WorldMapView.vue'
-import TavernView from './views/TavernView.vue'
-import MailboxView from './views/MailboxView.vue'
-import BackpackView from './views/BackpackView.vue'
-import SettingsView from './views/SettingsView.vue'
-import MemorySettingsView from './views/MemorySettingsView.vue'
-import JailbreakSettingsView from './views/JailbreakSettingsView.vue'   // 破限规则集（2026-10-15）
-import MaibotBridgeView from './views/MaibotBridgeView.vue'
-import GroupChatView from './views/GroupChatView.vue'
-import MediaView from './views/MediaView.vue'   // 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体）
-import GodSaysView from './views/GodSaysView.vue'   // 上游 v4.1.0：神说（godSays）
 // 小镇（世界页）已于 2026-10-20 从产品里彻底剥离：页面、子组件、渲染器、store 全部删除。
 // 上游 4.1.0 的 TownView 一并拒绝：路由与页面都不再注册（保留删除，不随上游回退）。
+
+const StandingDisplayView = () => import('./views/StandingDisplayView.vue')
+const ChatView = () => import('./views/ChatView.vue')
+const MomentsView = () => import('./views/MomentsView.vue')
+const EventsView = () => import('./views/EventsView.vue')
+const ScheduleView = () => import('./views/ScheduleView.vue')
+const GalleryView = () => import('./views/GalleryView.vue')
+const WorldMapView = () => import('./views/WorldMapView.vue')
+const TavernView = () => import('./views/TavernView.vue')
+const MailboxView = () => import('./views/MailboxView.vue')
+const BackpackView = () => import('./views/BackpackView.vue')
+const SettingsView = () => import('./views/SettingsView.vue')
+const MemorySettingsView = () => import('./views/MemorySettingsView.vue')
+const JailbreakSettingsView = () => import('./views/JailbreakSettingsView.vue')
+const MaibotBridgeView = () => import('./views/MaibotBridgeView.vue')
+const GroupChatView = () => import('./views/GroupChatView.vue')
+const MediaView = () => import('./views/MediaView.vue')
+const GodSaysView = () => import('./views/GodSaysView.vue')
 
 const routes = [
   { path: '/standing-display', component: StandingDisplayView, meta: { standingDisplay: true } },

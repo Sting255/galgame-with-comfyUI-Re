@@ -38,11 +38,7 @@
         </div>
       </div>
     </div>
-    <div class="page-host" :class="contextPanelClass">
-      <!-- 全局左上角上下文用量浮层：放在 .page-host 内，位置基准是内容区而非视口，
-           因此不会压到 NavBar / Sidebar 的可点区域，切页面也不消失。
-           各页面自带的标题栏高度不同，用一个变量把浮层的起始纵坐标让出来（见下方样式）。 -->
-      <ContextUsagePanel />
+    <div class="page-host">
       <router-view v-slot="{ Component }">
         <Transition name="page">
           <component v-if="Component" :is="Component" :key="route.path" />
@@ -73,7 +69,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
+import { ref, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { createMobileSidebarBackHandler } from './utils/mobileSidebarBack.js'
 import { observePageZoomHint } from './utils/pageZoomHint.js'
@@ -97,7 +93,6 @@ import ChangelogDialog from './components/ChangelogDialog.vue'
 import ImageEditTaskFloater from './components/ImageEditTaskFloater.vue'
 import DiaryBookOverlay from './components/DiaryBookOverlay.vue'
 import CharacterReactionHost from './components/CharacterReactionHost.vue'
-import ContextUsagePanel from './components/ContextUsagePanel.vue'
 import { MAIBOT_AFTER_START_STEPS, MAIBOT_INSTALL_STEPS, MAIBOT_INTRO_TEXT } from './data/maibotTutorial.js'
 import { CHANGELOG_FLAG } from './data/changelog.js'
 
@@ -107,14 +102,6 @@ const proactive = useProactiveStore()
 const mailbox = useMailboxStore()
 const update = useUpdateStore()
 const route = useRoute()
-// ── 上下文用量浮层的纵向基准 ──
-// 浮层固定在内容区左上角，必须让开各页面自己的标题栏，否则会盖住
-// 返回按钮 / 页面标题这些可点区域。聊天页标题栏是固定高度（桌面 64px、手机 68px），
-// 其余页面标题栏多为内联流式（高度随内容），用 60px 这个保守值都能落在标题栏下方。
-const CHAT_ROUTES = ['/chat', '/group']
-const contextPanelClass = computed(() => (
-  CHAT_ROUTES.some(prefix => route.path.startsWith(prefix)) ? 'is-chat-route' : ''
-))
 const confirmDialog = ref(null)
 const toastEl = ref(null)
 const guideDialog = ref(null)
@@ -404,8 +391,7 @@ onUnmounted(() => {
 /* ── 桌面端侧栏收纳（上游 v3.10.0）──────────────────────────────
    侧栏改成绝对定位的视口 + 可位移轨道：收纳只改 transform，不改宽度，
    内部内容不会被挤压。page-host 用 margin-left 让出侧栏宽度。
-   ⚠️ 本地保留 .page-host 上的 --ctx-usage-top（上下文用量浮层起点），
-      两个机制互不干扰：一个是横向让位，一个是纵向起点。 */
+*/
 .sidebar-viewport, .sidebar-track { display: contents; }
 @media (min-width: 768px) {
   .sidebar-viewport {
@@ -471,11 +457,7 @@ onUnmounted(() => {
   position: relative;
   flex: 1;
   min-width: 0;
-  /* 上下文用量浮层（ContextUsagePanel）的纵向起点：让开当前页面的标题栏。
-     聊天页标题栏是固定高度（桌面 64px），其余页面是内联流式标题，60px 是通用保守值。 */
-  --ctx-usage-top: 60px;
 }
-.page-host.is-chat-route { --ctx-usage-top: 64px; }
 /* 常驻页面弹窗层：铺满内容区、不参与排版，只给 anchored modal 当插入宿主与定位基准 */
 .page-modal-host {
   position: absolute;
@@ -483,11 +465,7 @@ onUnmounted(() => {
   pointer-events: none;
 }
 .page-modal-host > * { pointer-events: auto; }
-@media (max-width: 767px) {
-  /* 手机端聊天页有 44px 的返回按钮，标题栏更高 */
-  .page-host.is-chat-route { --ctx-usage-top: 68px; }
-  .page-host { --ctx-usage-top: 58px; }
-}
+
 #app { position: relative; z-index: 1; }
 
 /* ── 移动端 Sidebar 遮罩 ── */

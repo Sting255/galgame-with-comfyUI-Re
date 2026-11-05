@@ -1,5 +1,9 @@
 # 性爱推进状态机（亲密交互 · 口径与实施）
 
+当前聊天 UI：私聊／群聊共用输入区底部、文本域下方的「动作 / 玩具 / 亲密」入口，对话推测保留在输入区上方，先选群成员后继续原功能，面板互斥并支持 Esc 与切会话收起。布局以 [设计系统](../design-system.md#私聊与群聊互动入口) 为准；下文旧版图标位置与验收记录仅作历史依据。
+
+亲密面板先显示常用操作，体位列表按需展开；状态加载失败显示原因与重试入口。
+
 > **这份文件是什么**：把「可点击推进」的性爱交互链路（累积 / 节奏 / 体位 / 捆绑位掩码 / 门槛 / 余韵 / 记账）一次写清。
 > **为什么补**：`docs/` 里此前**零文档** —— `intimate-dashboard.md` 讲看板、`intimate-acceptance-report.md` 讲验收，都默认你已经知道状态机长什么样。新人接手只能读 1432 行的源码。
 > **口径来源**：`agent-core/src/services/intimateActionService.js`（零依赖纯函数，唯一来源）。数字以代码为准，本文为对照与解释。
@@ -289,7 +293,7 @@ DELETE /api/characters/:id/intimate              清空
 | `services/intimatePrompt.js` | 注入块与 prompt |
 | `services/intimateAiJudge.js` / `intimateAiEdit.js` | AI 判定 / AI 编辑档案 |
 | `services/intimateAutoRecord.js` / `intimateBackfill.js` | 自动记账 / 历史回填 |
-| `services/intimateActionQuota.js` | **推进动作的独立每日额度**（成本刹车；口径与接法见 `docs/intimate-action-quota.md`） |
+| `services/intimateActionQuota.js` | **推进动作的独立每日额度**（成本刹车；口径与接法见 `docs/characters/intimate-action-quota.md`） |
 | `routes/intimateActions.js`（707 行） | 可点击推进 HTTP |
 | `routes/intimate.js`（369 行） | 看板与档案 HTTP |
 

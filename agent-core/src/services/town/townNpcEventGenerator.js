@@ -1,3 +1,4 @@
+import { withEventProcessing } from '../eventProcessing.js';
 /**
  * 镇民 NPC 奇遇生成器
  *
@@ -645,6 +646,9 @@ ${npcPersonaBlock(npc, playerName, playerAppearance)}` },
  */
 export function expireTownNpcEvent(npc, event, outcome = 'expired') {
   const db = getDb();
+  // 调度器取列表后可能等待了其它结局，重新确认该事件尚未被分支请求占用。
+  event = db.prepare('SELECT * FROM town_npc_events WHERE id = ? AND processing = 0').get(event.id);
+  if (!event) return null;
   const { playerName } = townPlayerInfo(db);
   const displayName = npc.display_name;
   const conclusionData = {
@@ -700,6 +704,11 @@ function archiveNpcEvent(npc, event, outcome, conclusionData) {
  * 生成结局并移入历史表（镇民无记忆系统，不写记忆）
  */
 export async function concludeTownNpcEvent(npc, event, outcome, deps = {}) {
+  return withEventProcessing('town_npc_events', event.id,
+    current => concludeLockedNpcEvent(npc, current, outcome, deps));
+}
+
+async function concludeLockedNpcEvent(npc, event, outcome, deps) {
   const db = getDb();
   const chatSync = deps.llm?.chatSync || chatWithPreset;
   console.log(`[townNpcEventGen] Concluding event "${event.title}" for ${npc.display_name} (engaged=${event.engaged}, outcome=${outcome})`);

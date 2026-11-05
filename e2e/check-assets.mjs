@@ -59,7 +59,7 @@ if (await charItem.count()) {
 }
 
 // 开一次玩具面板（等它出现再点，别再干等 30 秒）
-const toy = page.locator('.toy-icon-btn')
+const toy = page.locator('.chat-action-toolbar [aria-label="玩具"]')
 await toy.first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
 if (await toy.count()) {
   await toy.first().click({ timeout: 5000 }).catch((e) => console.log('  🧸 点击失败：' + e.message.slice(0, 90)))
@@ -67,7 +67,7 @@ if (await toy.count()) {
   console.log('  玩具面板步骤完成（panel 数 = ' + (await page.locator('.toy-panel, [class*="toy-panel"]').count()) + '）')
 }
 // 开一次性爱面板（面板里也会拉头像/表情等资源）
-const heart = page.locator('.intimate-icon-btn')
+const heart = page.locator('.chat-action-toolbar [aria-label="亲密"]')
 await heart.first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
 if (await heart.count()) {
   await heart.first().click({ timeout: 5000 }).catch(() => {})

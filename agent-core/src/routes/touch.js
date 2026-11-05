@@ -11,7 +11,7 @@
  *   POST /api/characters/:id/touch/:action   body { mode?: 'auto'|'instant'|'implicit', scene?, groupId? }
  *
  * 分层：门控 / 腻烦 / prompt / 解析 / 新鲜度判定全在零依赖纯函数 `services/touchActionService.js`
- * （docs/touch-system.md §1~§3）；本文件只做"读既有系统的值 → 调纯函数 → 落库 / 调模型 / 发消息"。
+ * （docs/characters/touch-system.md §1~§3）；本文件只做"读既有系统的值 → 调纯函数 → 落库 / 调模型 / 发消息"。
  * 动作块注入在两条消费链上：私聊 `routes/chat.js` 的 5.55 段、群聊 `services/groupChatEngine.js`
  * 的 `collectTouchActionBlocks()`（阶段二）。
  *
@@ -318,7 +318,7 @@ function isGroupAdultAllowed() {
 // ── 每日即时反应配额（独立计数；机制照 services/intimateAiJudge.js 的 aiJudge 配额）──
 //
 // 为什么独立：即时反应是小调用，但用户连点动作条会持续烧额度 ⇒ 专题 §2.1 要求"独立计数 + 耗尽回落隐式"。
-// 键名写进 docs/touch-system.md，设置页将来要调就调这两个键（本文件不碰 config.js / db/settings.js）。
+// 键名写进 docs/characters/touch-system.md，设置页将来要调就调这两个键（本文件不碰 config.js / db/settings.js）。
 
 /** 每日上限设置键（0 = 不限制） */
 export const TOUCH_INSTANT_LIMIT_SETTING_KEY = 'touch_instant_daily_limit';
@@ -597,7 +597,7 @@ export function tuneTouchLikeRatio(characterId, actionKey, { annoyed = false, va
   }
 }
 
-// ── 既有系统的值（服务层不 import，全在这里读；docs/touch-system.md §3.1）──
+// ── 既有系统的值（服务层不 import，全在这里读；docs/characters/touch-system.md §3.1）──
 
 function parseCharacterId(req) {
   const id = Number.parseInt(req.params.id, 10);
@@ -656,7 +656,7 @@ function upsertStateRow(id, actionKey, annoyance, likeRatio) {
  * · `source='manual'`：这是用户自己点出来的动作，与「强制高潮」「面板人工补录」同待遇，绕过
  *   aiEditFields 权限闸门（Lv3 的「亲密授权」已经在门控那一步判过了）；
  * · `scene` 复用既有 `'chat'`：**不新增 SCENES 枚举值**（与镇民奇遇复用 `'event'` 同口径，
- *   见 docs/intimate-dashboard.md §3 的"不新增 SCENES"说明）；触摸发生在私聊里，也算实话；
+ *   见 docs/characters/intimate-dashboard.md §3 的"不新增 SCENES"说明）；触摸发生在私聊里，也算实话；
  * · `climaxCount` 不写（触摸不是高潮，别去动面板的「高潮次数」）；
  * · 失败只 warn：记账是旁路，绝不能影响动作本身（与 hypnosisService.recordForcedClimax 同款）。
  */
@@ -958,7 +958,7 @@ router.get('/:id/touch/actions', (req, res) => {
 // ── GET /:id/touch/stats ───────────────────────────────────────────────────
 
 /**
- * 统计聚合（task-19）：只读，供统计面板用。形状契约见 docs/touch-system.md §3.6。
+ * 统计聚合（task-19）：只读，供统计面板用。形状契约见 docs/characters/touch-system.md §3.6。
  * 只读端点不拦总开关（前端要在开关关闭时也能看到历史统计）。
  */
 router.get('/:id/touch/stats', (req, res) => {

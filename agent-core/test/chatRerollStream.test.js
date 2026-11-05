@@ -17,6 +17,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 
 process.env.DB_PATH = ':memory:';
+process.env.LLM_API_KEY = 'fixture-reroll-key'; // 网络已打桩，不能依赖本机 .env 的凭证
 // node:test 的 worker 对 stdout 洪泛敏感（会报 "Unable to deserialize cloned data"，runner 层崩溃）：
 // 本文件要跑真路由，连带的模块日志很多（情绪评估/配图判断/主动聊天排期都要打），这里静音。
 // 与 test/townNpcOfferingSeedFlow.test.js 同一处理。SSE 断言只吃网络返回，不受影响。

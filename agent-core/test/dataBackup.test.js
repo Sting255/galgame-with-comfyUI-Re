@@ -22,6 +22,8 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import express from 'express';
+import { AsyncResource } from 'node:async_hooks';
+import Database from 'better-sqlite3';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'linshe-backup-test-'));
 const DATA_DIR = path.join(TMP, 'data');
@@ -42,12 +44,15 @@ const { config } = await import('../src/config.js');
 config.dbPath = DB_PATH; // 兜底：即便 .env 里写了 DB_PATH，也不许漂到真实库
 const { getDb, closeDb } = await import('../src/db/index.js');
 const backup = await import('../src/services/dataBackup.js');
+assert.equal(backup.resolveRoots().envPath, ENV_PATH, '配置与备份必须使用同一临时文件');
 const tarGz = await import('../src/services/tarGz.js');
 const dataRoutes = (await import('../src/routes/data.js')).default;
 
 // ── 真实 HTTP 挂载（只挂 data 路由，不启动完整 app.js）──
 
 const app = express();
+// 本文件模拟多次进程重启后的归档往返；生产 HTTP 恢复后必须保持维护模式。
+app.locals.restoreRequiresRestart = false;
 app.use('/api/data', dataRoutes);
 const server = http.createServer(app);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -340,6 +345,16 @@ test('导入拒绝：路径穿越 ../ 与绝对路径', async () => {
   assert.equal(JSON.parse(nestedRes.body.toString('utf8')).error, '归档包含路径穿越');
 });
 
+test('导入拒绝：Windows 大小写别名、凭证、WAL 与非素材路径', async () => {
+  const { entries } = await baseEntries();
+  const before = getDb().prepare('SELECT COUNT(*) n FROM characters').get().n;
+  for (const path of ['data/.ACCESS-TOKEN', 'data/AGENT.DB', 'data/AGENT.DB-WAL', 'data/agent.db.', 'data/agent.db:stream', 'data/avatars/NUL.png', 'data/settings.json']) {
+    const res = await postImport(rebuild([...entries, { path, type: tarGz.TYPE_FILE, data: Buffer.from('invalid'), size: 7 }]));
+    assert.equal(res.status, 400, path);
+  }
+  assert.equal(getDb().prepare('SELECT COUNT(*) n FROM characters').get().n, before);
+});
+
 test('导入拒绝：符号链接 / 硬链接条目', async () => {
   const { entries } = await baseEntries();
 
@@ -620,7 +635,115 @@ test('导入：使用 seed 的临时库，全程真实 HTTP（restored 形状固
   const res = await postImport(archive, { 'Content-Type': 'application/gzip' });
   assert.equal(res.status, 200);
   const json = JSON.parse(res.body.toString('utf8'));
-  assert.deepEqual(Object.keys(json).sort(), ['backupPath', 'message', 'ok', 'restartRecommended', 'restored'].sort());
+  assert.deepEqual(Object.keys(json).sort(), ['backupPath', 'message', 'ok', 'restartRecommended', 'restartRequired', 'restored'].sort());
   assert.deepEqual(Object.keys(json.restored).sort(), ['bytes', 'counts', 'files'].sort());
   assert.equal(manifest.format, 'linshe-backup');
+});
+
+test('损坏 SQLite 虽有正确文件头和哈希也在 staging 拒绝，现有数据不变', async () => {
+  const { entries } = await exportEntries();
+  const invalid = Buffer.alloc(100);
+  invalid.write('SQLite format 3\0', 'latin1');
+  const manifest = JSON.parse(entries.find(e => e.path === 'manifest.json').data);
+  const item = manifest.files.find(e => e.path === 'data/agent.db');
+  item.bytes = invalid.length; item.sha256 = sha256(invalid);
+  const archive = await rebuild(entries.map(entry => ({ ...entry,
+    data: entry.path === 'data/agent.db' ? invalid : entry.path === 'manifest.json' ? Buffer.from(JSON.stringify(manifest)) : entry.data,
+  })));
+  const before = getDb().prepare('SELECT name FROM characters ORDER BY id').all();
+  const existing = fs.readdirSync(path.join(DATA_DIR, 'backups'));
+  await assert.rejects(backup.importBackup(archive), error => error.status === 400 && /损坏/.test(error.message));
+  assert.deepEqual(getDb().prepare('SELECT name FROM characters ORDER BY id').all(), before);
+  assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'backups')), existing);
+});
+
+test('音频按统一归档路径往返，支持自定义音频目录且保留未覆盖素材', async () => {
+  const previous = process.env.TTS_AUDIO_DIR;
+  const audio = path.join(TMP, 'external-audio');
+  fs.mkdirSync(path.join(audio, 'originals'), { recursive: true });
+  fs.writeFileSync(path.join(audio, 'originals', 'mine.source'), 'my recording');
+  process.env.TTS_AUDIO_DIR = audio;
+  try {
+    const { manifest } = await exportEntries();
+    assert.ok(manifest.files.some(file => file.path === 'data/audio/originals/mine.source'));
+    const archive = await exportToBuffer();
+    fs.writeFileSync(path.join(audio, 'originals', 'mine.source'), 'changed');
+    fs.writeFileSync(path.join(audio, 'keep.wav'), 'keep');
+    const result = await backup.importBackup(archive);
+    assert.equal(fs.readFileSync(path.join(audio, 'originals', 'mine.source'), 'utf8'), 'my recording');
+    assert.equal(fs.readFileSync(path.join(audio, 'keep.wav'), 'utf8'), 'keep');
+    assert.equal(fs.readFileSync(path.join(result.backupPath, 'audio', 'originals', 'mine.source'), 'utf8'), 'changed');
+  } finally {
+    if (previous === undefined) delete process.env.TTS_AUDIO_DIR; else process.env.TTS_AUDIO_DIR = previous;
+  }
+});
+
+test('恢复期间外部任务不能重新打开旧库，导入前已确认写入在回滚备份中', async () => {
+  const archive = await exportToBuffer();
+  getDb().prepare('INSERT INTO characters(name,display_name,base_prompt) VALUES(?,?,?)').run('rollback-marker', 'rollback-marker', 'x');
+  const oldHandle = getDb();
+  const external = new AsyncResource('external-request');
+  const original = fs.promises.copyFile;
+  let checked = false;
+  fs.promises.copyFile = async function(source, target, ...args) {
+    const result = await original.call(this, source, target, ...args);
+    if (source === DB_PATH && String(target).includes('pre-import-')) {
+      external.runInAsyncScope(() => {
+        assert.throws(() => getDb(), error => error.code === 'DATABASE_MAINTENANCE');
+        assert.throws(() => oldHandle.prepare('SELECT 1'), /not open/);
+        checked = true;
+      });
+    }
+    return result;
+  };
+  let result;
+  try { result = await backup.importBackup(archive); }
+  finally { fs.promises.copyFile = original; external.emitDestroy(); }
+  assert.equal(checked, true);
+  const old = new Database(path.join(result.backupPath, 'agent.db'), { readonly: true });
+  try { assert.equal(old.prepare("SELECT COUNT(*) n FROM characters WHERE name='rollback-marker'").get().n, 1); }
+  finally { old.close(); }
+});
+
+test('换库复制失败自动回滚，进程中的数据库仍可读写', async () => {
+  const archive = await exportToBuffer();
+  const original = fs.copyFileSync;
+  const names = getDb().prepare('SELECT name FROM characters ORDER BY id').all();
+  let failed = false;
+  fs.copyFileSync = function(source, target, ...args) {
+    if (target === DB_PATH && !failed) { failed = true; throw new Error('injected disk error'); }
+    return original.call(this, source, target, ...args);
+  };
+  try { await assert.rejects(backup.importBackup(archive), /已自动恢复/); }
+  finally { fs.copyFileSync = original; }
+  assert.deepEqual(getDb().prepare('SELECT name FROM characters ORDER BY id').all(), names);
+});
+
+test('素材恢复失败时同时回滚数据库与已覆盖文件', async () => {
+  const archive = await exportToBuffer();
+  fs.writeFileSync(AVATAR_A, 'before failed restore');
+  getDb().prepare('INSERT INTO characters(name,display_name,base_prompt) VALUES(?,?,?)').run('asset-rollback', 'asset-rollback', 'x');
+  const original = fs.promises.copyFile;
+  let failed = false;
+  fs.promises.copyFile = async function(source, target, ...args) {
+    if (String(source).includes('linshe-import-') && target === TOWN_TILE && !failed) {
+      failed = true; throw new Error('injected asset error');
+    }
+    return original.call(this, source, target, ...args);
+  };
+  try { await assert.rejects(backup.importBackup(archive), /已自动恢复/); }
+  finally { fs.promises.copyFile = original; }
+  assert.equal(failed, true);
+  assert.equal(fs.readFileSync(AVATAR_A, 'utf8'), 'before failed restore');
+  assert.equal(getDb().prepare("SELECT COUNT(*) n FROM characters WHERE name='asset-rollback'").get().n, 1);
+});
+
+test('生产 HTTP 恢复完成后保持维护状态，旧任务不能向恢复后的库写入', async () => {
+  const archive = await exportToBuffer();
+  delete app.locals.restoreRequiresRestart;
+  const res = await postImport(archive);
+  assert.equal(res.status, 200, res.body.toString());
+  assert.equal(JSON.parse(res.body).restartRecommended, true);
+  assert.equal(JSON.parse(res.body).restartRequired, true);
+  assert.throws(() => getDb(), error => error.code === 'DATABASE_MAINTENANCE');
 });

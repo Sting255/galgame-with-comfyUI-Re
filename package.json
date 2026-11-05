@@ -4,6 +4,7 @@
   "private": true,
   "description": "AI Image Generation Agent — monorepo root",
   "scripts": {
+    "check": "node scripts/project-health.mjs",
     "test": "node scripts/test-all.mjs",
     "test:be": "node scripts/test-all.mjs --backend",
     "test:fe": "node scripts/test-all.mjs --frontend",

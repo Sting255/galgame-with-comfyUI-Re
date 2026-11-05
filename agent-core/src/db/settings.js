@@ -3,8 +3,9 @@
 // 依赖方向（单向）：
 //   db/index.js → settings.js（打开数据库后注入句柄并触发装载）
 //   config.js  → settings.js（读写系统设置）
-//   settings.js → （无内部依赖，db 句柄由 initSettingsHandle 注入）
+//   settings.js → config.js（运行时配置同步）、maintenance.js（恢复门禁）；db 句柄由 initSettingsHandle 注入。
 import { config } from '../config.js';
+import { assertDatabaseAvailable } from './maintenance.js';
 
 let _db = null;
 
@@ -14,6 +15,7 @@ export function initSettingsHandle(db) {
 }
 
 function handle() {
+  assertDatabaseAvailable();
   if (!_db) throw new Error('settings: db handle not initialized (initSettingsHandle)');
   return _db;
 }

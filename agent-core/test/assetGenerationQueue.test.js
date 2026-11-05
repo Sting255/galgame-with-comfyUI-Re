@@ -51,6 +51,8 @@ const stubPort = stubServer.address().port
 // ⚠️ 必须 unref：server 句柄会让事件循环一直有活干，`node --test` 就永远不退出
 //（第一版漏了这行，测试卡到十分钟后被挪进后台任务）。
 stubServer.unref()
+// 先初始化测试库：首次 getDb() 会从 system_settings 回填 config，不能覆盖下面的本机桩地址。
+q.ensureAssetJobTable()
 config.comfyui.url = `http://127.0.0.1:${stubPort}`
 process.on('exit', () => { try { stubServer.close() } catch { /* 退出时不重要 */ } })
 
@@ -67,8 +69,6 @@ function seedStandingFile(characterId, fileName = `stand_${characterId}.png`) {
   return `/images/standing/${fileName}`
 }
 fs.mkdirSync(path.join(tmpImages, 'standing'), { recursive: true })
-
-q.ensureAssetJobTable()
 
 test('★ 建完任务必须**自动启动**（真机验收抓到过：只建行不启动 ⇒ 永远停在 queued）', () => {
   const src = fs.readFileSync(new URL('../src/services/assetGenerationQueue.js', import.meta.url), 'utf8')

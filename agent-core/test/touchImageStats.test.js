@@ -4,7 +4,7 @@
  * 三块：
  *   ① 出图档位 always / smart / never（默认 smart）+ 既有出图总开关；
  *   ② 立绘表情联动（服务端独占通道，复用 standingDisplay.publishStandingKeys）；
- *   ③ GET /api/characters/:id/touch/stats 聚合（形状契约见 docs/touch-system.md §3.6）。
+ *   ③ GET /api/characters/:id/touch/stats 聚合（形状契约见 docs/characters/touch-system.md §3.6）。
  *
  * 生图走**测试接缝** __setTouchImageGeneratorForTest（默认失败桩）：测试永不真连 ComfyUI、也不落盘。
  */

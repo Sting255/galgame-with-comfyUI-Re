@@ -1,7 +1,7 @@
 /**
  * SLG 动作系统 · 阶段三 · 触摸互动统计（前端纯逻辑）
  *
- * 数据源：GET /api/characters/:id/touch/stats —— **形状已落地**（task-19，契约见 docs/touch-system.md §3.3）：
+ * 数据源：GET /api/characters/:id/touch/stats —— **形状已落地**（task-19，契约见 docs/characters/touch-system.md §3.3）：
  *   { characterId, generatedAt, range:{days,from},
  *     totals:{ events, injected, pending, done, expired, dropped, byMode, peakAnnoyance, intimateActs, images },
  *     byAction:[{ actionKey, label, level, levelLabel, count, lastAt, byMode, byStatus, peakAnnoyance,

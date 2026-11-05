@@ -8,7 +8,7 @@
  *   · 复用 `features.antiRepetition`（总开关）与 `features.antiRepetitionEscalation`（升级）两个键，
  *     **不新增设置键**；总开关关闭 ⇒ 零块、零查询，与加功能前逐字节一致；
  *   · 块序：紧跟 `<round_message_limit>`/发图规则之后、`<member_private_memory>` 与
- *     `<touch_action>` 之前，催眠块仍最后（理由见 docs/anti-repetition.md 与源码注释）。
+ *     `<touch_action>` 之前，催眠块仍最后（理由见 docs/chat/anti-repetition.md 与源码注释）。
  *
  * 纯函数 + :memory: 库；不联网。检测逻辑一行都不复制——全部来自 antiRepetition.js。
  */

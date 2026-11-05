@@ -1,7 +1,7 @@
 /**
  * SLG 动作系统 · task-15 前端接线
  *
- * 契约来源：docs/touch-system.md §6.3
+ * 契约来源：docs/characters/touch-system.md §6.3
  *   - GET  /api/characters/:id/touch/actions → 清单 + 逐 key 门控 {allowed, code, message, wakesSleeping, exempt}
  *   - GET  /api/characters/:id/touch/state   → { states:{<key>:{annoyance,tier,likeRatio,updatedAt}}, quota }
  *   - POST /api/characters/:id/touch/:action → 门控拒绝 = **200 + { allowed:false, code, message }**（不是 4xx）
@@ -269,7 +269,8 @@ test('动作条：有 serverGroups 就用服务端，没有才回落镜像；展
   assert.ok(barScript.includes('props.serverGroups && props.serverGroups.length'), '服务端优先')
   assert.ok(barScript.includes('buildActionGroups(props.state, props.actions)'), '无服务端时回落镜像')
   assert.ok(barScript.includes("emit('open')"), '展开时要发 open 让父组件刷门控')
-  assert.ok(barTemplate.includes('v-for="group in groups"'))
+  assert.ok(barTemplate.includes('v-for="group in visibleGroups"'))
+  assert.ok(barScript.includes('groups.value.filter'), '分类筛选来自原服务端分组')
 })
 
 test('ChatView 接线：拉服务端清单 + POST 上报 + 展开/切角色时刷新', () => {

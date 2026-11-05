@@ -1,5 +1,5 @@
 /**
- * D2 重写兜底 · 替换语义（docs/anti-repetition.md §12.4 冻结形状）
+ * D2 重写兜底 · 替换语义（docs/chat/anti-repetition.md §12.4 冻结形状）
  *
  * 事件名：replace_last_assistant；形状：{ content, segments:[{content, emojiKeys, images}], reason, turn }
  * 要害：复用既有气泡（不追加）、末尾多出来的删掉（旧文本不残留）、**表情包与图片不能丢**。

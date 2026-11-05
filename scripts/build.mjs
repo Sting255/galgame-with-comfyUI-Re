@@ -10,7 +10,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, unlinkSync, copyFileSync } from "node:fs";
+import { existsSync, copyFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,28 +110,14 @@ async function main() {
   // ═══════════════════════════════════════════
   console.log(`  ${C.bold}[2/3]${C.reset} PyInstaller 打包启动器...`);
 
-  // 删除旧 .spec 文件，避免缓存导致 --add-data 不生效
-  const specFile = resolve(LAUNCHER_DIR, "邻舍.EXE.spec");
-  if (existsSync(specFile)) {
-    unlinkSync(specFile);
-    log("已删除旧的 .spec 缓存");
+  const buildPython = resolve(LAUNCHER_DIR, "build_cache", "pyinstaller-venv", "Scripts", "python.exe");
+  if (!existsSync(buildPython)) {
+    fail("缺少启动器构建环境，请先运行 launcher/build.bat");
+    process.exit(1);
   }
-
-  const pyinstallerResult = await exec("pyinstaller", [
-    "--onefile", "--windowed",
-    "--name", "邻舍.EXE",
-    "--icon", "assets/icon.ico",
-    "--add-data", "assets/launchHeader.jpg;assets",
-    "--add-data", "assets/icon.ico;assets",
-    "--add-data", "assets/MiSans-Regular.ttf;assets",
-    "--add-data", "assets/navbar-title.png;assets",
-    "--hidden-import", "PySide6.QtCore",
-    "--hidden-import", "PySide6.QtGui",
-    "--hidden-import", "PySide6.QtWidgets",
-    "--hidden-import", "PySide6.QtNetwork",
-    "--clean", "--noconfirm",
-    "main.py",
-  ], { cwd: LAUNCHER_DIR, print: true });
+  const pyinstallerResult = await exec(buildPython, ["build_launcher.py"], {
+    cwd: LAUNCHER_DIR, print: true, timeout: 300000,
+  });
 
   if (!pyinstallerResult.ok) {
     fail("PyInstaller 打包失败!");

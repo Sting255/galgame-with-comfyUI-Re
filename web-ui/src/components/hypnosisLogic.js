@@ -431,7 +431,7 @@ export function heatViewModel(raw, now = Date.now()) {
 
 /** 批量模式提供的动作（不含遗忘按钮：遗忘要逐人确认，只放在单独使用模式里。
  *  注意——**按钮不在这里 ≠ 遗忘不覆盖群聊**：task-1 起遗忘按窗口 from_at→to_at 的时间区间
- *  屏蔽群聊 transcript 并归档群聊长期记忆，批量区只是不发这条指令。口径见 docs/hypnosis-phone.md §14.1） */
+ *  屏蔽群聊 transcript 并归档群聊长期记忆，批量区只是不发这条指令。口径见 docs/characters/hypnosis-phone.md §14.1） */
 export const GROUP_BATCH_ACTIONS = Object.freeze([
   { key: 'hypnotize', label: '催眠', variant: 'primary' },
   { key: 'wake', label: '唤醒', variant: 'secondary' },

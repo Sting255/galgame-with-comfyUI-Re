@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { resolveEnvPath } from './envFile.js';
 
 export const DEFAULT_SERVICE_PORT = 3099;
 
 // 所有启动入口读取同一份 PORT；不加载密钥或打开数据库。
-export function resolveServicePort({ env = process.env, envPath = new URL('../../.env', import.meta.url) } = {}) {
+export function resolveServicePort({ env = process.env, envPath = resolveEnvPath(env) } = {}) {
   let fileEnv = {};
   try { fileEnv = dotenv.parse(fs.readFileSync(envPath)); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }

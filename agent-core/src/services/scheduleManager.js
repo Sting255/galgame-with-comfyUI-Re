@@ -182,7 +182,18 @@ export function initialize() {
  * 在入睡/起床高峰期（21:00-02:00 / 06:00-09:00）每 15 分钟跑一次，
  * 其他时段每小时兜底一次。使用自调整 setTimeout 链，不用 setInterval。
  */
+let sleepCronTimer = null;
+let sleepCronStopped = false;
+export function stopScheduleManager() {
+  sleepCronStopped = true;
+  clearTimeout(sleepCronTimer);
+  for (const timer of tempWakeTimers.values()) clearTimeout(timer);
+  tempWakeTimers.clear();
+}
+
 function startSleepingStateCron() {
+  sleepCronStopped = false;
+  clearTimeout(sleepCronTimer);
   let running = false;
 
   async function tick() {
@@ -197,6 +208,7 @@ function startSleepingStateCron() {
   }
 
   function scheduleNext() {
+    if (sleepCronStopped) return;
     const now = getProgramNow();
     const hour = now.getHours();
     const sleepPeak = hour >= 21 || hour < 2;
@@ -208,7 +220,7 @@ function startSleepingStateCron() {
       : `off(${intervalMs / 3600000}h)`;
     console.log(`[scheduleMgr] Next sleeping-state sync in ${tag}`);
 
-    setTimeout(async () => {
+    sleepCronTimer = setTimeout(async () => {
       if (running) return; // 上一轮还没跑完，跳过
       running = true;
       try {

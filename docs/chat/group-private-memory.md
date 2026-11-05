@@ -159,7 +159,7 @@ effective = min(GROUP_PRIVATE_MEMORY_TOTAL_CHARS, 人数 × (GROUP_PRIVATE_MEMOR
 
 - 群聊侧的遗忘区间只有**时间**：`collectForgottenWindowsForMembers` 返回 `{characterId, windowId, fromAt, toAt}`
   （`hypnosisService.js:580`、`:595-596`），判断是 `at >= from && at <= to` 的**闭区间**（`groupChatEngine.js:620`）。
-- 相对私聊的 raw id 闭区间（见 `docs/hypnosis-phone.md` §7），群聊的时间近似会**多剔除**边界同一秒的消息 ——
+- 相对私聊的 raw id 闭区间（见 `docs/characters/hypnosis-phone.md` §7），群聊的时间近似会**多剔除**边界同一秒的消息 ——
   方向是「宁可少说，不泄漏」，与遗忘的语义一致；
 - 反向误差（该删没删）需要 raw 的 `created_at` 与窗口 `from_at/to_at` **不同源**才可能出现，而两者都出自
   同一个 SQLite 的 `datetime('now')`（UTC 无时区串、同一时钟）。

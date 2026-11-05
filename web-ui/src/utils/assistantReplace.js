@@ -1,5 +1,5 @@
 /**
- * D2 重写兜底的**替换语义**（docs/anti-repetition.md §12.4，形状已冻结）。
+ * D2 重写兜底的**替换语义**（docs/chat/anti-repetition.md §12.4，形状已冻结）。
  *
  * 后端事件：`replace_last_assistant{ content, segments:[{content, emojiKeys, images}], reason:'reroll', turn }`
  * 语义：把**刚显示的那轮** assistant 气泡整段换成新内容 —— **复用既有气泡（不追加）**、
@@ -45,7 +45,7 @@ export function applyAssistantReplace({ messages, bubbleIds, segments, uid, now 
       m.images = toImageList(seg.images)
     }
     // 表情包：**优先级 = 有 stickerUrls 用 url；没 url 才退回 emojiKeys 的兜底规则**
-    // 契约（docs/anti-repetition.md §12.4，Lead 定名）：segments[i].stickerUrls = url 字符串数组，
+    // 契约（docs/chat/anti-repetition.md §12.4，Lead 定名）：segments[i].stickerUrls = url 字符串数组，
     // 与 sticker_images 同源 ⇒ 用与 images 同一套映射覆盖；**缺失 / 空数组一律保持原样**（向后兼容）。
     let stickerFromUrls = false
     if (Array.isArray(seg.stickerUrls) && seg.stickerUrls.length > 0) {

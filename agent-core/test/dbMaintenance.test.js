@@ -28,7 +28,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NODE = path.join(ROOT, '..', 'runtime', 'nodejs', 'node.exe');
+const NODE = process.execPath;
 // better-sqlite3 是 CJS 原生模块：这里用 createRequire 同步拿（test 回调不是 async，不能用 await import）
 const Database = createRequire(import.meta.url)(path.join(ROOT, 'node_modules', 'better-sqlite3'));
 const dbSrc = fs.readFileSync(new URL('../src/db/index.js', import.meta.url), 'utf8');

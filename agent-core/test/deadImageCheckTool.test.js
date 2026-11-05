@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'dead-image-check.mjs');
-const NODE = path.join(ROOT, 'runtime', 'nodejs', 'node.exe');
+const NODE = process.execPath;
 const CORE = path.join(ROOT, 'agent-core');
 const Database = createRequire(path.join(CORE, 'package.json'))(path.join(CORE, 'node_modules', 'better-sqlite3'));
 

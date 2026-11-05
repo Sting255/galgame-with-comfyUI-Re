@@ -7,12 +7,15 @@
       视觉全部走 Linshe 组件（LinsheButton / LinsheTabs）+ 设计系统 token，不引入新体系。
     -->
     <Transition name="ia-panel">
-      <div v-if="open" class="ia-panel" role="dialog" aria-modal="false" aria-label="性爱推进">
+      <div v-if="open" class="ia-panel" role="dialog" aria-modal="false" aria-label="亲密">
         <div class="ia-header">
-          <span class="ia-title">推进</span>
+          <span class="ia-title" :title="targetName">{{ targetName ? '亲密 · ' + targetName : '亲密' }}</span>
           <span class="ia-summary" :title="summary">{{ summary }}</span>
-          <linshe-button variant="icon" size="sm" aria-label="关闭推进面板" @click="emit('close')">✕</linshe-button>
+          <linshe-button touch-target variant="icon" size="sm" aria-label="关闭亲密面板" @click="emit('close')">✕</linshe-button>
         </div>
+
+        <div v-if="loadError" class="ia-load-state" role="alert"><span>{{ loadError }}</span><linshe-button variant="secondary" size="sm" :loading="loading" @click="refresh">重试</linshe-button></div>
+        <p v-else-if="loading && !snapshot" class="ia-load-state" role="status">正在读取状态…</p>
 
         <!-- 状态 HUD：体位 / 插入状态 / 节奏 + 累积度条 -->
         <div class="ia-hud">
@@ -83,6 +86,26 @@
           <span class="ia-auto-hint">{{ view.autoThrust ? `他每 ${(view.autoIntervalMs / 1000).toFixed(1)} 秒一下` : '先开「自动插入」' }}</span>
         </div>
 
+        <!-- 动作按钮：可用性一律以服务端 actions 为准，端点不可用才回落镜像 -->
+        <div class="ia-actions">
+          <linshe-button
+            v-for="action in actions"
+            :key="action.key"
+            :variant="action.available ? (action.tone || (action.key === 'thrust' ? 'primary' : 'secondary')) : 'secondary'"
+            :size="action.key === 'thrust' || action.key === 'faster' ? 'lg' : 'md'"
+            :disabled="!action.available || busy || loading || !!loadError || !enabled"
+            :loading="busy && busyKey === action.key"
+            :active="isToggleOn(action.key)"
+            :title="hintFor(action)"
+            @click="run(action)"
+          >
+{{ labelFor(action) }}
+</linshe-button>
+        </div>
+
+        <linshe-button variant="ghost" size="sm" class="ia-position-toggle" :aria-expanded="showPositionPicker" @click="showPositionPicker = !showPositionPicker">{{ showPositionPicker ? '收起选择' : '选择体位' }} · {{ view.positionLabel }}</linshe-button>
+        <CollapseTransition :show="showPositionPicker">
+        <div>
         <!-- 大类：点一下就让她在这一类里自己挑（84 条平铺太长，先选大类再让她决定） -->
         <div v-if="categories.length" class="ia-row ia-row--block">
           <span class="ia-label">换个花样（点大类，让她自己挑）</span>
@@ -95,7 +118,9 @@
               :disabled="busy || loading || !enabled || suggesting"
               :title="`${cat.label}类共 ${cat.count} 个，让她在里面挑一个`"
               @click="suggestByCategory(cat)"
-            >{{ cat.label }}<span class="ia-cat-count">{{ cat.count }}</span></linshe-button>
+            >
+{{ cat.label }}<span class="ia-cat-count">{{ cat.count }}</span>
+</linshe-button>
           </div>
         </div>
 
@@ -111,7 +136,9 @@
               :loading="suggesting"
               title="让她按自己的性子挑一个"
               @click="suggestPositionForHer"
-            >✨ 让她决定</linshe-button>
+            >
+✨ 让她决定
+</linshe-button>
             <linshe-button
               v-for="item in visiblePositions"
               :key="item.key"
@@ -121,42 +148,34 @@
               :disabled="busy || loading || !enabled"
               :title="positionTitle(item, view)"
               @click="changePosition(item)"
-            >{{ item.label }}</linshe-button>
+            >
+{{ item.label }}
+</linshe-button>
             <linshe-button
               v-if="!showAllPositions && hiddenPositionCount > 0"
               variant="link"
               size="sm"
               :disabled="busy || loading || !enabled"
               @click="showAllPositions = true"
-            >更多体位（+{{ hiddenPositionCount }}）</linshe-button>
+            >
+更多体位（+{{ hiddenPositionCount }}）
+</linshe-button>
             <linshe-button
               v-else-if="showAllPositions && hiddenPositionCount > 0"
               variant="link"
               size="sm"
               @click="showAllPositions = false"
-            >收起</linshe-button>
+            >
+收起
+</linshe-button>
           </div>
         </div>
-
-        <!-- 动作按钮：可用性一律以服务端 actions 为准，端点不可用才回落镜像 -->
-        <div class="ia-actions">
-          <linshe-button
-            v-for="action in actions"
-            :key="action.key"
-            :variant="action.available ? (action.tone || (action.key === 'thrust' ? 'primary' : 'secondary')) : 'secondary'"
-            :size="action.key === 'thrust' || action.key === 'faster' ? 'lg' : 'md'"
-            :disabled="!action.available || busy || loading || !enabled"
-            :loading="busy && busyKey === action.key"
-            :active="isToggleOn(action.key)"
-            :title="hintFor(action)"
-            @click="run(action)"
-          >{{ labelFor(action) }}</linshe-button>
-        </div>
-
+</div>
+        </CollapseTransition>
         <Transition name="ia-fade">
-          <p v-if="feedback" class="ia-feedback" :class="{ 'is-reject': feedbackRejected }">{{ feedback }}</p>
+          <p v-if="feedback" class="ia-feedback" role="status" :class="{ 'is-reject': feedbackRejected }">{{ feedback }}</p>
         </Transition>
-        <p v-if="!enabled" class="ia-feedback is-reject">「性爱推进」功能当前已关闭。</p>
+        <p v-if="!enabled" class="ia-feedback is-reject">「亲密」功能当前已关闭。</p>
       </div>
     </Transition>
   </Teleport>
@@ -177,6 +196,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onEvent, offEvent } from '../stores/unifiedStream.js'
 import LinsheButton from './ui/LinsheButton.vue'
+import CollapseTransition from './CollapseTransition.vue'
 import LinsheTabs from './ui/LinsheTabs.vue'
 import {
   accumulationHint,
@@ -202,6 +222,7 @@ const props = defineProps({
   open: { type: Boolean, default: false },
   /** 当前私聊角色 id（必填；换人会自动重新读状态） */
   characterId: { type: [Number, String], default: 0 },
+  targetName: { type: String, default: '' },
   /**
    * 场景（2026-10-02）：`'chat'`（默认，私聊）或 `'group'`。
    * 群里打开时必须传 `'group'` + `groupId`，否则她的反应会写到私聊去
@@ -219,6 +240,8 @@ const toast = inject('toast', null)
 const snapshot = ref(null)
 const enabled = ref(true)
 const loading = ref(false)
+const loadError = ref('')
+const showPositionPicker = ref(false)
 const busy = ref(false)
 const busyKey = ref('')
 const feedback = ref('')
@@ -332,20 +355,24 @@ function setFeedback(text, rejected = false) {
 }
 
 /** 读一次服务端快照（列表/可用性/体位清单都来自它） */
+let refreshVersion = 0
 async function refresh() {
   const id = Number(props.characterId)
+  const version = ++refreshVersion
   if (!id) return
   loading.value = true
+  loadError.value = ''
   try {
     // 场景透传：群聊里读的是 group_<gid> 的场景快照（不传 = 私聊，老行为不变）
     const data = await fetchIntimateActionState(id, { scene: props.scene, groupId: props.groupId })
+    if (version !== refreshVersion || id !== Number(props.characterId)) return
     snapshot.value = data || null
     enabled.value = data?.enabled !== false
     emit('state', data?.state || null)
   } catch (err) {
-    setFeedback(err?.message || '读取状态失败', true)
+    if (version === refreshVersion) loadError.value = err?.message || '读取状态失败，请重试'
   } finally {
-    loading.value = false
+    if (version === refreshVersion) loading.value = false
   }
 }
 
@@ -430,11 +457,12 @@ onBeforeUnmount(() => { if (autoTimer) { clearTimeout(autoTimer); autoTimer = nu
 /** 点一下动作（同一次点击只发一个请求；busy 期间忽略连点） */
 async function run(action, extra = {}) {  if (busy.value || !action?.key) return
   if (!enabled.value) {
-    setFeedback('「性爱推进」功能当前已关闭。', true)
+    setFeedback('「亲密」功能当前已关闭。', true)
     return
   }
   // 换姿势必须带目标体位：「换姿势」按钮本身不带，点是提示去点下面的体位胶囊
   if (action.key === 'position' && !action.positionKey) {
+    showPositionPicker.value = true
     setFeedback('先点下面的体位，再换过去。', true)
     return
   }
@@ -558,11 +586,15 @@ async function setAutoPace(pace) {
 watch(() => props.open, (open) => {
   if (open) {
     setFeedback('')
+    showPositionPicker.value = false
     refresh()
-  }
+  } else { refreshVersion++; loading.value = false }
 })
 
-watch(() => props.characterId, () => {
+watch([() => props.characterId, () => props.scene, () => props.groupId], () => {
+  refreshVersion++
+  snapshot.value = null
+  loadError.value = ''
   if (props.open) refresh()
 })
 
@@ -571,14 +603,17 @@ defineExpose({ refresh })
 
 <style scoped>
 /* 浮动小窗：右下角，不挡消息区（与 TouchActionPanel 同取向：无遮罩、不接管点击） */
+.ia-position-toggle { margin: 12px 0 4px; max-width: 100%; }
+.ia-load-state { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--text-secondary); margin: 8px 0; }
 .ia-panel {
   position: fixed;
   right: 16px;
-  bottom: 96px;
+  bottom: 140px;
   z-index: 60;
   width: min(340px, calc(100vw - 24px));
-  max-height: min(70vh, 620px);
+  max-height: min(62dvh, 620px, calc(100dvh - 160px));
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px;
   box-sizing: border-box;
   background: var(--bg-secondary);
@@ -594,8 +629,8 @@ defineExpose({ refresh })
 .ia-panel-enter-from,
 .ia-panel-leave-to { opacity: 0; transform: translateY(12px); }
 
-.ia-header { display: flex; align-items: center; gap: 8px; }
-.ia-title { font-size: 14px; font-weight: 600; color: var(--text-bright, var(--text-primary)); }
+.ia-header { display: flex; align-items: center; gap: 8px; position: sticky; top: -12px; z-index: 2; margin: -12px -12px 0; padding: 12px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); }
+.ia-title { font-size: 14px; font-weight: 600; color: var(--text-bright, var(--text-primary)); max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ia-summary {
   flex: 1; min-width: 0; font-size: 11px; color: var(--text-secondary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -687,6 +722,9 @@ defineExpose({ refresh })
 .ia-fade-leave-to { opacity: 0; }
 
 @media (max-width: 520px) {
-  .ia-panel { right: 8px; left: 8px; width: auto; bottom: 84px; }
+  .ia-panel { right: 8px; left: 8px; width: auto; bottom: calc(140px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (max-width: 380px) {
+  .ia-panel { bottom: calc(180px + env(safe-area-inset-bottom, 0px)); max-height: calc(100dvh - 200px); }
 }
 </style>

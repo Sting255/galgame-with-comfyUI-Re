@@ -192,6 +192,8 @@ test('restoredText 把 restored 拼成人话', () => {
 })
 
 test('importSuccessText 在 restartRecommended 时补「建议重启应用」', () => {
+  assert.equal(importSuccessText({ message: '恢复完成', restartRequired: true }), '恢复完成；请重启邻舍后继续使用')
+  assert.equal(importSuccessText({ message: '请重启邻舍', restartRequired: true, restartRecommended: true }), '请重启邻舍')
   assert.equal(
     importSuccessText({ message: '导入完成', restartRecommended: false }),
     '导入完成',
