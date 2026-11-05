@@ -31,6 +31,8 @@
           </div>
           <div class="chat-header-schedule" v-if="currentScheduleText">{{ currentScheduleText }}</div>
           <ChatSleepStatus :states="[charSleepState]" :loaded="scheduleStore.overviewLoaded" :error="scheduleStore.overviewError" @retry="scheduleStore.fetchOverview(true)" />
+          <!-- 睡眠条（2026-11-06 用户要求放到最顶上）：只有她睡着时才出现，点一下开亲密面板 -->
+          <ChatSleepBar :character-id="chat.activeCharId" @open="showIntimatePanel = true" />
         </div>
         <div class="chat-header-right">
           <linshe-button class="standing-entry-desktop" variant="ghost" size="sm" @click="openStandingDisplayPage">同步形象展示 ↗</linshe-button>
@@ -755,6 +757,7 @@ import { useSettingsStore } from '../stores/settings.js'
 import { useEventsStore } from '../stores/events.js'
 import { useChatSchedule } from '../composables/useChatSchedule.js'
 import ChatSleepStatus from '../components/chat/ChatSleepStatus.vue'
+import ChatSleepBar from '../components/chat/ChatSleepBar.vue'
 
 const route = useRoute()
 const router = useRouter()

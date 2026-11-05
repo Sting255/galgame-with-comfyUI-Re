@@ -24,11 +24,14 @@
           v-for="m in (store.activeGroup?.members || []).slice(0, 4)"
           :key="m.id"
           class="group-avatar-cell avatar-clickable"
+          :class="{ 'is-asleep': isMemberSleeping(m.id) }"
           :style="m.avatar_path ? {} : { background: 'var(--accent)' }"
           @click.stop="openAvatarMenu(m, $event)"
         >
           <img v-if="m.avatar_path" :src="m.avatar_path" class="group-avatar-img" alt="" />
           <span v-else>{{ m.display_name.charAt(0) }}</span>
+          <!-- 睡眠标记（2026-11-06）：群里谁在睡，一眼能看见，不用去读那行汇总文字 -->
+          <span v-if="isMemberSleeping(m.id)" class="group-avatar-sleep" aria-label="睡眠中">💤</span>
         </div>
       </div>
       <div class="chat-header-center">
@@ -144,44 +147,9 @@
       </Transition>
     </div>
 
-    <!-- SLG 动作快捷条（阶段二·群聊）：先选「对谁」，再选动作。
-         选人复用本页既有的 @提及成员面板（同一套 .mention-panel / .mention-item 视觉，includeAll=false）。 -->
+    <!-- SLG 动作快捷条（阶段二·群聊）：动作对象在面板顶部直接点头像切换（2026-11-06 去掉二级弹层）。 -->
     <div class="touch-group-wrap">
-      <Transition name="mention-fade">
-        <div
-          v-if="showTargetPicker"
-          id="touch-target-list"
-          class="mention-panel"
-          role="listbox"
-          aria-label="选择动作对象"
-          @keydown.esc.stop.prevent="closeTargetPicker"
-          @keydown.up.prevent="moveTargetFocus(-1)"
-          @keydown.down.prevent="moveTargetFocus(1)"
-        >
-          <div
-            v-for="(opt, idx) in targetOptions"
-            :key="opt.key"
-            class="mention-item"
-            :class="{ 'is-active': idx === targetIndex }"
-            role="option"
-            tabindex="0"
-            :aria-selected="idx === targetIndex"
-            @mouseenter="targetIndex = idx"
-            @focus="targetIndex = idx"
-            @click="pickTarget(opt)"
-            @keydown.enter.prevent="pickTarget(opt)"
-            @keydown.space.prevent="pickTarget(opt)"
-          >
-            <div class="mention-avatar" :style="opt.avatar_path ? {} : { background: 'var(--accent)' }">
-              <img v-if="opt.avatar_path" :src="opt.avatar_path" class="avatar-img" alt="" />
-              <span v-else>{{ opt.display_name.charAt(0) }}</span>
-            </div>
-            <span>{{ opt.display_name }}</span>
-          </div>
-        </div>
-      </Transition>
-      <!-- SLG 动作系统（交互改版）：与私聊同一颗 ✋（输入区最右），点开底部弹层大卡片面板。
-           群聊先选「对谁」（复用本页 @提及成员面板）；面板顶部有「对 XXX」可随时换人。 -->
+      <!-- SLG 动作系统（交互改版）：与私聊同一颗 ✋（输入区最右），点开底部弹层大卡片面板。 -->
       <TouchActionPanel
         :open="showTouchPanel"
         :server-groups="touchServerGroups"
@@ -191,8 +159,10 @@
         :pending-by-mode="touchPendingByMode"
         :states="touchStates"
         :target-name="touchTarget ? touchTarget.display_name : ''"
+        :targets="store.activeGroup?.members || []"
+        :target-value="touchTargetId"
         :requires-target="true"
-        @pick-target="openTargetPicker"
+        @select-target="selectTouchTarget"
         @action="onTouchAction"
         @open="onTouchPanelOpen"
         @close="showTouchPanel = false"
@@ -278,7 +248,7 @@
       group :target-name="touchTarget?.display_name || ''"
       :touch-open="showTouchPanel" :toy-open="showToyPanel" :intimate-open="showIntimatePanel"
       :pending-count="touchPendingCount" :pending-hint="touchPendingHint" :toy-count="groupWornToys.length"
-      @toggle="openGroupPanel" @pick-target="openTargetPicker"
+      @toggle="openGroupPanel" @pick-target="cycleTouchTarget"
     />
       <div
         role="button"
@@ -502,8 +472,6 @@
 </template>
 
 <script setup>
-import LinsheCloseButton from "../components/ui/LinsheCloseButton.vue"
-
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroupsStore } from '../stores/groups.js'
@@ -550,6 +518,11 @@ const store = useGroupsStore()
 const scheduleStore = useChatSchedule(() => store.activeGroupId, () => store.sending || store.playing, () => store.messages.length)
 const memberSleepStates = computed(() => (store.activeGroup?.members || []).map(member =>
   scheduleStore.characters.find(state => String(state.id) === String(member.id)) || null))
+/** 该成员此刻真的在睡（临时叫醒不算）—— 头像上的 💤 标记用 */
+function isMemberSleeping(characterId) {
+  const state = memberSleepStates.value.find(item => String(item?.id) === String(characterId))
+  return Boolean(state && state.is_sleeping && !state.is_temp_woken)
+}
 // 程序时间：群聊时间分隔符与私聊同口径
 const clock = useProgramClock()
 clock.ensureLoaded()
@@ -585,48 +558,24 @@ const touchTarget = computed(() =>
 const touchServerGroups = ref([])
 // §4.2 连点：**同动作在飞时忽略重复点击、不同动作可并发** ⇒ 单个 key 换成 Set
 const touchBusyActions = ref(new Set())
-const showTargetPicker = ref(false)
 
-// 「对谁」复用本页既有的 @提及成员选择器：同一份 store.activeGroup.members、同一套 .mention-panel 视觉；
-// includeAll=false —— 动作只能对具体成员做，不能对「全体成员」
-const targetPicker = useMentionPicker(() => store.activeGroup?.members || [], { includeAll: false })
-const { options: targetOptions, index: targetIndex } = targetPicker
-
-let requestedPanel = null
-function openTargetPicker(kind = 'touch') {
-  if (!(store.activeGroup?.members || []).length) {
-    toast?.('这个群里还没有成员', 'info')
-    return
-  }
-  targetPicker.close()
-  requestedPanel = kind
-  closePanels()
-  showTargetPicker.value = true
-  nextTick(() => document.querySelector('#touch-target-list [role="option"]')?.focus())
+/**
+ * 选动作对象（2026-11-06 用户要求去掉二级菜单）：面板顶部那排头像点一下就是这一步，
+ * 顺手重拉她这一侧的动作门控。不再有"先弹列表选人、再进面板"的第二层。
+ */
+async function selectTouchTarget(id) {
+  if (!id || String(id) === String(touchTargetId.value)) return
+  touchTargetId.value = Number(id) || id
+  await loadTouchActions()
 }
 
-function closeTargetPicker() {
-  const restoreFocus = document.activeElement?.closest('#touch-target-list')
-  showTargetPicker.value = false
-  requestedPanel = null
-  targetPicker.close()
-  if (restoreFocus) nextTick(() => document.querySelector('.chat-action-toolbar [aria-label="选择互动对象"]')?.focus())
-}
-
-function moveTargetFocus(delta) {
-  const options = document.querySelectorAll('#touch-target-list [role="option"]')
-  if (!options.length) return
-  const index = (targetIndex.value + delta + options.length) % options.length
-  options[index]?.focus()
-}
-
-async function pickTarget(opt) {
-  if (!opt || opt.isAll) return
-  const kind = requestedPanel
-  touchTargetId.value = opt.id
-  closeTargetPicker()
-  await nextTick()
-  if (kind) openGroupPanel(kind)
+/** 输入区的「对 XX」按钮：一步一步循环换人，不再弹菜单 */
+function cycleTouchTarget() {
+  const members = store.activeGroup?.members || []
+  if (!members.length) { toast?.('这个群里还没有成员', 'info'); return }
+  const index = members.findIndex(m => String(m.id) === String(touchTargetId.value))
+  const next = members[(index + 1) % members.length]
+  selectTouchTarget(next.id)
 }
 
 /** 拉目标成员的动作清单 + 服务端逐条门控（群聊口径：scene=group） */
@@ -672,13 +621,12 @@ const touchPendingByMode = ref({})
 /** 入口角标标题 / 面板提示行同源文案 */
 const touchPendingHint = computed(() => pendingHintByMode({ count: touchPendingCount.value, byMode: touchPendingByMode.value }))
 /** 动作面板显隐（✋ 入口点开） */
-const { showTouchPanel, showToyPanel, showIntimatePanel, closePanels } = useChatActionPanels(() => store.activeGroupId)
+const { showTouchPanel, showToyPanel, showIntimatePanel } = useChatActionPanels(() => store.activeGroupId)
 
 // ── 群聊里的「🧸 玩具 / ❤ 推进」入口（2026-10-02 用户：「群聊里也没有动作系统和玩具 性爱系统的按钮」）──
 /** 面板作用的群成员 id：在**打开那一刻**从 touchTargetId 锁定（换人时下面的 watch 会把面板关掉） */
 const panelCharacterId = ref(null)
 watch(() => store.activeGroupId, () => {
-  closeTargetPicker()
   touchTargetId.value = null
   panelCharacterId.value = null
 })
@@ -686,24 +634,24 @@ watch(() => store.activeGroupId, () => {
 /**
  * 点 🧸 / ❤ 的统一入口。
  *
- * 群聊与私聊最大的差别：群里有很多人，这两个面板一次只能作用于**一个人** ⇒ 必须先选定"对谁"。
- * 这里刻意**不**回落到 `members[0]`（纯函数 resolveGroupPanelTarget 里也是这么写的）：
- * 默认拿第一个人会让用户以为"点一下就能玩"，实际作用在别人身上 —— 那是更难查的错。
- * 没选目标时打开选人列表，选择后继续原来的功能。
+ * 群里有很多人，这两个面板一次只能作用于一个人。2026-11-06 起**默认取群里第一位**、
+ * 直接开面板：面板顶部有头像行、输入区也有「对 XX」可循环换人 —— 不再先弹一层选人列表。
  */
 function openGroupPanel (kind) {
   if (kind === 'touch' && touchTargetId.value) {
     showTouchPanel.value = !showTouchPanel.value
     return
   }
+  if (!touchTargetId.value) {
+    const first = (store.activeGroup?.members || [])[0]
+    if (!first) { toast?.('这个群里还没有成员', 'info'); return }
+    touchTargetId.value = first.id
+  }
   const r = resolveGroupPanelTarget({
     targetId: touchTargetId.value,
     members: store.activeGroup?.members || [],
   })
-  if (!r.ok) {
-    openTargetPicker(kind)
-    return
-  }
+  if (!r.ok) { toast?.(r.message, 'info'); return }
   panelCharacterId.value = r.characterId
   if (kind === 'toy') {
     showToyPanel.value = !showToyPanel.value
@@ -1353,8 +1301,6 @@ function scrollMentionIntoView() {
 
 /** draft 任何变化（打字、Shift+Enter 换行、选中后回填）都重新对齐面板 */
 function syncMention(text) {
-  // 一开始打字就收起「对谁」面板：两个面板互斥，同开会在输入区上方打架
-  if (showTargetPicker.value) closeTargetPicker()
   if (mention.sync(text)) scrollMentionIntoView()
 }
 
@@ -1591,10 +1537,22 @@ async function clearGroupAvatar() {
   background: var(--bg-tertiary);
 }
 .group-avatar-cell {
+  position: relative;
   background-size: cover; background-position: center;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-size: 10px; font-weight: 600;
   min-height: 20px;
+}
+/* 睡眠标记：头像压暗 + 右上角 💤，一眼看清谁在睡 */
+.group-avatar-cell.is-asleep .group-avatar-img { filter: grayscale(0.6) brightness(0.7); }
+.group-avatar-sleep {
+  position: absolute; right: -3px; top: -3px;
+  font-size: 9px; line-height: 1;
+  padding: 1px 2px;
+  border-radius: var(--radius-full);
+  background: var(--bg-secondary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
 }
 .group-avatar-img {
   width: 100%;

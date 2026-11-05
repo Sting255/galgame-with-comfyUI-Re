@@ -26,7 +26,7 @@
               动作
             </span>
             <linshe-button
-              v-if="requiresTarget"
+              v-if="requiresTarget && !targets.length"
               variant="chip"
               size="sm"
               :active="!!targetName"
@@ -40,6 +40,30 @@
 
           <!-- 待回应提示：与入口角标同源同文案（pendingCount>0 才出现） -->
           <p v-if="pendingHint" class="touch-pending">{{ pendingHint }}</p>
+
+          <!-- 动作对象（2026-11-06 用户要求去掉二级菜单）：群聊里直接在这里点头像换人，
+               不再有「先选人 → 再选动作」的第二层弹层。只有群聊（targets 非空）才出现。 -->
+          <div v-if="targets.length" class="touch-targets" role="group" aria-label="动作对象">
+            <div
+              v-for="member in targets"
+              :key="member.id"
+              class="touch-target"
+              :class="{ 'is-active': String(member.id) === String(targetValue) }"
+              role="button"
+              tabindex="0"
+              :aria-pressed="String(member.id) === String(targetValue)"
+              :title="member.display_name"
+              @click="emit('select-target', member.id)"
+              @keydown.enter.prevent="emit('select-target', member.id)"
+              @keydown.space.prevent="emit('select-target', member.id)"
+            >
+              <span class="touch-target-avatar">
+                <img v-if="member.avatar_path" :src="member.avatar_path" alt="" />
+                <span v-else>{{ (member.display_name || '?').charAt(0) }}</span>
+              </span>
+              <span class="touch-target-label">{{ member.display_name }}</span>
+            </div>
+          </div>
 
           <linshe-tabs v-if="groups.length > 1" v-model="selectedLevel" class="touch-filters" size="sm" :options="levelOptions" aria-label="动作分类" />
 
@@ -133,8 +157,12 @@ const props = defineProps({
   busyActions: { type: [Object, Array], default: () => new Set() },
   /** 镜像动作清单（仅在无 serverGroups 时使用） */
   actions: { type: Array, default: () => TOUCH_ACTIONS },
-  /** 群聊多人场景：当前动作对象的成员名；非空时显示「对 XXX」胶囊 */
+  /** 群聊多人场景：当前动作对象的成员名；非空时显示「对 XXX」胶囊（仅无 targets 头像行时用） */
   targetName: { type: String, default: '' },
+  /** 群聊成员列表（{ id, display_name, avatar_path }）：有它就在面板顶部直选对象，不再弹二级菜单 */
+  targets: { type: Array, default: () => [] },
+  /** 当前选中的对象 id（与 targets 配合） */
+  targetValue: { type: [Number, String], default: null },
   /** 需要先选动作对象（群聊为 true）：没选对象不让做动作 */
   requiresTarget: { type: Boolean, default: false },
   /** 待回应动作条数（GET .../touch/state 的 pendingCount）：>0 才显示提示行 */
@@ -153,7 +181,7 @@ const props = defineProps({
   hypnosisBadge: { type: Object, default: null },
 })
 
-const emit = defineEmits(['action', 'open', 'pick-target', 'close', ])
+const emit = defineEmits(['action', 'open', 'pick-target', 'select-target', 'close', ])
 
 const toastFn = inject('toast', null)
 
@@ -414,6 +442,54 @@ function onPick(action) {
 .touch-target-name { display: block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .touch-filters { flex: 0 0 auto; margin: 12px 14px 0; max-width: calc(100% - 28px); overflow-x: auto; }
 .touch-group { animation: touch-category-in 0.3s ease; }
+
+/* 动作对象直选（2026-11-06）：头像一行横滑，替代原来的「对谁」二级弹层 */
+.touch-targets {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.touch-targets::-webkit-scrollbar { display: none; }
+.touch-target {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 52px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.touch-target-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-sunken);
+  border: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  transition: border-color 0.3s ease, transform 0.3s ease;
+}
+.touch-target-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.touch-target-label {
+  max-width: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.touch-target.is-active .touch-target-avatar { border-color: var(--accent); }
+.touch-target.is-active .touch-target-label { color: var(--text-bright); }
+.touch-target:active .touch-target-avatar { transform: scale(0.94); }
+.touch-target:focus-visible .touch-target-avatar { outline: 2px solid var(--accent); outline-offset: 2px; }
 @keyframes touch-category-in { from { opacity: 0; } to { opacity: 1; } }
 .touch-title-icon { flex-shrink: 0; }
 .touch-pending { flex: 0 0 auto; margin: 6px 20px 0; font-size: 12px; color: var(--text-secondary); }

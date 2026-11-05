@@ -204,6 +204,11 @@
         <GodSacredButton v-if="!atBottom && god.turns.length" class="god-latest" variant="line" size="sm" @click="goBottom">回到最新 ↓</GodSacredButton>
       </Transition>
       <div v-if="god.reconnecting" class="connection-note" role="status">正在重新连接，天使仍在处理；恢复连接后会接续显示。</div>
+      <!-- 神谕待落地（2026-11-06）：排了"今晚八点让谁发动态"之后，界面上要能看见它还在排队 -->
+      <div v-if="pendingDeliveries.length" class="god-pending" role="status">
+        <span class="god-pending-dot" aria-hidden="true"></span>
+        神谕待落地 {{ pendingDeliveries.length }} 项 · {{ pendingLabel }}
+      </div>
       <div class="god-composer" @paste="onComposerPaste">
         <div v-if="draftImages.length" class="composer-images">
           <figure v-for="(image, index) in draftImages" :key="image.id" class="composer-image">
@@ -396,6 +401,30 @@ const userAvatarFailed = ref(false)
 const showUserAvatar = computed(() => !!userAvatar.value && !userAvatarFailed.value)
 const memoryLabels = { preference: '偏好', promise: '约定', event: '经历', relationship: '我们' }
 const subtitle = computed(() => !god.state ? '云庭 · 等待你的声音' : `${god.state.angel.display_name} · ${!god.state.scheduleEnabled ? '日程未启用' : god.state.activity?.activity || (god.state.angel.schedule_error ? '今日日程暂未就绪' : '在云庭等候')}`)
+
+/** 神谕里还在排队/正在执行的投递（定时投递以后端 next_attempt_at 为准，前端只做展示） */
+const pendingDeliveries = computed(() => {
+  const out = []
+  for (const event of god.state?.worldEvents || []) {
+    for (const delivery of event.deliveries || []) {
+      if (delivery.status !== 'pending' && delivery.status !== 'running') continue
+      out.push({ ...delivery, event_title: event.title })
+    }
+  }
+  return out.sort((a, b) => String(a.next_attempt_at || '').localeCompare(String(b.next_attempt_at || '')))
+})
+const pendingLabel = computed(() => {
+  const first = pendingDeliveries.value[0]
+  if (!first?.next_attempt_at) return '等待执行'
+  const at = new Date(first.next_attempt_at)
+  if (Number.isNaN(at.getTime())) return '等待执行'
+  if (at.getTime() <= Date.now()) return '正在落地'
+  const hh = String(at.getHours()).padStart(2, '0')
+  const mm = String(at.getMinutes()).padStart(2, '0')
+  const now = new Date()
+  if (at.toDateString() === now.toDateString()) return `最近 ${hh}:${mm}`
+  return `最近 ${at.getMonth() + 1}-${at.getDate()} ${hh}:${mm}`
+})
 
 function renderText(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/`([^`\n]+)`/g, '<code>$1</code>')
@@ -777,6 +806,23 @@ watch(() => [god.state?.session.id, god.turns[0]?.id, god.turns[0]?.input], () =
 .god-error,.archive-strip { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding:9px 24px; font-size:var(--fs-sm); line-height:1.6; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
 .god-error { color:var(--danger); }
 .connection-note { max-width:var(--god-col); margin:0 auto 8px; color:var(--god-muted); font-size:var(--fs-xs); line-height:1.6; }
+/* 神谕待落地：一行低调的状态字，不抢天使的台词 */
+.god-pending {
+  max-width: var(--god-col);
+  margin: 0 auto 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--god-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+.god-pending-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-2) 22%, transparent);
+}
 .god-loading .skeleton { height:56px; margin-bottom:25px; border-radius:var(--radius-md); }
 .god-loading .skeleton:nth-child(2) { width:75%; }
 .god-modal-content { font-size:var(--fs-md); line-height:1.8; }
