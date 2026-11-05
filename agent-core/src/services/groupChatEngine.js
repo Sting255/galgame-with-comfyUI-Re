@@ -44,7 +44,9 @@ import { getTimeTag } from './timeLight.js';
 import { takeGroupNewspaperBlockFor } from './newspaperService.js';
 import { splitText } from '../utils/sentenceSplitter.js';
 import { stripImagePromptLines, stripBracePromptBlocks, extractUnbracedGroupImagePrompt, isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
-import { getCurrentActivity, isSleeping } from './scheduleManager.js';
+import { getCurrentActivity, isSleeping, tempWake } from './scheduleManager.js';
+import { isSleepLocked } from './sleepLock.js';
+import { recordInterCharacterEvents, buildRecentInteractionsBlock } from './groupInterCharacterEvents.js';
 import { detectAndApplyAppointment } from './appointmentDetector.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { buildGroupEmojiNote, getCharacterEmojiMap, parseGroupEmojiText, getEmojiCategories, parseEmojiText } from './emojiService.js';
@@ -215,7 +217,7 @@ export function collectHypnosisDirectiveBlocks(members = []) {
 const MAX_TRANSCRIPT_RAWS = 40;   // 摘要兜底基准：checkpoint 之后 transcript 超过阈值触发边界推进（随配置轮次扩大）
 const TRIM_KEEP_RAWS = 24;        // 边界推进后保留的最近 raw 条数（留出再增长空间，降低跳变频率）
 const MAX_ROUND_MESSAGES = 18;     // 每轮剧本消息的绝对上限（动态上限见 computeRoundMessageLimit，按群人数与话题浮动）
-const IMAGE_NUDGE_PROBABILITY = 0.75;  // 每轮抽卡鼓励发图的概率
+const IMAGE_NUDGE_PROBABILITY = 0.3;   // 每轮抽卡鼓励发图的概率（2026-11-06：0.75 → 0.3，真机 12 轮出了 10 张图，太像图片机器）
 
 /** 群聊记忆总结/滑动窗口推进轮次（2~6，所有群共享；默认 4） */
 export function getGroupSummaryInterval() {
@@ -946,6 +948,46 @@ export function recordGroupIntimateFromText(rawId, lines, { excludeCharacterIds 
   return { inserted, skipped, blocked };
 }
 
+// ── 群聊里的「叫醒」必须落库 ──
+// 问题现场（2026-11-06 真机日志）：模型在群里把睡着的银狼写得活灵活现（"被叫醒后身体发软"），
+// 但 characters.is_sleeping 一直是 1 —— 下一轮的 <此刻的作息> 仍把她列在"睡着"，表演和状态是两套账本。
+// 这里在剧本落库后做一次确定性判定，把"叫醒"这件事真的写进状态：
+//   1) 有人在台词里点了她的名 + 带唤醒动作（叫醒/摇醒/掀被子…）→ 她被吵醒；
+//   2) 用户本轮点了她的名，且模型真的让她开口了 → 用户是在跟她说话，走和电话/上门同一口径。
+// 写入口只走 tempWake（全仓唯一的"从睡眠里拉起来"入口），到期按日程自动回睡，
+// 不需要在这里维护 sleep_until；催眠「无法醒来」锁着时一律不醒（与 sleepLock 口径一致）。
+const WAKE_CALL_RE = /(叫|喊|摇|晃|推|拽|拉|弄|拍)(一?下|了)?(醒|起来)|醒醒|别睡了|起床|掀.{0,6}被|拍.{0,6}(脸|肩)|泼水/;
+
+export function applyGroupWake(group, { userMessage = '', speakerLines = [] } = {}) {
+  const userName = config.user.nickname || '用户';
+  const woken = [];
+  for (const member of group.members || []) {
+    let sleeping = false;
+    try { sleeping = Boolean(isSleeping(member.id).sleeping); } catch { continue; }
+    if (!sleeping) continue;
+    // 被催眠锁死（「无法醒来」开着）时，群里喊破喉咙也不该醒 —— 那条开关的全部意义就是这个。
+    try { if (isSleepLocked(member.id)) continue; } catch { /* 判定失败按可唤醒处理 */ }
+
+    const name = member.display_name;
+    const spokeHerself = speakerLines.some(line => Number(line.characterId) === Number(member.id));
+    const calledOut = speakerLines.some(line => typeof line.text === 'string' && line.text.includes(name) && WAKE_CALL_RE.test(line.text));
+    const userText = String(userMessage || '');
+    // 用户点名 + 带唤醒语气（"银狼醒醒""别睡了德丽莎"）⇒ 直接算叫醒，不依赖模型这一轮有没有让她开口。
+    // 只点名不带语气（顺口提到"银狼还在睡啊"）时，仍要她真的接了话才算 —— 避免误唤醒。
+    const userCalledByWords = Boolean(userText) && userText.includes(name) && WAKE_CALL_RE.test(userText);
+    const userMentionedAndSpoke = Boolean(userText) && userText.includes(name) && spokeHerself;
+    if (!calledOut && !userCalledByWords && !userMentionedAndSpoke) continue;
+
+    const result = tempWake(member.id, { mode: 'shake', minutes: 10 + Math.floor(Math.random() * 6) });
+    if (result.ok) {
+      woken.push(name);
+      const why = calledOut ? 'called in round' : userCalledByWords ? 'user wake words' : `${userName} mentioned`;
+      console.log(`[group] wake-up: ${name}(${member.id}) temp-woken for ${result.minutes}min (${why})`);
+    }
+  }
+  return woken;
+}
+
 // ── 核心：跑一轮群聊 ──
 
 // 每群同时只允许一轮生成（用户发言/后台闲聊/冷场续聊互斥）
@@ -1095,7 +1137,7 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   let dyn = null;         // 本轮话题引子（idle 轮从成员动态中抽取）
   let mentionAll = false; // 用户 @全体成员：本轮全员都必须发言
   if (trigger === 'user') {
-    directiveBlocks.push(`「${chatUserName}」在群里发了消息，接下来角色们要接话。`);
+    directiveBlocks.push(`「${chatUserName}」在群里发了消息，接下来角色们接话。先由一两位成员互相接住这个话头（可以点名、反驳、追问别人），再由其中一位顺带回应「${chatUserName}」——不要全员排队回答他。`);
     mentionAll = detectMentionAll(userMessage);
     if (mentionAll) {
       const roster = group.members.map(m => m.display_name).join('、');
@@ -1151,6 +1193,15 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
     console.warn('[group] sleep state inject failed:', err.message);
   }
 
+  // 成员之间的最近互动（2026-11-06）：给模型一些"A 跟 B 之间发生过什么"的话头。
+  // 放在指令块里而不是群名片里 —— 群名片是稳定前缀块，塞动态内容会让前缀缓存整块失效。
+  try {
+    const interactions = buildRecentInteractionsBlock(group.id, 6);
+    if (interactions) directiveBlocks.push(interactions);
+  } catch (err) {
+    console.warn('[group] recent interactions inject failed:', err.message);
+  }
+
   // 记忆召回范围：**只含本群会话**（成员私聊记忆不走 RAG，见 buildGroupRoundMemoryScope 的说明）。
   // 口径选择（本仓保留 task-36 隐私收窄）：上游 3.6.0 把这里放宽成「本群 + 全体成员各自私聊」，
   // 会把成员的私事塞进全体共享的群 prompt；本仓维持只含本群，成员私聊记忆只走各自的小节。
@@ -1172,9 +1223,9 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
 
   // 发图指令：主动/自动发起的群聊轮（idle 后台闲聊、lull 冷场续聊）强制要求配一张图；user/opening 维持抽卡鼓励
   if (trigger === 'idle' || trigger === 'lull') {
-    directiveBlocks.push(`本轮是角色们主动发起的群聊，群聊生成方向建议有一个小的主题，要么围绕某个人的朋友圈讨论，要么大家围绕某个话题、某件事讨论，聊天有个中心，不要各聊各的。安排至少一个合适的角色发一张图（配合话题的照片/自拍/表情包/截图），按发图协议输出花括号画面描述行，画面描述必须为英文。`);
+    directiveBlocks.push(`本轮是角色们主动发起的群聊，群聊生成方向建议有一个小的主题，要么围绕某个人的朋友圈讨论，要么大家围绕某个话题、某件事讨论，聊天有个中心，不要各聊各的。配图按需：只有话题正好落到看得见的东西上（手上的、眼前的地点、刚拍的、吃到的）才让其中一个角色发一张，纯对话不配图。`);
   } else if (Math.random() < IMAGE_NUDGE_PROBABILITY) {
-    directiveBlocks.push(`本轮安排至少一个合适的角色发一张图（配合话题的照片/自拍/表情包），按发图协议输出花括号画面描述行，画面描述必须为英文。`);
+    directiveBlocks.push(`如果这一轮的话题适合配图（手上的东西、眼前的地点、自拍、刚发生的事），安排一位合适的角色发一张，按发图协议输出花括号画面描述行；话题只是纯聊天就不要发。`);
   }
 
   // 反重复与话题推进（P2-3 / task-26）：**面向全群的合并块**，检测复用 antiRepetition.js 的同一套纯函数。
@@ -1542,6 +1593,18 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
     recordGroupIntimateFromText(rawId, intimateTextLines, {
       excludeCharacterIds: intimatePrompts.map(item => item.characterId),
     });
+  }
+
+  // ── 群聊叫醒落库：剧本里把谁叫起来了，状态就跟着改 ──
+  // 放在亲密记账之后：判定只看"谁对这谁说了什么"，与看板无关；失败绝不能影响收尾。
+  if (rawContent && linkTextLines.length > 0) {
+    try {
+      applyGroupWake(group, { userMessage: trigger === 'user' ? userMessage : '', speakerLines: linkTextLines });
+      // 角色之间的互动记录（2026-11-06）：同一份"谁说了什么"，零额外成本
+      recordInterCharacterEvents(group, { speakerLines: linkTextLines });
+    } catch (err) {
+      console.warn('[group] wake-up / inter-character apply failed:', err.message);
+    }
   }
 
   // ── 群聊 ⇄ 私聊 记忆互通（H2）：把"她这一轮在群里经历的事"写进她自己的私聊长期记忆 ──
