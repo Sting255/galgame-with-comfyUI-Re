@@ -24,8 +24,9 @@ import { TOUCH_MODES, buildTouchActionBlock, getTouchAction, touchEventCutoff } 
 // 2026-11-03 睡眠锁（催眠手机「无法醒来」）：群聊触摸也要按锁着算
 import { isSleepLocked } from './sleepLock.js';
 
-/** 围观插话的默认概率（task-22）：30%。`config.features.touchBystanderChance` 可覆盖；null / false = 关闭概率模型。 */
-export const DEFAULT_TOUCH_BYSTANDER_CHANCE = 0.3;
+/** 围观插话的默认概率（task-22：30% → 2026-11-06 用户反馈"群里互动别人完全没反应"，抬到 80%）。
+ *  `config.features.touchBystanderChance` 可覆盖；null / false = 关闭概率模型。 */
+export const DEFAULT_TOUCH_BYSTANDER_CHANCE = 0.8;
 
 /**
  * 解析本轮围观概率（task-22）。

@@ -67,6 +67,11 @@ import { getDb } from '../db/index.js';
 // （`publishToyReaction` 的 writeMessage ⇒ `char_<id>`），于是"在群聊里点玩具，她的反应跑到私聊"。
 // 场景解析与群消息写入与 touch / 亲密共用同一份实现（`resolveSceneTarget` / `writeGroupInsertMessage`）。
 import { resolveSceneTarget } from '../services/groupInsertMessage.js';
+// 群聊旁观反应（2026-11-06）：玩具链也只有"她一个人演"，这里补一位在场成员接一句
+import { maybeAddBystanderReaction } from '../services/groupBystanderReaction.js';
+
+/** 玩具事件 → 旁观者能看懂的一句话（只用于旁观 prompt，不参与任何落库口径） */
+const TOY_EVENT_TEXT = { equip: '戴上了玩具', intensity: '被调了强度', remove: '摘下了玩具', selfplay: '自己玩了起来' };
 
 const router = express.Router();
 
@@ -260,6 +265,16 @@ async function reactAndPublish(characterId, { event, toyKey, intensity, minutesW
           ? { groupExtra: { toy: { event, toyKey } } }   // 群 payload 的附加字段（前端忽略未知字段）
           : { writeMessage: writeProactiveMessage },
       });
+      // 群聊里"别人有反应"（2026-11-06）：她演完这一下，再让一位在场成员接一句。
+      // 不 await：旁观是旁路，不能让玩具链的返回等她。
+      if (isGroup) {
+        void maybeAddBystanderReaction({
+          groupId: Number(scene.groupId),
+          actorId: characterId,
+          actionLabel: TOY_EVENT_TEXT[event] || '动了玩具',
+          actorLine: reaction.reactionText,
+        });
+      }
     }
   }
   return reaction;

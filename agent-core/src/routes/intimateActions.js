@@ -81,6 +81,8 @@ import { broadcast } from '../services/unifiedStreamBus.js';
 // 于是群里点的动作、她的反应、配图全落到私聊。现在按请求带 `scene=group&groupId=<n>` 切到 `group_<gid>`，
 // 写入形状与触摸链共用一份实现（services/groupInsertMessage.js），不传 scene 时**逐字保持旧行为**。
 import { writeGroupInsertMessage, resolveSceneTarget } from '../services/groupInsertMessage.js';
+// 群聊旁观反应（2026-11-06）：亲密/玩具两条链只有"她一个人演"，这里补一位在场成员接一句
+import { maybeAddBystanderReaction } from '../services/groupBystanderReaction.js';
 // 自动插入 ticker 的场景登记：服务端要按自动速度替他"插一下"，它必须知道这一场是在私聊还是群里
 // （否则群里开的自动抽插会把她的反应写进私聊 —— 正是用户报过的那类问题）。
 // `noteReaction`：这一轮**真的出了一次完整反应**（含一次 LLM 调用）之后记账 ——
@@ -771,6 +773,17 @@ router.post('/:id/:action', async (req, res) => {
     } catch (err) {
       console.warn('[intimate-action] 反应消息写入失败（只影响落库，不影响返回）:', err?.message || err);
       written = null;
+    }
+
+    // 群聊里"别人有反应"（2026-11-06）：她演完这一下，再让一位在场成员接一句。
+    // 不 await —— 旁观是旁路，不能让动作的返回等她；触发概率与落库失败处理都在服务层。
+    if (scene.scene === 'group' && scene.groupId && parsed?.reactionText) {
+      void maybeAddBystanderReaction({
+        groupId: scene.groupId,
+        actorId: id,
+        actionLabel: action.label,
+        actorLine: parsed.reactionText,
+      });
     }
 
     // ⑥.5 配图（2026-10-02）：LLM 在反应里给了画面 ⇒ 后台生成并挂到那条气泡上。

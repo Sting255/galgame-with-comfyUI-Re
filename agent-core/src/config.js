@@ -341,13 +341,14 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     // 动作出图档位（task-19）：'always' | 'smart' | 'never'，**默认 smart**。
     // 智能 = 只对 Lv2/Lv3 按概率出图（判定与概率在 touchActionService，本文件不做校验）。
     touchImageMode: process.env.FEATURE_TOUCH_IMAGE_MODE || 'smart',
-    // 群聊围观概率（task-22 的概率模型）：0.3 = 30% 概率让 1 名其他成员插一句话。
+    // 群聊围观概率（task-22 的概率模型）：2026-11-06 起默认 0.8 —— 用户反馈"群里互动别人完全没反应"，
+    // 30% 在真机上等于基本没人应声。
     // null/false = 关闭（与 task-17 的"最多 1 人"纯 prompt 口径逐字节一致）；
-    // 读取侧是 groupChatEngine.resolveTouchBystanderChance（非数字回落 0.3、0~1 夹取），
+    // 读取侧是 groupTouchConsumption.resolveTouchBystanderChance（非数字回落同一默认、0~1 夹取），
     // 这里只提供"可被 system_settings 覆盖"的键（loadSystemSettings 是白名单式的）。
     touchBystanderChance: process.env.FEATURE_TOUCH_BYSTANDER_CHANCE !== undefined
       ? Number(process.env.FEATURE_TOUCH_BYSTANDER_CHANCE)
-      : 0.3,
+      : 0.8,
     // 反应风格（task-30）：'conversation'（**默认**：对话式 —— 全量喂料 + 放开输出的 1~4 句）
     //   | 'quick'（快速：旧口径 —— 短喂料 + 1~2 句 + max_tokens 300，一键回退）。
     // 校验/回落见 updateFeatureFlag 的二态分支（非这两个值一律回落 conversation）。
