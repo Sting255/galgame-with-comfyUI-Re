@@ -1,26 +1,19 @@
-## 工作模式（开工必读）
+## 运行与验收环境（要点）
 
-本仓库的编程模式见 `docs/编程模式-DeepSeek.md`：它规定动手前按什么顺序读、每轮怎么验（L1 定向单测 → L6 浏览器点击）、硬纪律（内存库 / 产物重建 / 真实库保护 / Linshe 组件与 LLM prompt 口径）、什么时候必须停下来问用户、收工要更新哪几份文档。
-
-**任何 AI 接手本仓库，第一件事就是读它。** 它与本文件不冲突：本文件管**全仓契约**，模式文件管**执行手段**；两者冲突时以本文件为准。
-
-## 真机验收环境（要跑验收先读）
-
-LLM 网关、Key、ComfyUI 安装路径与端口、服务启动命令、测试与打包口径，全部固定在
-`docs/验收环境-凭据与路径.md`。**不要在会话里重新猜地址或 Key**，以那份文件为准。
+- LLM 网关：`http://127.0.0.1:7863/v1`，模型 `cn:deepseek-v4.1-flash`（Key 与其余参数在 `agent-core/.env`，不要在会话里另猜）
+- 生图 ComfyUI：`http://127.0.0.1:8199`
+- 后端端口取自 `.env` 的 `PORT`（默认 `3099`）；向量服务 `8765`；前端开发态 Vite `5173`
+- 验证一律用内存库（`DB_PATH=:memory:`），不许落 `agent-core/data/agent.db`
 
 ## UI / UX
 
-所有 UI 修改、新功能设计、页面设计必须遵循 `docs/design-system.md`。
-
 涉及 UI 时：
 
-1. 先阅读 `docs/design-system.md`
-2. 优先复用现有组件和设计模式
-3. 新功能必须融入现有设计语言，不得自行引入新的视觉风格
-4. 修改完成后检查与现有 Toast、世界观、信箱等页面的一致性
-5. UI 切换（如页面、页签、内容区域切换）需要考虑 0.3 秒的过渡动画，避免生硬跳变
-6. 窗口（含弹窗）打开时使用 0.3 秒的渐入动画，关闭时使用 0.3 秒的渐出动画；关闭动画完成后再隐藏或卸载窗口
+1. 优先复用现有组件和设计模式
+2. 新功能必须融入现有设计语言，不得自行引入新的视觉风格
+3. 修改完成后检查与现有 Toast、世界观、信箱等页面的一致性
+4. UI 切换（如页面、页签、内容区域切换）需要考虑 0.3 秒的过渡动画，避免生硬跳变
+5. 窗口（含弹窗）打开时使用 0.3 秒的渐入动画，关闭时使用 0.3 秒的渐出动画；关闭动画完成后再隐藏或卸载窗口
 
 除非任务明确要求，不要随意重做已有设计或引入新的 UI 体系。
 Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
@@ -33,14 +26,14 @@ Avoid unnecessary secondary labels and descriptions. Let the layout do the expla
 
 按钮、输入框、选择框、开关、分段选择与弹窗一律使用 `web-ui/src/components/ui/` 下的 Linshe 组件，禁止写裸 `<button>` / `<input>` / `<select>` 或遮罩面板皮肤。
 
-以下各小节只写**接入口径**（引入方式、prop 行为、特例白名单、改哪个文件）；皮肤语言（软糖立体 / 软糖凹陷）、变体语义、色值与 token 归属以 `docs/design-system.md`「Linshe 表单控件层」为准，不要在本文件重复描述。
+以下各小节只写**接入口径**（引入方式、prop 行为、特例白名单、改哪个文件），不重复描述皮肤语言（软糖立体 / 软糖凹陷）、变体语义与色值归属。
 
 ## 按钮（LinsheButton）
 
 web-ui 中所有常规按钮必须使用统一组件 `web-ui/src/components/ui/LinsheButton.vue`，禁止写裸 `<button>` 标签或全局 button 样式。
 
 1. 引入：`import LinsheButton from '.../components/ui/LinsheButton.vue'`，模板中写 `<linshe-button>`
-2. 按层级选 variant：`primary`（主操作实心，每屏至多一个）/ `secondary`（默认）/ `danger`（危险操作）/ `ghost`（弱操作）/ `icon`（圆形图标钮，如弹窗关闭 ✕）/ `chip`（胶囊选择、页签，配 `:active`）/ `link`（文字链接）；尺寸用 `size="sm|md|lg"`；各变体的皮肤与色值见设计系统
+2. 按层级选 variant：`primary`（主操作实心，每屏至多一个）/ `secondary`（默认）/ `danger`（危险操作）/ `ghost`（弱操作）/ `icon`（圆形图标钮，如弹窗关闭 ✕）/ `chip`（胶囊选择、页签，配 `:active`）/ `link`（文字链接）；尺寸用 `size="sm|md|lg"`
 3. 禁用与加载用 `:disabled` / `loading` prop，不要手写禁用样式
 4. 特殊交互元素（长按手势、动态配色、整卡热区、下拉菜单项、已有独立设计的控件）不套组件：用 `<div role="button" tabindex="0">` + 自包含样式，补齐 `cursor/text-align` 等基础属性，禁用态用 `.is-disabled` class + `aria-disabled` + 点击守卫
 5. 调整按钮风格只改 `LinsheButton.vue`，不要在各页面里覆盖组件皮肤
@@ -108,7 +101,7 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 
 1. 临时脚本只用于当场验证，跑完、结论确认后就删除；随手生成的调试日志（如 `*.log`）一并清理
 2. 临时脚本用完即删。**本项目已移除全部自动化测试**（2026-11-06 用户决定），不再新增 `test/` 目录与 `*.test.js`；验证方式是解压交付包真启动 + 真机点一遍
-3. 判断口径：没有「正式测试」这一层了。要留的验证逻辑写成文档里的复现步骤（`docs/`），或留成可按需手动跑的独立脚本放 `scripts/`，不要伪装成测试收集链
+3. 判断口径：没有「正式测试」这一层了。要留的验证逻辑写成文档里的复现步骤，或留成可按需手动跑的独立脚本放 `scripts/`，不要伪装成测试收集链
 
 ## 角色生图人格组装（characterPersona）
 
