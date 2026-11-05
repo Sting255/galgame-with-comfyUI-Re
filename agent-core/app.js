@@ -326,6 +326,8 @@ function trimImageTaskHistory() {
 function compactDatabaseIfFragmented() {
   try {
     if (process.env.DB_AUTO_VACUUM === '0') return;
+    // 内存库没有磁盘文件：statSync(':memory:') 会抛 ENOENT，打出一条"自动压缩跳过"的误导日志
+    if (!config.dbPath || config.dbPath === ':memory:') return;
     const db = getDb();
     const pages = db.pragma('page_count', { simple: true });
     const free = db.pragma('freelist_count', { simple: true });

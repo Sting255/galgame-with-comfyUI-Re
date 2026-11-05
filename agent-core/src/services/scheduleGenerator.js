@@ -470,6 +470,16 @@ function validateScheduleInner(raw, displayName) {
     if (act && typeof act === 'object') {
       if (act.endTime === '24:00') act.endTime = '00:00';
       else if (act.startTime === '24:00') act.startTime = '00:00';
+      // 2026-11-06：可自动补的字段就地补，别为一条小瑕疵把整份日程判废重生成
+      // （真机日志：银狼首轮非 JSON、天使「未覆盖完整一天」⇒ 一整轮 tokens 白花）。
+      if (typeof act.replyDelay !== 'number' || !Number.isFinite(act.replyDelay)) {
+        const sleeping = /睡|就寝|安眠|梦/.test(String(act.activity || ''));
+        act.replyDelay = sleeping ? -1 : 0;
+      }
+      if ((!act.description || !String(act.description).trim()) && act.activity) {
+        const place = act.location ? `，在${String(act.location).trim()}` : '';
+        act.description = `${String(act.activity).trim()}${place}。`;
+      }
     }
     if (!act || typeof act !== 'object' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.startTime)) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.endTime))) return null;
     for (const key of required) {

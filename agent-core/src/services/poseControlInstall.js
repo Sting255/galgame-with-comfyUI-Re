@@ -168,3 +168,40 @@ export function ensurePoseControlAssetsOnBoot() {
     return { ok: false, comfyRoot: null, copied: [], skipped: [], failed: [String(err?.message || err)] };
   }
 }
+
+// ── 分时重试（2026-11-06）──
+// 真机现场：用户在另一台机器上启动时 ComfyUI 还没开（或启动器还没配 comfyui_exe），
+// 启动那一次安装直接 skipped，之后**再也不会重试** —— 于是永远"没有 AnimaPoseControl 节点"，
+// 姿势玩法整晚静默失效。资产其实就在包里（387MB），只是没人再去看一眼。
+// 处理：每 30 分钟复查一次（已装时只是几次 existsSync，成本可忽略），装了就打一行日志提示重启 ComfyUI。
+let watchTimer = null;
+let lastReportKey = '';
+
+export function startPoseControlAssetWatch({ intervalMs = 30 * 60 * 1000 } = {}) {
+  if (watchTimer) return;
+  const tick = () => {
+    try {
+      const r = ensurePoseControlAssets();
+      const key = JSON.stringify([r.copied, r.failed, r.skipped]);
+      if (key === lastReportKey) return;   // 状态没变就不刷屏
+      lastReportKey = key;
+      if (r.copied.length) {
+        console.log(`[poseControl] 已补装随包的姿势控制资产：${r.copied.join('、')}`
+          + '（重启 ComfyUI 后 AnimaPoseControl 才会被加载）');
+      } else if (r.failed.length) {
+        console.warn('[poseControl] 姿势控制资产补装失败（不影响出图）：', r.failed.join('；'));
+      } else if (r.skipped.length) {
+        console.log('[poseControl] 姿势控制资产暂未安装：', r.skipped.join('；'), '（30 分钟后再试）');
+      }
+    } catch (err) {
+      console.warn('[poseControl] 资产复查跳过：', err?.message || err);
+    }
+  };
+  tick();
+  watchTimer = setInterval(tick, Math.max(60_000, Number(intervalMs) || 30 * 60 * 1000));
+  watchTimer.unref?.();   // 后台复查不应吊住进程退出
+}
+
+export function stopPoseControlAssetWatch() {
+  if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+}

@@ -13,6 +13,7 @@ import { startGroupIdleScheduler, stopGroupIdleScheduler } from '../services/gro
 import { startKnowledgeSyncScheduler, stopKnowledgeSyncScheduler } from '../services/imagePromptKnowledge.js';
 import { startConsolidationScheduler, stopConsolidationScheduler } from '../services/memory/consolidationScheduler.js';
 import { startItemScheduler, stopItemScheduler } from '../services/itemScheduler.js';
+import { startPoseControlAssetWatch, stopPoseControlAssetWatch } from '../services/poseControlInstall.js';
 
 // 启动顺序保持原 app.js 口径；每项必须成对登记退出函数。
 const services = [
@@ -31,6 +32,8 @@ const services = [
   [startKnowledgeSyncScheduler, stopKnowledgeSyncScheduler],
   [startConsolidationScheduler, stopConsolidationScheduler],
   [startItemScheduler, stopItemScheduler],
+  // 体位骨架的 ComfyUI 侧资产：启动时可能 ComfyUI 未开/路径未配，每 30 分钟补装一次
+  [startPoseControlAssetWatch, stopPoseControlAssetWatch],
 ];
 export function startBackgroundServices() { for (const [start] of services) start(); }
 export function stopBackgroundServices() {

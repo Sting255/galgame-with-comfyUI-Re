@@ -498,7 +498,9 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
     if (!poseNodeMissingWarned) {
       poseNodeMissingWarned = true;
       console.warn('[poseControl] 目标 ComfyUI 没有 AnimaPoseControl 节点（未装 ComfyUI-anima-pose-control），'
-        + '已跳过骨架注入，按无姿势出图；这条只提醒一次。要恢复体位生图请在设置里装好该节点。');
+        + '已跳过骨架注入，按无姿势出图；这条只提醒一次。'
+        + '如果这是你自己的机器：程序会每 30 分钟把随包的节点资产装进 ComfyUI（assets/pose-control，'
+        + '需要启动器里配好 comfyui_exe），装完重启 ComfyUI 即生效。');
     }
   } else {
     maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });
