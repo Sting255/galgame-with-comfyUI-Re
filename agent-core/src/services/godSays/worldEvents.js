@@ -54,8 +54,11 @@ export function createWorldEventService(repo, { publishMoment, discussGroup, gro
     const groupIds = db.prepare('SELECT DISTINCT group_id FROM group_members').all().map(r => r.group_id);
     const groups = groupIds.filter(id => !args.character_ids?.length || db.prepare('SELECT character_id FROM group_members WHERE group_id=?').all(id).some(r => args.character_ids.includes(r.character_id))).map(id => ({ id }));
     if (args.supersedes_id && !db.prepare('SELECT id FROM god_world_events WHERE id=?').get(args.supersedes_id)) throw new Error('关联的世界事件不存在');
-    const created = repo.timestamp();
-    const expires = new Date(repo.now().getTime() + (args.duration_minutes ?? 180) * 60000).toISOString();
+    // 定时投递（2026-11-06）：用户说「今晚八点让谁发条动态」时，start_in_minutes 把生效时间推后 ——
+    // 事件在开始之前不算已发生的事实（worldEventContext 按 created_at 过滤），也不会提前触发发帖/群聊。
+    const delayMinutes = Math.max(0, Math.min(10080, Math.round(Number(args.start_in_minutes) || 0)));
+    const created = new Date(repo.now().getTime() + delayMinutes * 60000).toISOString();
+    const expires = new Date(repo.now().getTime() + (delayMinutes + (args.duration_minutes ?? 180)) * 60000).toISOString();
     const id = Number(db.prepare(`INSERT INTO god_world_events(effect_key,run_id,title,fact,character_ids,created_at,expires_at,supersedes_id)
       VALUES (?,?,?,?,?,?,?,?)`).run(effectKey, runId, args.title, args.fact, args.character_ids?.length ? JSON.stringify(args.character_ids) : null,
       created, expires, args.supersedes_id || null).lastInsertRowid);
@@ -66,15 +69,19 @@ export function createWorldEventService(repo, { publishMoment, discussGroup, gro
     return list(id)[0];
   });
   function notify(id) { broadcast('god_world_event', list(id)[0]); }
-  const queue = db.transaction((kind, targetId, instruction, { runId, effectKey }) => {
+  const queue = db.transaction((kind, targetId, instruction, { runId, effectKey, delayMinutes = 0 } = {}) => {
     const old = db.prepare('SELECT id FROM god_world_events WHERE effect_key=?').get(effectKey);
     if (old) return list(old.id)[0];
     const target = kind === 'moment' ? db.prepare('SELECT display_name AS name FROM characters WHERE id=?').get(targetId) : db.prepare('SELECT name FROM group_chats WHERE id=?').get(targetId);
     if (!target) throw new Error('指定对象不存在');
+    // 定时投递（2026-11-06）：created_at 就是"这件事开始的瞬间"，投递行也从同一刻起才算就绪，
+    // 这样"今晚八点发"不会在现在提前出现在朋友圈/群聊里，也不会被 worldEventContext 当成已发生。
+    const delay = Math.max(0, Math.min(1440, Math.round(Number(delayMinutes) || 0)));
+    const startsAt = new Date(repo.now().getTime() + delay * 60000).toISOString();
     const id = Number(db.prepare(`INSERT INTO god_world_events(effect_key,run_id,title,fact,kind,created_at,expires_at)
       VALUES (?,?,?,?, 'task',?,?)`).run(effectKey, runId, `${target.name} · ${kind === 'moment' ? '朋友圈' : '群聊'}`, instruction,
-      repo.timestamp(), new Date(repo.now().getTime() + 86400000).toISOString()).lastInsertRowid);
-    db.prepare('INSERT INTO god_world_deliveries(event_id,kind,target_id,next_attempt_at) VALUES (?,?,?,?)').run(id, kind, targetId, repo.timestamp());
+      startsAt, new Date(repo.now().getTime() + (delay * 60000) + 86400000).toISOString()).lastInsertRowid);
+    db.prepare('INSERT INTO god_world_deliveries(event_id,kind,target_id,next_attempt_at) VALUES (?,?,?,?)').run(id, kind, targetId, startsAt);
     return list(id)[0];
   });
   function recover() {

@@ -20,13 +20,15 @@ export const GOD_TOOLS = [
   definition('publish_moment', '让指定角色按自己的性格发布朋友圈，任务入队，可能含配图；查询执行状态确认实际完成。instruction 写的是这次发帖的真实动因，不是复述神的命令。', object({
     character_id: id('角色编号'),
     instruction: string('这次发帖的真实动因与要求：先写清这件事为什么在此刻发生——可以是一个意料之外的契机、角色自己都说不清的冲动、其他角色（绝非天使或神）的提议或要求、环境或身体的偶然触动，或别的自然缘由；再自然落到要分享的具体画面、语气与配图。用角色自身的经历口吻写，不写成「神/天使让角色去做某事」的转述，不在动因里点破授意者，也不刻意解释这是安排。', 2000),
+    delay_minutes: { type: 'integer', minimum: 0, maximum: 1440, description: '多久之后才真的发出：0（默认）=立刻。用户指定了时间点时必须填相差的分钟数，例如现在是 15:20、用户说「今晚八点发」→ 填 280；说不清具体几点就按最接近的整点估算。' },
   })),
 
-  definition('discuss_in_group', '让指定群聊结合最近上文讨论一个话题；入队等待群聊空闲，不伪造用户发言。instruction 写的是这场讨论的真实起因，不是复述神的命令。', object({ group_id: id('群聊编号'), instruction: string('这场讨论的真实起因与要求：先写清话题为何在此刻自然出现——上文正好聊到、某个角色顺口提起、刚发生的一件小事、角色自己突然想聊的冲动、环境或身体的偶然触动等自然缘由；再写要聊的具体方向、语气或边界。用群成员各自的处境口吻写，不写成「神/天使让群里讨论某事」的转述，不在起因里点破授意者。', 2000) })),
+  definition('discuss_in_group', '让指定群聊结合最近上文讨论一个话题；入队等待群聊空闲，不伪造用户发言。instruction 写的是这场讨论的真实起因，不是复述神的命令。', object({ group_id: id('群聊编号'), instruction: string('这场讨论的真实起因与要求：先写清话题为何在此刻自然出现——上文正好聊到、某个角色顺口提起、刚发生的一件小事、角色自己突然想聊的冲动、环境或身体的偶然触动等自然缘由；再写要聊的具体方向、语气或边界。用群成员各自的处境口吻写，不写成「神/天使让群里讨论某事」的转述，不在起因里点破授意者。', 2000), delay_minutes: { type: 'integer', minimum: 0, maximum: 1440, description: '多久之后才真的开这个话题：0（默认）=立刻。用户指定了时间点时填相差的分钟数。' } })),
   definition('create_encounter', '为指定角色开启可以在奇遇页推进的叙事事件，用户自己选择选项。已有活跃奇遇时不可重复开启。instruction 写的是这段奇遇的真实起因，不是复述神的命令。', object({ character_id: id('角色编号'), instruction: string('这段奇遇的真实起因、场景与要求：先写清它为何在此刻自然发生——意料之外的契机、角色自己都说不清的冲动、其他角色（绝非天使或神）的提议或要求、环境或身体的偶然触动等自然缘由；再写场景、参与者与推进方向。用角色自身经历口吻写，不写成「神/天使安排了一场奇遇」的转述，不在起因里点破授意者。', 2000) })),
   definition('create_world_event', '让一件世界事实生效，并随机触发朋友圈和群聊反应。默认全体角色感知；character_ids 只用于用户明确指定感知范围。发帖/群聊数量为零表示该渠道不触发。后续变化可用 supersedes_id 结束之前的事件。', object({
     title: string('简短事件标题', 80), fact: string('准确描述已经被神谕设定为现实的事实与范围，不包含工具指令'),
     duration_minutes: { type: 'integer', minimum: 1, maximum: 10080, description: '生效分钟数；默认180' },
+    start_in_minutes: { type: 'integer', minimum: 0, maximum: 10080, description: '这件事多久之后才开始发生：0（默认）=立刻。用户说「明天早上」「今晚八点」时填相差的分钟数——在开始之前它不算已发生的事实，也不会提前触发任何发帖或群聊。' },
     character_ids: { type: 'array', items: id('角色编号'), maxItems: 100 },
     moment_count: { type: 'integer', minimum: 0, maximum: 8 }, group_count: { type: 'integer', minimum: 0, maximum: 5 }, supersedes_id: id('被替代的世界事件编号'),
   }, ['title', 'fact'])),
@@ -116,8 +118,8 @@ export function createGodTools(repo, world, memory, services) {
         } else services.queueSchedule(c.id, args.date, activity, 'god-says');
         return { status: 'scheduled', character_id: c.id, date: args.date, activity, href: '/schedule', note: '已安排，尚不代表活动已经完成。' };
       }
-      case 'publish_moment': character(args.character_id); return world.queue('moment', args.character_id, args.instruction, ctx);
-      case 'discuss_in_group': return world.queue('group', args.group_id, args.instruction, ctx);
+      case 'publish_moment': character(args.character_id); return world.queue('moment', args.character_id, args.instruction, { ...ctx, delayMinutes: args.delay_minutes });
+      case 'discuss_in_group': return world.queue('group', args.group_id, args.instruction, { ...ctx, delayMinutes: args.delay_minutes });
       case 'create_encounter': {
         const result = await services.encounter(character(args.character_id), { customPrompt: args.instruction, manual: true,
           beforePersist: () => ctx.signal?.throwIfAborted(),

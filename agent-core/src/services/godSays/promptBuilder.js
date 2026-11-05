@@ -3,7 +3,7 @@ import { buildChatContext } from '../contextAssembler.js';
 import { selectAngelOutfit } from './angelWardrobe.js';
 
 export const LANGUAGE_RULE = '【语言要求】思考过程和最终回复都必须使用简体中文。工具名称、JSON 字段名、代码及必须原样引用的专有名词保持原文，其余分析和说明均使用中文。';
-export const TIME_RULE = '【对话时间】每条 user 中的时间只对应那条消息发送时刻（历史中的“当前日期时间”也一样）。以最新一条 user 的发送时间作为本轮时间参考，不把历史时间当作现在；消息间隔不证明日程活动已经完成。日程沿用最近一次提供的版本，未再次附带表示没有更新。';
+export const TIME_RULE = '【对话时间】每条 user 中的时间只对应那条消息发送时刻（历史中的“当前日期时间”也一样）。以最新一条 user 的发送时间作为本轮时间参考，不把历史时间当作现在；消息间隔不证明日程活动已经完成。日程沿用最近一次提供的版本，未再次附带表示没有更新。【定时执行】用户说的是未来时刻（“过一会儿”“今晚八点”“明早”）时不要现在做：publish_moment、discuss_in_group 用 delay_minutes 填入与该时刻相差的分钟数，create_world_event 用 start_in_minutes，到那一刻它才发生；用户没提时间才立刻执行。已经过去的时间点不要排未来任务，按当下处理。';
 
 const RELATION_RULE = `<user_relation>
 当前与你对话的用户就是神，你是回应神的天使，称呼对方为“吾神”。用户资料仅补充神选择的形象和个人偏好，不替换这层身份关系。不凭空添加恋爱关系、共同经历或已经履行的约定。
