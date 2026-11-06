@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { randomUUID } from 'node:crypto';
 import { resolveServicePort } from './utils/servicePort.js';
+import { resolveComfySubdir, describeComfyPathFailure } from './utils/comfyPaths.js';
 import { resolveEnvPath, persistEnvValues } from './utils/envFile.js';
 // 设置读写走独立的 db/settings 模块（不经过 db/index.js，避免形成 config ↔ db 循环依赖）
 import { setSetting, getSetting } from './db/settings.js';
@@ -1737,27 +1738,12 @@ export function autoDetectWorkflowMode() {
   }
 
   try {
-    // 推导项目根目录：config.js 位于 agent-core/src/，往上两级到项目根（launcher_config.json 所在）
-    const projectRoot = resolve(__dirname, '..', '..');
-    const launcherConfigPath = resolve(projectRoot, 'launcher_config.json');
-
-    if (!fs.existsSync(launcherConfigPath)) {
-      return { skipped: true, reason: 'launcher_config_not_found' };
-    }
-
-    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf-8'));
-    const comfyuiExe = launcherConfig.comfyui_exe;
-    if (!comfyuiExe) {
-      return { skipped: true, reason: 'comfyui_exe_not_configured' };
-    }
-
-    // comfyui_exe 是启动器 exe 路径，其所在目录即为 ComfyUI 安装根目录
-    const comfyuiRoot = dirname(comfyuiExe);
-    const diffusionModelsDir = resolve(comfyuiRoot, 'ComfyUI', 'models', 'diffusion_models');
-
-    if (!fs.existsSync(diffusionModelsDir)) {
-      // 路径不存在 → 不操作也不标记，下次启动再试
-      return { skipped: true, reason: 'diffusion_models_dir_not_found' };
+    // 路径推导统一走 utils/comfyPaths.js（兼容绘世 exe / main.py / ComfyUI 目录三种填法，
+    // 以及 launcher_config.json 在项目根或上一级两种包结构）
+    const diffusionModelsDir = resolveComfySubdir('models', 'diffusion_models');
+    if (!diffusionModelsDir) {
+      // 推导不出来 → 不操作也不标记，下次启动再试（日志里能看出卡在哪）
+      return { skipped: true, reason: 'diffusion_models_dir_not_found', detail: describeComfyPathFailure() };
     }
 
     // 扫描目录下的模型文件（不递归，仅顶层）

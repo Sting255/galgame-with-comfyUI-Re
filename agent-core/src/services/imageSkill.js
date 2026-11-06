@@ -25,6 +25,7 @@ import { acquireSlot, releaseSlot } from './llmConcurrency.js';
 import { prepareImagePrompt } from './imagePromptPreparer.js';
 import { createSoftState } from './softStateStore.js';
 import { stripImagePromptRuleEcho } from '../utils/groupImagePrompt.js';
+import { resolveComfySubdir } from '../utils/comfyPaths.js';
 
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, checkWorkflowHealth, resolveCustomWorkflowPath } from './workflowTemplates.js';
@@ -774,6 +775,21 @@ export function isUserQuiet(quietMs = QUIET) {
   return Date.now() - readLastHighTime() >= quietMs;
 }
 
+/**
+ * 生图队列水位（设置页「运行状态」用）。
+ * active = 正在生成；low = 低优队列里排队的张数；waitingMs = 队首已等多久。
+ */
+export function getImageQueueStatus() {
+  const head = lowQueue[0];
+  return {
+    active: activeTaskCount,
+    low: lowQueue.length,
+    headWaitedMs: head ? Date.now() - Number(head.enqueuedAt || Date.now()) : 0,
+    quietMs: QUIET,
+    lowMaxWaitMs: LOW_QUEUE_MAX_WAIT,
+  };
+}
+
 export async function generateImage(rawPrompt, opts = {}) {
   if (opts.priority === 'low') {
     return new Promise((resolve, reject) => {
@@ -796,17 +812,9 @@ export async function generateImageRaw(rawPrompt, opts = {}) {
   return _execute(rawPrompt, opts);
 }
 export function getComfyLorasRoot() {
-  try {
-    const projectRoot = path.resolve(__dirname, '..', '..', '..');
-    const launcherConfigPath = path.resolve(projectRoot, '..', 'launcher_config.json');
-    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf8'));
-    if (!launcherConfig.comfyui_exe) return null;
-    const rootDir = path.dirname(launcherConfig.comfyui_exe);
-    const lorasRoot = path.join(rootDir, 'ComfyUI', 'models', 'loras');
-    return fs.existsSync(lorasRoot) ? lorasRoot : null;
-  } catch {
-    return null;
-  }
+  // 路径推导统一走 utils/comfyPaths.js（原来这里读的 launcher_config.json 比项目根多退了一级，
+  // 于是永远返回 null —— 用户明明在启动器里填了 ComfyUI 路径，姿势控制资产却一直装不上）
+  return resolveComfySubdir('models', 'loras');
 }
 
 // 兼容历史数据：ComfyUI 只接受模型根目录相对名，不接受本机绝对路径。

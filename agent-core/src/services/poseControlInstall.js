@@ -114,7 +114,7 @@ export function ensurePoseControlAssets({ comfyRoot, bundledDir, rtmlibDir, dryR
 
   if (!root) {
     report.ok = false;
-    report.skipped.push('没找到 ComfyUI 路径（启动器里没配 comfyui_exe）');
+    report.skipped.push('没找到 ComfyUI 的 loras 目录：启动器里「ComfyUI 启动器路径」要填本机路径（绘世 exe / main.py / ComfyUI 目录都可以），不能填访问地址');
     return report;
   }
   if (!fs.existsSync(src)) {

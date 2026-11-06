@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { load as yamlLoad } from 'js-yaml';
+import { readLauncherConfig, resolveComfyRoot, resolveComfySubdir } from '../utils/comfyPaths.js';
 import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, getActiveNovelaiProfileId, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays, updateAntiRepetitionPenalty } from '../config.js';
 import { resetClient, chatSync, resetFreeEggFailureCount, testLlmConnection } from '../llm/llm-client.js';
 import { getDb, getSystemRules } from '../db/index.js';
@@ -939,22 +940,22 @@ router.post('/user-avatar', (req, res) => {
 // GET /api/config/loras-files — 从 launcher_config.json 读取 comfyui_exe，推导 loras 文件夹，并解析 extra_model_paths.yaml 获取外部路径
 router.get('/loras-files', (req, res) => {
   try {
-    const __filename = fileURLToPath(import.meta.url);
-    const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
-    const launcherConfigPath = path.join(projectRoot, '..', 'launcher_config.json');
-
-    if (!fs.existsSync(launcherConfigPath)) {
+    // 路径推导统一走 utils/comfyPaths.js：兼容「绘世 exe / main.py / ComfyUI 目录」三种填法，
+    // 以及 launcher_config.json 在项目根或上一级两种包结构（原来这里只认绘世那一种）
+    const launcher = readLauncherConfig();
+    if (!launcher) {
       return res.json({ files: [], lorasDir: null, error: 'launcher_config.json 不存在，请先在启动器中配置 ComfyUI 路径' });
     }
-
-    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf-8'));
-    const comfyuiExe = launcherConfig.comfyui_exe;
+    const launcherConfig = launcher.config || {};
+    const comfyuiExe = String(launcherConfig.comfyui_exe || '').trim();
     if (!comfyuiExe) {
       return res.json({ files: [], lorasDir: null, error: 'comfyui_exe 未配置，请先在启动器中设置 ComfyUI 启动器路径' });
     }
 
-    const rootDir = path.dirname(comfyuiExe);
-    const defaultLoraDir = path.join(rootDir, 'ComfyUI', 'models', 'loras');
+    const comfyRoot = resolveComfyRoot();
+    // yaml 与额外目录的锚点：优先用真正的 ComfyUI 根，推导不出来时退回 exe 所在目录
+    const rootDir = comfyRoot ? path.dirname(comfyRoot) : path.dirname(comfyuiExe);
+    const defaultLoraDir = resolveComfySubdir('models', 'loras');
 
     // 收集所有待扫描目录
     const scanDirs = new Set();
@@ -976,12 +977,13 @@ router.get('/loras-files', (req, res) => {
       });
     }
 
-    // 解析 extra_model_paths.yaml（可能在 rootDir 或 rootDir/ComfyUI 下）
-    let yamlPath = path.join(rootDir, 'extra_model_paths.yaml');
-    if (!fs.existsSync(yamlPath)) {
-      yamlPath = path.join(rootDir, 'ComfyUI', 'extra_model_paths.yaml');
-    }
-    if (fs.existsSync(yamlPath)) {
+    // 解析 extra_model_paths.yaml（可能在 ComfyUI 根、启动器目录、或 exe 旁的 ComfyUI/ 下）
+    const yamlCandidates = [];
+    if (comfyRoot) yamlCandidates.push(path.join(comfyRoot, 'extra_model_paths.yaml'));
+    yamlCandidates.push(path.join(rootDir, 'extra_model_paths.yaml'));
+    yamlCandidates.push(path.join(rootDir, 'ComfyUI', 'extra_model_paths.yaml'));
+    const yamlPath = yamlCandidates.find(p => fs.existsSync(p));
+    if (yamlPath) {
       const yamlDir = path.dirname(yamlPath);
       try {
         const yamlContent = yamlLoad(fs.readFileSync(yamlPath, 'utf-8'));
