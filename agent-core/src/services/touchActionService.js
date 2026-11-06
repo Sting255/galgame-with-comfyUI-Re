@@ -906,6 +906,9 @@ export function buildReactionPrompt({
   const user = [
     '【刚刚发生的动作】' + who + ' 做了「' + action.label + '」：' + describeActionForTarget(action, { userName: who }) + '。',
     recent.length > 0 ? '【最近两轮对话】\n' + recent.map(line => '- ' + line).join('\n') : '【最近两轮对话】（无）',
+    // 2026-11-06 真机实测：连续点三次触摸，三次反应的第一句一模一样（"手上还沾着浆糊呢……"）。
+    // 最近对话只当上下文喂进去是不够的，得明确要求换开场。
+    '【避免重复】如果最近对话里已经有她对这个动作的反应，这一下必须换一个完全不同的开场：不要用上一次的第一句话，也不要复用同一个细节或同一个借口的句式。',
     '【场景】' + (scene === 'group' ? '群聊' + (groupPeek ? '（其他人看得到）' : '') : '私聊'),
     '',
     '请按上面的 JSON 格式输出她这一下的反应。',
@@ -1074,6 +1077,9 @@ export function buildConversationReactionPrompt({
     '【刚刚发生的动作】' + who + ' 做了「' + action.label + '」（Lv' + action.level + '）：' + describeActionForTarget(action, { userName: who }) + '。',
     recent.length > 0 ? '【最近 ' + recent.length + ' 轮对话】\n' + recent.map(line => '- ' + line).join('\n') : '【最近对话】（无）',
     '【场景】' + (scene === 'group' ? '群聊' + (groupPeek ? '（其他人看得到）' : '') : '私聊'),
+    // 2026-11-06 真机实测：连续三次触摸，三次都以"手上还沾着浆糊呢……"开头。
+    // 只让她"回短"不够，必须明确换一个开场与切入角度。
+    '【避免重复】最近对话里她已经说过的开场、借口和句式都不要再用：换一个不同的第一句、不同的细节或不同的态度切入。',
     recentSameAction && Number(recentSameAction.minutesAgo) <= 5
       ? '【补充】她刚刚才被这样摸过（' + Math.max(1, Math.round(Number(recentSameAction.minutesAgo))) + ' 分钟前）——这一下回短一点。'
       : null,
