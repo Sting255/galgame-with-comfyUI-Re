@@ -39,6 +39,7 @@ export function recordInterCharacterEvents(group, { speakerLines = [] } = {}) {
     const now = new Date().toISOString();
     const seen = new Set();
     let count = 0;
+    let lastSpeaker = 0;
 
     for (const line of speakerLines) {
       if (count >= MAX_EVENTS_PER_ROUND) break;
@@ -46,19 +47,37 @@ export function recordInterCharacterEvents(group, { speakerLines = [] } = {}) {
       const text = String(line?.text || '').trim();
       if (!Number.isSafeInteger(fromId) || !text) continue;
       const hit = names.find(item => item.id !== fromId && text.includes(item.name));
-      if (!hit) continue;
-      const key = `${fromId}:${hit.id}`;
-      if (seen.has(key)) continue;   // 同一位对同一个人，一轮只记一次
-      seen.add(key);
-      try {
-        insert.run(groupId, fromId, hit.id, 'said_to', text.slice(0, SUMMARY_MAX), now);
-        // 关系温度（2026-11-06）：这一句是带刺还是带笑，顺手记进两人之间的分数
-        nudgeBond(fromId, hit.id, { text });
-        count += 1;
-      } catch (err) {
-        console.warn('[group] inter-character event insert failed:', err?.message || err);
-        break;
+      if (hit) {
+        const key = `${fromId}:${hit.id}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          try {
+            insert.run(groupId, fromId, hit.id, 'said_to', text.slice(0, SUMMARY_MAX), now);
+            // 关系温度（2026-11-06）：这一句是带刺还是带笑，顺手记进两人之间的分数
+            nudgeBond(fromId, hit.id, { text });
+            count += 1;
+          } catch (err) {
+            console.warn('[group] inter-character event insert failed:', err?.message || err);
+            break;
+          }
+        }
+      } else if (lastSpeaker && lastSpeaker !== fromId) {
+        // 真机实测（2026-11-06）：角色互相称呼是"云姐""哥""师傅"，很少直呼全名，
+        // 于是按名字匹配一条都记不到。这里退化成"谁接了谁的话"——不给温度加权，
+        // 只留一条可以给群聊当话头的痕迹。
+        const key = `${fromId}:${lastSpeaker}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          try {
+            insert.run(groupId, fromId, lastSpeaker, 'replied_to', text.slice(0, SUMMARY_MAX), now);
+            count += 1;
+          } catch (err) {
+            console.warn('[group] inter-character event insert failed:', err?.message || err);
+            break;
+          }
+        }
       }
+      lastSpeaker = fromId;
     }
     if (count > 0) console.log(`[group] recorded ${count} inter-character event(s) for group ${groupId}`);
     return count;
@@ -74,7 +93,7 @@ export function readRecentInterCharacterEvents(groupId, limit = 6) {
     const gid = Number(groupId);
     if (!Number.isSafeInteger(gid) || gid <= 0) return [];
     return getDb().prepare(`
-      SELECT e.summary, e.created_at, cf.display_name AS from_name, ct.display_name AS to_name
+      SELECT e.kind, e.summary, e.created_at, cf.display_name AS from_name, ct.display_name AS to_name
       FROM inter_character_events e
       JOIN characters cf ON cf.id = e.from_character_id
       JOIN characters ct ON ct.id = e.to_character_id
@@ -90,7 +109,9 @@ export function readRecentInterCharacterEvents(groupId, limit = 6) {
 export function buildRecentInteractionsBlock(groupId, limit = 6) {
   const rows = readRecentInterCharacterEvents(groupId, limit);
   if (!rows.length) return '';
-  const lines = rows.reverse().map(row => `- ${row.from_name} → ${row.to_name}：${row.summary}`);
+  const lines = rows.reverse().map(row => (row.kind === 'replied_to'
+    ? `- ${row.from_name} 接了 ${row.to_name} 的话：${row.summary}`
+    : `- ${row.from_name} → ${row.to_name}：${row.summary}`));
   return `<recent_character_events>\n群成员之间最近发生过这些互动（可以作为话头自然提起，不必逐条复述，也不要当成玩家说过的话）：\n${lines.join('\n')}\n</recent_character_events>`;
 }
 
