@@ -705,7 +705,7 @@ const detail = reactive({
   appearanceTail: '',     // 外观段之后的内容（罕见；保留以免重组时丢段）
   originalAppearance: '', // 打开时的原外观段：工装被误清空时用它兜底，避免生图链路失去外观
   sceneOutfits: [],       // 四套场景服装 [{ scene, sceneLabel, name, description }]
-  // 用**场景 key**（work/casual/home/sleep）而不是数组索引：
+  // 用**场景 key**（work/sleep 或自定义 custom_*）而不是数组索引：
   // 重新加载/接口失败后数组长度会变，索引会指错项甚至落空
   sceneTab: 'work',
   sceneOutfitsLoading: false,
@@ -1012,7 +1012,7 @@ async function generateOtherSceneOutfits() {  const c = props.character
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
   // 场景列表没加载出来（接口失败）时用后端 OUTFIT_SCENES 里除默认外的三套 key 兜底，
   // 保证按钮仍然可用。⚠ key 必须与 agent-core/src/services/outfitScene.js 一致：
-  // work / casual / home / sleep —— 写错（如 private）后端会按 SCENE_KEYS 过滤掉，那一套永远不生成。
+  // work / sleep —— 写错（如 private）后端会按 isValidSceneKey 过滤掉，那一套永远不生成。
   // 兜底只留睡衣：私服 / 居家已于 2026-11-07 从枚举移除，传旧 key 会被后端 normalizeDesignScenes 拒掉
   const FALLBACK_SCENE_KEYS = ['sleep']
   const targets = detail.sceneOutfits.length
@@ -1203,8 +1203,8 @@ function init(c) {
   detail.sceneOutfitsLoading = false
   detail.relOpen = false       // 关系列表默认折叠，把纵向空间让给人设与外观
   if (props.profileAdapter) {
-    detail.sceneOutfits = ['work', 'casual', 'home', 'sleep'].map((scene, index) => ({
-      scene, sceneLabel: ['默认', '私服', '居家', '睡衣'][index], name: ['日常装', '便装', '居家服', '睡衣'][index],
+    detail.sceneOutfits = ['work', 'sleep'].map((scene, index) => ({
+      scene, sceneLabel: ['默认', '睡衣'][index], name: ['日常装', '睡衣'][index],
       ...c.outfits?.find(outfit => outfit.scene === scene), ...(scene === 'work' ? { description: split.appearance } : {}),
     })).map(outfit => ({ ...outfit, description: outfit.description || '' }))
     for (const outfit of detail.sceneOutfits) initialOutfitDescriptions[outfit.scene] = outfit.description

@@ -17,8 +17,6 @@ const outfitScene = defineModel('outfitScene', { type: String, default: 'work' }
 const requirement = defineModel({ type: String, default: '' })
 const outfitOptions = [
   { label: '默认', value: 'work' },
-  { label: '私服', value: 'casual' },
-  { label: '居家', value: 'home' },
   { label: '睡衣', value: 'sleep' },
 ]
 </script>

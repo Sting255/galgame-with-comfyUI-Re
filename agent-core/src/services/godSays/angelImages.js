@@ -82,7 +82,7 @@ export function createAngelImageService(repo, { describe, render, promptEnvironm
       if (typeof input.baseAppearance !== 'string' || !input.baseAppearance.trim() || input.baseAppearance.length > 30000) throw bad('请先填写有效的默认外观');
       // 天使批量设计只做「默认」以外的三套（本 fork 的 GENERATED_OUTFIT_SCENES 多一个 nude，
       // 直接走默认值会要求模型额外产出一套裸体，与天使四套衣柜口径不符）。
-      try { request.scenes = normalizeDesignScenes(input.scenes ?? ['casual', 'home', 'sleep']); } catch (error) { throw bad(error.message); }
+      try { request.scenes = normalizeDesignScenes(input.scenes ?? ['sleep']); } catch (error) { throw bad(error.message); }
       request.baseAppearance = input.baseAppearance.trim();
       if (db.prepare("SELECT id FROM god_angel_image_jobs WHERE kind='standing' AND status='running'").get()) throw Object.assign(new Error('形象正在生成，请稍后再生成服装'), { status: 409 });
     }

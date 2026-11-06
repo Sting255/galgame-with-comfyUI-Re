@@ -256,7 +256,7 @@ function cropPersona(basePrompt) {
 }
 
 /** 仅设计几套换装；默认外观只作为基准，不进入返回值与保存流程。 */
-const SCENE_LABELS = { nude: '裸体', work: '常服', casual: '私服', home: '居家', sleep: '睡衣' };
+const SCENE_LABELS = { nude: '裸体', work: '常服', sleep: '睡衣' };
 
 export async function generateSceneOutfits(character, opts = {}) {
   const displayName = character?.display_name || '角色';
@@ -265,7 +265,7 @@ export async function generateSceneOutfits(character, opts = {}) {
 
   // ── 反推锚点（2026-10-13 移植 PR #24：替代固定「按工装推其余三套」）──
   const seeds = (Array.isArray(opts.seeds) ? opts.seeds : [])
-    .filter(s => SCENE_KEYS.includes(s?.scene) && (s.body || s.description))
+    .filter(s => isValidSceneKey(s?.scene) && (s.body || s.description))
     .map(s => ({
       scene: s.scene,
       name: String(s.name || '').trim(),
@@ -388,7 +388,6 @@ export function getBaseSceneOutfit(characterId) {
   const outfits = listSceneOutfits(characterId);
   if (!outfits.length) return null;
   const pick = outfits.find(o => o.scene === BASE_SCENE)
-    || outfits.find(o => o.scene === 'casual')
     || outfits.find(o => o.scene !== PRIVATE_SCENE && o.scene !== 'sleep')
     || null;
   return pick ? { outfit: pick, scene: pick.scene, source: 'base' } : null;
@@ -445,7 +444,8 @@ export function setOutfitOverride(characterId, scene, until = null) {
   const exists = db.prepare('SELECT 1 FROM characters WHERE id = ?').get(id);
   if (!exists) throw new Error('character not found');
   const key = String(scene || '').trim();
-  if (key && !SCENE_KEYS.includes(key)) throw new Error('invalid argument');
+  // 放行自定义类型：否则在「婚纱」这类页签点「现在穿这套」会报 invalid argument
+  if (key && !isValidSceneKey(key)) throw new Error('invalid argument');
   db.prepare('UPDATE characters SET outfit_override_scene = ?, outfit_override_until = ? WHERE id = ?')
     .run(key, key ? (until || null) : null, id);
   return { scene: key, until: key ? (until || null) : null };
@@ -538,15 +538,14 @@ export function buildOutfitAnnotation(outfits) {
   const sleepName = outfits.find(o => o.scene === 'sleep')?.name;
   const nudeName = outfits.find(o => o.scene === PRIVATE_SCENE)?.name;
   const workName = outfits.find(o => o.scene === 'work')?.name;
-  const casualName = outfits.find(o => o.scene === 'casual')?.name;
-  const homeName = outfits.find(o => o.scene === 'home')?.name;
   // 「白天的服装」要排除睡眠与裸体 —— 把裸体列进这里等于教模型"白天可以光着"
   const dayNames = outfits.filter(o => o.scene !== 'sleep' && o.scene !== PRIVATE_SCENE)
     .map(o => `"${o.name}"`).join(' / ') || '（无）';
 
   // 示例用角色真实拥有的服装名，避免出现"示例里写了 A、可选清单里没有 A"的自相矛盾
-  const exOut = workName || casualName || outfits[0].name;
-  const exHome = homeName || outfits[0].name;
+  // 居家场景已删除：这里用「另一套」代替（没有第二套就沿用常服）
+  const exOut = workName || outfits[0].name;
+  const exHome = outfits[1]?.name || outfits[0].name;
 
   // 裸体那一段只在角色真的配了「裸体」时才讲 —— 没配的角色别被提示词带偏
   const nudeBlock = nudeName ? `
@@ -654,9 +653,8 @@ export async function ensureOutfitAnnotations(schedule, characterId, chat = chat
   // ── 修复：只输出与日程等长的 outfit 数组 ──
   const list = outfits.map(o => `- "${o.name}"（${LABEL_BY_KEY[o.scene] || o.scene}）`).join('\n');
   const sleepName = outfits.find(o => o.scene === 'sleep')?.name;
-  const homeName = outfits.find(o => o.scene === 'home')?.name;
-  const exOut = outfits.find(o => o.scene === 'work')?.name
-    || outfits.find(o => o.scene === 'casual')?.name || outfits[0].name;
+
+  const exOut = outfits.find(o => o.scene === 'work')?.name || outfits[0].name;
   const lines = schedule.map((a, i) =>
     `${i}. ${a.startTime}-${a.endTime}　${a.activity}　@${a.location || '（未写）'}`
     + `${Number(a.replyDelay) === -1 ? '　【睡眠】' : ''}`
@@ -674,7 +672,7 @@ ${list}
    河岸、酒馆、学校、公司，以及**别人家**）。
 2. 睡眠时段（标了【睡眠】的）→ 必须穿${sleepName ? ` "${sleepName}"` : '睡衣'}。
 3. **住所外**的时段 → 必须穿外出服（常服或私服），**绝不能是居家服或睡衣**。
-4. 回到自己住处 → 穿${homeName ? ` "${homeName}"` : '居家服'}。
+4. 回到自己住处 → 优先沿用常服，或从清单里挑一套更宽松适合在家的那套。
 5. **只在穿着发生变化的那一段**给出名字，没变化就填 null（表示沿用上一段）。
    出门、回家都是变化，都要给。
 

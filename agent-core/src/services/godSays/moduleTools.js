@@ -75,7 +75,7 @@ export const GOD_MODULE_TOOLS = [
   tool('read_scene_outfits', '角色', '查看场景服装', '读取默认、私服、居家、睡衣槽位中的现有服装，不查询日程。', char, ['character_id'], 'GET', '/api/characters/:character_id/outfit-scenes', { href: '/tavern' }),
   tool('generate_scene_outfits', '角色', '生成场景服装草稿', '生成或修改私服、居家服、睡衣必须用此工具。调用邻舍已有服装生成接口及其生图描述规则，先生成完整草稿，用户在卡片确认后仅写入指定场景槽位；不修改基础外观，不创建独立专属形态，不自动生图。可用 batch_characters 逐角色生成。', {
     ...char,
-    scenes: { type: 'array', description: '指定目标槽位：casual 私服、home 居家、sleep 睡衣；只选用户要求的槽位', items: { type: 'string', enum: ['casual', 'home', 'sleep'] }, minItems: 1, maxItems: 3, uniqueItems: true },
+    scenes: { type: 'array', description: '指定目标槽位：work 常服、sleep 睡衣；只选用户要求的槽位', items: { type: 'string', enum: ['work', 'sleep'] }, minItems: 1, maxItems: 2, uniqueItems: true },
     instruction: text('用户对款式、颜色或修改已有服装的要求；没有额外要求可省略，不代写最终外观正文', 4000),
   }, ['character_id', 'scenes'], 'POST', '/api/characters/:character_id/outfits/generate', { body: a => ({ scenes: a.scenes, instruction: a.instruction, save: false, generateImages: false }), href: '/tavern' }),
   tool('create_outfit', '角色', '创建专属外观', '新增独立、可切换的专属外观。instruction 填设计要求，由原外观扩写服务生成规范正文；只有用户明确给了完整最终描述时才传 description，两者二选一。新增直接保存但不启用，启用另用 set_outfit_enabled。私服/居家/睡衣用 generate_scene_outfits，基础外观用 apply_character_appearance。', { ...char, name: text('新增外观名称', 60), instruction: text('服装或形态设计要求，不代写最终描述', 2000), description: text('用户明确提供的完整最终外观正文', 5000) }, ['character_id', 'name'], 'POST', '/api/characters/:character_id/outfits', { href: '/tavern' }),
