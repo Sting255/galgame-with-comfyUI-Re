@@ -491,7 +491,7 @@ const MAX_SUBMIT_RETRIES = 2;
 async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
   loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
-  poseJson,
+  poseJson, sceneKey,
 } = {}) {
   if (config.comfyui.imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
@@ -507,7 +507,9 @@ async function submitWithRetry(rawPrompt, {
   const { wf, wfMode } = buildWorkflow(finalPrompt, {
     artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
     // 同场景稳定种子：调用方传 sceneKey 时，连续几张图共用一套 base（每张 +1）
-    sceneSeed: resolveSceneSeed(opts.sceneKey),
+    // ⚠️ 2026-11-06 修：这一行第一版写成了 opts.sceneKey，但本函数是解构参数、没有 opts
+    // ⇒ 所有生图入口（聊天/群聊/朋友圈/事件/触摸/玩具/独立生图）全部 `opts is not defined`。
+    sceneSeed: resolveSceneSeed(sceneKey),
   });
   if (onProgress) onProgress({ stage: 'submitting' });
 
