@@ -18,8 +18,8 @@ export function migrateInterCharacterEventSchema(db) {
     CREATE TABLE IF NOT EXISTS inter_character_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       group_id INTEGER,
-      from_character_id INTEGER NOT NULL REFERENCES characters(id),
-      to_character_id INTEGER NOT NULL REFERENCES characters(id),
+      from_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      to_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       kind TEXT NOT NULL DEFAULT 'said_to',
       summary TEXT NOT NULL,
       created_at TEXT NOT NULL

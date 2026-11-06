@@ -621,7 +621,14 @@ router.delete('/:id', async (req, res, next) => {
     db.prepare(`DELETE FROM moment_comments WHERE author_type = 'character' AND author_id = ?`).run(char.id);
     db.prepare(`DELETE FROM moment_posts WHERE character_id = ?`).run(char.id);
 
-    // 3. 删除头像文件
+    // 3. 清理跨角色数据（2026-11-06 真机：删角色报 FOREIGN KEY constraint failed）
+    //    character_bonds 与 inter_character_events 都引用 characters(id)，但建表时没写
+    //    ON DELETE CASCADE ⇒ 只要这个角色和别的角色有过互动/羁绊，就永远删不掉。
+    //    这里显式清理；新库的建表语句已补 CASCADE，老库靠这一步兜底。
+    db.prepare(`DELETE FROM character_bonds WHERE from_character_id = ? OR to_character_id = ?`).run(char.id, char.id);
+    db.prepare(`DELETE FROM inter_character_events WHERE from_character_id = ? OR to_character_id = ?`).run(char.id, char.id);
+
+    // 4. 删除头像文件
     if (char.avatar_path) {
       const __filename = fileURLToPath(import.meta.url);
       const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
