@@ -152,6 +152,22 @@ export function ensurePoseControlAssets({ comfyRoot, bundledDir, rtmlibDir, dryR
   return report;
 }
 
+/**
+ * 资产是否已经在目标 ComfyUI 里（把「没装」和「装了但 ComfyUI 还没重启」区分开）。
+ *
+ * 真机 2026-11-06：日志明明打了「已补装随包的姿势控制资产…（重启 ComfyUI 后生效）」，
+ * 而运行状态面板还显示「未装 ComfyUI-anima-pose-control」—— 因为 ComfyUI 只在启动时
+ * 加载自定义节点，资产到位 ≠ 节点可用。用户看到"未装"只会以为自动安装没做好。
+ */
+export function inspectPoseAssetPlacement() {
+  const comfyRoot = resolveComfyRoot();
+  if (!comfyRoot) return { placed: false, comfyRoot: null, nodeDir: '', reason: 'no-comfy-root' };
+  const nodeDir = path.join(comfyRoot, 'custom_nodes', 'ComfyUI-anima-pose-control');
+  let placed = false;
+  try { placed = fs.existsSync(nodeDir); } catch { placed = false; }
+  return { placed, comfyRoot, nodeDir, reason: placed ? 'installed-need-restart' : 'not-installed' };
+}
+
 /** 启动时调用：只做一次、只打一行日志、绝不影响启动 */
 export function ensurePoseControlAssetsOnBoot() {
   try {

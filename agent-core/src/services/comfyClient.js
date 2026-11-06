@@ -509,10 +509,22 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   if (poseNodeOk === false) {
     if (!poseNodeMissingWarned) {
       poseNodeMissingWarned = true;
-      console.warn('[poseControl] 目标 ComfyUI 没有 AnimaPoseControl 节点（未装 ComfyUI-anima-pose-control），'
-        + '已跳过骨架注入，按无姿势出图；这条只提醒一次。'
-        + '如果这是你自己的机器：程序会每 30 分钟把随包的节点资产装进 ComfyUI（assets/pose-control，'
-        + '需要启动器里配好 comfyui_exe），装完重启 ComfyUI 即生效。');
+      // 区分「资产没装」和「装了但 ComfyUI 没重启」：ComfyUI 只在启动时加载自定义节点，
+      // 资产到位 ≠ 节点可用。之前一律说"未装"，用户以为自动安装没做好（2026-11-06 真机）。
+      // ⚠ 用动态 import：comfyClient → poseControlInstall → imageSkill → comfyClient 会成环，
+      //    静态导入在 ESM 下可能踩 TDZ；这里只在警告分支里取一次，运行时开销可忽略。
+      let placement = { placed: false, comfyRoot: null, nodeDir: '', reason: 'unknown' };
+      try {
+        const mod = await import('./poseControlInstall.js');
+        placement = mod.inspectPoseAssetPlacement();
+      } catch { /* 取不到按未知处理，沿用通用文案 */ }
+      const detail = placement.reason === 'installed-need-restart'
+        ? `资产已在 ${placement.nodeDir}，只差重启 ComfyUI —— 自定义节点只在启动时加载，重启后 AnimaPoseControl 才可用`
+        : placement.reason === 'no-comfy-root'
+          ? '启动器里没配 ComfyUI 路径（comfyui_exe），程序无法自动安装随包的节点资产'
+          : '随包的节点资产还没装进去，程序会在 30 分钟内重试安装';
+      console.warn('[poseControl] 目标 ComfyUI 没有 AnimaPoseControl 节点，本次跳过骨架注入、按无姿势出图：'
+        + detail + '（这条只提醒一次）');
     }
   } else {
     maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });
