@@ -813,3 +813,8 @@ if (be && fe) {
 log('══════════════════════════════════════════════════════')
 log('\n⚠️ 还剩最后一步（手跑，需要等解压与启动）：')
 log('   解压 → 起 vector-service(8765) 与 agent-core(3199) → 抽查 /api/characters 与 /api/intimate-actions/:id/state')
+// 2026-11-06：第 69 轮包曾经把「每张图都 opts is not defined」的回归打出去过 ——
+// 上面所有校验都只看文件与接口，没有一步真的生成一张图。生图冒烟必须单独跑。
+log('   另外务必跑一次生图冒烟（十几秒，能挡住"接口全活、生图全挂"这类回归）：')
+log('     cd agent-core && DB_PATH=":memory:" ../runtime/nodejs/node.exe ../scripts/smoke-image.mjs')
+log('     退出码 0=出图成功 / 2=ComfyUI 未开（环境问题）/ 1=代码链路有错')
