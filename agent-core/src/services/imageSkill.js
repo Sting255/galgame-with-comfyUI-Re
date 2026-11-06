@@ -569,6 +569,11 @@ async function submitWithRetry(rawPrompt, {
     }
 
     const unreachable = isComfyUnreachable(lastResult?.error);
+    // 生成超时：ComfyUI 没在时限内画完，重试只是再堵一个完整时限 —— 直接放弃这一张
+    if (!unreachable && /execution timeout/i.test(String(lastResult?.error || ''))) {
+      console.warn('[imageSkill] 生成超时（ComfyUI 未在时限内返回），本张标记失败、不再重试');
+      break;
+    }
     if (unreachable && !warnedUnreachable) {
       warnedUnreachable = true;
       console.warn('[imageSkill] ComfyUI 连不上（多半是还没启动 / 正在加载模型）—— 本次会多等几轮再放弃');
@@ -599,6 +604,9 @@ async function submitWithRetry(rawPrompt, {
 export function isComfyUnreachable(message) {
   const text = String(message || '').toLowerCase();
   if (!text) return false;
+  // 2026-11-06：**生成超时**不算"连不上"。ComfyUI 收到了请求但没在时限内画完，
+  // 重试只会再堵一个完整时限（120s × 重试次数），比不重试更糟。
+  if (/execution timeout/.test(text)) return false;
   return /fetch failed|econnrefused|econnreset|econnaborted|etimedout|socket hang up|network error|timed? ?out|aborted/.test(text);
 }
 

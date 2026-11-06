@@ -7,7 +7,19 @@ import { withImageGpu } from './speechGpu.js';
 
 const getBase = () => config.comfyui.url.replace(/\/+$/, '');
 const getWsBase = () => config.comfyui.url.replace(/^http/, 'ws');
-const EXECUTION_TIMEOUT_MS = 60 * 60 * 1000; // 1 小时，WebSocket 与轮询兜底共用
+/**
+ * 单张图的等待上限（WebSocket 与轮询兜底共用）。
+ *
+ * 2026-11-06 真机：原来写死 **1 小时**，等于没有超时 —— ComfyUI 卡住三分钟时，
+ * 前端只能一直转圈、刷新也没用，等它缓过来又一次性倒出十几张。
+ * 现在默认 2 分钟（turbo 单张 3~6 秒，慢图也很少超过 30 秒），可用 COMFY_IMAGE_TIMEOUT_MS 覆盖。
+ */
+const DEFAULT_EXECUTION_TIMEOUT_MS = 120_000;
+const EXECUTION_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.COMFY_IMAGE_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_EXECUTION_TIMEOUT_MS;
+  return Math.min(Math.max(raw, 30_000), 60 * 60 * 1000);
+})();
 
 // ── 节点定义缓存（从 ComfyUI /object_info 获取，~2.8MB，常驻内存）──
 
