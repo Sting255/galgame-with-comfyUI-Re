@@ -506,7 +506,7 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
   return db.prepare('SELECT * FROM town_newspapers WHERE id = ?').get(paperId);
 }
 
-async function generateNewsImage(prompt, { ragQuery, loras, character } = {}) {
+async function generateNewsImage(prompt, { ragQuery, loras, character, priority = 'high' } = {}) {
   // 生图参数与朋友圈发帖保持同步（generateMomentImages）：画师优先角色单独设置、
   // 分辨率用 moments 档、有 LoRA 时同样透传角色自定义工作流；scene 也沿用 'moments'
   //（全局 LoRA 面板里勾了「朋友圈」的条目对报纸配图同样生效——报纸 ≈ 全员可见的朋友圈）
@@ -517,7 +517,11 @@ async function generateNewsImage(prompt, { ragQuery, loras, character } = {}) {
     width: config.comfyui.momentsWidth,
     height: config.comfyui.momentsHeight,
     scene: 'moments',
-    priority: 'low',
+    // 2026-11-06 真机：日报配图原来是 low，被"高优任务后 180 秒静默期"压着 ——
+    // 12:49:03 最后一张聊天图完成 → 12:52:00 才开始补图，正好卡满 180 秒，
+    // 用户看到的就是"日报一直不出图、要等很久"。
+    // 现在默认 high：报纸一天只有一期、配图也就 4 张，抢这几秒换用户不用干等，值。
+    priority,
     ...(loras?.length ? { customWorkflow: character?.custom_workflow || null, loras } : {}),
   });
   if (!genResult?.success || !genResult.images?.length) return null;
