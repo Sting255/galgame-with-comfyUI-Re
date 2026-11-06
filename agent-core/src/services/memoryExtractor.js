@@ -290,10 +290,40 @@ export function planCurationRecovery({ finishReason, parseFailed = false } = {})
   return parseFailed ? 'json' : null;
 }
 
+/**
+ * 把 JSON **字符串值内部**的裸控制字符转义成 \uXXXX。
+ *
+ * 真机日志（2026-11-06 12:45）：`Bad control character in string literal in JSON at position 397`
+ * —— 模型在记忆正文里直接吐了换行/制表符，JSON.parse 当场报错，整批 curation 失败，
+ * group 3 的 checkpoint 原地不动（`memory checkpoint did not advance ... expected>=1905`）。
+ * 只处理引号内的字符：结构外的换行是合法空白，动了反而坏事。
+ */
+export function escapeControlCharsInJson(text) {
+  const src = String(text || '');
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (const ch of src) {
+    if (!inString) {
+      if (ch === '"') inString = true;
+      out += ch;
+      continue;
+    }
+    if (escaped) { out += ch; escaped = false; continue; }
+    if (ch === '\\') { out += ch; escaped = true; continue; }
+    if (ch === '"') { out += ch; inString = false; continue; }
+    const code = ch.codePointAt(0);
+    if (code < 0x20) { out += `\\u${code.toString(16).padStart(4, '0')}`; continue; }
+    out += ch;
+  }
+  return out;
+}
+
 export function parseMemoryActions(raw) {
   let text = String(raw || '').trim();
   if (text.startsWith('```')) text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-  const parsed = JSON.parse(text);
+  // 先洗掉字符串里的裸控制字符再解析：模型偶尔会在正文里吐真换行
+  const parsed = JSON.parse(escapeControlCharsInJson(text));
   const actions = parsed.memoryActions ?? parsed.actions ?? [];
   if (!Array.isArray(actions)) throw new Error('memoryActions 必须是数组');
   return actions.slice(0, CURATION_MAX_ACTIONS);
