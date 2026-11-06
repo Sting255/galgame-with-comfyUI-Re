@@ -1,4 +1,6 @@
 import { parseJson } from './repository.js';
+// 世界时间轴（2026-11-06）：神降下的事实要与奇遇事件共用同一条"最近发生了什么"
+import { recordWorldTimeline } from '../worldTimeline.js';
 
 export function sampleTargets(rows, count, random = Math.random) {
   const pool = [...rows];
@@ -66,6 +68,15 @@ export function createWorldEventService(repo, { publishMoment, discussGroup, gro
     const insert = db.prepare('INSERT INTO god_world_deliveries(event_id,kind,target_id,next_attempt_at) VALUES (?,?,?,?)');
     for (const c of sampleTargets(characters, args.moment_count ?? (2 + Math.floor(random() * 3)), random)) insert.run(id, 'moment', c.id, created);
     for (const g of sampleTargets(groups, args.group_count ?? (1 + Math.floor(random() * 2)), random)) insert.run(id, 'group', g.id, created);
+    // 世界时间轴（2026-11-06）：神降下的事实也进同一条账，事件生成能接着它往下写
+    recordWorldTimeline({
+      kind: 'god_fact',
+      title: args.title,
+      summary: args.fact,
+      characterIds: characters.map(c => c.id),
+      sourceId: `god:${id}`,
+      at: created,
+    }, repo.db);
     return list(id)[0];
   });
   function notify(id) { broadcast('god_world_event', list(id)[0]); }

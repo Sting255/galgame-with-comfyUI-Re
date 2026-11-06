@@ -53,6 +53,7 @@ import { migrateTtsSchema, recoverSpeechJobs } from './ttsSchema.js';
 import { migrateGodSaysSchema } from './godSaysSchema.js';
 import { migrateCohabitationSchema } from './cohabitationRepository.js';
 import { migrateInterCharacterEventSchema } from './interCharacterEventSchema.js';
+import { migrateWorldTimelineSchema } from './worldTimelineSchema.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1147,6 +1148,7 @@ function initSchema(db) {
   migrateScheduleSchema(db);
   migrateCohabitationSchema(db);
   migrateInterCharacterEventSchema(db);
+  migrateWorldTimelineSchema(db);
 
   // 迁移: moment_comments 新增 auto_trigger + thread_root_id（朋友圈关系网互动）
   migrateMomentAutoTrigger(db);

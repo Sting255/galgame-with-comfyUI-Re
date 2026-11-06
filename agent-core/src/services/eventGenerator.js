@@ -43,6 +43,8 @@ import { getWorldIntegrationRule } from '../builtinRules.js';
 import { extractFirstJson } from './jsonExtract.js';
 // 亲密看板：奇遇场景记账（零 LLM 的确定性归类；幂等锚点用显式 sourceUid，见 recordIntimateForEvent）
 import { classifyPromptTags, recordIntimateActs, tagsFromPromptString } from './intimateService.js';
+// 世界时间轴（2026-11-06）：事件开场与世界事实落成"这个世界最近发生了什么"，供后续承接
+import { recordWorldTimeline, buildWorldTimelineBlock } from './worldTimeline.js';
 
 // ── 生活片段类型库（事件类型存于 event_types 表，见 db/index.js 的 seedEventLibraries）──
 // 每个类型描述的是"角色今天的生活进入了哪一种状态"，不是"发生了什么剧情"。
@@ -350,6 +352,13 @@ export async function generateEvent(character, options = {}) {
   let contextBlock = '';
   if (recentMoment) {
     contextBlock += `\n关联线索——${character.display_name}一小时前刚发了朋友圈："${recentMoment.content}"。事件素材可以与此呼应，提高关联性。\n`;
+  }
+  // 世界时间轴（2026-11-06）：把最近发生的事作为前因带上，事件之间才接得上
+  try {
+    const timeline = buildWorldTimelineBlock(3);
+    if (timeline) contextBlock += `\n${timeline}\n`;
+  } catch (err) {
+    console.warn('[eventGen] timeline block skipped:', err?.message || err);
   }
 
   // 将角色人格中的"你"替换为角色名（保留引号内对话不变，简单正则处理）；统一入口含生效外观注入
@@ -716,6 +725,14 @@ ${directorPrompt}`
   const event = db.prepare(`SELECT * FROM character_events WHERE id = ?`).get(eventId);
   // 奇遇时长预留：把「开场活动」延长到覆盖整个事件存续期（上游 v3.9.0）
   syncEventSchedule(event);
+  // 世界时间轴（2026-11-06）：事件开场记一条，后续事件生成能接手前面发生的事
+  recordWorldTimeline({
+    kind: 'event',
+    title: event.title,
+    summary: event.description,
+    characterIds: [event.character_id],
+    sourceId: `event:${event.id}`,
+  });
 
   // 8. SSE 广播
   broadcastNewEvent({
