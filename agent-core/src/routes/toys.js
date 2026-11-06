@@ -225,7 +225,7 @@ function characterIdOf(req) {
  */
 function characterRow(characterId) {
   return getDb().prepare(
-    'SELECT id, display_name, avatar_path, base_prompt, short_prompt FROM characters WHERE id = ?'
+    'SELECT id, display_name, avatar_path, base_prompt, short_prompt, negative_prompt FROM characters WHERE id = ?'
   ).get(characterId) || null;
 }
 

@@ -29,6 +29,7 @@ import { listCharacterOutfits, createCharacterOutfit, updateCharacterOutfit, del
 import {
   OUTFIT_SCENES, listSceneOutfits, upsertSceneOutfits, generateSceneOutfits,
   getSceneOutfitForNow, setCharacterBody, backfillBodyFromExisting,
+  readOutfitOverride, setOutfitOverride,
 } from '../services/outfitScene.js';
 import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS, STANDING_SCENE_LABELS } from '../services/characterStanding.js';
 import { buildCharacterPersona, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
@@ -408,7 +409,7 @@ router.post('/schedule-enabled-all', (req, res) => {
 // PUT /api/characters/:id — 更新角色
 router.put('/:id', (req, res) => {
   const db = getDb();
-  const { name, display_name, base_prompt, emotion_baseline, avatar_path, chat_bg_path, moments_disabled, proactive_disabled, events_disabled, custom_workflow, loras, artist_override } = req.body;
+  const { name, display_name, base_prompt, emotion_baseline, avatar_path, chat_bg_path, moments_disabled, proactive_disabled, events_disabled, custom_workflow, loras, artist_override, negative_prompt } = req.body;
   const updates = [], params = [];
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name); }
@@ -445,6 +446,11 @@ router.put('/:id', (req, res) => {
   if (custom_workflow !== undefined) { updates.push('custom_workflow = ?'); params.push(custom_workflow || null); }
   if (loras !== undefined) { updates.push('loras = ?'); params.push(Array.isArray(loras) ? JSON.stringify(loras) : (loras || '[]')); }
   if (artist_override !== undefined) { updates.push('artist_override = ?'); params.push(typeof artist_override === 'string' ? artist_override.trim() : null); }
+  // 角色级负面提示词（2026-11-06）：只在该角色单人出场的生图链路注入；空串 = 只用全局负面词
+  if (negative_prompt !== undefined) {
+    updates.push('negative_prompt = ?');
+    params.push(typeof negative_prompt === 'string' ? negative_prompt.trim().slice(0, 200) : '');
+  }
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
   params.push(req.params.id);
   db.prepare(`UPDATE characters SET ${updates.join(', ')} WHERE id = ?`).run(...params);
@@ -956,6 +962,7 @@ router.post('/:id/gift', async (req, res) => {
         disableRAG: true,
         ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
         loras: _parseCharLoras(char.loras),
+        characterNegative: char.negative_prompt || '',
         ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
         ...(giftArtist !== null ? { artist: giftArtist } : {}),
         onProgress: (p) => {
@@ -1126,6 +1133,7 @@ ${buildCharacterPersona(char, { variant: 'full', outfitScene: 'base' })}
       width: 768,
       height: 768,
       loras: charLoras.length > 0 ? charLoras : undefined,
+      characterNegative: char.negative_prompt || '',
       ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
       onProgress: (p) => {
         if (p.stage) console.log(`[generate-avatar] ComfyUI: ${p.stage}`);
@@ -1280,6 +1288,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
     width: 768,
     height: 1536,
     loras: charLoras.length > 0 ? charLoras : undefined,
+    characterNegative: char.negative_prompt || '',
     ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
     onProgress: (p) => {
       // stage 只在切换时打印：WS 采样进度消息很密，逐条打印会刷屏
@@ -2130,6 +2139,27 @@ router.delete('/:id/outfits/:outfitId', (req, res) => {
   const removed = deleteCharacterOutfit(req.params.id, req.params.outfitId);
   if (!removed) return res.status(404).json({ error: 'Outfit not found' });
   res.json({ success: true });
+});
+
+// PUT /api/characters/:id/outfit-override — 手动指定「现在穿这套」 Body: { scene, until? }
+// scene 传空 = 清除指定，回到日程换装。睡眠时段仍是硬规则：指定了也不覆盖睡衣。
+router.put('/:id/outfit-override', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const scene = String(req.body?.scene || '').trim();
+  const until = req.body?.until ? String(req.body.until) : null;
+  try {
+    const saved = setOutfitOverride(char.id, scene, until);
+    const current = getSceneOutfitForNow(char.id);
+    res.json({
+      ...saved,
+      current: current ? { scene: current.scene, source: current.source } : null,
+    });
+  } catch (err) {
+    const code = err.message === 'invalid argument' || err.message === 'character not found' ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
 });
 
 export default router;

@@ -56,6 +56,7 @@ export function getActiveOutfits(characterId) {
   const exclusive = db.prepare(
     `SELECT id, name, description FROM character_outfits
      WHERE character_id = ? AND enabled = 1
+       AND (scene IS NULL OR scene = '')
        AND (expires_at IS NULL OR expires_at > datetime('now'))
      ORDER BY id ASC LIMIT 1`
   ).get(characterId) || null;
@@ -65,8 +66,12 @@ export function getActiveOutfits(characterId) {
 }
 
 export function listCharacterOutfits(characterId) {
+  // 只列「额外形态」：scene 非空的行是场景服装（默认/私服/居家/睡衣/裸体），
+  // 由「外观服装」面板管理，混进来会让用户能在形态弹窗里删掉日程要用的衣服。
   return getDb().prepare(
-    'SELECT id, name, description, enabled, created_at FROM character_outfits WHERE character_id = ? ORDER BY id ASC'
+    `SELECT id, name, description, enabled, created_at FROM character_outfits
+     WHERE character_id = ? AND (scene IS NULL OR scene = '')
+     ORDER BY id ASC`
   ).all(characterId);
 }
 
@@ -92,7 +97,9 @@ export function updateCharacterOutfit(characterId, outfitId, { name, description
   const nextDesc = description !== undefined ? description : outfit.description;
   const nextEnabled = enabled !== undefined ? (enabled ? 1 : 0) : outfit.enabled;
   if (nextEnabled) {
-    db.prepare('UPDATE character_outfits SET enabled = 0 WHERE character_id = ? AND id != ?')
+    // 互斥只在「额外形态」之间生效；场景服装那几行的 enabled 归日程换装用，不能被这里清零
+    db.prepare(`UPDATE character_outfits SET enabled = 0
+      WHERE character_id = ? AND id != ? AND (scene IS NULL OR scene = '')`)
       .run(characterId, outfitId);
   }
   db.prepare('UPDATE character_outfits SET name = ?, description = ?, enabled = ? WHERE id = ?')

@@ -180,6 +180,8 @@ async function defaultTouchImageGenerator(character, prompt, { scene = 'chat' } 
     scene,
     // 同一次亲密/触摸过程的连续几张图共用种子基准（30 分钟窗口，与 resolveSceneSeed 对齐）
     sceneKey: `touch:${character.id}:${Math.floor(Date.now() / (30 * 60 * 1000))}`,
+    // 角色级负面词：触摸/亲密图里的主角就是她本人
+    characterNegative: character.negative_prompt || '',
     ...opts,
   });
   if (!result?.success || !result.images?.length) {

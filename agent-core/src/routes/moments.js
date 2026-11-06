@@ -524,6 +524,11 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
           scene: 'moments',
           priority: manual ? 'high' : 'low',
           ...loraOpts,
+          // 角色级负面词只在「画面里只有发帖者本人」时注入：多人同框没有唯一主角，
+          // 拿谁的负面词都可能在排斥别人身上的正常元素
+          ...(otherChars.length === 0 && character.negative_prompt
+            ? { characterNegative: character.negative_prompt }
+            : {}),
         });
 
         if (!genResult.success || genResult.images.length === 0) {

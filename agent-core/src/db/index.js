@@ -1105,6 +1105,12 @@ function initSchema(db) {
   // 迁移: characters 表新增 next_moment_at 列
   migrateMomentsSchema(db);
 
+  // 迁移: characters 表新增 negative_prompt 列（角色级负面提示词，2026-11-06）
+  migrateCharacterNegativePrompt(db);
+
+  // 迁移: characters 表新增 outfit_override_scene / outfit_override_until（手动指定当前服装）
+  migrateCharacterOutfitOverride(db);
+
   // 迁移: town_newspapers 去掉 character_id 外键（报纸主角链接不随角色删除被置空）
   migrateNewspaperDropForeignKey(db);
 
@@ -1779,6 +1785,34 @@ export function migrateMomentPostUserAuthors(db) {
     console.log('[db] Rebuilt moment_posts to support user authors');
   } finally {
     if (fkWasOn) db.pragma('foreign_keys = ON');
+  }
+}
+
+function migrateCharacterNegativePrompt(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'negative_prompt')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN negative_prompt TEXT NOT NULL DEFAULT ''`);
+      console.log('[db] Added characters.negative_prompt column');
+    }
+  } catch (err) {
+    console.log('[db] migrateCharacterNegativePrompt error:', err.message);
+  }
+}
+
+function migrateCharacterOutfitOverride(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'outfit_override_scene')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN outfit_override_scene TEXT NOT NULL DEFAULT ''`);
+      console.log('[db] Added characters.outfit_override_scene column');
+    }
+    if (!cols.find(c => c.name === 'outfit_override_until')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN outfit_override_until DATETIME`);
+      console.log('[db] Added characters.outfit_override_until column');
+    }
+  } catch (err) {
+    console.log('[db] migrateCharacterOutfitOverride error:', err.message);
   }
 }
 

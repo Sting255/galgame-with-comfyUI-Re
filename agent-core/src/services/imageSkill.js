@@ -89,6 +89,28 @@ function resolveWorkflowPath(scene) {
 
 const PROMPT_PLACEHOLDER = '请输入画面描述';
 
+/**
+ * 角色级负面提示词的长度上限（字符）。负面词过长会挤占 CLIP 的 77-token 窗口，
+ * 把真正该排除的特征挤掉，等于越写越差；200 字符足够写 15~20 个 tag。
+ */
+const MAX_CHARACTER_NEGATIVE = 200;
+
+/**
+ * 合并最终负面提示词：角色级在前，全局在后。
+ * 顺序有意义 —— 靠前的 tag 更容易被模型当主体约束读到；角色级更具体，理应优先。
+ * 两者都空时返回空串（调用方据此不覆盖工作流里的默认负面词，保持旧行为）。
+ * @param {string} characterNegative 角色级负面词
+ * @param {string} globalNegative 全局负面词
+ * @returns {string}
+ */
+export function composeNegativePrompt(characterNegative, globalNegative) {
+  const role = typeof characterNegative === 'string'
+    ? characterNegative.trim().slice(0, MAX_CHARACTER_NEGATIVE)
+    : '';
+  const base = typeof globalNegative === 'string' ? globalNegative.trim() : '';
+  return [role, base].filter(Boolean).join(', ');
+}
+
 // 按节点 title 注入参数（而非硬编码节点 ID）
 export const NODE_TITLES = {
   artist: '画师串',
@@ -265,7 +287,7 @@ function buildWorkflow(promptText, overrides = {}) {
   if (qualityPrompt) defaults[NODE_TITLES.quality] = qualityPrompt;
   // 负面提示词：非空才覆盖工作流节点里的默认值，留空不注入
   const negativeValue = overrides.negativePrompt ?? config.comfyui.negativePrompt;
-  const negativePrompt = typeof negativeValue === 'string' ? negativeValue.trim() : '';
+  const negativePrompt = composeNegativePrompt(overrides.characterNegative, negativeValue);
   if (negativePrompt) defaults[NODE_TITLES.negative] = negativePrompt;
 
   for (const node of wf.nodes || []) {
@@ -478,6 +500,7 @@ const MAX_SUBMIT_RETRIES = 2;
  * @param {object}   [opts]
  * @param {Array}    [opts.loras]              - [{path, weight, triggerWord}]
  * @param {string}   [opts.customWorkflow]       - 自定义工作流文件名（单人兼容）
+ * @param {string}   [opts.characterNegative]    - 角色级负面提示词（排在全局负面词前，截 200 字符）
  * @param {string}   [opts.scene]                - 全局 LoRA 的场景过滤；默认也用于工作流选择
  * @param {string}   [opts.workflowScene]        - hybrid 模式下单独用于工作流选择
  * @param {string}   [opts.artist]
@@ -491,7 +514,7 @@ const MAX_SUBMIT_RETRIES = 2;
 async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
   loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
-  poseJson, sceneKey,
+  characterNegative, poseJson, sceneKey,
 } = {}) {
   if (config.comfyui.imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
@@ -506,6 +529,7 @@ async function submitWithRetry(rawPrompt, {
   // 2. 构建 workflow
   const { wf, wfMode } = buildWorkflow(finalPrompt, {
     artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
+    characterNegative,
     // 同场景稳定种子：调用方传 sceneKey 时，连续几张图共用一套 base（每张 +1）
     // ⚠️ 2026-11-06 修：这一行第一版写成了 opts.sceneKey，但本函数是解构参数、没有 opts
     // ⇒ 所有生图入口（聊天/群聊/朋友圈/事件/触摸/玩具/独立生图）全部 `opts is not defined`。

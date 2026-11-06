@@ -386,6 +386,47 @@ export function getBaseSceneOutfit(characterId) {
  * @returns {{outfit: object, scene: string, source: string}|null}
  *          source 便于排查：'sleep' | 'schedule' | 'fallback'
  */
+/**
+ * 读「手动指定当前服装」的覆盖值（服装面板「现在穿这套」写入）。
+ * 返回 scene key，未指定或已过期返回空串。until 为空 = 永久生效直到手动取消。
+ */
+export function readOutfitOverride(characterId) {
+  try {
+    const row = getDb().prepare(
+      'SELECT outfit_override_scene, outfit_override_until FROM characters WHERE id = ?'
+    ).get(Number(characterId));
+    if (!row) return '';
+    const scene = String(row.outfit_override_scene || '').trim();
+    if (!scene) return '';
+    const until = String(row.outfit_override_until || '').trim();
+    if (until) {
+      const ts = new Date(until).getTime();
+      if (Number.isFinite(ts) && ts <= Date.now()) return ''; // 已过期：视为未指定
+    }
+    return scene;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 写「手动指定当前服装」。scene 传空 = 清除指定，回到日程换装。
+ * @param {number|string} characterId
+ * @param {string} scene 场景 key（work/casual/home/sleep/nude）
+ * @param {string|null} until ISO 时间串；为空表示一直生效
+ */
+export function setOutfitOverride(characterId, scene, until = null) {
+  const db = getDb();
+  const id = Number(characterId);
+  const exists = db.prepare('SELECT 1 FROM characters WHERE id = ?').get(id);
+  if (!exists) throw new Error('character not found');
+  const key = String(scene || '').trim();
+  if (key && !SCENE_KEYS.includes(key)) throw new Error('invalid argument');
+  db.prepare('UPDATE characters SET outfit_override_scene = ?, outfit_override_until = ? WHERE id = ?')
+    .run(key, key ? (until || null) : null, id);
+  return { scene: key, until: key ? (until || null) : null };
+}
+
 export function getSceneOutfitForNow(characterId, date = new Date()) {
   const outfits = listSceneOutfits(characterId);
   if (!outfits.length) return null;
@@ -397,21 +438,28 @@ export function getSceneOutfitForNow(characterId, date = new Date()) {
   const byId = new Map(outfits.map(o => [String(o.id), o]));
 
   const acts = todayActivities(characterId, date);
+  const idx = acts.length ? findCurrentIndex(acts, nowMinutes(date)) : -1;
+  const cur = idx >= 0 ? (acts[idx] || {}) : {};
+
+  // ② 睡眠：硬规则，优先于任何标注**和手动指定** —— 睡觉穿常服不合理
+  if (Number(cur.replyDelay) === -1 && sleepOutfit) {
+    return { outfit: sleepOutfit, scene: 'sleep', source: 'sleep' };
+  }
+
+  // ③ 手动指定：用户显式钉住的那套，优先于日程换装（睡眠之外的最高优先级）
+  const overrideScene = readOutfitOverride(characterId);
+  if (overrideScene) {
+    const hit = outfits.find(o => o.scene === overrideScene);
+    if (hit) return { outfit: hit, scene: hit.scene, source: 'override' };
+  }
+
   if (!acts.length) {
     // 没有日程：用第一套白天服装兜底（实在没有才退睡衣；**绝不用裸体**）
     const fallback = dayOutfits[0] || sleepOutfit;
     return fallback ? { outfit: fallback, scene: fallback.scene, source: 'fallback' } : null;
   }
 
-  const idx = findCurrentIndex(acts, nowMinutes(date));
-  const cur = acts[idx] || {};
-
-  // ② 睡眠：硬规则，优先于任何标注（**包括日程显式标的 nude** —— 睡觉一律穿睡衣）
-  if (Number(cur.replyDelay) === -1 && sleepOutfit) {
-    return { outfit: sleepOutfit, scene: 'sleep', source: 'sleep' };
-  }
-
-  // ③ 向前回溯最近的换装点（含当前段）；上限防止绕一圈
+  // ④ 向前回溯最近的换装点（含当前段）；上限防止绕一圈
   for (let step = 0; step < acts.length; step++) {
     const i = (idx - step + acts.length) % acts.length;
     const o = acts[i]?.outfit;
@@ -423,7 +471,7 @@ export function getSceneOutfitForNow(characterId, date = new Date()) {
     // 标注了但匹配不到（LLM 编了个名字）→ 继续往前找，别停在一个无效值上
   }
 
-  // ④ 兜底（同样排除 nude）
+  // ⑤ 兜底（同样排除 nude）
   const fallback = dayOutfits[0] || sleepOutfit;
   return fallback ? { outfit: fallback, scene: fallback.scene, source: 'fallback' } : null;
 }

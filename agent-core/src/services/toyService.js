@@ -1094,6 +1094,8 @@ export async function generateToyImageForReaction({ character, imagePrompt = '',
     const result = await runner(promptWithPosition, {
       scene: 'chat', workflowScene: 'chat', promptScene: 'chat',
       artist: charArtistOverride(character || {}),
+      // 角色级负面词：玩具/亲密反应图里的主角就是她本人
+      characterNegative: charObj.negative_prompt || '',
       // 同一次亲密场景的连续几张图共用一个种子基准（人物一致），由调用方传 sceneKey 决定
       ...(options.sceneKey ? { sceneKey: options.sceneKey } : {}),
       ...(poseJsonForToy ? { poseJson: poseJsonForToy } : {}),

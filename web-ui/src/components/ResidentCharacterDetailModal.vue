@@ -145,6 +145,19 @@
                       <template v-if="section.key === 'persona'">
                         <p class="split-hint">设置角色的身份、性格与经历。外观在「外观服装」中单独编辑。</p>
                         <linshe-input v-model="detail.editPersona" type="textarea" class="prompt-textarea" aria-label="人设提示词" @input="detail.dirty = true" />
+                        <!-- 角色级负面提示词（2026-11-06）：只在「画面里只有这个角色」的生图链路注入，
+                             用来把模型画串成别人的特征推出去（如流萤不戴银狼的护目镜） -->
+                        <details class="negative-adv">
+                          <summary>负面提示词（高级）</summary>
+                          <p class="split-hint">这个角色出场生图时要排除的东西，用英文逗号分隔，例如 <code>goggles, sunglasses, purple hair</code>。留空则只用全局负面词。只在她的单人图生效（私聊配图、朋友圈单人、触摸/玩具/亲密、头像与立绘），群里多人同框不注入。</p>
+                          <linshe-input
+                            v-model="detail.editNegativePrompt" type="textarea" rows="3" maxlength="200"
+                            aria-label="角色负面提示词"
+                            placeholder="留空 = 只用全局负面词"
+                            @input="detail.dirty = true"
+                          />
+                          <p class="negative-adv-count">{{ (detail.editNegativePrompt || '').length }} / 200</p>
+                        </details>
                       </template>
                       <div v-else class="scene-block">
                         <div class="scene-block-head">
@@ -163,7 +176,47 @@
                         <Transition name="persona-fold" mode="out-in">
                           <div v-if="activeSceneOutfit" :key="activeSceneOutfit.scene" class="scene-edit">
                             <p class="split-hint">{{ activeSceneOutfit.scene === 'sleep' ? '睡眠时段优先使用睡衣；未配置时沿用其他有效服装。' : activeSceneOutfit.scene === 'work' ? '保留角色的常态形象，作为其他服装的生成基准。' : '只调整这套服装，保留角色的身体特征。' }}</p>
-                            <linshe-button variant="secondary" size="sm" class="clothing-library-trigger" :disabled="outfitBatchRunning || outfitGenerating" @click="openClothingLibrary">衣服库 · 选 tag 搭配</linshe-button>
+                            <!-- 这套服装画出来长什么样：改文字的同时能看见图，串角色一眼可辨 -->
+                            <div class="scene-stand-card">
+                              <div
+                                class="scene-stand-figure"
+                                role="button" tabindex="0"
+                                :class="{ 'is-empty': !activeSceneStandingUrl }"
+                                :title="activeSceneStandingUrl ? '点击看大图' : '这套还没有立绘'"
+                                @click="previewActiveSceneStanding"
+                                @keydown.enter.prevent="previewActiveSceneStanding"
+                              >
+                                <img v-if="activeSceneStandingUrl" :src="activeSceneStandingUrl" :alt="`${activeSceneOutfit.sceneLabel}立绘`" />
+                                <span v-else class="scene-stand-empty">这套还没有立绘</span>
+                              </div>
+                              <div class="scene-stand-meta">
+                                <p class="scene-stand-hint">
+                                  {{ activeSceneStandingUrl
+                                    ? (activeSceneStanding?.is_fallback ? '当前显示的是默认立绘兜底，还没单独为这套出过图' : '这张就是她穿这套的样子')
+                                    : '文字描述决定生图内容，立绘是它画出来的样子' }}
+                                </p>
+                                <div class="scene-stand-actions">
+                                  <linshe-button size="sm" variant="secondary" :loading="sceneGenerating" :disabled="standingBusy && !sceneGenerating" @click="generateStandingForActiveScene">生成本套立绘</linshe-button>
+                                  <label class="scene-stand-upload">
+                                    <input type="file" accept="image/png,image/jpeg,image/webp" hidden @change="onSceneStandingFileChange" />
+                                    <linshe-button size="sm" variant="ghost" :loading="standingUploading">上传本套</linshe-button>
+                                  </label>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="scene-edit-tools">
+                              <linshe-button variant="secondary" size="sm" class="clothing-library-trigger" :disabled="outfitBatchRunning || outfitGenerating" @click="openClothingLibrary">衣服库 · 选 tag 搭配</linshe-button>
+                              <linshe-button
+                                :variant="isWearingThisScene ? 'primary' : 'secondary'"
+                                size="sm"
+                                :loading="outfitOverrideSaving"
+                                :disabled="outfitBatchRunning"
+                                :title="isWearingThisScene ? '取消指定后，她重新按日程换装' : '钉住这套：日程换装暂不生效（睡眠时段仍穿睡衣）'"
+                                @click="toggleOutfitOverride"
+                              >
+                                {{ isWearingThisScene ? '正在穿 · 取消指定' : '现在穿这套' }}
+                              </linshe-button>
+                            </div>
                             <linshe-input
                               v-model="activeSceneOutfit.description" type="textarea" rows="10" :disabled="outfitBatchRunning"
                               :aria-label="`${activeSceneOutfit.scene === 'work' ? '默认' : activeSceneOutfit.sceneLabel}外观描述`"
@@ -218,12 +271,13 @@
                 <span>亲密信息</span>
                 <span class="toolbar-badge">看板</span>
               </div>
-              <!-- 外观 / 形态入口暂时隐藏：角色外观系统数据层与注入已就绪，待开放时取消注释即可 -->
-              <!-- <div class="toolbar-item toolbar-item-btn" @click="openOutfitModal">
+              <!-- 外观 / 形态（2026-11-06 开放）：带名称与启用开关的额外服装，与「外观服装」的五套场景服装互补 ——
+                   形态优先级更高，启用后生图时盖在场景服装之上。 -->
+              <div class="toolbar-item toolbar-item-btn" @click="openOutfitModal">
                 <span>外观 / 形态</span>
                 <span v-if="activeOutfitName" class="toolbar-badge active">{{ activeOutfitName }}</span>
                 <span v-else class="toolbar-badge">未启用</span>
-              </div> -->
+              </div>
             </div>
 
             <!-- SLG 动作系统 · 阶段三：触摸互动统计小节 -->
@@ -287,12 +341,11 @@
                 <span class="float-label">亲密信息</span>
                 <span class="float-badge">看板</span>
               </div>
-              <!-- 外观 / 形态入口暂时隐藏：角色外观系统数据层与注入已就绪，待开放时取消注释即可 -->
-              <!-- <div class="float-row float-row-action" @click="openOutfitModal">
+              <div class="float-row float-row-action" @click="openOutfitModal">
                 <span class="float-label">外观 / 形态</span>
                 <span v-if="activeOutfitName" class="float-badge active float-badge-name">{{ activeOutfitName }}</span>
                 <span v-else class="float-badge">未启用</span>
-              </div> -->
+              </div>
             </div>
           </div>
         </div>
@@ -467,6 +520,7 @@
               <p class="outfit-intro">
                 配置该角色专属的额外形态、装甲或服装。启用后，角色生图时会优先穿着这里的外观，
                 人物卡里的原有外观用于填补未提及的部位；同一时间只启用一套。
+                「外观服装」里的五套（默认 / 私服 / 居家 / 睡衣 / 裸体）是日常换装，这里配的是叠在它们之上的额外一层。
               </p>
               <TransitionGroup name="lora-card" tag="div" class="lora-list">
                 <div v-for="(item, idx) in outfitItems" :key="item.id ?? `new-${idx}`" class="lora-item-card" :class="{ 'outfit-deleted': item._deleted }">
@@ -590,7 +644,11 @@ async function refreshVoiceLabel() {
 watch([() => props.visible, () => props.character?.id], ([visible]) => {
   if (visible) { voiceLabel.value = '读取中'; refreshVoiceLabel() }
 }, { immediate: true })
-watch(() => props.visible, visible => { if (!visible) showVoiceModal.value = false })
+watch(() => props.visible, visible => {
+  if (!visible) showVoiceModal.value = false
+  // 重开弹窗时刷新「现在穿这套」：日程、时间或别处改过的指定都可能已经变了
+  else if (props.character && !props.profileAdapter) void loadCurrentOutfit(props.character.id)
+})
 
 const emit = defineEmits([
   'close',
@@ -626,6 +684,7 @@ const detail = reactive({
   editCharName: '',
   editName: '',
   editPersona: '',        // 人设（= base_prompt 去掉「## 你的外观」段）
+  editNegativePrompt: '', // 角色级负面提示词（只在单人生图链路注入）
   appearanceTail: '',     // 外观段之后的内容（罕见；保留以免重组时丢段）
   originalAppearance: '', // 打开时的原外观段：工装被误清空时用它兜底，避免生图链路失去外观
   sceneOutfits: [],       // 四套场景服装 [{ scene, sceneLabel, name, description }]
@@ -634,6 +693,7 @@ const detail = reactive({
   sceneTab: 'work',
   sceneOutfitsLoading: false,
   sceneOutfitsError: '',
+  currentOutfit: null,   // { scene, source } 此刻实际穿的那套（source: sleep/schedule/override/fallback）
   relOpen: false,         // 角色关系列表是否展开（折叠后把人设编辑区让出来）
   relationships: [],
   relationshipsLoading: false,
@@ -725,6 +785,48 @@ const fullPrompt = computed(() => composePersona(detail.editPersona, effectiveAp
 
 /** 工装（常态外观）当前文本：作「按工装生成其余三套」的基准，也用于判断按钮是否可用 */
 const workOutfitText = computed(() => effectiveAppearance())
+
+// ── 手动指定当前服装（2026-11-06）──
+// 「现在穿这套」把某一套钉住，优先于日程换装；睡眠时段仍是硬规则，指定了也穿睡衣。
+const outfitOverrideSaving = ref(false)
+const currentOutfitScene = computed(() => detail.currentOutfit?.scene || '')
+const currentOutfitIsOverride = computed(() => detail.currentOutfit?.source === 'override')
+const isWearingThisScene = computed(() =>
+  currentOutfitIsOverride.value && currentOutfitScene.value === detail.sceneTab)
+
+async function loadCurrentOutfit(characterId) {
+  if (!characterId) { detail.currentOutfit = null; return }
+  try {
+    const r = await api.getCurrentSceneOutfit(characterId)
+    detail.currentOutfit = { scene: r?.scene || '', source: r?.source || '' }
+  } catch {
+    detail.currentOutfit = null
+  }
+}
+
+async function toggleOutfitOverride() {
+  const c = props.character
+  if (!c || outfitOverrideSaving.value) return
+  const clearing = isWearingThisScene.value
+  const scene = detail.sceneTab
+  outfitOverrideSaving.value = true
+  try {
+    const r = await api.setOutfitOverride(c.id, clearing ? '' : scene)
+    detail.currentOutfit = r?.current ? { scene: r.current.scene, source: r.current.source } : null
+    const label = detail.sceneOutfits.find(o => o.scene === scene)?.sceneLabel || scene
+    if (clearing) {
+      toastFn('已取消指定，改回按日程换装', 'success')
+    } else if (r?.current?.source === 'sleep') {
+      toastFn('现在是睡眠时段，她仍穿睡衣（指定会在白天生效）', 'warning')
+    } else {
+      toastFn(`已指定：现在穿「${label}」`, 'success')
+    }
+  } catch (err) {
+    toastFn('指定失败：' + (err?.message || '未知错误'), 'error')
+  } finally {
+    outfitOverrideSaving.value = false
+  }
+}
 
 async function loadSceneOutfits(characterId, fallbackWorkDesc = '') {
   if (!characterId) { detail.sceneOutfits = []; detail.sceneOutfitsError = ''; return }
@@ -977,6 +1079,7 @@ function init(c) {
   // 外观段归入「外观服装 · 工装」，于是人设保持纯粹，四套造型也能统一管理。
   const split = splitPersona(c.base_prompt || '')
   detail.editPersona = split.persona
+  detail.editNegativePrompt = c.negative_prompt || ''
   detail.appearanceTail = split.tail
   detail.originalAppearance = split.appearance
   detail.sceneTab = 'work'     // 每次打开都停在「常服/默认」（用户最常改的那套）
@@ -995,6 +1098,7 @@ function init(c) {
   }
   loadSceneOutfits(c.id, split.appearance)
   loadSceneStandings(c.id)
+  loadCurrentOutfit(c.id)
   detail.momentsDisabled = !!c.moments_disabled
   detail.proactiveDisabled = !!c.proactive_disabled
   detail.eventsDisabled = !!c.events_disabled
@@ -1062,6 +1166,7 @@ async function saveCharDetail() {
     name: detail.editCharName,
     display_name: detail.editName,
     base_prompt: composed,
+    negative_prompt: detail.editNegativePrompt,
     moments_disabled: detail.momentsDisabled,
     proactive_disabled: detail.proactiveDisabled,
     events_disabled: detail.eventsDisabled,
@@ -1606,6 +1711,31 @@ function onStandingStageClick() {
 
 // ── 四套场景立绘：加载 / 切换 / 生成 ──
 
+// ── 服装页签里的立绘预览（2026-11-06）──
+// 让「改这套的文字」和「看她穿这套的样子」出现在同一处：页签切到哪套，下面就是那套的图。
+const activeSceneStanding = computed(() =>
+  standingScenes.value.find(s => s.scene === detail.sceneTab) || null)
+const activeSceneStandingUrl = computed(() => activeSceneStanding.value?.image_url || '')
+
+/** 点缩略图：把形象面板切到这套场景再开大图（复用现有大图查看器，不新造一个） */
+function previewActiveSceneStanding() {
+  const url = activeSceneStandingUrl.value
+  if (!url) return
+  const idx = standingScenes.value.findIndex(s => s.scene === detail.sceneTab)
+  if (idx >= 0) standingSceneIdx.value = idx
+  standingLightboxVisible.value = true
+}
+
+function generateStandingForActiveScene() {
+  void generateSceneStanding('', detail.sceneTab)
+}
+
+function onSceneStandingFileChange(e) {
+  const file = e.target?.files?.[0]
+  if (file) void uploadSceneStandingFile(file, detail.sceneTab)
+  if (e.target) e.target.value = ''
+}
+
 /** 读四套场景立绘（工装槽由后端以默认立绘兜底） */
 async function loadSceneStandings(characterId) {
   if (!characterId) { standingScenes.value = []; return }
@@ -1647,10 +1777,15 @@ function nextStandingScene() { shiftStandingScene(1) }
  * 生成**当前场景**的形象。
  * @param {string} [prompt] - 传了就直接复用该提示词（「再次 Roll 图」），否则让 LLM 出新提示词
  */
-async function generateSceneStanding(prompt = '') {
+/**
+ * 生成**某套场景**的形象。
+ * @param {string} [prompt] - 传了就直接复用该提示词（「再次 Roll 图」），否则让 LLM 出新提示词
+ * @param {string} [sceneOverride] - 指定场景（服装页签里用）；不传则用形象面板当前选中的那套
+ */
+async function generateSceneStanding(prompt = '', sceneOverride = '') {
   const c = props.character
-  const scene = currentSceneKey.value
-  if (!c || !scene || standingBusy.value) return
+  const scene = sceneOverride || currentSceneKey.value
+  if (!c || !scene || standingBusy.value || sceneGenerating.value) return
   standingFuncOpen.value = true
   sceneGenerating.value = true
   try {
@@ -1664,7 +1799,10 @@ async function generateSceneStanding(prompt = '') {
     if (Array.isArray(res?.standings)) standingScenes.value = res.standings
     else await loadSceneStandings(c.id)
     if (res?.prompt_text) standingPrompt.value = res.prompt_text
-    toastFn(`「${currentSceneLabel.value}」形象已生成`, 'success')
+    const label = sceneOverride
+      ? (detail.sceneOutfits.find(o => o.scene === sceneOverride)?.sceneLabel || sceneOverride)
+      : currentSceneLabel.value
+    toastFn(`「${label}」形象已生成`, 'success')
   } catch (e) {
     console.error('generateSceneStanding failed:', e)
     toastFn(e?.message || '形象生成失败', 'error')
@@ -1724,8 +1862,8 @@ function readFileAsDataURL(file) {
   })
 }
 
-/** 上传本地图片作为**当前场景**的形象（已生成立绘时也允许，会覆盖该场景） */
-async function uploadSceneStandingFile(file) {
+/** 上传本地图片作为**某套场景**的形象（已生成立绘时也允许，会覆盖该场景） */
+async function uploadSceneStandingFile(file, sceneOverride = '') {
   if (!file) return
   if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
     toastFn('请选择 PNG / JPG / WEBP 图片', 'error')
@@ -1736,7 +1874,7 @@ async function uploadSceneStandingFile(file) {
     return
   }
   const c = props.character
-  const scene = currentSceneKey.value
+  const scene = sceneOverride || currentSceneKey.value
   if (!c || !scene) return
   let base64
   try {
@@ -2147,6 +2285,24 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 
 /* ═══ 外观 / 形态设置 ═══ */
 .outfit-intro { margin: 0 0 12px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+/* 角色级负面提示词（高级折叠）：默认收起，不打扰常规编辑 */
+.negative-adv { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--glass-border); }
+.negative-adv > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-secondary); user-select: none; }
+.negative-adv > summary:hover { color: var(--text-primary); }
+.negative-adv[open] > summary { margin-bottom: 8px; }
+.negative-adv-count { margin: 4px 0 0; font-size: 11px; color: var(--text-secondary); text-align: right; }
+
+/* 服装页签里的立绘预览：左边竖幅缩略图，右边说明与操作 */
+.scene-stand-card { display: flex; gap: 14px; margin: 10px 0 12px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 14px; background: var(--bg-secondary); }
+.scene-stand-figure { flex-shrink: 0; width: 70px; height: 140px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px dashed var(--glass-border); border-radius: 10px; background: var(--bg-primary); cursor: pointer; }
+.scene-stand-figure.is-empty { cursor: default; }
+.scene-stand-figure img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.scene-stand-empty { padding: 0 8px; font-size: 11px; line-height: 1.5; color: var(--text-secondary); text-align: center; }
+.scene-stand-meta { display: flex; flex-direction: column; justify-content: center; gap: 10px; min-width: 0; }
+.scene-stand-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.scene-stand-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.scene-stand-upload { display: inline-flex; }
+.scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .outfit-enabled-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; flex-shrink: 0; padding-bottom: 6px; }
 .outfit-enabled-label input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 .outfit-enabled-label span { font-weight: 600; }

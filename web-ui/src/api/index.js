@@ -167,9 +167,18 @@ export function listSceneOutfits(characterId) {
   return request(`/characters/${characterId}/outfit-scenes`)
 }
 
-/** 此刻该穿哪套（source: sleep / schedule / fallback） */
+/** 此刻该穿哪套（source: sleep / schedule / override / fallback） */
 export function getCurrentSceneOutfit(characterId) {
   return request(`/characters/${characterId}/outfit-now`)
+}
+
+/**
+ * 手动指定「现在穿这套」：scene 传空串 = 清除指定、回到日程换装。
+ * 睡眠时段仍是硬规则 —— 指定了也不覆盖睡衣，返回的 current 会显示实际生效的那套。
+ * @returns {Promise<{scene: string, until: string|null, current: {scene: string, source: string}|null}>}
+ */
+export function setOutfitOverride(characterId, scene, until = null) {
+  return request(`/characters/${characterId}/outfit-override`, { method: 'PUT', body: { scene, until } })
 }
 
 /**

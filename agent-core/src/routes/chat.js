@@ -2501,11 +2501,14 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
 
   // 查找角色 lora 设置
   let loraOpts = {};
+  // 角色级负面词（2026-11-06）：只在「这张图里有该角色本人」时注入，规则跟随 includeCharacter
+  let characterNegative = '';
   try {
     const charId = parseInt(String(conversationId).replace(/^char_/, ''), 10);
     if (!Number.isNaN(charId)) {
-      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override FROM characters WHERE id = ?').get(charId);
+      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override, negative_prompt FROM characters WHERE id = ?').get(charId);
       if (char) {
+        if (includeCharacter && typeof char.negative_prompt === 'string') characterNegative = char.negative_prompt;
         const loras = includeCharacter ? _parseLoras(char) : [];
         if (loras.length > 0 || (includeCharacter && char.custom_workflow) || charArtistOverride(char) !== null) {
           const opts = {};
@@ -2557,6 +2560,7 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
       },
       ...frozenImageConfig,
       ...loraOpts,
+      characterNegative,
     });
     if (result.success && result.images.length > 0) {
       const urls = [];
@@ -3246,6 +3250,7 @@ async function handleDreamTalkReply(res, characterId, conversationId, userMsgId,
 
       const result = await generateImage(finalPrompt, {
         scene: 'chat',
+        characterNegative: character.negative_prompt || '',
         // 上游 v3.10.0：梦话配图的 RAG query 用「本轮用户消息 + 梦话正文」，
         // 而不是英文 prompt —— 这样知识库召回贴住梦境语境。
         ragQuery: `${config.user.nickname || '用户'}: ${userMessage}\n${character.display_name || '角色'}: ${talk}`,
