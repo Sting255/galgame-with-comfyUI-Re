@@ -103,6 +103,22 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 2. 临时脚本用完即删。**本项目已移除全部自动化测试**（2026-11-06 用户决定），不再新增 `test/` 目录与 `*.test.js`；验证方式是解压交付包真启动 + 真机点一遍
 3. 判断口径：没有「正式测试」这一层了。要留的验证逻辑写成文档里的复现步骤，或留成可按需手动跑的独立脚本放 `scripts/`，不要伪装成测试收集链
 
+## 交付前的验收（2026-11-06 用户定，必做）
+
+只跑语法检查和"服务能起来"不算验收。历史上因此把一个**所有生图都抛 `opts is not defined`** 的包发了出去，也把"动作面板被 flex 压成一条线"这种 DOM 完全正常的界面问题留到了用户手里。交付前固定做三步：
+
+1. **生图冒烟**（十几秒）：
+   `cd agent-core && DB_PATH=":memory:" ../runtime/nodejs/node.exe ../scripts/smoke-image.mjs`
+   退出码 0=出图成功、2=ComfyUI 未开（环境问题）、1=代码链路有错。
+2. **浏览器截图巡检**：起临时库后端，用 `playwright-cli`（`--browser=chrome`，会话放后台 shell 保活）打开页面，
+   **桌面宽度与移动端 390×844 各截一遍**关键页面（聊天、群聊、朋友圈、设置），再看两套主题。
+   理由：flex 压缩、overflow 裁切、z-index 遮挡、对比度这几类问题，DOM 快照和自动化断言全都会通过，只有眼睛能看出来。
+3. **解压真启动**：交付包解压到干净目录，起 vector-service 与 agent-core，抽查 `/api/health`、`/api/characters`，
+   再看一眼包内是否带上了 `.env`（不该带）与 `launcher_config.json`（不该带）。
+
+三步都过再说交付；哪一步没做，汇报时必须写明没做。
+
+
 ## 角色生图人格组装（characterPersona）
 
 所有「配合生图」的角色人格拼接——整卡 `base_prompt`，或 `short_prompt + ## 你的外观` 段——必须统一走 `agent-core/src/services/characterPersona.js`，禁止在各模块内写 `match(/##\s*你的外观/)` 之类的正则自行截取（历史上 16+ 处内联实现口径不一，已全部收口）。
