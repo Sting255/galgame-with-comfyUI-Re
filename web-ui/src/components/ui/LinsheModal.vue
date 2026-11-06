@@ -106,8 +106,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   scrollbar-width: thin;
   scrollbar-color: rgba(var(--accent-rgb), 0.28) transparent;
 }
-.linshe-modal .modal-body::-webkit-scrollbar { width: 6px; height: 6px; }
-.linshe-modal .modal-body::-webkit-scrollbar-track { background: transparent; }
+
+/* 撑满型工作区（关系图 / 背包）：body 自己变成 flex 容器，里面的画布才能用 flex:1 拿到高度。
+   上游 4.2.1 在 LinsheModal 里加了这条，本地文件没跟上 ⇒ 关系图/背包画布高度 0，只剩顶部提示条。 */
+.linshe-modal .modal-body.modal-workspace-body { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.linshe-modal .modal-body.modal-form-body { display: flex; flex-direction: column; gap: 12px; }
+.modal-form-body :deep(> *) { flex-shrink: 0; }
+.linshe-modal .modal-body::-webkit-scrollbar { width: 6px; height: 6px; }.linshe-modal .modal-body::-webkit-scrollbar-track { background: transparent; }
 .linshe-modal .modal-body::-webkit-scrollbar-thumb {
   background: rgba(var(--accent-rgb), 0.28);
   border-radius: 999px;
