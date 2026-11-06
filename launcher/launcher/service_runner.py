@@ -10,6 +10,11 @@ import os
 import sys
 import json
 from PySide6.QtCore import QObject, Signal, QProcess, QTimer, QUrl, QByteArray, QThread
+
+# 2026-11-06：后端（agent-core/src/services/procRestart.js）用这个退出码表示
+# 「我要换一个进程跑，不是崩溃」——导入备份后旧库句柄与旧 config 都失效，必须新进程重读。
+# 两边必须一致，改一处就要同步另一处。
+RESTART_EXIT_CODE = 75
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from .process_env import ensure_system_env
@@ -259,6 +264,10 @@ class ServiceWorker(QObject):
         env.insert("NODE_ENV", "production")
         if self.name == "agent_core":
             env.insert("PORT", str(self.port))
+            # 2026-11-06：告诉后端「你现在被启动器托管」。
+            # 托管时后端不自己 spawn 新进程，而是用 RESTART_EXIT_CODE 退出、由这里拉起 ——
+            # 否则新进程的 stdout 是 ignore 的，启动器看不到它，界面只会停在"意外退出"。
+            env.insert("LINSHE_MANAGED_BY_LAUNCHER", "1")
         # 服务定义中的额外环境变量（如 MaiBot 的 PYTHONUTF8）
         for _key, _value in self._def.get("env", {}).items():
             env.insert(_key, _value)
@@ -401,11 +410,22 @@ class ServiceWorker(QObject):
         self._pid = None
         if self._status == self.STATUS_STOPPING:
             self._set_status(self.STATUS_STOPPED)
+        elif exit_code == RESTART_EXIT_CODE:
+            # 2026-11-06：后端要求「换一个进程」——导入备份后旧库句柄与旧 config 都失效，
+            # 必须由新进程重新读库和 .env。由这里拉起，日志与状态都归启动器管。
+            self.output.emit(self.name, f"[{self.display}] 数据已恢复，正在自动重启…")
+            self._set_status(self.STATUS_STOPPING)   # 先落到"停"态，避免重启期间被判成崩溃
+            QTimer.singleShot(1200, self._restart_after_data_restore)
         else:
             # 意外退出
             self._set_status(self.STATUS_ERROR)
             self.output.emit(self.name, f"[ERROR] [{self.display}] 意外退出 (code: {exit_code})")
         self.health_changed.emit(self.name, False)
+
+    def _restart_after_data_restore(self):
+        """数据恢复后的自动重启：旧进程已退出、端口已释放，直接重开即可。"""
+        self._set_status(self.STATUS_STOPPED)
+        self.start()
 
     # ------------------------------------------------------------------
     # Internal — Status
