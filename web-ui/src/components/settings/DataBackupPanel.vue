@@ -128,7 +128,10 @@ async function loadAccess() {
     accessLoading.value = false
   }
 }
-const exportIncludeConfig = ref(false)
+// 2026-11-06 真机：默认改成「带上」——用户导入备份后模型全挂（OPENAI_API_KEY missing），
+// 才发现导出时没勾这个开关，而换包/重装场景下这份配置丢了要手动重填一遍。
+// 开关仍在界面上，面板里的警示文案（备份含密钥、不要外发）保留。
+const exportIncludeConfig = ref(true)
 const exportBusy = ref(false)
 const importBusy = ref(false)
 const exportInfoLoading = ref(false)

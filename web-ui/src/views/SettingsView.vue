@@ -218,7 +218,7 @@
 
 
       <!-- 测试画风：自由画面描述（LLM 完善提示词）或固定提示词测试 -->
-      <div class="card">
+      <div class="card image-lab-card">
         <h3>图片实验室</h3>
         <p class="fd">可测试当前生图服务，使用对应画师串和分辨率发送生图请求，图片仅作预览不保存</p>
         <p class="fd">Anima文生图模型的数据库大约在2025年9月，过新的角色不识别，越久的角色特征越稳定</p>
@@ -521,11 +521,6 @@
               <label class="llm-label" for="llm-max-tokens">最大输出 tokens</label>
               <linshe-input id="llm-max-tokens" v-model.number="llmMaxTokens" type="number" min="1" step="1" :invalid="!llmMaxTokensValid" aria-describedby="llm-max-tokens-hint" @input="onLlmMaxTokensInput" />
               <p id="llm-max-tokens-hint" class="llm-token-hint" :class="{ 'is-invalid': !llmMaxTokensValid, 'is-oversized': llmMaxTokensValid && llmMaxTokensOversized }" aria-live="polite">{{ llmMaxTokensHint }}</p>
-            </div>
-            <div class="llm-field">
-              <span class="llm-label">思考模式</span>
-              <linshe-tabs v-model="llmThinkingMode" :options="thinkingModeOptions" size="sm" aria-label="思考模式" @update:model-value="markLlmDirty" />
-              <p class="llm-field-hint">{{ llmConnectionType === 'vertexai' ? '「不传」使用 Google 默认；Pro 无法完全关闭思考。' : '「不传」使用服务商默认设置。思考模式打开会增加大约30%的消耗，但是日志会很有意思' }}</p>
             </div>
           </div>
         </section>
@@ -3999,6 +3994,8 @@ function resetTestPrompts() {
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 /* 不参与 grid 的整行卡片（设备连接）：单独占一行，行高只由自己决定 */
 .settings-standalone { margin-bottom: 16px; }
+/* 图片实验室内容少，别被 grid 拉到与左列同高（真机截图里中间空出一大片） */
+.image-lab-card { align-self: start; }
 .memory-settings-card { gap: 0; }
 
 /* ── 程序时间（面板自带皮肤，这里只负责与卡片头的间距） ── */
