@@ -19,7 +19,10 @@
  * CACHE_TTL_MS），本地版本号变了（升级后）自动失效重查。
  */
 
-const REPO = 'icecranberry/galgame-with-comfyUI'
+// 2026-11-07 改：原来写死上游仓库，导致本 fork 装的包永远收不到更新提示
+// （本地 4.2.1 对上游最新 4.2.1，判定「不比远端旧」；就算上游发新版，提示也会把用户引到上游去）。
+// fork 自己的发布放在这里，tag 命名沿用 vX.Y.Z（跟随上游）+ 必要时 vX.Y.Z.N（本地补丁）。
+const REPO = 'Sting255/galgame-with-comfyUI-Re'
 const REPO_URL = `https://github.com/${REPO}`
 const API_BASE = `https://api.github.com/repos/${REPO}`
 const REQUEST_TIMEOUT_MS = 8000
