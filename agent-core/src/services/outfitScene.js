@@ -275,7 +275,9 @@ export async function generateSceneOutfits(character, opts = {}) {
   const seedScenes = new Set(seeds.map(s => s.scene));
 
   // 未指定就补「所有还没有的」
-  const wanted = Array.isArray(opts.scenes) ? opts.scenes.filter(s => SCENE_KEYS.includes(s)) : [];
+  // ⚠ 用 isValidSceneKey 而不是 SCENE_KEYS：后者只有内置三套，会把 custom_* 全部过滤掉，
+  //   表现为「给自定义类型点生成，结果生成的是常服/睡衣」（2026-11-07 真机）。
+  const wanted = Array.isArray(opts.scenes) ? opts.scenes.filter(s => isValidSceneKey(s)) : [];
   const targetScenes = (wanted.length ? wanted : SCENE_KEYS).filter(s => !seedScenes.has(s));
   if (!targetScenes.length) return [];
 
@@ -329,7 +331,7 @@ export async function generateSceneOutfits(character, opts = {}) {
   const raw = await chatSync(msgs, {
     model: config.llm.model || 'deepseek-chat', temperature: 0.8, response_format: { type: 'json_object' }, label: '场景服装生成',
   });
-  return parseSceneOutfitDesign(raw, targetScenes, { bodySource });
+  return parseSceneOutfitDesign(raw, targetScenes, { bodySource, sceneLabels: Object.fromEntries(listSceneOutfits(character.id).map(o => [o.scene, o.sceneLabel])) });
 }
 // ── 按日程决定此刻的服装 ──────────────────────────────────
 

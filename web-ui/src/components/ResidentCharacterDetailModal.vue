@@ -221,6 +221,7 @@
                               </div>
                             </div>
                             <div class="scene-edit-tools">
+                              <linshe-button variant="secondary" size="sm" :loading="outfitGenerating" :disabled="outfitBatchRunning || outfitGenerating || !workOutfitText" @click="generateThisSceneOutfit">自动生成本套</linshe-button>
                               <linshe-button variant="secondary" size="sm" class="clothing-library-trigger" :disabled="outfitBatchRunning || outfitGenerating" @click="openClothingLibrary">衣服库 · 选 tag 搭配</linshe-button>
                               <linshe-button
                                 :variant="isWearingThisScene ? 'primary' : 'secondary'"
@@ -974,15 +975,46 @@ watch(() => imageEditTasks.tasks.filter(task => task.action === 'scene_outfits'
   } catch (error) { toastFn('任务已结束，重新打开角色卡可刷新服装和形象', 'warning') }
 })
 
-async function generateOtherSceneOutfits() {
+/**
+ * 只自动生成**当前这一套**（2026-11-07 用户：新加的服装类型也得能自己找 tag，不能只靠手写）。
+ * 复用「一键生成整套」的同一条接口，只把 scenes 收窄成当前槽位；自定义类型同样适用
+ * （后端 normalizeDesignScenes 已放行 custom_*，类型名会一起给模型）。
+ */
+async function generateThisSceneOutfit() {
   const c = props.character
+  const slot = activeSceneOutfit.value
+  if (!c || !slot || outfitGenerating.value || outfitBatchRunning.value) return
+  const base = workOutfitText.value
+  if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
+  outfitGenerating.value = true
+  try {
+    const scene = slot.scene
+    const result = await api.generateSceneOutfits(c.id, true, { baseAppearance: base, scenes: [scene] })
+    const item = (Array.isArray(result?.outfits) ? result.outfits : []).find(o => o.scene === scene)
+    if (item && (item.description || '').trim()) {
+      slot.description = item.description
+      if (item.name) slot.name = item.name
+      toastFn(`已生成「${slot.sceneLabel}」的服装描述`, 'success')
+    } else {
+      toastFn('模型没有返回这一套的内容，稍后再试', 'warning')
+    }
+  } catch (err) {
+    console.error('generateThisSceneOutfit failed:', err)
+    toastFn('生成失败：' + (err?.message || '未知错误'), 'error')
+  } finally {
+    outfitGenerating.value = false
+  }
+}
+
+async function generateOtherSceneOutfits() {  const c = props.character
   if (!c || outfitGenerating.value || outfitBatchRunning.value || standingBusy.value) return
   const base = workOutfitText.value
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
   // 场景列表没加载出来（接口失败）时用后端 OUTFIT_SCENES 里除默认外的三套 key 兜底，
   // 保证按钮仍然可用。⚠ key 必须与 agent-core/src/services/outfitScene.js 一致：
   // work / casual / home / sleep —— 写错（如 private）后端会按 SCENE_KEYS 过滤掉，那一套永远不生成。
-  const FALLBACK_SCENE_KEYS = ['casual', 'home', 'sleep']
+  // 兜底只留睡衣：私服 / 居家已于 2026-11-07 从枚举移除，传旧 key 会被后端 normalizeDesignScenes 拒掉
+  const FALLBACK_SCENE_KEYS = ['sleep']
   const targets = detail.sceneOutfits.length
     ? detail.sceneOutfits.filter(o => o.scene !== 'work').map(o => o.scene)
     : FALLBACK_SCENE_KEYS

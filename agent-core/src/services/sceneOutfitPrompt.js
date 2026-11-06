@@ -172,6 +172,8 @@ export const FALLBACK_OUTFITS = {
 export function parseSceneOutfitDesign(raw, scenes, opts = {}) {
   const targets = normalizeDesignScenes(scenes);
   const bodySource = String(opts?.bodySource || '').trim();
+  // 自定义类型的名称以用户起的为准（模型容易把它改写成英文，页签会跟着变）
+  const sceneLabels = opts?.sceneLabels || {};
   let parsed;
   try {
     parsed = JSON.parse(String(raw || '').replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim());
@@ -197,7 +199,7 @@ export function parseSceneOutfitDesign(raw, scenes, opts = {}) {
     }
     // 非裸体套必须有衣服描述；裸体套允许就是那串声明
     if (!description && scene !== 'nude') {
-      out.push({ scene, name: String(hit.name).trim().slice(0, 10), description: FALLBACK_OUTFITS[scene]?.description || '', body });
+      out.push({ scene, name: String(scene).startsWith('custom_') ? (sceneLabels[scene] || String(hit.name).trim().slice(0, 10)) : String(hit.name).trim().slice(0, 10), description: FALLBACK_OUTFITS[scene]?.description || '', body });
       continue;
     }
     out.push({
