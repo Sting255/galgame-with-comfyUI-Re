@@ -38,6 +38,8 @@ async function copy() {
 .device-access {
   padding: 16px 18px;
   gap: 0;
+  /* 设置页是 grid：不加这行会被右侧的长卡片拉成同样高，底下留一大片空白（桌面截图实测） */
+  align-self: start;
 }
 .da-head {
   display: flex;
