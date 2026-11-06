@@ -78,6 +78,8 @@ import { applyFromConfig } from './src/services/llmConcurrency.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
 import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
 import { initFileLogging, getFileLogging } from './src/utils/fileLogger.js';
+import { installRuntimeHealthConsoleHook, getRuntimeFailures, getSelfCheck, setSelfCheckResult } from './src/services/runtimeHealth.js';
+import { getImageQueueStatus } from './src/services/imageSkill.js';
 // 体型行注册（副作用 import）：characterPersona 通过 bodyBuildRegistry 取用，避免三角环
 import './src/services/characterBuild.js';
 
@@ -89,6 +91,9 @@ const fileLog = initFileLogging();
 if (fileLog) {
   console.log(`[log] 日志文件：${fileLog.file}（保留 ${fileLog.keepDays} 天；LOG_TO_FILE=false 可关闭）`);
 }
+// 运行状态采集：包一层 console.error / warn，把「哪个模块最近在反复失败」记在内存里，
+// 供设置页的「运行状态」读取。要在日志初始化之后装，才能连启动期的错误一起统计。
+installRuntimeHealthConsoleHook();
 
 const app = express();
 
@@ -281,6 +286,17 @@ app.get('/api/health', asyncHandler(async (req, res) => {
   });
 }));
 
+// 运行状态（2026-11-06）：最近 1 小时的错误/警告汇总 + 生图队列水位 + 启动自检结论。
+// 动机：11-06 的日志里，报纸/日程/朋友圈/群聊连续失败几十次，界面上毫无提示。
+app.get('/api/health/runtime', asyncHandler(async (req, res) => {
+  res.json({
+    ...getRuntimeFailures(),
+    selfCheck: getSelfCheck(),
+    imageQueue: getImageQueueStatus(),
+    comfyui: { url: config.comfyui.url || '', imageProvider: config.comfyui.imageProvider || 'comfyui' },
+  });
+}));
+
 // 错误处理
 app.use(errorHandler);
 
@@ -422,6 +438,36 @@ server.on('error', error => {
 // 缩短 keep-alive 空闲超时，避免 Vite 代理在进程重启后复用到已死连接
 server.keepAliveTimeout = 5000;
 startGodSays();
+
+/**
+ * 启动自检（2026-11-06）：启动 60 秒后跑一次 LLM 与 ComfyUI 的连通性，结论留在内存里给设置页看。
+ *
+ * 动机：11-06 的日志里 `OPENAI_API_KEY ... missing` 让报纸/日程/朋友圈/事件/群聊在 9 分钟内
+ * 连续失败几十次，而界面上毫无提示 —— 用户不翻日志就不会知道后台已经全废。
+ * 这里只做「探活 + 留结论」，不重试、不改配置、不影响任何调度。
+ */
+async function runRuntimeSelfCheck() {
+  try {
+    const t0 = Date.now();
+    const { chatSync } = await import('./src/llm/llm-client.js');
+    await chatSync([{ role: 'user', content: 'ping' }], { max_tokens: 8, temperature: 0, label: '启动自检' });
+    setSelfCheckResult({ llm: { ok: true, ms: Date.now() - t0, error: '', model: config.llm.model || '' } });
+  } catch (err) {
+    setSelfCheckResult({ llm: { ok: false, ms: 0, error: err?.message || String(err), model: config.llm.model || '' } });
+  }
+  const url = String(config.comfyui.url || '').replace(/\/$/, '');
+  if (!url) {
+    setSelfCheckResult({ comfy: { ok: false, url: '', error: '未配置 ComfyUI 地址' } });
+    return;
+  }
+  try {
+    const res = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(5000) });
+    setSelfCheckResult({ comfy: { ok: res.ok, url, error: res.ok ? '' : `HTTP ${res.status}` } });
+  } catch (err) {
+    setSelfCheckResult({ comfy: { ok: false, url, error: err?.message || String(err) } });
+  }
+}
+setTimeout(() => { runRuntimeSelfCheck().catch(() => {}); }, 60_000).unref?.();
 
 // 体位骨架所需的 ComfyUI 侧资产（自定义节点 / 姿态 LoRA / 检测模型）随包自带，
 // 启动时幂等装进目标 ComfyUI —— 用户换机器不用再单独装一遍（2026-11-03 用户要求）。

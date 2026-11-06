@@ -50,12 +50,21 @@ const LABEL_TARGET_PREFIXES = [
  *    详见 目标/20261019-下一步方案-上游v3.10.0合并.md §2.3。
  *    守卫：test/smallAllowanceParsing.test.js（变化探测器）。
  */
+let _oversizedWarned = false;
 function applyOutputTokenLimit(params, maxTokens = config.llm.maxTokens, baseURL = config.llm.baseURL) {
   const field = Object.hasOwn(params, 'max_completion_tokens') ? 'max_completion_tokens' : 'max_tokens';
   delete params.max_tokens;
   delete params.max_completion_tokens;
   delete params.max_output_tokens;
-  params[field] = isValidMaxTokens(maxTokens) ? maxTokens : defaultMaxTokens(baseURL, params.model);
+  const value = isValidMaxTokens(maxTokens) ? maxTokens : defaultMaxTokens(baseURL, params.model);
+  // 额度远超常用上限时只警告一次（不钳制：有些服务商确实支持大额度，静默改小反而更难查）
+  const cap = defaultMaxTokens(baseURL, params.model);
+  if (!_oversizedWarned && isValidMaxTokens(value) && value > cap * 1.5) {
+    _oversizedWarned = true;
+    console.warn(`[llm] 输出额度 ${value} 远超该模型常用上限 ${cap}（模型 ${params.model || '?'}），`
+      + '部分服务商会拒绝或截断回复；如遇「模型未完成本轮回复」请先在设置里调小额度和。');
+  }
+  params[field] = value;
 }
 
 function resolveShieldTarget(label) {

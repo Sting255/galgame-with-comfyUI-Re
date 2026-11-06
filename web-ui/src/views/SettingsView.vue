@@ -8,6 +8,11 @@
       </div>
     </div>
 
+    <!-- 运行状态（2026-11-06）：把「后台在静默失败」变成看得见的一行 -->
+    <div class="settings-standalone">
+      <RuntimeHealthPanel />
+    </div>
+
     <!-- 设备连接（2026-11-06 真机反馈）：它和下面那张很长的「画师串」卡同处一个 grid 行时，
          行高由后者决定，卡片底下会空出一大截。移出 grid 单独占一行。 -->
     <div class="settings-standalone">
@@ -530,7 +535,7 @@
           aria-label="最大输出 tokens"
           @input="onLlmMaxTokensInput"
         />
-        <p id="llm-max-tokens-hint" class="fd" :class="{ 'gen-error': !llmMaxTokensValid }" aria-live="polite">{{ llmMaxTokensHint }}</p>
+        <p id="llm-max-tokens-hint" class="fd" :class="{ 'gen-error': !llmMaxTokensValid, 'gen-warn': llmMaxTokensValid && llmMaxTokensOversized }" aria-live="polite">{{ llmMaxTokensHint }}</p>
 
         <!-- 上下文窗口（token）：留空则由服务端从上游探测 / 用默认值 -->
         <label class="fl llm-label" for="llm-context-window">上下文窗口</label>
@@ -1683,6 +1688,7 @@ import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/
 import { validateVertexServiceAccount } from '../api/index.js'
 import DeepseekSetup from '../components/DeepseekSetup.vue'
 import DeviceAccessPanel from '../components/settings/DeviceAccessPanel.vue'
+import RuntimeHealthPanel from '../components/settings/RuntimeHealthPanel.vue'
 import DataBackupPanel from '../components/settings/DataBackupPanel.vue'
 import LlmProfilesPanel from '../components/settings/LlmProfilesPanel.vue'
 import { useLlmProfiles } from '../composables/useLlmProfiles.js'
@@ -2363,9 +2369,24 @@ let llmTokenEditVersion = 0
 const llmMaxTokensHint = computed(() => {
   if (!llmMaxTokensValid.value) return '请输入大于 0 的整数。'
   const amount = Number(llmMaxTokens.value).toLocaleString()
+  // 输出额度没有硬上限（服务商各自不同），但填出远超常用值的大数会被服务商拒绝或截断，
+  // 而界面上只表现为「模型未完成本轮回复」，非常难查（2026-11-06 真机：填了 340000）。
+  const cap = llmModelCapabilities.value[llmModel.value]?.maxTokens
+    || defaultMaxTokens(llmBaseURL.value, llmModel.value)
+  if (isValidMaxTokens(cap) && Number(llmMaxTokens.value) > cap * 1.5) {
+    return `当前额度 ${amount} tokens，远超这个模型的常用上限 ${Number(cap).toLocaleString()}`
+      + ' —— 部分服务商会直接拒绝或截断回复，建议改回常用值。'
+  }
   if (llmTokenSource.value === 'model') return '已从模型能力自动填入 ' + amount + ' tokens，可手动调整。'
   if (llmTokenSource.value === 'manual' || llmTokenSource.value === 'saved') return '当前额度 ' + amount + ' tokens，仍受服务商上限约束。'
   return '默认额度 ' + amount + ' tokens；自动获取模型后优先使用接口上限，也可手动调整。'
+})
+/** 额度是否远超模型常用上限（只做提示，不拦保存：用户可能确实知道自己在干什么） */
+const llmMaxTokensOversized = computed(() => {
+  if (!llmMaxTokensValid.value) return false
+  const cap = llmModelCapabilities.value[llmModel.value]?.maxTokens
+    || defaultMaxTokens(llmBaseURL.value, llmModel.value)
+  return isValidMaxTokens(cap) && Number(llmMaxTokens.value) > cap * 1.5
 })
 function clearLlmModels() {
   llmModelsVersion++
@@ -4128,6 +4149,8 @@ function resetTestPrompts() {
 }
 
 .gen-error { margin-top: 6px; font-size: 12px; color: var(--danger, #ff4d4f); }
+/* 额度远超模型常用上限：只提示不拦保存，避免用户确实想填大值时被卡住 */
+.gen-warn { margin-top: 6px; font-size: 12px; color: var(--warning, #faad14); }
 .fr { display: flex; gap: 12px; }
 .fh { flex: 1; min-width: 0; }
 .fr .fl {
