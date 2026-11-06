@@ -115,3 +115,6 @@ tts-service/runtime/
 tts-service/dist/
 tts-service/cache/
 tts-service/logs/
+
+# 浏览器自动化快照缓存（playwright-cli 产生，不入库）
+.playwright-cli/

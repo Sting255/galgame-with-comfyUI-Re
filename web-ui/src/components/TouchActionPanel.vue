@@ -450,6 +450,9 @@ function onPick(action) {
   padding: 0 16px 6px;
   overflow-x: auto;
   scrollbar-width: none;
+  /* 2026-11-06 实测：面板是 flex column，不加这两行会被压扁成一条看不见的线 */
+  flex: 0 0 auto;
+  min-height: 58px;
 }
 .touch-targets::-webkit-scrollbar { display: none; }
 .touch-target {

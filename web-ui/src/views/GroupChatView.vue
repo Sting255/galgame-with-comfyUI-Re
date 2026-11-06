@@ -638,10 +638,6 @@ watch(() => store.activeGroupId, () => {
  * 直接开面板：面板顶部有头像行、输入区也有「对 XX」可循环换人 —— 不再先弹一层选人列表。
  */
 function openGroupPanel (kind) {
-  if (kind === 'touch' && touchTargetId.value) {
-    showTouchPanel.value = !showTouchPanel.value
-    return
-  }
   if (!touchTargetId.value) {
     const first = (store.activeGroup?.members || [])[0]
     if (!first) { toast?.('这个群里还没有成员', 'info'); return }
@@ -653,7 +649,11 @@ function openGroupPanel (kind) {
   })
   if (!r.ok) { toast?.(r.message, 'info'); return }
   panelCharacterId.value = r.characterId
-  if (kind === 'toy') {
+  // 2026-11-06 修：原来 touch 只在"已经有对象"时才 toggle；对象为空时走完默认选人会落到
+  // 下面的 else 分支 ⇒ 点「动作」打开的是**亲密面板**（实测发现）。这里显式分流。
+  if (kind === 'touch') {
+    showTouchPanel.value = !showTouchPanel.value
+  } else if (kind === 'toy') {
     showToyPanel.value = !showToyPanel.value
     if (showToyPanel.value) loadGroupToys()   // 打开时按选中成员取一次穿戴状态（与私聊同口径）
   } else {
