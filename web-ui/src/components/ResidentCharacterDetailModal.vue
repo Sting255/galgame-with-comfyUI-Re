@@ -922,9 +922,24 @@ async function generateOtherSceneOutfits() {
   outfitGenerating.value = true
   try {
     if (props.profileAdapter) { await props.profileAdapter.generateOutfits(base, targets); return }
-    const result = await api.generateSceneOutfits(c.id, true, { baseAppearance: base, scenes: targets, generateImages: true })
-    if (!result?.task_id) throw new Error('未收到后台任务，请重启后端加载自动生成形象功能')
-    await imageEditTasks.refresh()
+    // ⚠ 后端 /outfits/generate 是**同步返回**的（{ ok, outfits, saved }），这里以前按
+    // 「后台任务」期待 result.task_id，于是每次点完都抛「未收到后台任务，请重启后端」——
+    // 而文字其实已经落库了。用户看到报错、界面又没刷新，再点「生成本套立绘」时自然像是没生效。
+    const result = await api.generateSceneOutfits(c.id, true, { baseAppearance: base, scenes: targets })
+    const generated = Array.isArray(result?.outfits) ? result.outfits : []
+    if (generated.length) {
+      // 直接把新描述合并进当前编辑态，避免再拉一次接口打断用户正在改的内容
+      for (const item of generated) {
+        const slot = detail.sceneOutfits.find(o => o.scene === item.scene)
+        if (slot && (item.description || '').trim()) {
+          slot.description = item.description
+          slot.name = item.name || slot.name
+        }
+      }
+      toastFn(`已生成 ${generated.length} 套服装`, 'success')
+    } else {
+      toastFn('没有生成新的服装描述', 'warning')
+    }
   } catch (err) {
     console.error('generateOtherSceneOutfits failed:', err)
     toastFn('生成失败：' + (err?.message || ''), 'error')
