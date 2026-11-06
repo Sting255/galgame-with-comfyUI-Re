@@ -741,6 +741,11 @@ export function groupChatStream(groupId, items, truncateAfterMsgId = null) {
 }
 
 // ── Config ──
+/** 批量开关全体角色的日程生成（省 token 的总闸） */
+export function setAllScheduleEnabled(enabled) {
+  return request('/characters/schedule-enabled-all', { method: 'POST', body: { enabled: enabled === true } })
+}
+
 /**
  * 运行状态：最近 60 分钟的失败汇总 + 生图队列水位 + 启动自检结论。
  * 设置页「运行状态」面板用；统计只在内存里，进程重启即清零。

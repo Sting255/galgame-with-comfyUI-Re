@@ -438,6 +438,32 @@ const refreshDays = ref(1)
 const scheduleDisableThinking = ref(false)
 const savingRefreshDays = ref(false)
 
+// 「停止所有角色生成日程」总闸（模板一直在用这三个名字，但实现漏了 —— 2026-11-07 lint 抓到
+// allSchedulesDisabled / scheduleAllToggling / toggleAllSchedules 全部未定义，点开关没反应）。
+const allSchedulesDisabled = ref(false)
+const scheduleAllToggling = ref(false)
+watch(
+  () => store.characters,
+  list => { allSchedulesDisabled.value = (list?.length || 0) > 0 && list.every(c => c.schedule_enabled === 0) },
+  { immediate: true }
+)
+
+/** 开关语义：打开 = 停止生成（schedule_enabled = 0） */
+async function toggleAllSchedules(next) {
+  const stop = next === true
+  scheduleAllToggling.value = true
+  try {
+    await api.setAllScheduleEnabled(!stop)
+    for (const c of store.characters || []) c.schedule_enabled = stop ? 0 : 1
+    allSchedulesDisabled.value = stop
+    toastFn?.(stop ? '已停止所有角色的日程生成' : '已恢复所有角色的日程生成', 'success')
+  } catch (err) {
+    toastFn?.('保存失败：' + (err?.message || '未知错误'), 'error')
+  } finally {
+    scheduleAllToggling.value = false
+  }
+}
+
 async function openSettings() {
   try {
     const cfg = await api.getConfig()

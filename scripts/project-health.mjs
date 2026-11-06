@@ -11,9 +11,12 @@ function files(directory, pattern) {
     return entry.isDirectory() ? files(file, pattern) : pattern.test(entry.name) ? [file] : [];
   });
 }
-const docs = files(path.join(root, 'docs'), /\.md$/);
+// 文档检查是可选的：本仓已把 docs/ 目录剥离（2026-11-06），没有文档时跳过这一层，
+// 不要让它把整个健康检查带崩（CI 报 ENOENT: scandir .../docs）。
+const docsDir = path.join(root, 'docs');
+const docs = fs.existsSync(docsDir) ? files(docsDir, /\.md$/) : [];
 const errors = [];
-const index = fs.readFileSync(path.join(root, 'docs/README.md'), 'utf8');
+const index = docs.length ? fs.readFileSync(path.join(root, 'docs/README.md'), 'utf8') : '';
 for (const file of docs) {
   const name = relative(file).slice('docs/'.length);
   if (name !== 'README.md' && !index.includes(`](${name})`)) errors.push(`文档没有导航入口：${name}`);
