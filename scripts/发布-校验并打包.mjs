@@ -299,8 +299,8 @@ assertNoStalePaths()
 // ── ②-冒烟族（默认关，交付日手动开）─────────────────────────────────────────
 // 跑在单测之后、同步之前：冒烟失败就不该继续产出交付包（避免"坏包已同步进交付目录"）。
 if (withSmoke) {
-  // smoke-all-modules.mjs 自己 VACUUM INTO 副本库 + 自己起停后端，**不碰真实库**
-  runScript('全模块冒烟（161 端点）', path.join('e2e', 'smoke-all-modules.mjs'), {})
+  // 2026-11-07：e2e/ 已由用户删除，这里不再执行脚本（免得 --with-smoke 直接崩）
+  log('\n── 全模块冒烟 ──────────────── 已跳过（e2e 已移除）────────')
 } else {
   log('\n── 全模块冒烟 ──────────────── 已跳过 ────────────────')
   log('   （交付日加 --with-smoke 开；它自起自停后端、用真库副本，不碰真实库）')
@@ -320,22 +320,16 @@ if (withChecks) {
   //    两者顺序诉求冲突 —— 这也是它默认不进自动流的原因之一（见下方 SKIP 说明）。
   const up = isBackendUp(3199)
   if (!up) {
-    log('\n── e2e 专项检查 ──────────── 已跳过（后端未起）──────────')
-    log('   这三个检查要求后端已在 http://127.0.0.1:3199 跑着。要跑就先按 e2e/README.md 起好后端，')
-    log('   再加 --with-checks。门禁**故意不替用户起服务**（起停服务是敏感动作，见脚本内注释）。')
+    log('\n── e2e 专项检查 ──────────── 已跳过（e2e 已移除）──────────')
   } else {
-    for (const s of ['check-panels.mjs', 'check-assets.mjs']) {
-      runScript(`专项检查 ${s}`, path.join('e2e', s), {}, { expectExitZero: true, tolerateWarn: false })
-    }
-    // check-event-images.mjs 读的是**交付包**里的 data 与库（依赖同步已经跑过），
-    // 而本段排在同步之前 —— 顺序不满足，所以这里只提示、不执行。
-    log('   （check-event-images.mjs 依赖已同步的交付包，须在同步之后手工跑 —— 见 e2e/README.md）')
+    // 2026-11-07：e2e/ 目录已由用户删除，这里不再尝试执行任何脚本，
+    // 免得有人加了 --with-checks 才发现文件不存在。
+    log('\n── e2e 专项检查 ──────────── 已跳过（e2e 已移除）──────────')
+    log('   e2e/ 已不在仓库内；需要这类检查请自行准备脚本。')
   }
 } else {
   log('\n── e2e 专项检查 ──────────── 已跳过 ────────────────')
-  log('   （交付日加 --with-checks 开，且需先起好 3199 后端：check-panels / check-assets）')
-  log('   四个 e2e 脚本的依赖与跑法见 e2e/README.md；probe-intimate.mjs 与')
-  log('   check-event-images.mjs 依赖真实 LLM / 已同步的交付包，**不适合进自动门禁**')
+  log('   （e2e/ 已移除，--with-checks 不再执行任何脚本）')
 }
 
 // ── --gates-only：到此为止，不同步、不打包 ────────────────────────────────────
