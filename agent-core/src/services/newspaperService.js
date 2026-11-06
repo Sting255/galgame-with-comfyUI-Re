@@ -554,12 +554,34 @@ export function collectImageTasks(row) {
   return tasks;
 }
 
+/** 正在生成的日报配图键 `${paperId}:${key}:${prompt}`（防止两条补图路径重复生成同一张） */
+const inflightPaperImages = new Set();
+
 /** 给报纸补齐缺失配图（逐张生成；单张失败不阻断其余）。返回补上的张数 */
 async function fillPaperImages(row) {
   const tasks = collectImageTasks(row);
   let filled = 0;
   for (const task of tasks) {
-    if (await generateAndStorePaperImage(row, task)) filled++;
+    // 2026-11-06 真机一次出事：日报同一批 4 张 prompt 各生了两遍（共 10 张图、白烧 3 分钟）。
+    // 原因是两条补图路径能同时进来 —— tick 的 maybeRefillTodayImages 有 refillingImages 锁，
+    // 而 backgroundImages=false 的同步分支直接 await fillPaperImages，没有锁。
+    // 两道防线：① 同一张图正在生成时记进 inflight，另一路跳过；
+    //           ② 轮到自己生成前重新读一次库，槽位已经有图就跳过（另一路可能刚写完）。
+    const key = `${row.id}:${task.key}:${String(task.image || '').slice(0, 80)}`;
+    if (inflightPaperImages.has(key)) continue;
+    inflightPaperImages.add(key);
+    try {
+      const fresh = getDb().prepare('SELECT * FROM town_newspapers WHERE id = ?').get(row.id);
+      if (fresh) {
+        const stillMissing = collectImageTasks(fresh).some(item => item.image === task.image);
+        if (!stillMissing) continue;
+        if (await generateAndStorePaperImage(fresh, task)) filled++;
+        continue;
+      }
+      if (await generateAndStorePaperImage(row, task)) filled++;
+    } finally {
+      inflightPaperImages.delete(key);
+    }
   }
   return filled;
 }
