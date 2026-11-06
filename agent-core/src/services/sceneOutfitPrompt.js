@@ -46,7 +46,8 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
 
 【要求】
 1. 各套服装必须**彼此区分明显** —— 一眼能看出是上班、睡觉，还是这个角色自己的某种场合。
-2. 必须**贴合这个角色的人设与世界观**：颜色、风格、职业特征要呼应 ta 的身份。
+2. 必须**贴合这个角色的人设与世界观**：颜色、风格要呼应 ta 的气质与所处世界。
+   ⚠ 但「服装类型名」决定这套穿什么，不能被职业带跑：名字写「泳装」就画泳装，别画成潜水服、救生衣或运动训练服；名字写「婚纱」就画婚纱，不管她是潜水教练还是上班族。职业只用来决定配色、材质偏好与细节气质。
 3. 只输出 JSON，不要解释、不要 Markdown 代码块。
 
 ## 输出格式
@@ -121,7 +122,7 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
   const labelOf = scene => sceneLabels[scene] || SCENE_LABELS[scene] || scene;
   const customLines = targets
     .filter(scene => String(scene).startsWith(CUSTOM_SCENE_PREFIX))
-    .map(scene => `- ${scene}（${labelOf(scene)}）：角色自己添加的服装类型，按这个名字的语义设计，贴合其职业、人设与世界观；不要设计成常服或睡衣的重复。`)
+    .map(scene => `- ${scene}（${labelOf(scene)}）：名字就是这套衣服的类型。按名字本身的语义设计（写「泳装」就画泳装，不是潜水服或运动训练服；写「婚纱」就画婚纱），角色的职业与人设只用来决定配色、材质偏好与细节气质，不要改写成职业装。`)
     .join('\n');
   const summary = String(shortPrompt || '').trim();
   const seedList = (Array.isArray(seeds) ? seeds : []).filter(s => s?.body || s?.description);
