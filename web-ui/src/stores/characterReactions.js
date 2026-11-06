@@ -191,7 +191,7 @@ export const useCharacterReactionsStore = defineStore('characterReactions', () =
     const card = id === null ? shown.value[shown.value.length - 1] : shown.value.find(item => item.id === id)
     if (!card || card.leaving) return
     const timer = cardTimers.get(card.id)
-    if (timer) { clearTimeout(timer); cardTimers.delete(card.id) }
+    if (timer) { clearTimeout(timer); cardTimers.delete(timer) }
     const elapsed = Date.now() - Number(card.startedAt || Date.now())
     const remaining = Math.max(600, Number(card._remaining || card.duration || remainingMs()) - elapsed)
     shown.value = shown.value.map(item => item.id === card.id ? { ...item, _remaining: remaining } : item)
@@ -205,7 +205,7 @@ export const useCharacterReactionsStore = defineStore('characterReactions', () =
     cardTimers.set(card.id, setTimeout(() => dismissCard(card.id), remaining))
   }
 
-  /** 素材加载失败：表情包  头像  首字占位（3.3-4），不重置计时 */
+  /** 素材加载失败：表情包 → 头像 → 首字占位（3.3-4），不重置计时 */
   function demoteMedia(id = null) {
     const card = id === null ? shown.value[shown.value.length - 1] : shown.value.find(item => item.id === id)
     if (!card) return

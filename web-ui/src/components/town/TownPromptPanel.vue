@@ -237,7 +237,7 @@ onMounted(async () => {
   border-radius: 999px;
   padding: 0 7px;
 }
-.pp-default-tag.is-custom { background: rgba(224, 123, 108, 0.14); color: var(--accent-hover); }
+.pp-default-tag.is-custom { background: rgba(224, 123, 108, 0.14); color: var(--accent-text); }
 
 .pp-preview { font-size: 10px; color: var(--text-secondary); line-height: 1.5; }
 .pp-preview code {
@@ -266,7 +266,7 @@ onMounted(async () => {
   flex-shrink: 0;
   font-size: 9px;
   background: rgba(224, 123, 108, 0.14);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   border-radius: 999px;
   padding: 1px 7px;
 }

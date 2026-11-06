@@ -18,6 +18,14 @@
  *
  * 生图参数与朋友圈一致（scene='moments' → 朋友圈画师串 / 全局 LoRA / 工作流），
  * 分辨率取朋友圈宽高并随机横竖，逐图独立随机，priority 固定 high。
+ *
+ * 【上游合并口径】本文件从上游 v3.9.0 原样合并。依赖清单已逐条核对本地仓：
+ *   getDb / getSystemRulesWithWorld / getGlobalRule / getWorldSetting → 本地 db/index.js（worldRepository 再导出）
+ *   getWorldIntegrationRule / chatSync / generateImage / charArtistOverride / buildCharacterPersona /
+ *   recordCompletedImageTask / broadcast / saveBase64Image / ensureFontForCharacter / getTodaySchedule /
+ *   getLocalDateKey / config.comfyui.moments* / characters 相关列 → 本地均已有
+ *   startBackgroundTask → 本地 imageEditTasks.js **原本没有**这个导出（那是「被动型后台任务」入口），
+ *     已由本次合并在 imageEditTasks.js 里补上（只增不改，见该文件的 startBackgroundTask 注释）。
  */
 
 import { getDb, getSystemRulesWithWorld, getGlobalRule, getWorldSetting } from '../db/index.js';

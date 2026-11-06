@@ -7,16 +7,17 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, onScopeDispose } from 'vue'
 import * as api from '../api/index.js'
 import { onEvent } from './unifiedStream.js'
-import { emitSchedulePeeked } from '../utils/characterReactionProducers.js'
 
 export const useScheduleStore = defineStore('schedule', () => {
   // ── 状态 ──
   const characters = ref([])           // 所有角色概览
   const currentSchedule = ref(null)    // 当前展开角色的详细日程
   const loading = ref(false)
+  const overviewError = ref(null)
+  const overviewLoaded = ref(false)
   const peekGenerating = ref(false)    // 瞄一眼生图中
   const peekImage = ref(null)          // 快照 base64 结果
   const peekError = ref(null)
@@ -69,11 +70,11 @@ export const useScheduleStore = defineStore('schedule', () => {
   // ── 持久 SSE 监听（store 初始化时注册，不受页面切换影响）──
 
   // 叫醒状态变更 → 刷新概览
-  onEvent('schedule_state_change', () => {
-    fetchOverview(true)
-  })
+  const unsubscribeOverview = ['schedule_state_change', 'schedule_changed', 'connected']
+    .map(event => onEvent(event, () => fetchOverview(true)))
+  onScopeDispose(() => unsubscribeOverview.forEach(unsubscribe => unsubscribe()))
 
-  onEvent('schedule_reset_progress', (data) => {
+  const unsubscribeReset = onEvent('schedule_reset_progress', (data) => {
     if (!resetTask.value) {
       if (data.phase === 'complete') fetchOverview(true)
       return
@@ -107,17 +108,31 @@ export const useScheduleStore = defineStore('schedule', () => {
     }
   })
 
+  onScopeDispose(unsubscribeReset)
+
   // ── 方法 ──
 
+  let overviewSequence = 0
+  let visibleRequests = 0
   async function fetchOverview(silent = false) {
+    const sequence = ++overviewSequence
+    if (!silent) visibleRequests++
     if (!silent) loading.value = true
     try {
       const data = await api.getScheduleOverview()
-      characters.value = data.characters || []
+      if (sequence !== overviewSequence) return
+      if (!Array.isArray(data?.characters)) throw new Error('日程状态格式异常')
+      characters.value = data.characters
+      overviewLoaded.value = true
+      overviewError.value = null
     } catch (err) {
-      console.error('[schedule] fetchOverview failed:', err.message)
+      if (sequence === overviewSequence) {
+        overviewError.value = err.message || '日程状态更新失败'
+        console.error('[schedule] fetchOverview failed:', err.message)
+      }
     } finally {
-      if (!silent) loading.value = false
+      if (!silent) visibleRequests--
+      loading.value = visibleRequests > 0
     }
   }
 
@@ -137,12 +152,13 @@ export const useScheduleStore = defineStore('schedule', () => {
     try {
       // 立即返回活动信息，图片异步通过 SSE 推送
       await api.peekSnapshot(characterId, true, activityContext)
-      // §2.2：成功发起「瞄一眼」后记录一次角色反应（不描述快照内容）
-      emitSchedulePeeked({ characterId, activityName: activityContext?.activity || '' })
       // 图片结果将通过 unifiedStream 的 schedule_peek_ready 事件回调处理
     } catch (err) {
       peekError.value = err.message
       console.error('[schedule] peekSnapshot failed:', err.message)
+      // 必须往上抛：视图的「瞄一眼」弹窗靠这个收尾（peekLoading 只认 SSE 事件，
+      // HTTP 失败时若不抛，进度条会永久停在 95%）。2026-10-22 修。
+      throw err
     } finally {
       peekGenerating.value = false
     }
@@ -175,7 +191,7 @@ export const useScheduleStore = defineStore('schedule', () => {
   }
 
   return {
-    characters, currentSchedule, loading,
+    characters, currentSchedule, loading, overviewError, overviewLoaded,
     peekGenerating, peekImage, peekError,
     sleepingCharacters, delayedCharacters,
     resetTask,

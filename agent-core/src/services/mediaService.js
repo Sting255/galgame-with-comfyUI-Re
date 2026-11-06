@@ -1,4 +1,3 @@
-import { chatWithPreset } from './presets/narrative.js';
 /**
  * mediaService.js — 媒体内容页（传媒 / 数字媒体）的生成引擎
  *
@@ -20,6 +19,15 @@ import { chatWithPreset } from './presets/narrative.js';
  *      落库时带 character_id 与头像 —— 且**流量更高**（浏览/点赞按角色影响力放大）。
  *   ② 作为**被讨论对象**：其余帖子由匿名 NPC 发，内容里会提到这些角色（八卦/见闻）。
  * 为避免靠名字匹配出错，发帖人**按下标指派**：提示词里明确「第 N 条由『某某』本人发布」。
+ *
+ * 2026-10-13 合并上游 v3.9.0。本地化修正：
+ *   · `extractFirstJson` 改从 `./jsonExtract.js` 导入（上游从 eventGenerator 再导出，
+ *     本仓第 34 轮踩过"再导出≠本地绑定"的坑，直接引收口模块更稳）；
+ *   · `repairJson` 仍从 `./eventGenerator.js` 导入（那个文件有本地导出）。
+ *
+ * 2026-10-17（全项目复查 §三-2）：出刊的「LLM → JSON」重试惯例收口到 `generateIssueJson`
+ * （唯一实现）。此前只有 feed 路径有 2 次尝试，weekly / poster / portal 三条历史形态是单发，
+ * 坏 JSON 即抛 ⇒ 用户点「刷新」偶发静默失败；门户板块正文（用户点开才走）同批一并收口。
  */
 
 import { getDb, getSystemRules, getWorldSetting, getGlobalRule } from '../db/index.js';
@@ -31,10 +39,12 @@ import { recordCompletedImageTask } from './imageTaskRecorder.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { MEDIA_PUBLICATION_ORDER, publishMediaPostIfReady, isMediaPostPublished } from './mediaPublication.js';
 import { config } from '../config.js';
-import { extractFirstJson, repairJson } from './eventGenerator.js';
+import { extractFirstJson } from './jsonExtract.js';
+import { repairJson } from './eventGenerator.js';
 import { buildCharacterPersona } from './characterPersona.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
 import { mediaAvatarLibrary } from './mediaAvatarLibrary.js';
+import { parseCharacterLoras as parseCharacterLorasImpl } from './characterLoras.js';
 
 /** 一次刷新默认抽多少条 */
 export const DEFAULT_BATCH_SIZE = 6;
@@ -114,6 +124,70 @@ function safeParse(text, fallback = null) {
   try { return JSON.parse(text); } catch { return fallback; }
 }
 
+/**
+ * 出刊用的「LLM → JSON」调用（**唯一实现**，2026-10-17 收口）。
+ *
+ * ## 为什么要有它
+ *
+ * LLM 偶发输出「字符串里含未转义引号 / 裸换行」的坏 JSON（实测 `cn:glm-5.3-flash` 约 1/6 概率，
+ * 报 `Expected ',' or '}' after property value`）。上游在 `mediaAvatarDesigner` /
+ * `characterReactionPackService` 都有 2 次重试，但 mediaService 里只有 **feed** 路径补过
+ * （2026-10-14 合并期），另外三种历史形态（周刊 weekly / 海报 poster / 门户 portal）
+ * 仍是**单发 + 直接 JSON.parse**，失败即抛 ⇒ 用户点「刷新」偶发**静默失败**。
+ *
+ * 2026-10-17 全项目复查 §三-2 把这条列成 P1：与其把同一段重试逻辑再抄三遍（迟早改一处忘一处），
+ * 不如收成一个助手，四条出刊路径共用。**发现第二处实现就是缺陷。**
+ *
+ * ## 口径
+ *
+ * - 第 1 次：原参数（temperature / max_tokens / label 由调用方给，各形态不同）。
+ * - 第 2 次（仅在**解析失败**时）：往对话尾部追加一句「上次不是合法 JSON」的提示重问，
+ *   并把 temperature 降一档（0.9→0.7 这类；调用方可用 `retryTemperature` 覆盖）。
+ * - `response_format: { type: 'json_object' }` 每次都带。
+ * - 两次都解析不出 ⇒ 抛出带原因的 Error（**不再静默**，调用方/日志能看到是哪一步坏的）。
+ * - `normalize` 里抛错（字段缺失 / 缺 image_prompt 等业务校验）同样算这次失败，照常重试一次 ——
+ *   与 feed 旧口径一致（本地 2026-10-17 `e911141` 的收口；本地 8 条 `mediaIssueJsonRetry` 钉住）。
+ * - 报错文案保留上游 v3.9.1 的关键词「图文输出不完整」＋「第 N 条」，前缀是本地的「本批 N 条」，两者都在。
+ *
+ * @param {object}   opts
+ * @param {Array}    opts.messages     基础对话（第 2 次会自动追加提示）
+ * @param {Function} opts.normalize    (parsed) => 结果；抛错即视为本次失败
+ * @param {string}   opts.label        日志/追踪标签（如 `media:狸狸周刊`）
+ * @param {number}   [opts.temperature]
+ * @param {number}   [opts.retryTemperature]
+ * @param {number}   [opts.max_tokens]
+ * @param {string}   [opts.what]       报错文案里的主语（如「《狸狸周刊》出刊」）
+ * @returns {Promise<any>} normalize 的返回值
+ */
+async function generateIssueJson({ messages, normalize, label, temperature, retryTemperature, max_tokens, what = '出刊' }) {
+  const retryHint = {
+    role: 'user',
+    content: '上次输出不是合法 JSON（多半是某个字符串值里有没转义的引号或换行）。请重新输出完整结果：'
+      + '所有字符串内部的引号一律转义成 \\"，字符串里不要出现裸引号、不要出现真实换行（换成 \\n）。',
+  };
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const attemptMsgs = attempt === 0 ? messages : [...messages, retryHint];
+    const raw = await chatSync(attemptMsgs, {
+      temperature: attempt === 0 ? temperature : (retryTemperature ?? 0.7),
+      max_tokens,
+      response_format: { type: 'json_object' },
+      label,
+    });
+    let parsed = null;
+    try {
+      const jsonStr = extractFirstJson(raw);
+      if (!jsonStr) throw new Error('LLM 未返回完整 JSON');
+      // 【上游 v3.9.1】合法 JSON 优先直接解析，避免修复逻辑改变本来正确的转义内容。
+      try { parsed = JSON.parse(jsonStr); } catch { parsed = JSON.parse(repairJson(jsonStr)); }
+      return normalize(parsed);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(`${what}生成结果解析失败（已重试 1 次）：图文输出不完整：${lastErr?.message || '未知错误'}`);
+}
+
 function clampText(v, max) {
   const s = String(v ?? '').trim();
   return s ? s.slice(0, max) : '';
@@ -144,7 +218,8 @@ export function listOutlets({ onlyEnabled = false } = {}) {
     tagline: r.tagline,
     prompt: r.prompt,
     icon: r.icon,
-    // 形态：feed=帖子流 / weekly=周刊 / poster=海报（前端据此选渲染组件）
+    // 形态：feed=帖子流 / portal=数字报刊（前端据此选渲染组件）；
+    // weekly/poster 是历史形态，前端仍有对应渲染组件，老帖照常展示
     layout: r.layout || 'feed',
     sort_order: r.sort_order,
     enabled: !!r.enabled,
@@ -293,7 +368,7 @@ function mapPostRow(r) {
         : mediaAvatarLibrary.resolve(r.outlet_id, comment.author),
     })),
     image: r.image,
-    // 周刊/海报的结构化正文（feed 形态为 null）
+    // 数字报刊的结构化正文（feed 形态为 null）
     payload: safeParse(r.payload_json, null),
     layout: r.layout || 'feed',
     created_at: r.created_at,
@@ -323,7 +398,8 @@ export function getMediaUnread(seen = {}) {
  * 分页取帖子（跨媒体，或指定媒体/板块）。
  * @param {object} opts
  * @param {'digital'|'social'|null} [opts.category] - 分类过滤：
- *   `digital` = 数字报刊（weekly/poster/portal）；`social` = 社交平台（feed）。
+ *   `digital` = 数字报刊（weekly/poster/portal 三种形态都算，后两者是历史形态）；
+ *   `social` = 社交平台（feed）。
  *   分类由 layout 推导，加新媒体时按形态自动归类。
  *   「传统报纸」不走这里（《邻舍日报》不存 media_posts）。
  */
@@ -334,7 +410,7 @@ export function listPosts({ outletId = null, boardId = null, category = null, fa
   if (outletId) { where.push('p.outlet_id = ?'); params.push(outletId); }
   if (boardId) { where.push('p.board_id = ?'); params.push(boardId); }
   if (category === 'digital') {
-    // 门户是周刊/海报的升级形态（两层生成），同样属于「数字报刊」
+    // 门户是数字报刊的现行形态（两层生成）；weekly/poster 是历史形态，老帖仍要能按分类列出
     where.push(`o.layout IN ('weekly','poster','portal')`);
   } else if (category === 'social') {
     // 注意：layout 有 DEFAULT 'feed'，但老库可能为 NULL，一并当 feed 处理
@@ -372,7 +448,7 @@ export function listPostsNeedingImage(limit = 8, postIds = null) {
   // ⚠ 必须排除门户：门户由 fillPortalImages 负责逐块补图，而门户帖的 image_prompt 存的是
   //   「第一块的头图提示词」，被这里捞到会**额外多生一张重复的主图**（正是两层设计要避免的浪费）。
   return getDb().prepare(`
-    SELECT p.id, p.image_prompt, p.character_id, p.title, p.content FROM media_posts p
+    SELECT p.id, p.image_prompt, p.character_id FROM media_posts p
     LEFT JOIN media_outlets o ON o.id = p.outlet_id
     WHERE (p.image_status = 'pending' OR (p.published_seq IS NULL AND p.image_status = 'failed'))
       AND p.image_prompt IS NOT NULL AND p.image_prompt != ''
@@ -553,14 +629,6 @@ export function normalizeMediaDraft(raw, boards, authors = []) {
   return out;
 }
 
-/**
- * 生成一批草稿并落库，配图齐全后才发布。
- * @param {object} opts
- * @param {number} [opts.outletId] - 不传则随机挑一个启用的媒体
- * @param {number} [opts.count] - 条数
- * @param {boolean} [opts.withCharacters] - 是否让活跃角色参与发帖（默认 true）
- * @returns {Promise<{outletId:number, batchId:string, inserted:number}>}
- */
 // ══════════════════════════════════════════
 // 周刊形态（狸狸通讯社）
 // ══════════════════════════════════════════
@@ -645,12 +713,15 @@ async function generateWeeklyIssue(outlet, manual = false) {
     { role: 'user', content: `请出《狸狸周刊》新的一期。上一期是 Vol.${prevVolume || '（尚无，本期为 Vol.1）'}，本期卷号用 ${prevVolume + 1}。\n\n必须是全新一期，不得重复往期的头条与栏目内容。` },
   ];
 
-  const raw = await chatWithPreset(msgs, {
-    temperature: 0.9, response_format: { type: 'json_object' }, label: `media:${outlet.name}`,
+  // 2026-10-17：坏 JSON 重试收口到 generateIssueJson（见该助手文件头）。此前这里是单发 + 直接 parse，
+  // 与 feed 路径（已补 2 次尝试）不一致 ⇒ 周刊偶发静默失败。现在四条出刊路径共用同一份重试惯例。
+  const draft = await generateIssueJson({
+    messages: msgs,
+    normalize: (parsed) => parsed,
+    label: `media:${outlet.name}`,
+    temperature: 0.9, retryTemperature: 0.7, max_tokens: 8000,
+    what: `《狸狸周刊》第 ${prevVolume + 1} 期`,
   });
-  const jsonStr = extractFirstJson(raw);
-  if (!jsonStr) throw new Error('LLM 未返回 JSON');
-  const draft = JSON.parse(repairJson(jsonStr));
   const p = normalizeWeeklyDraft(draft, prevVolume);
 
   // content 存一份纯文本（便于搜索与列表摘要），结构存 payload
@@ -801,12 +872,14 @@ async function generatePosterIssue(outlet, manual = false) {
     { role: 'user', content: `请出《狸狸八卦》新的一期海报。上一期编号是 ${prevNo || '（尚无，本期为 01）'}，本期编号用 ${prevNo + 1}。\n\n必须是全新的瓜，不得重复往期。` },
   ];
 
-  const raw = await chatSync(msgs, {
-    temperature: 0.95, response_format: { type: 'json_object' }, label: `media:${outlet.name}`,
+  // 2026-10-17：同周刊，走 generateIssueJson 的 2 次尝试（此前单发，坏 JSON 即抛）
+  const p = await generateIssueJson({
+    messages: msgs,
+    normalize: (parsed) => normalizePosterDraft(parsed, prevNo),
+    label: `media:${outlet.name}`,
+    temperature: 0.95, retryTemperature: 0.7, max_tokens: 3000,
+    what: `《狸狸八卦》第 ${prevNo + 1} 期海报`,
   });
-  const jsonStr = extractFirstJson(raw);
-  if (!jsonStr) throw new Error('LLM 未返回 JSON');
-  const p = normalizePosterDraft(JSON.parse(repairJson(jsonStr)), prevNo);
 
   const batchId = `mp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const r = db.prepare(`
@@ -863,15 +936,15 @@ export function normalizePosterDraft(raw, prevNo = 0) {
   };
 }
 
-// ═══════════════════════════════════════════════════════════
-// 门户（portal）——数字报刊的「两层生成」
-// ═══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════
+// 数字报刊（portal）——两层生成
+// ══════════════════════════════════════════
+
 /**
  * 为什么要分两层（设计动机，改之前先读）：
  *
  * 周刊/海报是「一次长 LLM + N 张图」全量产出 —— 周刊的 JSON 有 5600 字符，
- * 出刊要等十几秒到几十秒，配图还要再等；而且横版铺在 1920 屏上两侧各空 520px
- * （`.special-list` 是 max-width:880px 居中单列）。
+ * 出刊要等十几秒到几十秒，配图还要再等；而且横版铺在 1920 屏上两侧各空 520px。
  *
  * 门户把这个峰拆开：
  *   第 1 层  出刊：1 次**短** LLM，只产骨架（板块名 + 一句导语 + 每板块的生图提示词），
@@ -882,7 +955,7 @@ export function normalizePosterDraft(raw, prevNo = 0) {
  *
  * 「外壳统一、里子各自保持个性」：门户只是个壳，各刊的人设/语气仍由 outlet.prompt 决定；
  * 板块正文用**通用块数组**承载，周刊的 outlet.prompt 会自然产出 qa/rank/replies 块，
- * 狸狸八卦会产出 caption 块 —— 不用为每个刊物各写一套版式。
+ * 八卦刊会产出 caption 块 —— 不用为每个刊物各写一套版式。
  */
 
 /** 门户的门户层格式（骨架，故意写得短，产出控制在一千多字符） */
@@ -1043,12 +1116,15 @@ async function generatePortalIssue(outlet, manual = false) {
     { role: 'user', content: `请出《${outlet.name}》新的一期。上一期是第 ${prevIssue || '（尚无，本期为第 1 期）'} 期，本期编号用 ${prevIssue + 1}。\n\n只出骨架，不要写正文。必须是全新一期。` },
   ];
 
-  const raw = await chatSync(msgs, {
-    temperature: 0.9, response_format: { type: 'json_object' }, label: `media:${outlet.name}`,
+  // 2026-10-17：同周刊，走 generateIssueJson 的 2 次尝试（此前单发，坏 JSON 即抛）
+  // 只产骨架 ⇒ max_tokens 压到同档，出刊速度是本设计的核心收益，别给大预算
+  const p = await generateIssueJson({
+    messages: msgs,
+    normalize: (parsed) => normalizePortalDraft(parsed, prevIssue),
+    label: `media:${outlet.name}`,
+    temperature: 0.9, retryTemperature: 0.7, max_tokens: 2500,
+    what: `《${outlet.name}》第 ${prevIssue + 1} 期`,
   });
-  const jsonStr = extractFirstJson(raw);
-  if (!jsonStr) throw new Error('LLM 未返回 JSON');
-  const p = normalizePortalDraft(JSON.parse(repairJson(jsonStr)), prevIssue);
 
   // content 存一份纯文本（列表摘要 / 搜索用），结构存 payload
   const plain = [
@@ -1115,7 +1191,7 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
       if (section.image || !section.image_prompt) continue;
       attempted++;
       try {
-        const result = await generateMediaImage(section.image_prompt, null, priority, [section.name, section.lead].filter(Boolean).join('\n'));
+        const result = await generateMediaImage(section.image_prompt, null, priority);
         if (!result) continue;
         // 重新读一次 payload：生成期间可能有别的写入（如用户点了某块生成正文）
         const fresh = safeParse(db.prepare('SELECT payload_json FROM media_posts WHERE id = ?').get(row.id)?.payload_json, null);
@@ -1174,18 +1250,20 @@ export async function generatePortalSection(postId, sectionKey) {
   const outlet = db.prepare('SELECT * FROM media_outlets WHERE id = ?').get(row.outlet_id);
   const worldSetting = getWorldSetting();
 
-  const raw = await chatWithPreset([
-    { role: 'system', content: [getSystemRules({ roleplay: false }), worldSetting].filter(Boolean).join('\n\n') },
-    { role: 'system', content: outlet?.prompt || '' },
-    { role: 'system', content: buildSectionBodyPrompt(section.name, section.lead) },
-    { role: 'user', content: `本期的总标题是「${payload.title}」。现在请写「${section.name}」这一块的正文。` },
-  ], {
-    temperature: 0.9, response_format: { type: 'json_object' }, label: `media:${outlet?.name || '门户'}·板块`,
+  // 2026-10-17：门户板块正文原为单发 + 直接 parse（同 §三-2 那批），一并切到 generateIssueJson。
+  // 它是用户**点开板块**才走的路径，坏 JSON 时用户看到的是"点开没反应"。
+  const body = await generateIssueJson({
+    messages: [
+      { role: 'system', content: [getSystemRules({ roleplay: false }), worldSetting].filter(Boolean).join('\n\n') },
+      { role: 'system', content: outlet?.prompt || '' },
+      { role: 'system', content: buildSectionBodyPrompt(section.name, section.lead) },
+      { role: 'user', content: `本期的总标题是「${payload.title}」。现在请写「${section.name}」这一块的正文。` },
+    ],
+    normalize: (parsed) => normalizeSectionBlocks(parsed),
+    label: `media:${outlet?.name || '门户'}·板块`,
+    temperature: 0.9, retryTemperature: 0.7, max_tokens: 4000,
+    what: `「${section.name}」板块正文`,
   });
-
-  const jsonStr = extractFirstJson(raw);
-  if (!jsonStr) throw new Error('LLM 未返回 JSON');
-  const body = normalizeSectionBlocks(JSON.parse(repairJson(jsonStr)));
 
   // 重新读 payload 再写：生成期间可能刚补进了图，直接写旧对象会把图弄丢
   const fresh = safeParse(db.prepare('SELECT payload_json FROM media_posts WHERE id = ?').get(postId)?.payload_json, null);
@@ -1236,7 +1314,8 @@ export function normalizeSectionBlocks(raw) {
   return out;
 }
 
-export async function generateMediaBatch({ outletId = null, count = DEFAULT_BATCH_SIZE, withCharacters = true, manual = false } = {}) {  if (generating) return generating;   // 同一时间只跑一批，避免并发刷爆 LLM
+export async function generateMediaBatch({ outletId = null, count = DEFAULT_BATCH_SIZE, withCharacters = true, manual = false } = {}) {
+  if (generating) return generating;   // 同一时间只跑一批，避免并发刷爆 LLM
   generating = (async () => {
     const db = getDb();
     const n = Math.max(1, Math.min(MAX_BATCH_SIZE, Number(count) || DEFAULT_BATCH_SIZE));
@@ -1248,8 +1327,11 @@ export async function generateMediaBatch({ outletId = null, count = DEFAULT_BATC
     }
     if (!outlet) throw new Error('没有可用的媒体（请先在媒体设置里添加）');
 
-    // 按形态分派：周刊/海报/门户一次出一期（刊），都不是「一批帖子」
+    // 按形态分派：数字报刊一次出一期（刊），不是「一批帖子」
     if (outlet.layout === 'portal') return await generatePortalIssue(outlet, manual);
+    // 2026-10-14 补漏合并：周刊（weekly）/ 海报（poster）是**历史形态**——
+    // 新建媒体界面已统一成 feed / portal，但老库里的周刊/海报仍要能读、能手动刷新、
+    // 能自动补内容（上游 v3.9.0 保留这两条分支，本地合并时整块丢了）。
     if (outlet.layout === 'weekly') return await generateWeeklyIssue(outlet, manual);
     if (outlet.layout === 'poster') return await generatePosterIssue(outlet, manual);
 
@@ -1266,23 +1348,20 @@ export async function generateMediaBatch({ outletId = null, count = DEFAULT_BATC
       { role: 'user', content: buildMaterialsPrompt(outlet, boards, authors, n) },
     ];
 
-    const raw = await chatWithPreset(msgs, {
-      temperature: 0.9,
-      response_format: { type: 'json_object' },
+    // 2026-10-14 合并期补强：LLM 偶发输出「字符串里含未转义引号」的坏 JSON
+    // （实测 cn:glm-5.3-flash 约 1/6 概率，报 `Expected ',' or '}' after property value`）。
+    // 上游在 mediaAvatarDesigner / characterReactionPackService 都有 2 次重试，mediaService 漏了 →
+    // 结果是用户点「刷新」偶发静默无反应。这里按同款惯例补 2 次尝试：解析失败带提示重问一次。
+    //
+    // 2026-10-17：这段惯例已收口到 `generateIssueJson`（唯一实现），weekly/poster/portal 三条
+    // 出刊路径也一并切过去 —— 别再在调用点重抄一遍。
+    const drafts = await generateIssueJson({
+      messages: msgs,
+      normalize: (parsed) => normalizeMediaDraft(parsed, boards, authors),
       label: `media:${outlet.name}`,
+      temperature: 0.9, retryTemperature: 0.7, max_tokens: 6000,
+      what: `「${outlet.name}」本批 ${n} 条`,
     });
-    let drafts;
-    try {
-      const jsonStr = extractFirstJson(raw);
-      if (!jsonStr) throw new Error('LLM 未返回完整 JSON');
-      // 合法 JSON 优先直接解析，避免修复逻辑改变原本正确的转义内容。
-      let parsed;
-      try { parsed = JSON.parse(jsonStr); } catch { parsed = JSON.parse(repairJson(jsonStr)); }
-      drafts = normalizeMediaDraft(parsed, boards, authors);
-    } catch (err) {
-      // 输出不完整直接报错，不重新请求模型，也不写入无图帖子。
-      throw new Error(`社交平台图文输出不完整：${err.message}`);
-    }
 
     const batchId = `mb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const ins = db.prepare(`
@@ -1322,11 +1401,11 @@ export async function generateMediaBatch({ outletId = null, count = DEFAULT_BATC
 // 配图（草稿后台补齐后发布）
 // ══════════════════════════════════════════
 
-async function generateMediaImage(prompt, character = null, priority = 'low', ragQuery = '') {
+async function generateMediaImage(prompt, character = null, priority = 'low') {
   const charArtist = charArtistOverrideWithFallback(character);
   const loras = parseCharacterLoras(character?.loras);
   const result = await generateImageRaw(prompt, {
-    ragQuery,
+    ragQuery: prompt,
     artist: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
     width: config.comfyui.momentsWidth,
     height: config.comfyui.momentsHeight,
@@ -1344,13 +1423,10 @@ async function generateMediaImage(prompt, character = null, priority = 'low', ra
   };
 }
 
-function parseCharacterLoras(loras) {
-  if (!loras) return [];
-  try {
-    const parsed = typeof loras === 'string' ? JSON.parse(loras) : loras;
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
-}
+// 角色 LoRA 解析：2026-10-17 收口到 `characterLoras.js`（全仓唯一实现）。
+// ⚠️ 这里是**裸版**口径（原样交给 generateImageRaw，由 imageSkill 自己归一化 + 过滤）
+// ⇒ 必须显式传 `raw: true`，别用默认的归一化版（会顺手给 weight 补 0.6，改变行为）。
+const parseCharacterLoras = (loras) => parseCharacterLorasImpl(loras, { raw: true });
 
 /**
  * 给缺图的帖子补封面（一次最多 limit 张，串行）。返回补上的张数。
@@ -1369,6 +1445,7 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
   // ⚠️ 这里**不要**调 resetStaleMediaGenerating —— 它每分钟跑一次会把
   // 「正在生成中」的帖子反复重置为 pending，形成无限重生循环（详见该函数注释）。
   // 自愈只在服务启动时做一次（见 startReplyQueueScheduler）。
+
   const pending = listPostsNeedingImage(limit, postIds);
   for (const p of pending) {
     // ★ 原子抢占（CAS）：只有仍是 pending 的才抢得到。
@@ -1380,7 +1457,7 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
       const character = p.character_id
         ? db.prepare('SELECT loras, artist_override, custom_workflow FROM characters WHERE id = ?').get(p.character_id)
         : null;
-      const result = await generateMediaImage(p.image_prompt, character, priority, [p.title, p.content].filter(Boolean).join('\n'));
+      const result = await generateMediaImage(p.image_prompt, character, priority);
       if (!result) {
         updatePostImage(p.id, { status: 'failed', error: 'ComfyUI 未返回图片' });
         continue;
@@ -1415,16 +1492,16 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
     }
   }
 
-  // ── 海报的小图（存在 payload.panels 里，一张海报最多 3 张）──
-  // 单独一轮、放在主图之后：主图是海报的门面，优先保证。
+  // ── 数字报刊的小图（存在 payload.panels 里，一张最多 3 张）──
+  // 单独一轮、放在主图之后：主图是门面，优先保证。
   filled += await fillPosterPanelImages(Math.max(0, limit), postIds, priority);
   return filled;
 }
 
 /**
- * 补海报小图（payload.panels[].image 为空且已有 image_prompt 的）。
+ * 补数字报刊小图（payload.panels[].image 为空且已有 image_prompt 的）。
  * 用「先写回 payload 再生成」的顺序无法 CAS（payload 是一整块 JSON），
- * 后台由 fillPendingImages 串行处理；手动刷新只处理独占的新批次，后台扫描排除该批次。
+ * 后台由 fillPendingImages 串行处理；手动刷新只处理独占的新批次。
  */
 async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low') {
   const db = getDb();
@@ -1454,7 +1531,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
       if (panel.image || !panel.image_prompt) continue;
       attempted++;
       try {
-        const result = await generateMediaImage(panel.image_prompt, null, priority, panel.label || '');
+        const result = await generateMediaImage(panel.image_prompt, null, priority);
         if (!result) continue;
         panel.image = result.url;
         // Persist each panel before notifying clients so a reload sees the completed image.
@@ -1473,7 +1550,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
         publishMediaPostIfReady(row.id);
         if (isMediaPostPublished(row.id)) broadcast('media_image_ready', { postId: row.id, image: result.url, panel: true, panelIndex: panels.indexOf(panel) });
       } catch (err) {
-        console.error(`[media] 海报小图失败 #${row.id}:`, err.message);
+        console.error(`[media] 数字报刊小图失败 #${row.id}:`, err.message);
       }
     }
     publishMediaPostIfReady(row.id);
@@ -1489,6 +1566,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
  * 定时补内容：到点后随机挑一个启用的媒体补一小批，并顺带补几张缺图。
  * 不阻塞 tick（内部 fire-and-forget）。
  */
+
 /** 这条内容是否有生图提示词（可重新生图） */
 export function canRegenerateImage(post) {
   if (!post) return false;
@@ -1504,8 +1582,7 @@ export function canRegenerateImage(post) {
  *
  * 三种形态一视同仁：
  *   feed   → 清空主图，重新排队
- *   poster → 清空主图 **+ payload.panels[].image**（小图一并重出）
- *   weekly → 清空头图
+ *   portal → 清空主图 **+ payload.sections[].image**（板块头图一并重出）
  *
  * 旧图文件**不在这里删** —— 等新图写入成功后再处理，避免「图清了、新图又失败」
  * 导致这条内容永久没图。
@@ -1564,7 +1641,7 @@ export function regeneratePostImage(postId) {
 
 /**
  * 删除一条内容（含全部配图文件）。
- * 周刊/海报的小图存在 payload.panels、门户的头图存在 payload.sections —— **都要一并清理**，
+ * 数字报刊的小图存在 payload.panels、门户的头图存在 payload.sections —— **都要一并清理**，
  * 否则会留下没人引用的孤儿文件。
  * @param {number} postId
  * @param {{ silent?: boolean }} [opts] silent=true 时**不**失效相册缓存、**不**广播
@@ -1673,7 +1750,8 @@ export function regeneratePostImages(ids) {
   return { ok: true, requested: list.length, queued, clearedImages, failed: failedItems.length, failedItems: failedItems.slice(0, 20) };
 }
 
-export function maybeAutoGenerate(now = Date.now()) {  // ⚠️ 这里**不再**每轮扫描补图。
+export function maybeAutoGenerate(now = Date.now()) {
+  // ⚠️ 这里**不再**每轮扫描补图。
   //
   // 原来每次 tick（1 分钟）都无条件调 `fillPendingImages(8)`，配合已被移除的橱窗预生成，
   // 会让 ComfyUI 持续满负载（实测 30 分钟被派单 46 次）。
@@ -1706,7 +1784,7 @@ export function maybeAutoGenerate(now = Date.now()) {  // ⚠️ 这里**不再*
  * 判"卡了多久" —— 但 `created_at` 是**帖子创建时间**，不是**生图开始时间**。
  * 于是一个「创建于 10 分钟前、此刻正在生成中」的帖子会被判定为卡死 → 重置为 pending
  * → 下一轮又被捞去生成 → 再被重置……**形成无限重生循环，ComfyUI 被持续打满**。
- * （2026-10-04 实测：30 分钟内被反复派单 46 次、同一 prompt 重生 4 次。）
+ * （上游 2026-10-04 实测：30 分钟内被反复派单 46 次、同一 prompt 重生 4 次。）
  *
  * 进程刚启动时不存在"正在生成"的帖子，因此此时把所有 generating 视为中断遗留是安全的。
  * @returns {number} 重置了几条

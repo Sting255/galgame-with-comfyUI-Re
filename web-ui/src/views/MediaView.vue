@@ -1773,7 +1773,7 @@ onUnmounted(() => {
   font-size: var(--fs-sm);
 }
 .batch-count b {
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 .media-fade-enter-active,
 .media-fade-leave-active {
@@ -2325,7 +2325,10 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .author-name.is-char {
-  color: color-mix(in srgb, var(--accent) 72%, var(--text-bright));
+  /* 2026-10-30：原来是 accent 72% + text-bright 28%，混出来是浅珊瑚色，
+     压在米白纸底（--media-paper #fbf6ec）上对比度只有 3.x:1，作者名基本看不清（用户实报）。
+     压到 accent 45% ⇒ 深红棕，对比度 8:1 左右，仍保留"角色"与普通作者的色差。 */
+  color: color-mix(in srgb, var(--accent) 45%, var(--text-bright));
 }
 
 .post-title {
@@ -2355,7 +2358,8 @@ onUnmounted(() => {
 }
 .tag {
   font-size: 10px;
-  color: var(--accent);
+  /* 文字用 --accent-text：--accent 在纸面上只有 2.7:1，10px 小字根本读不出来 */
+  color: var(--accent-text);
   background: rgba(var(--accent-rgb), 0.08);
   padding: 1px 6px;
   border-radius: 5px;

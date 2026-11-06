@@ -40,15 +40,15 @@
   </linshe-modal>
 </template>
 <script setup>
-import {ref,computed,watch,onBeforeUnmount} from 'vue'
+import {ref,computed,watch,onBeforeUnmount}from 'vue'
 import LinsheModal from '../ui/LinsheModal.vue'
 import LinsheButton from '../ui/LinsheButton.vue'
 import LinsheInput from '../ui/LinsheInput.vue'
 import VoiceAudioPlayer from '../VoiceAudioPlayer.vue'
-import {TOUCH_LABELS as labels} from '../../utils/standingTouch.js'
-import {getStandingTouchLines,saveStandingTouchLines,generateStandingTouchLines,generateStandingTouchSpeech} from '../../api/index.js'
-import {onEvent} from '../../stores/unifiedStream.js'
-import {speechPlayer} from '../../stores/speech.js'
+import {TOUCH_LABELS as labels}from '../../utils/standingTouch.js'
+import {getStandingTouchLines,saveStandingTouchLines,generateStandingTouchLines,generateStandingTouchSpeech}from '../../api/index.js'
+import {onEvent}from '../../stores/unifiedStream.js'
+import {speechPlayer}from '../../stores/speech.js'
 const props=defineProps({open:Boolean,characterId:Number,name:String})
 const emit=defineEmits(['close','saved'])
 const blank=()=>Object.fromEntries(Object.keys(labels).map(k=>[k,['','','']]))
@@ -94,7 +94,7 @@ function accept(value,replace=false,voiceVersion=voiceRevision){
   // A delayed response may describe the previous voice even after a config event.
   if(voiceVersion!==voiceRevision)value={...value,speech:null}
   // Keep the edit version while dirty, so concurrent changes cause a conflict.
-  if(replace||!dirty.value){state.value=value;draft.value=Object.fromEntries(Object.keys(labels).map(key=>[key, value.lines?.[key]?.length ? [...value.lines[key]] : ['','','']]));baseline.value=JSON.stringify(draft.value)}
+  if(replace||!dirty.value){state.value=value;draft.value=Object.fromEntries(Object.keys(labels).map(key=>[key,value.lines?.[key]?.length?[...value.lines[key]]:['','','']]));baseline.value=JSON.stringify(draft.value)}
   else state.value={...value,version:state.value.version}
 }
 async function refresh(replace=false){

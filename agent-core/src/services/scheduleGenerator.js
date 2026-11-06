@@ -11,12 +11,15 @@
  */
 
 import { getDb, getWorldSetting, getSystemRules } from '../db/index.js';
+// 场景服装（2026-10-13 合并上游 + PR #24）：日程生成时拼「着装标注」层 + 生成后校验修复
 import { chatSync } from './lorebook/runtime.js';
 import { config } from '../config.js';
-import { getLocalDateKey } from '../utils/localDate.js';
+import { getProgramDateKey, toSqlUtc } from './programTime.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
+// 奇遇时长预留（上游 v3.9.0）：写完当天日程快照后，把进行中的事件开场活动重新钉回去。
+// 本地从 v3.6.2 起漏了这条接线（2026-10-14 补）。
 import { reapplyActiveEventSchedule, reserveEventTime } from './eventSchedule.js';
-import { buildOutfitAnnotateLayer, buildOutfitAnnotation } from './outfitScene.js';
+import { buildOutfitAnnotateLayer, buildOutfitAnnotation, ensureOutfitAnnotations } from './outfitScene.js';
 import { publishedCohabitationContext } from '../db/cohabitationRepository.js';
 import { applySharedActivities, assertCompleteDay, intervals } from './cohabitationSchedule.js';
 import { persistIndividualSchedule, refreshResidenceDailySleep } from './cohabitationPersistence.js';
@@ -51,7 +54,7 @@ function normalizeTags(tags) {
  * @param {object} character - { id, display_name, base_prompt }
  * @returns {Promise<{schedule_json: string, version: number}>}
  */
-// 同一角色的自动刷新、手动刷新与补发任务共享正在执行的生成。
+// 同一角色的自动刷新、手动刷新与补发任务共享正在执行的生成（上游 v4.2.0：宿舍整轮流水线要求串行）。
 const pendingSchedules = new Map();
 export function generateSchedule(character, direction, options = {}) {
   const key = options.persist === false ? `detached:${character.id}` : character.id;
@@ -93,25 +96,29 @@ async function generateScheduleImpl(character, direction, options = {}) {
 - 自由职业→在家工作、外出取材、交稿截止日
 - 其他职业同理类推
 
-## 睡眠时间个性化（极其重要）
-**角色之间睡眠时间必须高度多样化，不要让所有角色都遵循朝九晚五的社畜作息。** 根据角色个性大胆决定就寝和起床时间，以下为参考类型：
+## 睡眠时间（硬约束，违反视为格式错误）
 
-- 夜猫子·轻度→凌晨 1-2 点睡，上午 9-10 点起
-- 夜猫子·重度→凌晨 3-4 点睡，中午 11-12 点起（游戏宅、深夜主播、同人画师、程序员、自由职业者等）
-- 夜猫子·通宵修仙→凌晨 5-6 点睡，下午 1-2 点起（重度网瘾、作息完全崩坏的 NEET、深夜工作的特殊职业）
-- 早睡早起型→晚上 9-10 点睡，早上 5-6 点起（运动员、晨练爱好者、老派作息）
-- 标准社畜型→晚上 11-12 点睡，早上 7 点起
-- NEET/家里蹲→凌晨 2-4 点睡，中午 11-13 点起
-- 艺人/夜场型→凌晨 1-3 点睡，上午 10-11 点起（偶像、乐队、酒吧驻唱等）
-- 昼伏夜出型→早上 6-8 点睡，下午 14-16 点起（夜班工人、深夜保安、地下社会等）
-- 碎片化睡眠→分两段睡（如晚上睡 4h + 下午补觉 3h），适合作息极度不规律的创作者或病人
+**主睡眠块必须整体落在 21:00 – 09:30 这个窗口内；起床时间最晚 09:30，最晚不得晚于 10:00。**
 
-睡眠 block 的 replyDelay 必须是 -1（暂停一切回复）。睡眠总时长通常在 5-9 小时之间（极端夜猫子可能只睡 5-6 小时）。
+- 白天是这个世界共同活动的时间（上课、上班、社团、街上的事）。任何人白天躺着睡觉，整座城就会显得假。
+- 所以**禁止**「凌晨 3 点睡到中午 11-12 点」「下午 2-4 点起床」这类作息——
+  哪怕角色是游戏宅、夜猫子、NEET、夜班工作者，也必须在 09:30 前起床（现实里他们也是补几小时就起）。
+- 允许的多样性（都在窗口内，够用了）：
+
+- 早睡早起型→21:00-22:00 睡，05:00-06:00 起（运动员、晨练、老派作息）
+- 标准型→23:00-00:00 睡，07:00 起
+- 夜猫子·轻度→00:00-01:00 睡，08:00-09:00 起（游戏宅、同人画师、自由职业）
+- 夜猫子·重度→01:00-02:30 睡，09:00-09:30 起（深夜主播、重度网瘾；**上限就是 09:30**）
+- 碎片化睡眠→夜里睡 4-5 小时 + **白天只用「小憩」**（见下），不许用长块
+
+睡眠 block 的 replyDelay 必须是 -1。主睡眠总时长 5-9 小时。
+
+**白天小憩（不是主睡）**：白天要休息只能写**不超过 40 分钟**的短块（例如「午间小憩——趴在桌上眯一会」），
+且必须 12:00–15:00 之间。这类短块同样 replyDelay=-1，但它是小憩、不是躺在床上睡一整天。
 
 **关键原则**：
-1. 角色的人格和职业直接决定睡眠类型——性格懒散的 NEET 不可能是早睡早起型，深夜主播不可能是社畜型
-2. 如果角色是自由职业、创作者、ACG 宅、夜生活相关职业，80% 以上的概率是夜猫子型
-3. 睡眠时间要贴合角色的"角色设定气質"——比如病娇角色可能作息极度不规律，军武角色可能作息严格
+1. 睡眠类型要贴人格与职业（懒散的人晚睡晚起、军武角色作息严格），但**都受上面的窗口约束**
+2. 不要为了"显得多样"就让人中午起床——那是这轮明确禁止的写法
 
 ## replyDelay 规则（非常重要）
 - 正常活动都是 replyDelay=0（即时回复）
@@ -128,6 +135,17 @@ async function generateScheduleImpl(character, direction, options = {}) {
 不留任何空白分钟。所有时间必须被完整覆盖。如果日程从 03:00 开始，
 那么 00:00~03:00 也必须有一个活动覆盖（可以是睡眠或深夜活动）。
 
+## 跨零点睡眠块（极容易出错，务必照做）
+睡眠块可以跨零点（例如 22:00 → 07:00 表示「22 点睡、次日 7 点起」）。
+**跨零点的睡眠块已经覆盖了零点之后的那段时间，因此禁止再安排任何与它重叠的活动。**
+真机上出现过的错误例子：睡眠块写 22:00 → 07:00，同时又写了 00:00 → 05:00 的「深夜巡查」——
+这两段在真实时间里是重叠的（深夜巡查被睡眠盖住），整份日程会被判为无效。
+两种合法写法，任选其一：
+- 深夜活动排在睡眠**之前**：20:00 → 22:00「深夜巡逻」，然后 22:00 → 07:00「就寝安眠」；
+- 把睡眠**拆成两段**互不重叠：22:00 → 02:00「就寝」+ 02:00 → 07:00「继续睡」，
+  深夜活动放在别处（例如 07:00 之后）。
+判断标准很简单：**把每条活动按 00:00 展开成一条时间轴，任意两段不许有交集，且合起来正好是 24 小时。**
+
 每个活动对象格式（description 必填，26-52 字，禁止空字符串或只写标点）：
 {
   "startTime": "HH:MM",
@@ -142,7 +160,7 @@ async function generateScheduleImpl(character, direction, options = {}) {
 完整 JSON 结构示例（示例仅2个活动，实际需要覆盖完整24小时）：
 {"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗——整理长发","location":"公寓浴室","replyDelay":0,"tags":["日常","晨间"],"description":"甘雨站在镜前慢慢理顺长发，水汽沾湿额发，动作安静而认真。"},{"startTime":"22:00","endTime":"07:00","activity":"就寝安眠","location":"公寓卧室","replyDelay":-1,"tags":["睡眠"],"description":"甘雨裹好被子沉入睡眠，角上铃兰微光映着窗帘，呼吸逐渐平稳。"}]}
 
-只输出 JSON 对象，不要输出任何解释、Markdown 代码块或 JSON 以外的文字。activities 数组必须按时间顺序排列，startTime 和 endTime 必须是 HH:MM 格式、24 小时制，数组里每个对象都必须严格包含上述全部字段（若上方系统消息另有额外字段要求，一并按那里的说明输出）。`;
+只输出 JSON 对象，不要输出任何解释、Markdown 代码块或 JSON 以外的文字。activities 数组必须按时间顺序排列，startTime 和 endTime 必须是 HH:MM 格式、24 小时制，数组里每个对象都必须严格包含并输出上述七个字段。`;
 
   // ── 用户指定的日程方向 ──
   const directionMsg = direction ? `## 用户指定的日程方向
@@ -151,6 +169,16 @@ async function generateScheduleImpl(character, direction, options = {}) {
 ${direction}**
 
 **注意：以上是用户指定的日程"方向"或"主题"，这就是严格的指令。所有日程编排以用户的意愿为准，可以想象理由，适当破坏角色原有的角色设定，自然地融入这个方向的元素。**` : null;
+
+  // ── 场景服装标注层（2026-10-13 合并上游 + PR #24）──
+  // 只有该角色配了场景服装（≥2 套）时才拼；没配的角色日程生成保持原样（零影响）。
+  // 这段要求模型为「换装的那一刻」额外输出 outfit 字段，供 outfitScene.getSceneOutfitForNow 按日程选装。
+  // ⚠ 必须在 triggerContent 声明**之后**再用它（TDZ：本仓踩过"引用后声明变量整块静默全废"）。
+  // options.outfits：系统角色（天使）自带衣柜，直接用传入的那几套；
+  // options.persist === false：旁路生成不落库，也就不需要按角色查库里的场景服装。
+  const outfitLayer = Array.isArray(options.outfits)
+    ? buildOutfitAnnotation(options.outfits.filter(outfit => outfit.description))
+    : options.persist === false ? null : buildOutfitAnnotateLayer(character.id);
 
   // ── 组装多层 system（前三层为跨角色共享前缀，提高 LLM 缓存命中率）──
   const msgs = [];
@@ -165,8 +193,6 @@ ${direction}**
   // msgs[3.5]: 着装标注（仅当角色配了 ≥2 套场景服装时才有；没配则完全不加，原提示词不变）
   //   放在这里而非 scheduleInst：scheduleInst 是跨角色共享常量（吃 LLM 前缀缓存），
   //   服装列表每个角色都不同，塞进去会让缓存全部失效。
-  const outfitLayer = Array.isArray(options.outfits) ? buildOutfitAnnotation(options.outfits.filter(outfit => outfit.description)) : options.persist === false && !options.resident ? null : buildOutfitAnnotateLayer(character.id);
-  if (outfitLayer) msgs.push({ role: 'system', content: outfitLayer });
   if (cohabitation.room || cohabitation.events.length) {
     msgs.push({ role: 'system', content: `【本轮已确定的共同生活安排】\n${JSON.stringify(cohabitation)}` });
   }
@@ -179,16 +205,29 @@ ${direction}**
   if (directionMsg) triggerContent += `
 
 ${directionMsg}`;
+  // 场景服装标注层接在用户方向之后（同为"本轮附加要求"），没有则不追加（逐字节不变）
+  if (outfitLayer) triggerContent += `
+
+${outfitLayer}`;
+  // 格式要求放最后（2026-10-22）：system 里那份规范在长 prompt 中会被模型忽略，
+  // 实测首轮几乎必定写成 Markdown。贴在紧邻生成点的 user 消息末尾后，首轮成功率明显提高。
+  triggerContent += `
+
+${SCHEDULE_FORMAT_TAIL}`;
   msgs.push({ role: 'user', content: triggerContent });
 
   let rawResult = '';
   let validationError = '';
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const attemptMsgs = msgs.map(m => ({ ...m }));
+      let attemptMsgs = msgs.map(m => ({ ...m }));
       if (validationError) attemptMsgs.at(-1).content += `\n上次日程校验失败：${validationError}，请修正时间安排。`;
       rawResult = await (options.chat || chatSync)(attemptMsgs, {
         temperature: 0.5,
+        // 2026-10-01：2048 → 4096。真机复现实测：14~16 段的日程输出就已经到 1500+ tokens、
+        // 原文 5000+ 字符；话多的角色（纳西妲/风瑾）会顶到 2048 上限**被截断**，
+        // 表现正是日志里那类 `JSON parse failed`（截断的 JSON 当然解析不了）。
+        max_tokens: 4096,
         response_format: { type: 'json_object' },
         label: `schedule-gen:${character.display_name}`,
         ...(config.features.scheduleDisableThinking
@@ -207,6 +246,18 @@ ${directionMsg}`;
         schedule = applySharedActivities(schedule, enforced, character.id);
         if (cohabitation.room) schedule = schedule.map(a => a.replyDelay === -1 ? { ...a, residence: cohabitation.room } : a);
         assertCompleteDay(schedule);
+
+        // 着装标注校验 + 一次专注修复（仅当该角色配了场景服装）。
+        // 提示词已要求「出门/回家必须标」，但 LLM 有波动：同一角色两次生成可能一次给 6 个换装点、
+        // 一次只给 3 个 —— 漏标会让角色穿着居家服在街上活动。只压提示词不够，加这道确定性兜底。
+        if (outfitLayer) {
+          try {
+            const r = await ensureOutfitAnnotations(schedule, character.id);
+            schedule = r.schedule;
+          } catch (err) {
+            console.warn(`[scheduleGen] 着装标注修复失败（不影响日程生成）: ${err.message}`);
+          }
+        }
         const json = JSON.stringify(schedule);
         // 系统角色（天使）复用生成与校验，但由自己的存储负责，不混入普通居民表。
         if (options.persist === false) return { schedule_json: json, version: 1 };
@@ -216,6 +267,16 @@ ${directionMsg}`;
         return { schedule_json: JSON.stringify(saved.schedule), version: db.prepare('SELECT version FROM schedule_templates WHERE character_id=?').get(character.id).version };
       }
 
+      // 首轮输出不合规 ⇒ 把上一版回灌，第二轮只做「改写成 JSON」。
+      // 不再用「原样重试」：同样的 prompt 同样的随机性，大概率还是 Markdown。
+      if (attempt === 0 && rawResult.trim()) {
+        attemptMsgs = [
+          ...msgs,
+          { role: 'assistant', content: rawResult.slice(0, 6000) },
+          { role: 'user', content: JSON_ONLY_REPAIR },
+        ];
+        console.warn(`[scheduleGen] ${character.display_name} 首轮输出非 JSON，带格式纠正指令重试`);
+      }
       console.warn(`[scheduleGen] Validation failed for ${character.display_name}, attempt ${attempt + 1}/2`);
       validationError = '请使用合法时间，完整覆盖24小时，无重叠无空档，并保留睡眠。';
     } catch (err) {
@@ -229,9 +290,146 @@ ${directionMsg}`;
 }
 
 /**
- * 解析并校验 LLM 输出的日程 JSON
+ * LLM 原始输出的**带标记截断预览**（2026-10-01）。
+ *
+ * 为什么必须加：日志取证发现后端把 LLM 返回体**静默截断到约 320 字符、且不加任何标记**，
+ * 于是"成功"的样本和"失败"的样本看起来停在同一位置（都停在一个词中间），
+ * 三月七的日程生成失败**因此完全无法从日志判断根因**。
+ * 现在任何一次校验失败都会打一条带「共 N 字符 / 已截断」的预览；
+ * 需要看全文时设环境变量 `SCHEDULE_GEN_DUMP=1`。
+ */
+function scheduleRawPreview(raw, limit = 400) {
+  const text = String(raw ?? '');
+  const head = text.slice(0, limit).replace(/\s+/g, ' ');
+  return text.length > limit ? `${head} …（共 ${text.length} 字符，已截断）` : head;
+}
+
+function dumpScheduleRaw(raw, displayName, reason) {
+  console.warn(`[scheduleGen] ${displayName} ${reason}；原始输出预览：${scheduleRawPreview(raw)}`);
+  if (process.env.SCHEDULE_GEN_DUMP === '1') {
+    console.warn(`[scheduleGen] ${displayName} 原始输出全文（${String(raw ?? '').length} 字符）：\n${String(raw ?? '')}`);
+  }
+}
+
+/** 分钟 → "HH:MM"（负数/超 1440 自动回绕） */
+function minutesToHHMM(minutes) {
+  const m = ((Math.trunc(minutes) % 1440) + 1440) % 1440;
+  return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+}
+
+/**
+ * 确定性修复：**睡眠块优先**，把被它盖住的非睡眠活动裁掉。
+ *
+ * 为什么需要（2026-10-01，有真机失败样本）：
+ * 复现时抓到德丽莎的失败原文 —— 模型先排 `00:00→05:00「深夜学生宿舍巡查」`，
+ * 又排了一个跨零点的睡眠块（如 `22:00→07:00「就寝安眠」`）。两段在真实时间里**重叠**
+ * （深夜巡查整段被睡眠盖住），校验直接判死，只能靠"再来一次"碰运气 ——
+ * 日志里 4 次失败有 3 次是这么被重试救回来的，剩下那次（三月七）连输两次就成了用户看到的失败。
+ *
+ * 这类冲突**有唯一合理解法**，不需要重掷骰子：
+ *   · 睡眠是不可让位的（replyDelay=-1 段决定了她的作息与消息队列行为）；
+ *   · 非睡眠段里与睡眠重叠的分钟**本来就已被睡眠覆盖**，删掉它不会造成任何时间空档
+ *     ⇒ **覆盖不变性**：本函数只做"减法"，且减掉的每一分钟都仍在睡眠块里 ⇒ 24 小时覆盖必然保持。
+ *   · 若一段被睡眠从中间切开（睡眠夹在它内部），会切成两段相邻的子段，时间上仍然首尾相接。
+ * 返回新数组；没有冲突时返回原数组（**逐字节不变**，保证干净日程不受影响）。
+ */
+export function repairScheduleOverlaps(activities) {
+  if (!Array.isArray(activities) || activities.length === 0) return activities;
+  const sleepBlocks = activities.filter(a => a && a.replyDelay === -1);
+  if (sleepBlocks.length === 0) return activities;
+
+  // 睡眠占用位图（1440 分钟），跨零点段展开后取模
+  const sleepMask = new Uint8Array(1440);
+  for (const block of sleepBlocks) {
+    let s = timeToMinutes(block.startTime);
+    let e = timeToMinutes(block.endTime);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+    if (e <= s) e += 1440;
+    for (let m = s; m < e; m++) sleepMask[((m % 1440) + 1440) % 1440] = 1;
+  }
+
+  let changed = false;
+  const out = [];
+  for (const act of activities) {
+    if (!act || act.replyDelay === -1) { out.push(act); continue; }
+    let s = timeToMinutes(act.startTime);
+    let e = timeToMinutes(act.endTime);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) { out.push(act); continue; }
+    if (e <= s) e += 1440;
+    const free = [];
+    for (let m = s; m < e; m++) if (!sleepMask[((m % 1440) + 1440) % 1440]) free.push(m);
+    if (free.length === e - s) { out.push(act); continue; }   // 完全没冲突
+
+    changed = true;
+    if (free.length === 0) continue;                           // 整段被睡眠盖住 → 丢弃
+    // 连续段切分（被睡眠从中间切开时得到两段相邻子段）
+    const runs = [];
+    let runStart = free[0];
+    let prev = free[0];
+    for (let i = 1; i < free.length; i++) {
+      if (free[i] === prev + 1) { prev = free[i]; continue; }
+      runs.push([runStart, prev + 1]);
+      runStart = free[i];
+      prev = free[i];
+    }
+    runs.push([runStart, prev + 1]);
+    for (const [rs, re] of runs) {
+      out.push({ ...act, startTime: minutesToHHMM(rs), endTime: minutesToHHMM(re) });
+    }
+  }
+
+  if (!changed) return activities;
+  out.sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+  return out;
+}
+
+/** 首轮就把格式约束贴在最后一条 user 消息里：长 system 中间那份规范，模型经常读不到 */
+const SCHEDULE_FORMAT_TAIL = `【输出格式 · 硬性要求】
+只输出一个 JSON 对象，形如：
+{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"她站在镜前慢慢理顺长发，水汽沾湿额发。"}]}
+8~15 条，按时间顺序覆盖完整 24 小时、上一条 endTime 等于下一条 startTime，不留空档；只有睡觉那条 replyDelay=-1，其余为 0；description 20~40 字且必须有内容。
+不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
+
+/**
+ * 「格式纠正」重试指令（2026-10-22）
+ *
+ * 背景（真机实测）：日程与日报都传了 `response_format: { type: 'json_object' }`，
+ * 但网关**直接忽略该参数**，模型返回的是 Markdown 排版（`# 银狼LV.999 · 今日日程安排`），
+ * 解析器要 JSON 数组 → `No JSON array found` → 两次尝试全废。
+ * 实测 7 个角色 14 次尝试全部失败，日程功能整体不可用。
+ *
+ * 修法：不重写提示词（原文已经写得很强），而是**把上一次的输出回灌**，只要求它
+ * 把同样的内容改写成 JSON。模型做「格式转换」比「从零遵守格式」成功率高得多，
+ * 也不会因为换一次随机采样就把角色/剧情写飞。
+ */
+const JSON_ONLY_REPAIR = `你上一次的回答不是合法 JSON（写成了 Markdown 标题/表格/分点）。
+
+现在请把**同样的日程内容**改写成下面这个结构的纯 JSON，字段名一个字都不能改：
+
+{"activities":[
+  {"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"她站在镜前慢慢理顺长发，水汽沾湿额发。"}
+]}
+
+硬性要求：
+- 一共 8~15 条，按时间顺序覆盖完整 24 小时，上一条的 endTime 必须等于下一条的 startTime，不留任何空档；
+- 只有睡觉那一条 replyDelay 是 -1，其余全部 0；
+- description 20~40 字、必须有内容，不许空字符串；
+- 只输出这个 JSON 对象本身：不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
+
+/**
+ * 解析并校验 LLM 输出的日程 JSON。
+ *
+ * 真正的实现是下面的 `validateScheduleInner`；本函数是**带失败回显的包装**：
+ * 失败时统一补一条原始输出预览（具体原因仍由 inner 里各自的 warn 说明），
+ * 这样"校验为什么没过"永远能从日志里看出来。
  */
 export function parseAndValidateSchedule(raw, displayName) {
+  const result = validateScheduleInner(raw, displayName);
+  if (!result) dumpScheduleRaw(raw, displayName, '日程校验未通过（具体原因见上一条 warn）');
+  return result;
+}
+
+function validateScheduleInner(raw, displayName) {
   let activities;
 
   // 优先尝试完整 JSON 解析（兼容 json_object 模式的 {"activities":[...]} 和旧格式 [...]）
@@ -265,8 +463,28 @@ export function parseAndValidateSchedule(raw, displayName) {
 
   // 校验每个活动
   const required = ['startTime', 'endTime', 'activity', 'location', 'replyDelay', 'description'];
+  // 24:00 是合法终点（表示当天结束），模型与手写日程都常用它；正规化后再校验，
+  // 否则一条 24:00 结尾的完整日程会被整份判废（真机表现为「日日重生成」）。
+  const hhmm = (value) => {
+    const text = String(value || '').trim();
+    return text === '24:00' ? '00:00' : text;
+  };
   for (const act of activities) {
-    if (!act || typeof act !== 'object' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(act.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(act.endTime)) return null;
+    if (act && typeof act === 'object') {
+      if (act.endTime === '24:00') act.endTime = '00:00';
+      else if (act.startTime === '24:00') act.startTime = '00:00';
+      // 2026-11-06：可自动补的字段就地补，别为一条小瑕疵把整份日程判废重生成
+      // （真机日志：银狼首轮非 JSON、天使「未覆盖完整一天」⇒ 一整轮 tokens 白花）。
+      if (typeof act.replyDelay !== 'number' || !Number.isFinite(act.replyDelay)) {
+        const sleeping = /睡|就寝|安眠|梦/.test(String(act.activity || ''));
+        act.replyDelay = sleeping ? -1 : 0;
+      }
+      if ((!act.description || !String(act.description).trim()) && act.activity) {
+        const place = act.location ? `，在${String(act.location).trim()}` : '';
+        act.description = `${String(act.activity).trim()}${place}。`;
+      }
+    }
+    if (!act || typeof act !== 'object' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.startTime)) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.endTime))) return null;
     for (const key of required) {
       if (!(key in act)) {
         console.warn(`[scheduleGen] Missing key "${key}" in activity for ${displayName}`);
@@ -290,7 +508,56 @@ export function parseAndValidateSchedule(raw, displayName) {
     return null;
   }
 
+  // 计算最长睡眠时长
+  let maxSleepDuration = 0;
+  for (const block of sleepingBlocks) {
+    const duration = timeToMinutes(block.endTime) - timeToMinutes(block.startTime);
+    const adjusted = duration < 0 ? duration + 24 * 60 : duration;
+    if (adjusted > maxSleepDuration) maxSleepDuration = adjusted;
+  }
+  if (maxSleepDuration < 15) {
+    console.warn(`[scheduleGen] Sleep too short (${maxSleepDuration}min) for ${displayName}, need ≥15min`);
+    return null;
+  }
+
+  // 2026-11-03 用户：「角色还在大白天睡觉」—— 主睡眠块**不许压到白天**。
+  // 原来提示词明着鼓励「凌晨 3-4 点睡、中午 11-12 点起」「下午 2-4 点起」，
+  // 于是真机上出现「03:00–11:00 就寝安眠」，上午十点整座城有一半人在睡。
+  // 现在硬性约束：主睡（≥3 小时那段）必须整体落在 21:00–09:30 窗口内，起床不晚于 10:00。
+  // 校验不通过 → 返回 null → 上层按既有逻辑重试/重生成，旧模板也会因此被换掉。
+  {
+    const MAIN_SLEEP_MIN_MINUTES = 180;
+    const DAY_SLEEP_START_OK = 21 * 60;   // 21:00 之后才允许开始长睡
+    const DAY_SLEEP_END_LIMIT = 10 * 60;  // 10:00 前必须起床
+    for (const block of sleepingBlocks) {
+      const start = timeToMinutes(block.startTime);
+      const end = timeToMinutes(block.endTime);
+      const duration = (end - start + 24 * 60) % (24 * 60);
+      if (duration < MAIN_SLEEP_MIN_MINUTES) continue; // 小憩不在此列
+      // 「在床上」的判定：跨零点的长睡（start ≥ 21:00 或 end ≤ 10:00 都算合规窗口内的端点）
+      const startsOk = start >= DAY_SLEEP_START_OK || start <= DAY_SLEEP_END_LIMIT;
+      const endsOk = end <= DAY_SLEEP_END_LIMIT || end >= DAY_SLEEP_START_OK;
+      // 主睡必须"跨过午夜"或完全在凌晨段：既没有跨零点、又落在白天 → 违规
+      const crossesMidnight = start > end;
+      const isDaytimeSleep = !crossesMidnight && start >= 6 * 60 && end > DAY_SLEEP_END_LIMIT;
+      if (isDaytimeSleep || !startsOk || !endsOk) {
+        console.warn(`[scheduleGen] 主睡眠块压到白天（${displayName}）：${block.startTime}–${block.endTime}`
+          + `「${block.activity}」⇒ 必须落在 21:00–09:30 窗口内，返回 null 触发重生成`);
+        return null;
+      }
+    }
+  }
   // 校验时间不重叠
+  // 2026-10-01：先做**确定性修复**（睡眠块优先，裁掉与它重叠的非睡眠段），再判重叠。
+  // 真机抓到的失败样本正是这一类（跨零点睡眠块 vs 深夜活动），修完覆盖不变、也不会再掷骰子。
+  {
+    const repaired = repairScheduleOverlaps(activities);
+    if (repaired !== activities) {
+      const before = activities.length;
+      console.warn(`[scheduleGen] 修掉了与跨零点睡眠块重叠的时段（${displayName}）：${before} → ${repaired.length} 段`);
+      activities = repaired;
+    }
+  }
   for (let i = 0; i < activities.length; i++) {
     for (let j = i + 1; j < activities.length; j++) {
       if (timeRangesOverlap(
@@ -496,7 +763,7 @@ export function assignNextRefreshTime(characterId) {
   const refreshAt = new Date(target.getTime() + randomOffset);
 
   db.prepare('UPDATE characters SET next_schedule_refresh_at = ? WHERE id = ?')
-    .run(refreshAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, ''), characterId);
+    .run(toSqlUtc(refreshAt), characterId);
 
   console.log(`[scheduleGen] Next refresh for char ${characterId}: ${refreshAt.toISOString()}`);
   return refreshAt;
@@ -504,13 +771,15 @@ export function assignNextRefreshTime(characterId) {
 
 /**
  * 为角色创建当天的 daily_schedules 快照（从 template 派生）
+ * 「当天」= **程序日期**（推进程序时间之后，快照落在世界钟的那一天；偏移为 0 时即真实今天）
  */
 export function snapshotTodaySchedule(characterId) {
   const db = getDb();
   const template = db.prepare('SELECT schedule_json FROM schedule_templates WHERE character_id = ?').get(characterId);
   if (!template) return null;
 
-  const today = getLocalDateKey();
+  const today = getProgramDateKey();
+  // 上游 v4.2.0：重排时保留当天已被手动编辑/奇遇占用的活动
   const old = db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id=? AND schedule_date=?').get(characterId, today);
   let daily = JSON.parse(template.schedule_json);
   if (old) for (const fixed of JSON.parse(old.schedule_json).filter(a => a.edited)) {
@@ -521,14 +790,21 @@ export function snapshotTodaySchedule(characterId) {
     INSERT OR REPLACE INTO daily_schedules (character_id, schedule_date, schedule_json)
     VALUES (?, ?, ?)
   `).run(characterId, today, JSON.stringify(daily));
+  // 奇遇时长预留：新快照落地后，把进行中的事件开场活动重新钉回去（上游 v3.9.0）
   reapplyActiveEventSchedule(characterId, db);
   for (const id of refreshResidenceDailySleep(db, characterId)) { invalidateCache(id); syncSleepingState(id); }
 
-  // 从同一个 today 按日历减两天，避免 SQLite 墙钟与 JS 时钟不一致。
+  // 清理超过 2 天的旧快照（按程序日期算，跳天之后不会误删/漏删）
   db.prepare(
-    `DELETE FROM daily_schedules WHERE character_id = ? AND schedule_date < DATE(?, '-2 days')`
+    `DELETE FROM daily_schedules WHERE character_id = ? AND schedule_date < date(?, '-2 days')`
   ).run(characterId, today);
 
-  return db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id = ? AND schedule_date = ?')
-    .get(characterId, today).schedule_json;
+  // 返回值必须是**重新钉回奇遇开场活动之后**的当日行（上游 v3.9.0 口径）。
+  // 本地从 v3.6.2 起漏了这一步，返回的是 template 原始 JSON：
+  // 事件占用 +5 分钟（或跨午夜延长）之后，调用方拿到的却是没被占用的旧日程 ——
+  // 日程页/当前活动与库里真实快照不一致（2026-10-15 补）。
+  // 取不到行时（理论不可能，上面刚 INSERT）回落 template，保持旧行为不炸。
+  const row = db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id = ? AND schedule_date = ?')
+    .get(characterId, today);
+  return row?.schedule_json ?? template.schedule_json;
 }

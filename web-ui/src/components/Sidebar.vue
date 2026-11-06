@@ -1,10 +1,5 @@
 <template>
-  <aside
-    class="sidebar"
-    :class="{ 'mobile-open': isMobile && mobileOpen }"
-    :aria-hidden="(!isMobile && collapsed) ? 'true' : undefined"
-    :inert="(!isMobile && collapsed) ? true : undefined"
-  >
+  <aside class="sidebar" :class="{ 'mobile-open': isMobile && mobileOpen }">
     <div ref="charListEl" class="char-list stagger">
       <router-link to="/god-says" class="char-item god-entry" :class="{ active: route.path === '/god-says' }" @click="emit('charSelected')">
         <div class="god-entry-emblem"><GodEntryEmblem /></div>
@@ -135,9 +130,9 @@
       </div>
     </div>
 
-    <!-- 移动端底部：朋友圈 + 媒体 + 更多 -->
+    <!-- 移动端底部：朋友圈 + 奇遇 + 更多 -->
     <div v-if="isMobile" class="sidebar-footer">
-      <div class="footer-nav-btn" role="button" tabindex="0" :aria-current="$route.path === '/moments' ? 'page' : undefined" @click="onMomentsClick" @keydown.enter.prevent="onMomentsClick" @keydown.space.prevent="onMomentsClick">
+      <div class="footer-nav-btn" :class="{ active: $route.path === '/moments' }" @click="onMomentsClick">
         <div class="nav-icon-wrap">
           <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
             <path d="M679.17 398.982V126.497s-133.338-71.481-288.989-16.366l288.99 288.851z m25.245 160.303V137.748s157.63 71.434 202.052 244.963L704.415 559.285z m-84.8 122.527l290.99-273.649s51.488 83.709-25.293 273.649H619.614z m-148.586 34.695h393.014S816.6 845.102 646.788 898.195L471.03 716.507z m-128.293-86.811v256.18s102.072 65.365 276.878 21.477L342.736 629.696z m-227.366 13.25l199.075-178.62v406.207c0-0.001-120.272-41.75-199.075-227.587z m-5.045-28.57S64.787 467.442 128.48 339.824h273.81L110.326 614.377z m35.357-303.193s57.603-130.594 214.21-191.87l186.894 191.87H145.682z" />
@@ -146,17 +141,17 @@
         </div>
         <span>朋友圈</span>
       </div>
-      <router-link to="/media" class="footer-nav-btn" :aria-current="$route.path.startsWith('/media') ? 'page' : undefined" @click="onMediaClick">
+      <div class="footer-nav-btn" :class="{ active: $route.path === '/events' }" @click="onEventsClick">
         <div class="nav-icon-wrap">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 10v4a1 1 0 0 0 1 1h4l10 4V5L8 9H4a1 1 0 0 0-1 1Z" />
-            <path d="M8 9v6M5 15l1 5h3l-1-5M21 9a5 5 0 0 1 0 6" />
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
           </svg>
-          <span v-if="mediaUnreadCount > 0" class="nav-dot" :title="`媒体有 ${mediaUnreadCount} 条未读更新`" :aria-label="`媒体有 ${mediaUnreadCount} 条未读更新`">{{ mediaUnreadCount > 99 ? '99+' : mediaUnreadCount }}</span>
+          <span v-if="events.newEventCount > 0" class="nav-dot">{{ events.newEventCount > 99 ? '99+' : events.newEventCount }}</span>
         </div>
-        <span>媒体</span>
-      </router-link>
-      <div class="footer-more-btn" role="button" tabindex="0" aria-label="更多" :aria-expanded="showMoreMenu" @click="showMoreMenu = !showMoreMenu" @keydown.enter.prevent="showMoreMenu = !showMoreMenu" @keydown.space.prevent="showMoreMenu = !showMoreMenu">
+        <span>奇遇</span>
+      </div>
+      <div class="footer-more-btn" role="button" tabindex="0" @click="showMoreMenu = !showMoreMenu" @keydown.enter.prevent="showMoreMenu = !showMoreMenu" @keydown.space.prevent="showMoreMenu = !showMoreMenu">
         <svg viewBox="0 0 1024 1024" width="22" height="22" fill="currentColor">
           <path d="M436 128H168a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V168a40 40 0 0 0-40-40z m-32 276H200V200h204z m32 144H168a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V588a40 40 0 0 0-40-40z m-32 276H200V620h204z m452-276H588a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V588a40 40 0 0 0-40-40z m-32 276H620V620h204zM716 118c-104.9 0-190 85.1-190 190s85.1 190 190 190 190-85.1 190-190-85.1-190-190-190z m83.4 273.4A117.8 117.8 0 1 1 834 308a117 117 0 0 1-34.6 83.4z"/>
         </svg>
@@ -166,33 +161,29 @@
     <!-- 更多菜单弹窗 -->
     <Transition name="menu-slide">
       <div v-if="showMoreMenu" class="more-menu-overlay" @click.self="showMoreMenu = false">
-        <div class="more-menu-panel more-menu-grid">
-          <router-link to="/events" class="more-menu-item" @click.prevent="onEventsClick">
-            <div class="nav-icon-wrap">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
-              </svg>
-              <span v-if="events.newEventCount > 0" class="nav-dot nav-dot-count">{{ events.newEventCount > 99 ? '99+' : events.newEventCount }}</span>
-            </div>
-            <span>奇遇</span>
-          </router-link>
+        <div class="more-menu-panel">
           <router-link to="/tavern" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">
               <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
                 <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z"/>
                 <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
               </svg>
+              <!-- 《邻舍日报》未读：与 NavBar 酒馆项同源红点 -->
+              <span v-if="newspaper.unread" class="nav-dot nav-dot-daily" title="今天的《邻舍日报》还没读"></span>
             </div>
             <span>酒馆</span>
           </router-link>
-          <router-link to="/town" class="more-menu-item" @click="onMenuItemClick">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-            </svg>
-            <span>世界（内测）</span>
+          <!-- 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体） -->
+          <router-link to="/media" class="more-menu-item" @click="onMediaClick">
+            <div class="nav-icon-wrap">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 22V4a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1v18" />
+                <path d="M4 22h16" />
+                <path d="M9 6h6M9 10h6M9 14h4" />
+              </svg>
+              <span v-if="mediaUnreadCount > 0" class="nav-dot" :title="`传媒有 ${mediaUnreadCount} 条未读更新`">{{ mediaUnreadCount > 99 ? '99+' : mediaUnreadCount }}</span>
+            </div>
+            <span>传媒</span>
           </router-link>
           <router-link to="/schedule" class="more-menu-item" @click="onMenuItemClick">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -206,6 +197,13 @@
               <path stroke="currentColor" stroke-width="20" d="M742.1 849.5a21.3 21.3 0 0 1-15.2-6.3L311.5 427.8 139.5 571c-8.9 7.9-22.5 7.1-30.3-1.8-7.9-8.9-7.1-22.4 1.8-30.3l172-150.4c8.5-7.5 21.4-7.2 29.5 0.9l429.8 429.8c8.4 8.4 8.4 22 0 30.4zM914.2 741.9c-4.2 4.3-9.8 6.5-15.4 6.5-5.4 0-10.8-2-15-6.1L657.1 520.8l-121.9 121.9c-8.4 8.4-22 8.4-30.4 0s-8.4-22 0-30.4l137-137c8.3-8.3 21.8-8.4 30.2-0.2l221.8 213.5c8.5 8.3 8.7 21.9 0.4 30.3z"/>
             </svg>
             <span>相册</span>
+          </router-link>
+          <router-link to="/worldmap" class="more-menu-item" @click="onMenuItemClick">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/>
+              <path d="M9 4v14M15 6v14"/>
+            </svg>
+            <span>地图</span>
           </router-link>
           <router-link to="/backpack" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">
@@ -224,7 +222,7 @@
                 <rect x="2" y="4" width="20" height="16" rx="2"/>
                 <path d="M2 4L12 13L22 4"/>
               </svg>
-              <span v-if="mailbox.unreadCount > 0" class="nav-dot nav-dot-count">{{ mailbox.unreadCount > 99 ? '99+' : mailbox.unreadCount }}</span>
+              <span v-if="mailbox.unreadCount > 0" class="nav-dot">{{ mailbox.unreadCount > 99 ? '99+' : mailbox.unreadCount }}</span>
             </div>
             <span>信箱</span>
           </router-link>
@@ -332,6 +330,7 @@ import LinsheModal from './ui/LinsheModal.vue'
 import { ref, computed, onMounted, onUnmounted, watch, inject } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
+import { useProgramClock } from '../composables/useProgramClock.js'
 import { useMomentsStore } from '../stores/moments.js'
 import { useEventsStore } from '../stores/events.js'
 import { useProactiveStore } from '../stores/notifications.js'
@@ -340,20 +339,18 @@ import { useMailboxStore } from '../stores/mailbox.js'
 import { useGroupsStore } from '../stores/groups.js'
 import { useBackpackStore } from '../stores/backpack.js'
 import { useNewspaperStore } from '../stores/newspaper.js'
-import { useMediaStore } from '../stores/media.js'
-import { useCharacterFoldersStore, groupCharactersByFolder } from '../stores/characterFolders.js'
 import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'
 import GearIcon from './GearIcon.vue'
 import GodEntryEmblem from './godSays/GodEntryEmblem.vue'
 import { useGodSaysStore } from '../stores/godSays.js'
 import { selectStandingCharacter } from '../utils/standingDisplay.js'
+import { useCharacterFoldersStore, groupCharactersByFolder } from '../stores/characterFolders.js'
+import { useMediaStore } from '../stores/media.js'   // 上游 v3.9.0 合并：媒体内容页未读数
 
 const props = defineProps({
   isMobile: { type: Boolean, default: false },
   mobileOpen: { type: Boolean, default: false },
-  // 桌面端保持固定宽度，通过位移收纳并同步可达性状态。
-  collapsed: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['charSelected'])
@@ -361,6 +358,8 @@ const emit = defineEmits(['charSelected'])
 const router = useRouter()
 const route = useRoute()
 const chat = useChatStore()
+const clock = useProgramClock()
+clock.ensureLoaded()
 const godSays = useGodSaysStore()
 const godEntrySubtitle = computed(() => godSays.state?.activity?.activity || [...(godSays.state?.messages || [])].reverse().find(m => m.role === 'assistant' && m.content)?.content || '天使在云庭等候')
 const moments = useMomentsStore()
@@ -371,9 +370,14 @@ const mailbox = useMailboxStore()
 const groups = useGroupsStore()
 const backpack = useBackpackStore()
 const newspaper = useNewspaperStore()
-const media = useMediaStore()
-const mediaUnreadCount = computed(() => media.newPostCount + Number(newspaper.unread))
 const folderStore = useCharacterFoldersStore()
+// 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体）未读数
+const media = useMediaStore()
+const mediaUnreadCount = computed(() => media.newPostCount)
+// 已在媒体页时点入口 = 请求刷新（与 moments/events 的 onXxxClick 同口径）
+function onMediaClick() {
+  if (route.path === '/media') media.requestRefresh()
+}
 const toast = inject('toast', null)
 const showMoreMenu = ref(false)
 const charListEl = ref(null)
@@ -484,6 +488,8 @@ onMounted(() => {
   groups.loadGroups()
   backpack.fetchItems()
   folderStore.load()
+  // 上游 v3.9.0 合并：媒体内容页未读数（幂等，重复调用内部会跳过）
+  media.connectSSE()
 })
 
 // 角色增删（招募/删除）后各文件夹的成员数会变，跟着刷新一次
@@ -516,7 +522,6 @@ function onMomentsClick() {
 }
 
 function onEventsClick() {
-  showMoreMenu.value = false
   if (route.path === '/events') {
     events.requestScrollToTop()
   } else {
@@ -530,15 +535,12 @@ function onMenuItemClick() {
   if (props.isMobile) emit('charSelected')
 }
 
-function onMediaClick() {
-  if (route.path === '/media') media.requestRefresh()
-  onMenuItemClick()
-}
-
 function formatTime(iso) {
   if (!iso) return ''
-  const d = new Date(iso)
-  const now = new Date()
+  // 会话列表也按程序时间显示，避免和聊天页时间互相打架
+  const d = clock.toProgram(iso)
+  if (!d) return ''
+  const now = clock.now()
   const diff = now - d
 
   if (diff < 60000) return '刚刚'
@@ -564,8 +566,7 @@ function formatTime(iso) {
 .god-entry-star { color:var(--fun-gold); font-size:11px; margin-left:5px; }
 .god-entry-arrow { color:var(--text-secondary); font-size:16px; }
 .sidebar {
-  /* 收纳时不改变宽度，列表与文字在滑动过程中保持原有排版。 */
-  width: var(--sidebar-width, 300px); min-width: var(--sidebar-width, 300px);
+  width: 300px; min-width: 300px;
   height: 100vh; height: 100dvh;
   background: var(--glass-bg);
   backdrop-filter: blur(16px);
@@ -600,6 +601,47 @@ function formatTime(iso) {
   background: var(--list-item-active-bg);
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.04);
 }
+
+/* ── 角色文件夹分组（可折叠） ── */
+.folder-group-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 20px 5px 18px;
+  font-size: 11px; font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer; user-select: none;
+  transition: color 0.15s ease;
+}
+.folder-group-header:hover { color: var(--accent); }
+.folder-group-arrow {
+  flex-shrink: 0;
+  transition: transform 0.18s var(--ease-standard);
+}
+.folder-group-header.collapsed .folder-group-arrow { transform: rotate(-90deg); }
+.folder-group-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.folder-group-count {
+  flex-shrink: 0;
+  min-width: 16px; padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--tint-subtle);
+  color: var(--text-secondary);
+  font-size: 10px; font-weight: 600;
+  text-align: center;
+}
+.folder-group-header.collapsed .folder-group-count { color: var(--accent); }
+
+/* 组内角色缩进，形成层级 */
+.folder-group-body { position: relative; }
+.char-item.in-folder { margin-left: 20px; }
+
+
+/* 折叠/展开的淡入淡出；离开项脱离文档流，避免下方条目跟着跳 */
+.folder-chars-enter-active { transition: opacity 0.18s ease; }
+.folder-chars-leave-active { transition: opacity 0.12s ease; position: absolute; left: 0; right: 0; }
+.folder-chars-enter-from,
+.folder-chars-leave-to { opacity: 0; }
 
 .char-avatar-wrap {
   position: relative;
@@ -642,10 +684,10 @@ function formatTime(iso) {
 .char-info { flex: 1; min-width: 0; }
 .char-name { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 3px; }
 .char-schedule {
-  font-size: 11px; color: var(--accent);
+  /* 用 --accent-text（可读版强调色）：11px 小字用 --accent 在白底上只有 2.6:1 */
+  font-size: 11px; color: var(--accent-text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   margin-bottom: 3px;
-  opacity: 0.8;
 }
 .char-preview {
   font-size: 12px; color: var(--text-secondary);
@@ -704,48 +746,6 @@ function formatTime(iso) {
   font-size: 11px; font-weight: 600; color: var(--text-secondary);
   letter-spacing: 1px;
 }
-
-/* ── 角色文件夹分组（可折叠） ── */
-.folder-group-header {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 20px 5px 18px;
-  font-size: 11px; font-weight: 600;
-  color: var(--text-secondary);
-  cursor: pointer; user-select: none;
-  transition: color 0.15s ease;
-}
-.folder-group-header:hover { color: var(--accent); }
-.folder-group-arrow {
-  flex-shrink: 0;
-  transition: transform 0.18s var(--ease-standard);
-}
-.folder-group-header.collapsed .folder-group-arrow { transform: rotate(-90deg); }
-.folder-group-name {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.folder-group-count {
-  flex-shrink: 0;
-  min-width: 16px; padding: 0 5px;
-  border-radius: var(--radius-full);
-  background: var(--tint-subtle);
-  color: var(--text-secondary);
-  font-size: 10px; font-weight: 600;
-  text-align: center;
-}
-.folder-group-header.collapsed .folder-group-count { color: var(--accent); }
-
-/* 组内角色缩进，形成层级 */
-.folder-group-body { position: relative; }
-.char-item.in-folder { margin-left: 20px; }
-
-
-/* 折叠/展开的淡入淡出；离开项脱离文档流，避免下方条目跟着跳 */
-.folder-chars-enter-active { transition: opacity 0.18s ease; }
-.folder-chars-leave-active { transition: opacity 0.12s ease; position: absolute; left: 0; right: 0; }
-.folder-chars-enter-from,
-.folder-chars-leave-to { opacity: 0; }
-
 .group-create-btn {
   border: none; background: rgb(224 123 108 / 12%);
   width: 24px; height: 24px; min-width: 24px; padding: 0; border-radius: 8px;
@@ -939,6 +939,12 @@ function formatTime(iso) {
   position: relative;
   cursor: pointer;
 }
+.footer-nav-btn:hover, .footer-nav-btn.active {
+  background: var(--bg-hover);
+  color: var(--text-bright);
+  text-decoration: none;
+}
+
 .footer-more-btn {
   width: 46px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
@@ -951,15 +957,7 @@ function formatTime(iso) {
   transition: all 0.2s ease;
   user-select: none;
 }
-/* 触屏点击会保留模拟 :hover，仅在支持悬停的精细指针设备启用。 */
-@media (hover: hover) and (pointer: fine) {
-  .footer-nav-btn:hover,
-  .footer-more-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-bright);
-    text-decoration: none;
-  }
-}
+.footer-more-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
 
 .nav-icon-wrap {
   position: relative;
@@ -985,6 +983,18 @@ function formatTime(iso) {
   animation: jelly-pop 0.45s cubic-bezier(0.17, 0.89, 0.32, 1.35);
 }
 
+/* 《邻舍日报》未读点：与信箱数字徽标同皮肤，收成小圆点落到图标左上位 */
+.nav-dot-daily {
+  top: -6px;
+  right: auto;
+  left: -10px;
+  width: 12px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
+}
+
 @keyframes jelly-pop {
   0%   { transform: scale(0); opacity: 0; }
   60%  { transform: scale(1.25); opacity: 1; }
@@ -1006,69 +1016,21 @@ function formatTime(iso) {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 20px 20px 0 0;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .more-menu-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  min-width: 0;
-  min-height: 96px;
-  padding: 16px 4px;
-  border-radius: 12px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--text-primary);
-  text-align: center;
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px; border-radius: 12px;
+  font-size: 15px; color: var(--text-primary);
   text-decoration: none;
-  white-space: nowrap;
-  transition: transform var(--dur-fast) var(--ease-standard), opacity var(--dur-fast) var(--ease-standard);
+  transition: background 0.15s;
 }
-.more-menu-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  max-height: calc(100dvh - 32px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 20px 16px calc(20px + env(safe-area-inset-bottom, 0px));
-}
-/* 只在按下时反馈，不保留当前路由或触屏悬停的选中痕迹。 */
-.more-menu-item:active {
-  transform: scale(0.96);
-  opacity: 0.72;
-}
-.more-menu-item svg { width: 28px; height: 28px; flex-shrink: 0; }
-
-/* 菜单徽标统一贴图标左上角；数字变宽时向左延展，避免遮挡图标。 */
-.more-menu-item .nav-dot {
-  top: -6px;
-  right: calc(100% - 2px);
-  left: auto;
-  width: 12px;
-  min-width: 12px;
-  height: 12px;
-  padding: 0;
-  border-radius: 50%;
-  font-size: 6px;
-  line-height: 9px;
-}
-
-.more-menu-item .nav-dot-count {
-  width: auto;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 10px;
-  font-size: 10px;
-  line-height: 16px;
-}
+.more-menu-item:hover { background: var(--tint-subtle); }
+.more-menu-item svg { flex-shrink: 0; }
 
 /* 弹窗动画 */
 .menu-slide-enter-active, .menu-slide-leave-active {
-  transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .menu-slide-enter-from, .menu-slide-leave-to {
   opacity: 0;

@@ -23,9 +23,12 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { cleanupBeforeStartup } from "./lib/projectProcesses.mjs";
+import { resolveServicePort, isLinsheService, shutdownLinshe } from '../agent-core/src/utils/servicePort.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
+const API_PORT = resolveServicePort();
+const API_URL = `http://localhost:${API_PORT}`;
 
 // ── 终端颜色 ──
 const C = {
@@ -88,7 +91,7 @@ async function waitFor(url, child, timeoutSec = 30) {
     if (child && child.exitCode !== null) return false;
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      if (resp.ok) return true;
+      if (resp.ok && (url !== `${API_URL}/api/health` || await isLinsheService(API_URL))) return true;
     } catch { /* not ready */ }
     await new Promise(r => setTimeout(r, 1000));
   }
@@ -130,10 +133,7 @@ async function shutdown() {
   // ── Windows: 先请求 agent-core 优雅退出（防止 SQLite WAL 损坏）──
   if (process.platform === "win32") {
     try {
-      await fetch("http://localhost:3099/api/shutdown", {
-        method: "POST",
-        signal: AbortSignal.timeout(3000),
-      });
+      await shutdownLinshe(API_URL);
     } catch {
       // 可能已经挂了，无视
     }
@@ -214,8 +214,8 @@ async function main() {
     },
     {
       name: "agent-core",
-      port: 3099,
-      url: "http://localhost:3099/api/health",
+      port: API_PORT,
+      url: `${API_URL}/api/health`,
       cwd: resolve(ROOT, "agent-core"),
       getCmd() { return "npx"; },
       args: ["nodemon", "--watch", "src", "--watch", "app.js", "-e", "js,json", "app.js"],
@@ -266,7 +266,7 @@ async function main() {
   console.log(`  ${C.bold}All services running!${C.reset}`);
   console.log();
   console.log(`    Web UI:  ${C.cyan}http://localhost:5173${C.reset}  (Vite HMR)`);
-  console.log(`    API:     ${C.cyan}http://localhost:3099${C.reset}   (Express)`);
+  console.log(`    API:     ${C.cyan}${API_URL}${C.reset}   (Express)`);
   console.log(`    Vector:  ${C.cyan}http://localhost:8765${C.reset}   (FastAPI)`);
   console.log();
   console.log(`  ${C.dim}Press Ctrl+C to stop all services${C.reset}`);

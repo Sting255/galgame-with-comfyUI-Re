@@ -95,8 +95,7 @@ export function createTownExperienceService({ db, clock, registry, writeMemory, 
         AND occurred_at >= ? AND occurred_at < ?`).get(event.worldId, actorId, dayStart, dayStart + 86400000).n;
       if (count >= 12) continue;
       let memoryIds = [];
-      // 自动相遇只沉淀小镇经历，不进入角色长期记忆；旧摘要与恢复收尾也遵循此边界。
-      if (event.type !== 'town.encounter.happened' && actor.characterExists && sync(memoryEnabled()) === true && writeMemory) {
+      if (actor.characterExists && sync(memoryEnabled()) === true && writeMemory) {
         if (writeMemory.constructor.name === 'AsyncFunction') throw townError('ASYNC_EFFECT_FORBIDDEN');
         const result = writeMemory({ conversationId: `char_${actor.characterId}`, dedupeKey: event.eventId,
           sourceRawStartId: null, sourceRawEndId: null, sourceMessageId: null,

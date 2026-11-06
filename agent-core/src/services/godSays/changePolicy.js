@@ -1,4 +1,5 @@
-import { extractEditableAppearanceBody, replaceAppearanceSection } from '../characterPersona.js';
+import { replaceAppearanceSection } from '../characterPersona.js';
+import { editableAppearanceBody as extractEditableAppearanceBody } from './appearanceText.js';
 import { validateReplacement } from './replacementPrompt.js';
 import { parseSceneOutfitDesign } from '../sceneOutfitPrompt.js';
 import { angelOutfits, cleanAngelOutfits } from './angelWardrobe.js';

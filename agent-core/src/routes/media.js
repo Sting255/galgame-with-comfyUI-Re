@@ -5,6 +5,8 @@
  *   /outlets...  媒体 CRUD（含板块）
  *   /posts       帖子分页
  *   /refresh     触发一批生成（**异步**：LLM 要几十秒，不能占着请求）
+ *
+ * 2026-10-13 合并上游 v3.9.0。
  */
 
 import { Router } from 'express';
@@ -249,7 +251,7 @@ router.post('/fill-images', (req, res) => {
   try {
     const limit = req.body?.limit ? Number(req.body.limit) : 6;
     const n = Math.min(Math.max(1, limit), 20);
-    // 两条通道都要跑：主图/海报小图，与门户的板块头图（后者被 listPostsNeedingImage 排除在外）
+    // 两条通道都要跑：主图/数字报刊小图，与门户的板块头图（后者被 listPostsNeedingImage 排除在外）
     fillPendingImages(n)
       .then(c => console.log(`[media] 手动补图完成 ${c} 张`))
       .catch(err => console.error('[media] 手动补图失败:', err.message));

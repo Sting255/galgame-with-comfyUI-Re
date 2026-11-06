@@ -1,37 +1,23 @@
 <template>
   <div class="chat-bg-panel">
-    <div class="cbp-title">背景图</div>
-    <linshe-tabs v-model="target" size="sm" :options="[{ label: '聊天背景', value: 'chat' }, { label: 'Galgame 背景', value: 'galgame' }]" :disabled="locked" aria-label="背景类型" />
-    <Transition name="cbp-fade" mode="out-in">
-      <div :key="target" class="cbp-content">
-        <div class="cbp-preview" :class="{ 'is-default': !previewBg }" :style="previewBg ? { backgroundImage: `url(${previewBg})` } : {}">
-          <span class="cbp-default-hint">{{ currentBg ? '自定义背景' : target === 'galgame' && previewBg ? '沿用聊天背景' : '默认 · 主题背景' }}</span>
-        </div>
-        <p v-if="target === 'galgame'" class="cbp-note">仅用于沉浸对话，未设置时沿用聊天背景。</p>
-        <div class="cbp-actions">
-          <linshe-button class="cbp-act" variant="secondary" size="sm" :disabled="locked" @click="pickFile">本地上传</linshe-button>
-          <linshe-button v-if="previewBg" class="cbp-act" variant="secondary" size="sm" :disabled="locked" @click="editCrop">调整取景</linshe-button>
-          <linshe-button v-if="currentBg" class="cbp-act" variant="ghost" size="sm" :disabled="locked" @click="resetBg">恢复默认</linshe-button>
-        </div>
-        <template v-if="target === 'galgame'">
-          <linshe-input v-model="requirement" type="textarea" :rows="2" :maxlength="500" aria-label="Galgame 背景画面要求" placeholder="描述想要的场景；留空按角色设定设计" :disabled="locked" />
-          <linshe-button variant="primary" size="sm" :disabled="locked" :loading="generating" @click="generateBg">生成 Galgame 背景</linshe-button>
-        </template>
-      </div>
-    </Transition>
+    <div class="cbp-title">聊天背景</div>
+    <div class="cbp-preview" :class="{ 'is-default': !currentBg }" :style="currentBg ? { backgroundImage: `url(${currentBg})` } : {}">
+      <span v-if="!currentBg" class="cbp-default-hint">默认 · 主题柔光背景</span>
+      <span v-else class="cbp-custom-hint">自定义背景</span>
+    </div>
+    <div class="cbp-actions">
+      <linshe-button class="cbp-act" variant="secondary" size="sm" :disabled="busy" @click="pickFile">本地上传</linshe-button>
+      <linshe-button v-if="currentBg" class="cbp-act" variant="ghost" size="sm" :disabled="busy" @click="resetBg">恢复默认</linshe-button>
+    </div>
     <input ref="fileEl" type="file" accept="image/*" hidden @change="onFile" />
-    <div v-if="busyText" class="cbp-note" role="status">{{ busyText }}</div>
-    <BackgroundCropper v-model="cropOpen" :src="cropSrc" :title="cropContext?.target === 'galgame' ? 'Galgame 背景取景' : '聊天背景取景'" :aspect-ratio="cropContext?.aspect || 16 / 9" :saving="busy" @save="saveCrop" />
+    <div v-if="busyText" class="cbp-note">{{ busyText }}</div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, inject, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, inject } from 'vue'
 import * as api from '../api/index.js'
 import LinsheButton from './ui/LinsheButton.vue'
-import LinsheTabs from './ui/LinsheTabs.vue'
-import LinsheInput from './ui/LinsheInput.vue'
-import BackgroundCropper from './BackgroundCropper.vue'
 
 const props = defineProps({
   character: { type: Object, default: null },
@@ -40,67 +26,43 @@ const emit = defineEmits(['updated'])
 
 const toast = inject('toast', () => {})
 
-const target = ref('chat')
-const requirement = ref('')
-const generating = ref(false)
-const currentBg = computed(() => props.character?.[target.value === 'galgame' ? 'galgame_bg_path' : 'chat_bg_path'] || '')
-const previewBg = computed(() => currentBg.value || (target.value === 'galgame' ? props.character?.chat_bg_path : '') || '')
+const currentBg = computed(() => props.character?.chat_bg_path || '')
 const busy = ref(false)
 const busyText = ref('')
 const fileEl = ref(null)
-const cropOpen = ref(false), cropSrc = ref(''), cropContext = ref(null)
-const locked = computed(() => busy.value || cropOpen.value)
-let uploadContext = null
-let objectUrl = '', releaseTimer, disposed = false
 
-function releaseCrop() {
-  if (objectUrl) URL.revokeObjectURL(objectUrl)
-  objectUrl = ''; cropSrc.value = ''; cropContext.value = null
-}
-watch(cropOpen, open => {
-  clearTimeout(releaseTimer)
-  if (!open) releaseTimer = setTimeout(releaseCrop, 300)
-})
-onBeforeUnmount(() => { disposed = true; clearTimeout(releaseTimer); releaseCrop() })
-function selectionContext() {
-  const rect = document.querySelector('.chat-view')?.getBoundingClientRect()
-  return { characterId: props.character.id, target: target.value, aspect: rect?.width && rect?.height ? rect.width / rect.height : 16 / 9 }
-}
-function openCrop(src, context) {
-  clearTimeout(releaseTimer)
-  cropContext.value = context; cropSrc.value = src; cropOpen.value = true
-}
-function editCrop() { if (!locked.value && props.character && previewBg.value) openCrop(previewBg.value, selectionContext()) }
+function pickFile() { fileEl.value?.click() }
 
-watch(() => props.character?.id, () => { requirement.value = ''; uploadContext = null; cropOpen.value = false })
-function pickFile() {
-  if (locked.value || !props.character) return
-  uploadContext = selectionContext()
-  fileEl.value?.click()
+/** 本地图片压缩：最长边 1600px，转 JPEG，控制 base64 体积 */
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      const MAX = 1600
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height))
+      const w = Math.max(1, Math.round(img.width * scale))
+      const h = Math.max(1, Math.round(img.height * scale))
+      const canvas = document.createElement('canvas')
+      canvas.width = w; canvas.height = h
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h)
+      URL.revokeObjectURL(url)
+      resolve(canvas.toDataURL('image/jpeg', 0.85))
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读取失败')) }
+    img.src = url
+  })
 }
 
-function onFile(e) {
+async function onFile(e) {
   const file = e.target.files?.[0]
   e.target.value = ''
-  const context = uploadContext
-  uploadContext = null
-  if (!file || !context || locked.value || context.characterId !== props.character?.id) return
+  if (!file || !props.character) return
   if (!file.type.startsWith('image/')) { toast('请选择图片文件', 'error'); return }
-  releaseCrop()
-  objectUrl = URL.createObjectURL(file)
-  openCrop(objectUrl, context)
-}
-
-async function saveCrop(base64) {
-  const context = cropContext.value
-  if (busy.value || !context) return
   try {
-    busy.value = true; busyText.value = '保存中…'
-    const result = await api.uploadChatBg(context.characterId, base64, context.target)
-    if (!result.ok) throw new Error(result.error || '保存失败')
-    emit('updated', result)
-    cropOpen.value = false
-    toast(context.target === 'galgame' ? 'Galgame 背景已更新' : '聊天背景已更新')
+    busy.value = true; busyText.value = '处理图片中…'
+    const base64 = await compressImage(file)
+    await saveBg(base64)
   } catch (err) {
     toast(err.message || '上传失败', 'error')
   } finally {
@@ -109,14 +71,12 @@ async function saveCrop(base64) {
 }
 
 async function saveBg(base64) {
-  if (locked.value || !props.character) return
-  const characterId = props.character.id, selectedTarget = target.value
   try {
     busy.value = true; busyText.value = '保存中…'
-    const r = await api.uploadChatBg(characterId, base64, selectedTarget)
+    const r = await api.uploadChatBg(props.character.id, base64)
     if (r.ok) {
-      emit('updated', r)
-      toast(base64 ? '背景已更新' : '已恢复默认背景')
+      emit('updated', r.chat_bg_path)
+      toast(base64 ? '聊天背景已更新' : '已恢复默认背景')
     } else {
       toast(r.error || '保存失败', 'error')
     }
@@ -128,22 +88,6 @@ async function saveBg(base64) {
 }
 
 function resetBg() { saveBg('') }
-
-async function generateBg() {
-  if (locked.value || !props.character) return
-  const context = selectionContext()
-  try {
-    busy.value = true; generating.value = true; busyText.value = '正在设计并生成 Galgame 背景…'
-    const result = await api.generateChatBg(context.characterId, requirement.value, 'galgame', true)
-    if (!result.ok || !result.imageUrl) throw new Error(result.error || '生成失败')
-    if (!disposed && props.character?.id === context.characterId) openCrop(result.imageUrl, context)
-    toast('背景已生成，确认取景后应用')
-  } catch (err) {
-    toast(err.message || '生成失败', 'error')
-  } finally {
-    busy.value = false; generating.value = false; busyText.value = ''
-  }
-}
 </script>
 
 <style scoped>
@@ -162,9 +106,6 @@ async function generateBg() {
   color: var(--text-secondary);
   letter-spacing: 1px;
 }
-.cbp-content { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.cbp-fade-enter-active, .cbp-fade-leave-active { transition: opacity var(--dur-interaction) var(--ease-standard); }
-.cbp-fade-enter-from, .cbp-fade-leave-to { opacity: 0; }
 .cbp-preview {
   height: 92px;
   border-radius: 10px;
@@ -190,7 +131,7 @@ async function generateBg() {
 }
 .cbp-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
 }
 .cbp-act {

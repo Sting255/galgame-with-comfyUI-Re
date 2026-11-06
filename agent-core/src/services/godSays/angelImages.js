@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
-import { buildCharacterPersona, buildCharacterAppearanceSection, splitAppearanceSection, extractEditableAppearanceBody } from '../characterPersona.js';
-import { buildSceneOutfitRequest, normalizeDesignScenes, parseSceneOutfitDesign } from '../sceneOutfitPrompt.js';
+import { buildCharacterPersona, buildCharacterAppearanceSection, splitAppearanceSection } from '../characterPersona.js';
+import { editableAppearanceBody as extractEditableAppearanceBody } from './appearanceText.js';
+import { buildSceneOutfitMessages, normalizeDesignScenes, parseSceneOutfitDesign } from '../sceneOutfitPrompt.js';
 import { resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance } from '../clothingLibrary.js';
 import { angelOutfits, angelStandings, cleanAngelOutfits, validAngelScene, selectAngelOutfit, writeAngelStanding } from './angelWardrobe.js';
 import { saveBase64Image, deleteImageFileByUrl } from '../imagePaths.js';
@@ -40,11 +41,16 @@ export function buildAngelImageRequest(angel, kind, request, { systemRules, worl
 }
 
 export function buildAngelOutfitDesignRequest(angel, request, environment) {
-  const built = buildSceneOutfitRequest({ systemRules: [environment.systemRules, environment.worldSetting].filter(Boolean).join('\n\n'),
-    worldRule: environment.worldSetting ? environment.worldRule : '', persona: splitAppearanceSection(angel.persona).before.trim(),
-    displayName: angel.display_name, baseAppearance: request.baseAppearance, scenes: request.scenes,
-    instruction: request.instruction, currentOutfits: request.instruction ? angelOutfits(angel) : [] });
-  return { ...built, lorebook: { ...built.lorebook, scope: 'god:angel:outfits', userName: '吾神' } };
+  const persona = splitAppearanceSection(angel.persona).before.trim();
+  const messages = buildSceneOutfitMessages({
+    systemRules: [environment.systemRules, environment.worldSetting, environment.worldSetting ? environment.worldRule : ''].filter(Boolean).join('\n\n'),
+    persona, displayName: angel.display_name, baseAppearance: request.baseAppearance, scenes: request.scenes,
+  });
+  if (request.instruction?.trim()) messages.splice(-1, 0, { role: 'system', content: `【本次服装要求】\n${request.instruction.trim()}` });
+  const index = messages.findIndex(m => m.content.startsWith('【本次角色人设】'));
+  return { messages, lorebook: { scope: 'god:angel:outfits', userName: '吾神', characterName: angel.display_name, characterDescription: persona,
+    personaTexts: [persona], staticTexts: messages.slice(0, index).map(m => m.content), cacheBoundary: { index, offset: persona.length },
+    protectedPrefix: index, history: messages.slice(index + 1) } };
 }
 function wardrobePrompt(messages, angel, scope) {
   const index = messages.length - 3;
@@ -74,7 +80,9 @@ export function createAngelImageService(repo, { describe, render, promptEnvironm
     const request = { requirement: requirement.trim(), mode, day: repo.day() };
     if (kind === 'outfits') {
       if (typeof input.baseAppearance !== 'string' || !input.baseAppearance.trim() || input.baseAppearance.length > 30000) throw bad('请先填写有效的默认外观');
-      try { request.scenes = normalizeDesignScenes(input.scenes); } catch (error) { throw bad(error.message); }
+      // 天使批量设计只做「默认」以外的三套（本 fork 的 GENERATED_OUTFIT_SCENES 多一个 nude，
+      // 直接走默认值会要求模型额外产出一套裸体，与天使四套衣柜口径不符）。
+      try { request.scenes = normalizeDesignScenes(input.scenes ?? ['casual', 'home', 'sleep']); } catch (error) { throw bad(error.message); }
       request.baseAppearance = input.baseAppearance.trim();
       if (db.prepare("SELECT id FROM god_angel_image_jobs WHERE kind='standing' AND status='running'").get()) throw Object.assign(new Error('形象正在生成，请稍后再生成服装'), { status: 409 });
     }

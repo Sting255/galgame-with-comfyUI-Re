@@ -396,7 +396,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 本地 tokens.css 没有 --dur-interaction（上游 v3.9.0 才有），这里给一个同值 fallback，
+   不改动共享 token 文件（合并口径：本地样式体系不动，只做加法）。 */
 .diary-overlay {
+  --diary-dur: var(--dur-interaction, 300ms);
   --diary-control-paper: var(--bg-sunken);
   position: fixed;
   inset: 0;

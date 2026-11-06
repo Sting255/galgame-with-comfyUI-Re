@@ -6,6 +6,8 @@ export function createStandingDisplay({ resolveImage, emit, persist = () => {}, 
   let latestTurn = null;
   function snapshot() {
     const image = state.characterId ? resolveImage(state.characterId, state.slotId) : null;
+    // 【上游 v3.9.0 合并：立绘互动】resolvedSlotId / imageVersion 让前端能判断"现在这张图
+    // 是不是配置里引用的那一版"（换图后旧绑定作废，需要重新读取互动配置）。
     return { ...state, reason: state.reason, imageUrl: image?.image_url || null, bounds: image?.bounds || null, missingCount: image?.missingCount ?? 0, resolvedSlotId: image?.slot_id || null, imageVersion: image?.version ?? null };
   }
   function publish() { state.revision++; emit(snapshot()); }

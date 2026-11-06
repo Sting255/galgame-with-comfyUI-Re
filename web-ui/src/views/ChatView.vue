@@ -4,6 +4,7 @@
     </div>
 
     <template v-else>
+      <!-- galgame 沉浸模式的普通侧包装层（上游 v3.9.0 合并）：进入 galgame 时整侧隐藏并 inert -->
       <div v-show="!immersive || galgameEntering" class="chat-standard" :inert="immersive || undefined">
       <!-- 角色自定义聊天背景（未设置时透出全局柔光背景） -->
       <div v-if="chatBgUrl" class="chat-bg" :style="{ backgroundImage: `url(${chatBgUrl})` }"></div>
@@ -29,29 +30,19 @@
             </span>
           </div>
           <div class="chat-header-schedule" v-if="currentScheduleText">{{ currentScheduleText }}</div>
+          <ChatSleepStatus :states="[charSleepState]" :loaded="scheduleStore.overviewLoaded" :error="scheduleStore.overviewError" @retry="scheduleStore.fetchOverview(true)" />
+          <!-- 睡眠条（2026-11-06 用户要求放到最顶上）：只有她睡着时才出现，点一下开亲密面板 -->
+          <ChatSleepBar :character-id="chat.activeCharId" @open="showIntimatePanel = true" />
         </div>
         <div class="chat-header-right">
-          <linshe-button class="chat-standing-desktop" variant="ghost" size="sm" title="在独立窗口展示立绘，随当前聊天同步角色与表情" @click="openStandingDisplayPage">
-            <svg class="chat-standing-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="15" rx="3" /><path d="M8 22h8M12 18v4" /><circle cx="12" cy="8" r="2" /><path d="M8 15a4 4 0 0 1 8 0" /></svg>
-            <span>同步立绘展示</span><span aria-hidden="true">↗</span>
-          </linshe-button>
-          <div
-            class="affinity-reason-wrap"
-            role="button"
-            tabindex="0"
-            title="对你的印象"
-            aria-label="查看对你的印象"
-            aria-haspopup="dialog"
-            @click="openImpression"
-            @keydown.enter.prevent="openImpression"
-            @keydown.space.prevent="openImpression"
-          >
+          <linshe-button class="standing-entry-desktop" variant="ghost" size="sm" @click="openStandingDisplayPage">同步形象展示 ↗</linshe-button>
+          <span class="affinity-reason-wrap">
             <Transition name="roll">
               <span v-if="realtimeAffinityEnabled && chat.realtimeAffinity?.lastReason" :key="chat.affinityKey" class="header-reason">
                 💬"{{ chat.realtimeAffinity.lastReason }}"
               </span>
             </Transition>
-          </div>
+          </span>
           <div class="btn-header-settings" title="角色设置" @click="openSettings">
             <gear-icon :size="16" />
           </div>
@@ -120,6 +111,22 @@
                   loading="lazy"
                 />
               </div>
+              <!-- 等待期占位（专题 §九 建议 1）：淡色 + 复用现成 .typing-dots 跳动圆点（typing 字段终于有人消费）。
+                   必须排在下面 content 分支**之前** —— 占位是有 content 的，否则会被普通气泡吞掉。 -->
+              <div
+                v-else-if="item.msg.placeholder === 'touch'"
+                class="msg-bubble msg-placeholder-bubble"
+              >
+                <span class="msg-placeholder-text">{{ item.msg.content }}</span>
+                <svg class="typing-dots msg-placeholder-dots" viewBox="0 0 72 10" width="36" height="5" aria-hidden="true">
+                  <circle cx="4" cy="5" r="3" class="dot dot-0" />
+                  <circle cx="16" cy="5" r="3" class="dot dot-1" />
+                  <circle cx="28" cy="5" r="3" class="dot dot-2" />
+                  <circle cx="40" cy="5" r="3" class="dot dot-3" />
+                  <circle cx="52" cy="5" r="3" class="dot dot-4" />
+                  <circle cx="64" cy="5" r="3" class="dot dot-5" />
+                </svg>
+              </div>
               <div
                 v-else-if="item.msg.content" class="msg-bubble"
                 :class="{ 'has-speech': speechEnabled && item.msg.role === 'assistant' && item.msg.speech_message_id, 'speech-revealed': touchedSpeechBubble === item.id }"
@@ -166,6 +173,20 @@
         </div>
       </Transition>
 
+      <!-- 重写兜底过渡条（D2 / antiRepetitionReroll，2026-10-15 补）：
+           开启「重写这一轮」后，检测到车轱辘话时会**重新生成一遍**（多花一次模型调用、要几秒）。
+           期间必须给个明确的过渡提示 —— 否则用户会以为刚才那段上屏的就是最终答案。
+           后端在真正重写前发 reroll_start、结束（成功或失败）发 reroll_end；失败时原输出保留。 -->
+      <Transition name="guesses-fade">
+        <div v-if="chat.rerolling" class="recall-status reroll-status" role="status">
+          <svg class="recall-status-spinner cel-spin" viewBox="0 0 20 20" width="14" height="14" fill="none" aria-hidden="true">
+            <circle cx="10" cy="10" r="8" stroke="var(--accent)" stroke-opacity="0.25" stroke-width="2.5" />
+            <path d="M18 10a8 8 0 0 0-8-8" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" />
+          </svg>
+          <span>重新组织语言中…</span>
+        </div>
+      </Transition>
+
       <!-- 回复候选词：v-if 控制 DOM 存在 + 仅 opacity 动画，避免移动端与滚动竞争 compositor -->
       <Transition name="guesses-fade">
         <div v-if="chat.guesses" class="guesses-row">
@@ -183,7 +204,47 @@
         </div>
       </Transition>
 
+      <!-- SLG 动作系统（交互改版 §三）：入口是输入区最右的 ✋ 按钮，点开底部弹层大卡片面板。
+           门控吃服务端（GET .../touch/actions），被拒 toast，反应由后端广播进消息流。
+           详见 script 的 onTouchAction / loadTouchActions。 -->
+      <TouchActionPanel
+        :open="showTouchPanel"
+        :server-groups="touchServerGroups"
+        :state="touchGateState"
+        :busy-actions="touchBusyActions"
+        :hypnosis-badge="touchHypnosisBadge"
+        :pending-count="touchPendingCount"
+        :pending-by-mode="touchPendingByMode"
+        :states="touchStates"
+        @action="onTouchAction"
+        @open="onTouchPanelOpen"
+        @close="showTouchPanel = false"
+      />
+
+      <!-- 玩具面板（独立模块，用户要求）：入口是输入区那颗 🧸 -->
+      <ToyPanel
+        :open="showToyPanel"
+        :worn-toys="wornToys"
+        :toy-options="toyOptions"
+        @close="showToyPanel = false"
+        @toy-equip="onToyEquip"
+        @toy-intensity="onToyIntensity"
+        @toy-remove="onToyRemove"
+      />
+
+      <!-- 性爱交互姿势面板（2026-10-01，用户「性爱的时候可以点击的交互姿势…还得让角色有反馈」）：
+           自包含（面板自己 GET 状态、自己 POST 动作、自己显示反应）；父组件只给角色 id 与显隐。
+           她开始说话由既有消息 SSE 进聊天流；门控拒绝由面板自己 toast 服务端那句人话。 -->
+      <IntimateActionPanel
+        :open="showIntimatePanel"
+        :character-id="chat.activeCharId"
+        @close="showIntimatePanel = false"
+      />
+
+      <!-- 上游 v4.2.0：断线 / 超时后保留已收内容并给出重试入口 -->
       <ChatRetryNotice />
+
+
       <div class="input-area">
         <div class="force-img-wrap">
           <div
@@ -213,6 +274,11 @@
         <div v-else v-show="!(isMobile && inputFocused)" role="button" tabindex="0" class="gift-btn" @keydown.enter.prevent="showGiftPanel = true" @keydown.space.prevent="showGiftPanel = true" @click="showGiftPanel = true" title="送礼物">
           <svg class="gift-btn-icon" viewBox="0 0 1138 1024" width="20" height="18" fill="#fff"><path d="M57.242236 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM683.272405 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM0 284.393966l455.212067 0 0 284.393966-455.212067 0 0-284.393966zM1137.575865 284.393966l0 284.393966-454.303461 0 0-284.393966 454.303461 0zM512.454303 284.393966l113.575865 0 0 739.606034-113.575865 0 0-739.606034zM683.272405 228.060337l-228.060337 0 0-170.818101 228.060337 0 0 170.818101zM1024 228.060337l-284.393966 0 111.758651-228.060337 172.635315 0 0 228.060337zM398.878438 228.060337l-284.393966 0 0-228.060337 169.909494 0z"/></svg>
         </div>
+      <ChatActionToolbar
+        :touch-open="showTouchPanel" :toy-open="showToyPanel" :intimate-open="showIntimatePanel"
+        :toys-enabled="toysEnabled" :pending-count="touchPendingCount" :pending-hint="touchPendingHint"
+        :toy-count="wornToys.length" @toggle="togglePanel"
+      />
         <!-- 撤回气泡：长按发送按钮浮现 -->
         <Transition name="undo-bubble">
           <div v-if="showUndoBubble" role="button" tabindex="0" class="undo-bubble-btn" @keydown.enter.prevent="undoLastRound" @keydown.space.prevent="undoLastRound" @click.stop="undoLastRound">
@@ -251,6 +317,7 @@
       </div>
     </template>
 
+    <!-- galgame 沉浸模式（上游 v3.9.0 合并）：舞台覆盖整个 chat-view，普通侧在 chat-standard 里被隐藏 -->
     <Transition name="chat-mode" @after-enter="galgameEntering = false" @enter-cancelled="galgameEntering = false">
       <GalgameDialogue v-if="galgameVisited && chat.activeChar" v-show="immersive" :active="immersive" :character="chat.activeChar" v-model:draft="inputText" :image-mode="imageGenMode" :sleeping="isCharSleeping" :wake-busy="wakeBusy" @wake="onWakeChar" @exit="chatMode = 'chat'" @open-standing="openStandingDisplayPage" />
     </Transition>
@@ -299,15 +366,27 @@
 
         <div class="sp-divider"></div>
 
-        <div role="button" tabindex="0" class="sp-btn" @click="openStandingDisplayPage" @keydown.enter.prevent="openStandingDisplayPage" @keydown.space.prevent="openStandingDisplayPage">
+        <div role="button" tabindex="0" class="sp-btn standing-entry-mobile" @click="openStandingDisplayPage" @keydown.enter.prevent="openStandingDisplayPage" @keydown.space.prevent="openStandingDisplayPage">
           <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="15" rx="3" /><path d="M8 22h8M12 18v4" /><circle cx="12" cy="8" r="2" /><path d="M8 15a4 4 0 0 1 8 0" /></svg>
-          同步立绘展示
+          同步形象展示
         </div>
 
         <!-- 编辑人格 → 二级弹窗 -->
         <div role="button" tabindex="0" class="sp-btn" @click="openCharEditor" @keydown.enter.prevent="openCharEditor" @keydown.space.prevent="openCharEditor">
           <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M892.691692 30.72l77.981539 77.981538a73.491692 73.491692 0 0 1 0 103.975385l-584.861539 584.861539-228.036923 46.08 46.08-228.036924L788.716308 30.72a73.491692 73.491692 0 0 1 103.975384 0z m25.993846 129.969231l-77.981538-77.981539-569.186462 569.186462-19.692307 97.673846 97.673846-19.692308 569.186461-569.186461z" fill="currentColor"/><path d="M652.366769 167.699692l180.854154 182.035693 55.689846-55.689847-180.854154-182.114461zM73.491692 953.344h888.595693v-78.769231H73.570462z" fill="currentColor"/></svg>
           查看详细信息
+        </div>
+
+        <!-- 亲密信息看板直达：原先要「查看详细信息」→ 详情卡里再点一次，这里一步打开同一个看板 -->
+        <div role="button" tabindex="0" class="sp-btn" @click="openIntimatePanel" @keydown.enter.prevent="openIntimatePanel" @keydown.space.prevent="openIntimatePanel">
+          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          亲密信息
+        </div>
+
+        <!-- 催眠手机直达：不用专程去背包，聊天页一步打开同一个状态面板 -->
+        <div role="button" tabindex="0" class="sp-btn" @click="openHypnosisPanel" @keydown.enter.prevent="openHypnosisPanel" @keydown.space.prevent="openHypnosisPanel">
+          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2.5"/><path d="M9.5 2.5v2h5v-2"/><path d="M10 18.5h4"/></svg>
+          催眠手机
         </div>
 
         <!-- 查看角色对用户的印象 -->
@@ -365,17 +444,30 @@
       @close="showRelationGraph = false"
     />
 
-    <!-- 角色对用户的印象弹窗 -->
-    <linshe-modal :visible="showImpression" :title="`${chat.activeChar?.display_name || ''} 对你的印象`" wide @close="showImpression = false" panel-class="impression-modal" body-class="modal-workspace-body">
-      <template #title>
-        <div class="modal-heading-content">
-          <span class="impression-title" :title="`${chat.activeChar?.display_name || ''} 对你的印象`">{{ chat.activeChar?.display_name }} 对你的印象</span>
-          <div class="impression-header-actions">
-            <linshe-button variant="ghost" size="sm" @click="openStandingDisplayPage">同步立绘展示 ↗</linshe-button>
-
-          </div>
-        </div>
+    <!-- 亲密信息看板（聊天页直达入口）：与角色详情卡内那份是同一个组件、同一套标题与底部操作 -->
+    <linshe-modal v-model="showIntimate" :title="`亲密信息 — ${chat.activeChar?.display_name || ''}`" full>
+      <IntimatePanel v-if="chat.activeChar" :character="chat.activeChar" />
+      <template #footer>
+        <linshe-button variant="secondary" @click="showIntimate = false">关闭</linshe-button>
       </template>
+    </linshe-modal>
+
+    <!-- 催眠手机（聊天页直达入口）：与背包入口是同一个面板组件；持有/门控由面板自行提示（含领取按钮） -->
+    <linshe-modal v-model="showHypnosis" :title="`催眠手机 — ${chat.activeChar?.display_name || ''}`" full>
+      <HypnosisPhonePanel v-if="chat.activeChar && showHypnosis" :character="chat.activeChar" />
+      <template #footer>
+        <linshe-button variant="secondary" @click="showHypnosis = false">关闭</linshe-button>
+      </template>
+    </linshe-modal>
+
+    <!-- 角色对用户的印象弹窗 -->
+    <Transition name="editor-fade">
+      <div v-if="showImpression" class="editor-overlay" @click.self="showImpression = false">
+      <div class="editor-panel impression-panel">
+        <div class="editor-header">
+          <span>{{ chat.activeChar?.display_name }} 对你的印象</span>
+          <linshe-button variant="icon" class="editor-close" @click="showImpression = false">&times;</linshe-button>
+        </div>
 
         <div class="impression-body">
           <!-- 加载中 -->
@@ -579,8 +671,9 @@
           </div>  <!-- impression-content -->
 
         </div>
-
-    </linshe-modal>
+      </div>
+      </div>
+    </Transition>
 
     <!-- 角色头像选择器（设置面板） -->
     <Teleport to="body">
@@ -621,6 +714,7 @@ import { useSpeechAutoPlay } from '../composables/useSpeechAutoPlay.js'
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
+import { useProgramClock } from '../composables/useProgramClock.js'
 import ImageGenBubble from '../components/ImageGenBubble.vue'
 import EventShareCard from '../components/EventShareCard.vue'
 import EventCard from '../components/EventCard.vue'
@@ -630,12 +724,23 @@ import ChatBgPanel from '../components/ChatBgPanel.vue'
 import RelationshipGraph from '../components/RelationshipGraph.vue'
 import CharacterDetailModal from '../components/CharacterDetailModal.vue'
 import GiftPanel from '../components/GiftPanel.vue'
+import ChatActionToolbar from '../components/chat/ChatActionToolbar.vue'
+import { useChatActionPanels } from '../composables/useChatActionPanels.js'
+import TouchActionPanel from '../components/TouchActionPanel.vue'
+import ToyPanel from '../components/ToyPanel.vue'
+// 性爱交互姿势面板（2026-10-01，task-1）：自包含（自己读状态、自己发动作），父组件只持显隐
+import IntimateActionPanel from '../components/IntimateActionPanel.vue'
+import ChatRetryNotice from '../components/chat/ChatRetryNotice.vue'
+import { buildGroupsFromServer, createCoalescer, hypnosisBadgeOf, pendingHintByMode } from '../components/touchActionLogic.js'
+import { getHypnosisState } from '../api/hypnosis.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
+// galgame 模式（上游 v3.9.0 合并）：入口开关 + 沉浸舞台
 import ChatModeSwitch from '../components/chat/ChatModeSwitch.vue'
-import ChatRetryNotice from '../components/chat/ChatRetryNotice.vue'
 import GalgameDialogue from '../components/chat/GalgameDialogue.vue'
+import IntimatePanel from '../components/character/IntimatePanel.vue'
+import HypnosisPhonePanel from '../components/HypnosisPhonePanel.vue'
 import { userAvatar, loadUserAvatar } from '../userConfig.js'
 import * as api from '../api/index.js'
 import { openStandingDisplay, standingDisplayUrl, selectStandingCharacter } from '../utils/standingDisplay.js'
@@ -650,14 +755,21 @@ async function openStandingDisplayPage() {
 import { getCharacterPortrait, addPortrait, updatePortrait, deletePortrait } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { useEventsStore } from '../stores/events.js'
-import { useScheduleStore } from '../stores/schedule.js'
+import { useChatSchedule } from '../composables/useChatSchedule.js'
+import ChatSleepStatus from '../components/chat/ChatSleepStatus.vue'
+import ChatSleepBar from '../components/chat/ChatSleepBar.vue'
 
 const route = useRoute()
 const router = useRouter()
+// ── galgame 沉浸模式（上游 v3.9.0 合并）──
+// 模式由 URL query 驱动（?mode=galgame），普通侧与舞台各自 v-show，互不销毁、消息一份不丢。
+// 上游 v4.0.0 合并：语音气泡控制（长按/点击揭示并播放本条语音）
 const { touchedSpeechBubble, clearSpeechBubble, onSpeechPointerDown, onSpeechPointerMove, revealSpeechBubble } = useSpeechBubbleControls(() => route.params.id)
 const immersive = computed(() => route.query.mode === 'galgame')
 const galgameVisited = ref(immersive.value)
+// 进场动画中（普通侧还要多留一拍，等舞台铺开再撤）
 const galgameEntering = ref(false)
+// 预加载中（背景图解码）：按钮显示 loading，避免切过去先看到空舞台（上游 v3.10.0）
 const preparingGalgame = ref(false)
 const chatMode = computed({
   get: () => immersive.value ? 'galgame' : 'chat',
@@ -668,12 +780,14 @@ const chatMode = computed({
     router.push({ path: route.path, query })
   },
 })
-watch(immersive, async value => {
-  if (value) { galgameEntering.value = true; galgameVisited.value = true; closeSettings() }
-  else { galgameEntering.value = false; await nextTick(); if (!isMobile?.value) inputEl.value?.focus({ preventScroll: true }) }
-})
+
 const chat = useChatStore()
-useSpeechAutoPlay(() => route.path.startsWith('/chat') ? `chat:${route.params.id || chat.activeCharId}` : null)
+// 程序时间：进页面拉一次偏移，消息时间统一按它显示（见 composables/useProgramClock.js）
+const clock = useProgramClock()
+clock.ensureLoaded()
+// 上游 v4.0.0 合并：进入会话后自动播放本会话新到的语音
+useSpeechAutoPlay(() => `chat:${route.params.id || chat.activeCharId}`)
+// 进场前的背景预载：角色/背景一换就重新解码，并用 modeRequest 作废上一轮（快速连点时只认最后一次）
 let galgameBackgroundImage = null
 let galgameBackgroundReady = Promise.resolve()
 let modeRequest = 0
@@ -684,9 +798,14 @@ watch(() => [chat.activeChar?.id, chat.activeChar?.galgame_bg_path || chat.activ
   if (galgameBackgroundImage) {
     galgameBackgroundImage.src = url
     // Keep the decoded image alive until the stage can paint it, including cold-cache entry.
-    galgameBackgroundReady = galgameBackgroundImage.decode().catch(() => {})
+    // 老 WebView 可能没有 HTMLImageElement.decode（Android 壳），退化成"直接切"而不是抛错
+    galgameBackgroundReady = typeof galgameBackgroundImage.decode === 'function'
+      ? galgameBackgroundImage.decode().catch(() => {})
+      : Promise.resolve()
   } else galgameBackgroundReady = Promise.resolve()
 }, { immediate: true })
+
+/** 进入 galgame：先等背景解码（冷缓存时最明显），再切 query，切完撤 loading */
 async function enterGalgame() {
   if (preparingGalgame.value || immersive.value) return
   const request = ++modeRequest
@@ -700,6 +819,17 @@ async function enterGalgame() {
   }
 }
 onUnmounted(() => { modeRequest++ })
+
+// 进/出沉浸的收尾动作：进场关掉普通侧浮层；退场把焦点还给普通输入框（桌面端）。
+// 回调只在用户切换模式后触发，届时 setup 已全部执行完，closeSettings/inputEl/isMobile 均已就位。
+watch(immersive, async value => {
+  if (value) { galgameEntering.value = true; galgameVisited.value = true; closeSettings() }
+  else {
+    galgameEntering.value = false
+    await nextTick()
+    if (!isMobile?.value) inputEl.value?.focus({ preventScroll: true })
+  }
+})
 const eventsStore = useEventsStore()
 const confirmFn = inject('confirm')
 const toastFn = inject('toast')
@@ -751,24 +881,226 @@ function onDetailEventUpdated(update) {
   }
 }
 const settings = useSettingsStore()
-const scheduleStore = useScheduleStore()
+const scheduleStore = useChatSchedule(() => chat.activeCharId, () => chat.streaming, () => chat.messages.length)
 
 // 当前角色的日程活动文本
 const currentScheduleText = computed(() => {
   if (!chat.activeCharId) return ''
-  const sc = scheduleStore.characters.find(c => c.id === chat.activeCharId)
+  const sc = scheduleStore.characters.find(c => String(c.id) === String(chat.activeCharId))
   if (!sc || !sc.current_activity || sc.current_activity === '未设置日程') return ''
   return sc.current_activity
 })
 // 从 schedule store 获取当前角色睡眠状态（实时更新）
 const charSleepState = computed(() => {
   if (!chat.activeCharId) return null
-  return scheduleStore.characters.find(c => c.id === chat.activeCharId) || null
+  return scheduleStore.characters.find(c => String(c.id) === String(chat.activeCharId)) || null
 })
 const isCharSleeping = computed(() => {
   const s = charSleepState.value
   return s ? (s.is_sleeping && !s.is_temp_woken) : false
 })
+
+// ── SLG 动作系统（阶段一·前端）：私聊动作条（task-15 接线）──
+// **门控以服务端为准**：GET /api/characters/:id/touch/actions 里逐 key 的 gate 就是 getTouchGate
+// 的真实结果（含催眠豁免、Lv3 亲密看板授权），前端零翻译、零自算。
+// 下面的 touchGateState 只是**端点不可用时的镜像兜底**（见 docs/characters/touch-system.md §6.3 / §4）。
+const touchServerGroups = ref([])
+
+async function loadTouchActions() {
+  const charId = chat.activeCharId
+  if (!charId) { touchServerGroups.value = []; return }
+  try {
+    const payload = await api.fetchTouchActions(charId, { scene: 'chat' })
+    // 拉取期间可能已切换角色：丢弃过期响应
+    if (chat.activeCharId !== charId) return
+    touchServerGroups.value = buildGroupsFromServer(payload)
+  } catch (err) {
+    // 端点不可用 → 清空，组件自动回落到镜像门控，功能不至于全废
+    console.warn('[touch] 动作清单拉取失败，回落镜像门控:', err?.message || err)
+    touchServerGroups.value = []
+  }
+}
+
+// ── 待回应条数（task-25 ③；task-29 问题 3 补「被消费后刷新」）──
+// 数据：GET .../touch/state 的 pendingCount —— 动作做下、还等着她回应的条数。
+// 读不到 / 非数字一律当 0（不显示提示行、不弹错）。
+const touchPendingCount = ref(0)
+/** 分模式待回应数（专题 §七 问题 3；后端未落地时为空对象 → 文案回落） */
+const touchPendingByMode = ref({})
+/** 入口角标标题 / 面板提示行同源文案 */
+const touchPendingHint = computed(() => pendingHintByMode({ count: touchPendingCount.value, byMode: touchPendingByMode.value }))
+/** 动作面板显隐（✋ 入口点开） */
+const { showTouchPanel, showToyPanel, showIntimatePanel, togglePanel } = useChatActionPanels(() => chat.activeCharId)
+/** 每动作的耐受 / 偏好（GET /touch/state 的 states）→ 面板卡片状态行与偏好角标 */
+const touchStates = ref({})
+
+// ── 玩具系统（2026-09-30 三期，契约见 docs/characters/toys.md）────────────────────────────
+// 门控**一律服务端说了算**（gate.allowed / gate.message 原样吃），前端不算门槛；
+// 未解锁或端点不可用 ⇒ 整块不渲染（不伪造数据）。修复真机反馈：之前父组件漏传这两个 prop、
+// 也漏接三个事件 ⇒ 面板玩具区永远不出现。
+
+const toysEnabled = ref(false)
+const wornToys = ref([])
+/**
+ * 背包可选项（服务端下发，带逐件 gate）。
+ * 2026-10-01 修：原来**没把服务端清单传给面板**，ToyPanel 就回落到前端镜像
+ * （`toy.js` 里写死 `gate:{allowed:true}`）—— 结果是服务端会拒的玩具在面板上照样是"亮"的，
+ * 点下去只吃到 403 错误 toast，而不是服务端那句剧情文案；「门控服务端说了算」在这个面板上等于没落地。
+ */
+const toyOptions = ref([])
+
+async function loadToys() {
+  const charId = chat.activeCharId
+  if (!charId) { toysEnabled.value = false; wornToys.value = []; toyOptions.value = []; return }
+  try {
+    const res = await api.fetchToys(charId)
+    if (chat.activeCharId !== charId) return          // 期间换了角色：丢弃过期响应
+    toysEnabled.value = res?.unlocked === true
+    wornToys.value = Array.isArray(res?.worn) ? res.worn : []
+    toyOptions.value = Array.isArray(res?.available) ? res.available : []
+  } catch {
+    toysEnabled.value = false
+    wornToys.value = []
+    toyOptions.value = []
+  }
+}
+
+/** 面板打开：门控/腻烦度可能变了，玩具状态也一起刷新 */
+// ── 催眠状态徽标（复审遗留 2）──
+// **状态一律服务端说了算**：读 GET /characters/:id/hypnosis 的 { active, mindAwake }，
+// 前端不做任何本地推断；取不到 / 形状不对 ⇒ null（面板不渲染，绝不默认「完全控制」）。
+const touchHypnosisBadge = ref(null)
+async function loadTouchHypnosis() {
+  const charId = chat.activeCharId
+  if (!charId) { touchHypnosisBadge.value = null; return }
+  try {
+    const st = await getHypnosisState(charId)
+    if (charId !== chat.activeCharId) return   // 过期响应丢弃（切角色了）
+    touchHypnosisBadge.value = hypnosisBadgeOf(st)
+  } catch {
+    touchHypnosisBadge.value = null   // 取不到就不显示，绝不猜
+  }
+}
+
+function onTouchPanelOpen() { loadTouchActions(); loadToys(); loadTouchHypnosis() }
+
+async function onToyEquip(toyKey) {
+  const charId = chat.activeCharId
+  if (!charId) return
+  try {
+    const res = await api.equipToy(charId, toyKey, { intensity: 1 })
+    toastFn?.(res?.toy?.label ? `已给她戴上：${res.toy.label}` : '已经戴上了', 'info')
+    await loadToys()
+  } catch (err) {
+    toastFn?.(err?.message || '没戴上', 'error')   // 门控被拒时后端会带人话文案
+  }
+}
+
+async function onToyIntensity({ toyKey, intensity } = {}) {
+  const charId = chat.activeCharId
+  if (!charId || !toyKey) return
+  try {
+    await api.setToyIntensity(charId, toyKey, intensity)
+    await loadToys()
+  } catch (err) { toastFn?.(err?.message || '强度没调成', 'error') }
+}
+
+async function onToyRemove(toyKey) {
+  const charId = chat.activeCharId
+  if (!charId) return
+  try {
+    await api.removeToy(charId, toyKey)
+    await loadToys()
+  } catch (err) { toastFn?.(err?.message || '没摘下来', 'error') }
+}
+
+async function loadTouchState() {
+  const charId = chat.activeCharId
+  if (!charId) { touchPendingCount.value = 0; touchStates.value = {}; return }
+  try {
+    const payload = await api.fetchTouchState(charId)
+    if (chat.activeCharId !== charId) return          // 期间换了角色：丢弃过期响应
+    const raw = Number(payload && payload.pendingCount) || 0
+    touchPendingCount.value = raw > 0 ? Math.floor(raw) : 0
+    // 卡片状态行（耐受档 / 偏好角标）吃 states；缺字段就空着，不影响可用性
+    touchStates.value = payload && payload.states && typeof payload.states === 'object' ? payload.states : {}
+  } catch (err) {
+    // 端点不可用：这只是个提示，静默归零，别打断主流程
+    touchPendingCount.value = 0
+    touchStates.value = {}
+  }
+}
+
+// 她回应那一轮会连续插好几条消息（见下面 messages.length 监听）——合并成一次刷新，别把请求打爆
+const touchStateCoalescer = createCoalescer({ run: () => { loadTouchState() } })
+function scheduleTouchStateRefresh() { touchStateCoalescer.schedule() }
+
+// 切角色时重拉；展开动作条时也会再刷（见模板 @open）——门控依赖好感 / 睡眠 / 誓约，会变
+// task-29：顺带取消上一轮待合并的刷新（别让上一个角色的响应落到新角色头上），并立刻重拉条数
+// 2026-10-01：`loadToys()` 也挂进来（immediate ⇒ 初次进页面就跑）。原来它只在「点开 ✋ 动作面板」
+// 和装卸玩具之后被调用 ⇒ **冷启动 / 换角色时 🧸 入口根本不渲染**（`v-if="toysEnabled"` 还是 false），
+// 用户必须先开一次 ✋ 才看得到玩具入口。
+watch(() => chat.activeCharId, () => {
+  touchStateCoalescer.cancel()
+  loadTouchActions()
+  loadTouchState()
+  loadToys()
+}, { immediate: true })
+
+// 镜像门控入参：与服务层 getTouchGate 同名。**仅在服务端不可用时生效**
+// （intimateAuthorized / hypnotized 前端没有独立来源，兜底路径按保守值处理）
+const touchGateState = computed(() => ({
+  affinity: impressionAffinity.value,
+  isOath: !!chat.activeChar?.is_oath,
+  sleeping: isCharSleeping.value,
+  scene: 'chat',
+  intimateAuthorized: false,
+  hypnotized: false,
+}))
+
+// 正在上报的动作 key：请求期间该胶囊转 loading，并忽略连点
+// §4.2 连点：**同动作在飞时忽略重复点击、不同动作可并发** ⇒ 单个 key 换成 Set
+const touchBusyActions = ref(new Set())
+
+async function onTouchAction(actionId) {
+  const charId = chat.activeCharId
+  if (!charId || !actionId || touchBusyActions.value.has(actionId)) return
+  touchBusyActions.value = new Set(touchBusyActions.value).add(actionId)
+  // 建议 2（专题 §九）：**乐观插入占位** —— 覆盖 0~3 秒的 POST 等待期。
+  // （之前放在 await 之后：卡片转 3 秒 spinner 占位才出现，它自己没赶上要盖的静默期。）
+  // 门控拒绝 / 异常 / 隐式模式在下面立刻撤；真消息到达由 store 自己撤；15s 超时兜底。
+  chat.showTouchPlaceholder?.()
+  try {
+    const res = await api.performTouchAction(charId, actionId, { scene: 'chat' })
+
+    // 门控拒绝 = **200 + { allowed:false, code, message }**（“她不愿意”是叙事结果，不是请求失败）
+    // → 撤占位 + 直接 toast 服务端那句人话；**绝不伪造她的反应**
+    if (!res || res.allowed !== true) {
+      chat.clearTouchPlaceholder?.()   // 被拒：她不会有反应，占位不能留着
+      if (res?.message) toastFn?.(res.message, 'info')
+      return
+    }
+    // 真机反馈问题 2：她开始说话了，面板让位（隐式模式这轮没反应 ⇒ 留着让用户接着来）
+    // §4.2：「成功后自动收起」**作废**（§七那条被推翻）—— 面板常驻，用户要连着摸、连点。
+    // 隐式模式这轮她不会立刻反应 ⇒ 撤占位（否则误导）；非隐式留着占位，等真消息到达由 store 撤。
+    if (res.mode === 'implicit') chat.clearTouchPlaceholder?.()
+    if (res.notice) toastFn?.(res.notice, 'info')
+    else if (res.mode === 'implicit') toastFn?.('她的反应会在你下次发言时出现', 'info')
+
+    // 即时反应后端已 writeProactiveMessage 落库 + broadcastProactiveMessage 广播：
+    // 本页既有链路（App.vue → chat.handleProactiveMessage）会把它当作「她的新消息」插进消息流。
+    // 所以这里**不手动渲染、不重复插入**（免得与广播打架，也符合「别另造一套」）。
+  } catch (err) {
+    // 400 非法 action / 404 角色不存在 / 409 动作系统已关闭
+    chat.clearTouchPlaceholder?.()   // 异常路径：占位绝不残留（超时兜底之外的第一道）
+    toastFn?.(err?.message || '动作失败', 'error')
+  } finally {
+    touchBusyActions.value.delete(actionId)
+    loadTouchActions()   // 门控 / 腻烦度可能变了，刷新一次
+    loadTouchState()     // 待回应条数也变了（task-25 ③）
+  }
+}
+
 const imageGenMode = computed(() => settings.imageGenMode)
 const imageGenModeLabel = computed(() => {
   if (imageGenMode.value === 'off') return '关闭配图'
@@ -956,6 +1288,7 @@ const msgList = ref(null)
 const msgListInner = ref(null)
 const previewImage = ref(null)
 
+// 聊天图片预览（上游 v3.10.0 合并时被「本地优先」丢掉的那一项，2026-10-19 补回）
 function onChatImagePreview(url) {
   previewImage.value = url
 }
@@ -990,6 +1323,9 @@ function onChatImageRegenerated(newUrl) {
 
 // ── 角色设置面板 ──
 const showSettings = ref(false)
+/** 亲密看板（聊天页直达）：与角色详情卡里那个是同在 IntimatePanel 上的同一个看板 */
+const showIntimate = ref(false)
+const showHypnosis = ref(false)
 const showEditor = ref(false)
 const showRelationGraph = ref(false)
 const detailModalRef = ref(null)
@@ -1310,8 +1646,11 @@ async function saveAdd(key) {
 
 function formatTime(dateStr) {
   if (!dateStr) return ''
-  const d = new Date(dateStr)
-  const now = new Date()
+  // 一律按程序时间显示：角色住在调过的时间线里，消息时间跟着走才不会出现
+  // 「她说晚上好、时间戳是中午」这种割裂（2026-10-30 用户反馈）
+  const d = clock.toProgram(dateStr)
+  if (!d) return ''
+  const now = clock.now()
   const diffMs = now - d
   const diffMin = Math.floor(diffMs / 60000)
   if (diffMin < 1) return '刚刚'
@@ -1343,6 +1682,21 @@ function msgAvatarSrc(role) {
 
 function openSettings() { showSettings.value = true }
 function closeSettings() { showSettings.value = false }
+
+/**
+ * 从聊天页设置面板一步打开亲密信息看板。
+ * 先关设置面板再开看板：两者都是遮罩层，叠着会出现两层遮罩与焦点错乱。
+ */
+function openIntimatePanel() {
+  showSettings.value = false
+  showIntimate.value = true
+}
+
+/** 从聊天页设置面板一步打开催眠手机（与亲密信息同款交互：先关设置面板，避免双层遮罩） */
+function openHypnosisPanel() {
+  showSettings.value = false
+  showHypnosis.value = true
+}
 
 // ══════════════════════════════════════════════════
 // 角色详情编辑弹窗（酒馆同款）
@@ -1419,11 +1773,11 @@ await chat.uploadAvatar(null)
 
 const chatBgUrl = computed(() => chat.activeChar?.chat_bg_path || '')
 
-function onChatBgUpdated(result) {
-  const field = result.target === 'galgame' ? 'galgame_bg_path' : 'chat_bg_path'
-  // 请求期间切换角色时，结果仍归属于发起请求的角色。
-  const inList = chat.characters.find(c => c.id === result.characterId)
-  if (inList) inList[field] = result[field]
+function onChatBgUpdated(path) {
+  if (chat.activeChar) chat.activeChar.chat_bg_path = path
+  // 同步角色列表中的同名角色，避免切换会话时闪回旧背景
+  const inList = chat.characters.find(c => c.id === chat.activeCharId)
+  if (inList) inList.chat_bg_path = path
 }
 
 // ══════════════════════════════════════════════════
@@ -1503,7 +1857,9 @@ return items
 
 function timeLabel(iso) {
   if (!iso) return ''
-  const d = new Date(iso); const now = new Date(); const diff = now - d
+  const d = clock.toProgram(iso); const now = clock.now()
+  if (!d) return ''
+  const diff = now - d
   const hh = d.getHours().toString().padStart(2,'0'); const mm = d.getMinutes().toString().padStart(2,'0')
   const time = hh + ':' + mm
   if (d.toDateString() === now.toDateString()) return time
@@ -1682,7 +2038,6 @@ function teardownResizeObserver() {
 onMounted(async () => {
   await Promise.all([chat.loadCharacters(), loadUserAvatar(), settings.loadComfyConfig()])
   if (chat.activeCharId) loadSpeech(chat.activeCharId).catch(() => {})
-  scheduleStore.fetchOverview(true) // silent: 获取日程概览用于 header 显示
   const targetId = route.params.id ? parseInt(route.params.id) : (chat.characters.length > 0 ? chat.characters[0].id : null)
   if (targetId && targetId !== chat.activeCharId) {
     if (route.params.id) selectStandingCharacter(targetId)
@@ -1729,8 +2084,6 @@ watch(() => chat.activeCharId, (id, oldId) => {
     pendingCharSwitch = true
     userScrolledUp = false
     if (msgList.value) msgList.value.style.visibility = 'hidden'
-    // 静默刷新日程，确保 header 显示最新状态
-    scheduleStore.fetchOverview(true)
   }
 })
 
@@ -1741,6 +2094,9 @@ watch(() => chat.messages.length, (newLen) => {
   const hasNewImage = [...imageIds].some(id => !previousImageIds.has(id))
   previousImageIds = imageIds
   if (newLen === 0) return
+  // task-29 问题 3：新消息往往就是「她回应了」⇒ 把「还有 N 个动作」刷掉。
+  // 走合并器：同一轮会连插好几条，只刷一次，别把请求打爆。
+  scheduleTouchStateRefresh()
   if (pendingCharSwitch) {
     // 切角色后消息加载完成：滚底 + 恢复可见
     setTimeout(() => {
@@ -1846,7 +2202,6 @@ async function undoLastRound() {
 async function send() {
   if (sendDisabled.value) return
   const text = inputText.value.trim()
-  if (!text) return
   inputText.value = ''
   userScrolledUp = false  // 用户主动发送 → 强制跟随
   await chat.sendMessage(text, imageGenMode.value)
@@ -1865,12 +2220,17 @@ function renderContent(text) {
 </script>
 
 <style scoped>
+.sp-btn.standing-entry-mobile { display:none; }
+@media (max-width:767px) {
+  .standing-entry-desktop { display:none; }
+  .sp-btn.standing-entry-mobile { display:flex; }
+}
+
+/* galgame 沉浸模式（上游 v3.9.0 合并）：普通侧整体收进一层，隐藏/惯性由 v-show + inert 控制 */
 .chat-standard { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.chat-standing-desktop { flex-shrink: 0; }
-.chat-standing-icon { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* 普通侧 ↔ 舞台的淡入淡出（0.3s，设计系统统一时长） */
 .chat-mode-enter-active, .chat-mode-leave-active { transition: opacity .3s var(--ease-standard); }
 .chat-mode-enter-from, .chat-mode-leave-to { opacity: 0; }
-@media (max-width: 767px) { .chat-standing-desktop { display: none; } }
 
 .chat-view { flex:1; display:flex; flex-direction:column; height:100vh; height:100dvh; overflow:hidden; background:transparent; position:relative; }
 
@@ -1894,16 +2254,21 @@ function renderContent(text) {
 
 /* ── 毛玻璃顶部栏 ── */
 .chat-header {
-  z-index: 2;
-  flex-shrink: 0;
   padding:14px 24px;
   border-bottom: 1px solid var(--glass-border);
   background: var(--glass-bg);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   display:flex; align-items:center; justify-content:space-between;
+  /* ⚠️ 必须有定位 + z-index（2026-10-19 浏览器 E2E 抓到）：
+     `backdrop-filter` 会让 .chat-header 形成**独立的层叠上下文**，
+     里面 ChatModeSwitch 的 z-index:6 只在这个上下文内有效；而它按设计悬在顶栏下方
+     8px、压着消息列表 ⇒ 消息（在 DOM 里更靠后）会盖在胶囊上，**鼠标点不到「Galgame」入口**
+     （elementFromPoint 命中 .message）。抬顶栏的层叠顺序即可，视觉无变化。 */
+  position: relative;
+  z-index: 7;
 }
-.chat-title { font-size:16px; font-weight:600; color:var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-title { font-size:16px; font-weight:600; color:var(--text-bright); }
 
 /* ── 移动端返回按钮（← 箭头） ── */
 .btn-mobile-back {
@@ -2012,6 +2377,15 @@ function renderContent(text) {
 }
 
 /* 打字指示器：6 个圆点依次变色的 wave 动画 */
+/* 等待期占位气泡（专题 §九 建议 1）：淡色 + 呼吸动画，圆点复用现成 .typing-dots（跳动的 keyframes 已有） */
+.msg-placeholder-bubble {
+  display: inline-flex; align-items: center; gap: 8px;
+  animation: placeholder-breathe 1.6s ease-in-out infinite;
+}
+.msg-placeholder-text { color: var(--text-secondary); font-style: italic; }
+.msg-placeholder-dots { opacity: 0.85; }
+@keyframes placeholder-breathe { 0%, 100% { opacity: 0.55 } 50% { opacity: 0.85 } }
+
 .typing-dots { overflow: visible; flex-shrink: 0; }
 .typing-dots .dot {
   fill: #fff; animation: dotBlink 1.2s ease-in-out infinite;
@@ -2162,7 +2536,7 @@ function renderContent(text) {
   -webkit-backdrop-filter: blur(18px);
 }
 .chat-input {
-  flex:1; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
+  flex:1; min-width:0; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
   background: var(--bg-secondary);
   border-radius: 14px; color:var(--text-bright); outline:none; resize:none;
   overflow: hidden; caret-color: var(--accent);
@@ -2197,6 +2571,14 @@ function renderContent(text) {
 .gift-btn:hover { transform: scale(1.08); box-shadow: 0 4px 16px rgba(249, 194, 112, 0.35); }
 .gift-btn:hover .gift-btn-icon { transform: rotate(12deg) scale(1.1); }
 .gift-btn:active { transform: scale(0.94); }
+
+
+/* 面板开着时按钮高亮（2026-10-02 用户反馈："点开面板后只能点右上角的 × 关掉"）：
+   入口现在自己就是开关，所以它必须让人一眼看出"面板是我开着的、再点一下就收"。
+   渐变 + 0.3s 过渡，与设计系统的其它状态变化同节奏。 */
+
+/* 待回应角标：pendingCount>0 才出现 */
+
 
 /* ── 叫醒按钮（覆盖送礼按钮样式） ── */
 .wake-btn {
@@ -2362,8 +2744,8 @@ function renderContent(text) {
 /* ── 毛玻璃编辑弹窗 ── */
 
 /* 编辑弹窗淡入缩放 */
-.editor-fade-enter-active,
-.editor-fade-leave-active { transition: opacity 0.3s var(--ease-standard), transform 0.3s var(--ease-standard); }
+.editor-fade-enter-active { transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+.editor-fade-leave-active { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
 .editor-fade-enter-from { opacity:0; transform: scale(0.95); }
 .editor-fade-leave-to   { opacity:0; transform: scale(0.95); }
 .editor-header { padding:16px 20px; border-bottom:1px solid var(--glass-border); display:flex; align-items:center; justify-content:space-between; }
@@ -2688,8 +3070,6 @@ function renderContent(text) {
   flex: 1;
   padding: 0;
 }
-.impression-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.impression-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* 状态 */
 .impression-status {
@@ -3188,16 +3568,16 @@ function renderContent(text) {
 .chat-header-center { display: flex; flex-direction: column; gap: 0; flex: 1; min-width: 0; }
 .chat-header-title-row { display: flex; align-items: center; gap: 8px; }
 .chat-header-schedule {
-  font-size: 11px; color: var(--accent);
+  font-size: 11px; color: var(--accent-text);   /* 11px 小字在暖底上必须用深一档 */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   opacity: 0.75; margin-top: 2px;
 }
-.header-affinity { font-size: 14px; font-weight: 600; color: #e0245e; white-space: nowrap;display: flex;align-items: center; }
+.header-affinity { font-size: 14px; font-weight: 600; color: #c2184a;   /* 原 #e0245e 3.9:1 */ white-space: nowrap;display: flex;align-items: center; }
 .affinity-heart-icon { vertical-align: middle; margin-right: 1px; flex-shrink: 0; }
 .header-affinity-delta { font-size: 11px; font-weight: 500; margin-left: 4px; }
-.header-affinity-delta.delta-up { color: #e0245e; }
+.header-affinity-delta.delta-up { color: #c2184a; }
 .header-affinity-delta.delta-down { color: #4a90d9; }
-.chat-header-right { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 65%; }
+.chat-header-right { display: flex; align-items: center; gap: 10px; }
 .header-reason {
   font-size: 11px; color: var(--text-secondary); font-style: italic;
   white-space: nowrap;
@@ -3206,9 +3586,6 @@ function renderContent(text) {
 /* ── delta / reason roll 动画容器 ── */
 .affinity-delta-wrap,
 .affinity-reason-wrap { position: relative; display: inline-block; vertical-align: bottom; }
-.affinity-reason-wrap { cursor: pointer; text-align: left; touch-action: manipulation; min-width: 0; overflow: hidden; }
-.header-reason { display: block; overflow: hidden; text-overflow: ellipsis; }
-.btn-header-settings { flex-shrink: 0; }
 
 /* ── roll Transition ── */
 .roll-enter-active { animation: roll-in 0.2s ease; }
@@ -3231,7 +3608,13 @@ function renderContent(text) {
   .btn-header-settings { flex-shrink: 0; }
 }
 
-:global(.linshe-modal.impression-modal) { width: min(720px, 96vw); max-height: 68vh; }
-.impression-body { padding: 16px; min-height: 0; }
-@media (max-width: 767px) { :global(.linshe-modal.impression-modal) { height: 100%; max-height: 100%; } }
+
+/* 文本独占一行；工具在输入区底部，对话推测保留在输入区之外。 */
+.input-area { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.input-area > .chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; box-sizing: border-box; }
+.input-area > .force-img-wrap { grid-column: 1; grid-row: 2; }
+.input-area > .gift-btn { grid-column: 2; grid-row: 2; }
+.input-area > .chat-action-toolbar { grid-column: 3; grid-row: 2; justify-self: end; }
+.input-area > .send-btn { grid-column: 4; grid-row: 2; }
+
 </style>

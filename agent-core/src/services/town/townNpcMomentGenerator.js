@@ -12,7 +12,7 @@ import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlo
 import { chatWithPreset } from '../presets/narrative.js';
 import { generateImageRaw as defaultGenerateImageRaw } from '../imageSkill.js';
 import { saveBase64Image } from '../imagePaths.js';
-import { recordCompletedImageTask } from '../imageTaskRecorder.js';
+import { recordCompletedImageTask, recordFailedImageTask } from '../imageTaskRecorder.js';
 import { broadcast as broadcastToUnified } from '../unifiedStreamBus.js';
 import { config } from '../../config.js';
 import { getTimeTag, getLightNoteWithWeather } from '../timeLight.js';
@@ -142,6 +142,7 @@ export async function generateTownNpcMoment(npc, opts = {}) {
   // 3. LLM 生成文案 + 配图提示词
   const worldSetting = getWorldSetting();
   const permissionPrompt = worldSetting ? getSystemRulesWithWorld() : getSystemRules();
+  const worldIntegrationNote = worldSetting ? getWorldIntegrationRule('moments') : null;
   const imagePromptRule = getGlobalRule('image_prompt');
   const imagePromptGuide = imagePromptRule?.rule_content || '';
   const now = new Date();
@@ -186,10 +187,12 @@ ${weatherHint}`;
   const personaMsg = `以下是小镇镇民「${npc.display_name}」的资料，发帖时保持这个人设：\n\n${npcPersonaBlock(npc)}`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
-  if (worldSetting) msgs.push({ role: 'system', content: getWorldIntegrationRule('moments') });
+  if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
   msgs.push({ role: 'system', content: formatPrompt });
   msgs.push({ role: 'system', content: personaMsg });
-  msgs.push({ role: 'user', content: `${timeTag}${factsBlock}现在发一条朋友圈。${styleTail}` });
+  msgs.push({ role: 'user', content: worldSetting
+    ? `请遵循当前<world_setting>来发朋友圈。${timeTag}${factsBlock}现在发一条朋友圈。${styleTail}`
+    : `${timeTag}${factsBlock}现在发一条朋友圈。${styleTail}` });
 
   let text = '', imagePrompt = '';
   try {
@@ -240,9 +243,28 @@ ${weatherHint}`;
         workflowTemplate: genResult.wfMode,
         db,
       });
+    } else {
+      // 2026-10-01：失败落库（原来连 warn 都没有，库里零痕迹）
+      recordFailedImageTask({
+        conversationId: `town_npc_${npc.id}_moments`,
+        promptOriginal: imagePrompt,
+        errorMessage: genResult.error || 'ComfyUI 未返回图片',
+        style: config.comfyui.momentsArtist,
+        resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
+        workflowTemplate: genResult.wfMode || null,
+        db,
+      });
     }
   } catch (err) {
     console.error(`[npcMoments] Image failed for ${npc.display_name}:`, err.message);
+    recordFailedImageTask({
+      conversationId: `town_npc_${npc.id}_moments`,
+      promptOriginal: imagePrompt,
+      errorMessage: err.message,
+      style: config.comfyui.momentsArtist,
+      resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
+      db,
+    });
   }
 
   // 4.5 居民可能在生成期间被删除：此时丢弃本条并清理残留，避免「删了居民还能发朋友圈」

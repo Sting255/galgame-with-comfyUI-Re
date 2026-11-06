@@ -3,21 +3,20 @@
       :model-value="modelValue"
       :title="title"
       full
-      @update:model-value="onLibraryVisibilityChange"
+      @update:model-value="$emit('update:modelValue', $event)"
     >
       <template #header-extra>
-        <span class="lib-count">{{ items.length }} 条<span v-if="!isEvents"> · 已勾选 {{ checkedCount }}</span></span>
+        <span class="lib-count">{{ items.length }} 条</span>
       </template>
       <div class="lib-body">
           <!-- 生成器 -->
-          <div class="gen-section" @paste="onScenePaste">
+          <div class="gen-section">
             <div class="gen-row">
               <div class="gen-input-wrap">
                 <linshe-input
                   ref="directionInput"
                   @keydown.enter.exact.prevent="onDirectionEnter"
                   v-model="direction"
-                  :disabled="describingImage"
                   class="gen-input"
                   type="textarea"
                   rows="2"
@@ -28,18 +27,9 @@
                   <div class="scan-text">幻想中…</div>
                 </div>
               </div>
-              <linshe-button variant="primary" @click="doGenerate" :disabled="generating || saving || describingImage">
+              <linshe-button variant="primary" @click="doGenerate" :disabled="generating || saving">
                 {{ generating ? '幻想中…' : '开始幻想' }}
               </linshe-button>
-            </div>
-            <div class="image-direction-row">
-              <div v-show="false" aria-hidden="true">
-                <linshe-input ref="imagePicker" type="file" tabindex="-1" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" @change="onSceneImage" />
-              </div>
-              <linshe-button variant="secondary" size="sm" :loading="describingImage" :disabled="generating || saving || describingImage" @click="imagePicker?.$el?.click()">
-                {{ describingImage ? '正在识别场景…' : '上传图片还原场景' }}
-              </linshe-button>
-              <span class="image-direction-hint" role="status">{{ describingImage ? '识别完成后自动填入上方，可继续修改' : '也可在上方输入框直接粘贴图片（Ctrl+V），最大 6MB；可先填写补充要求' }}</span>
             </div>
 
             <!-- 生成结果预览 -->
@@ -109,10 +99,6 @@
                 <polyline points="9,6 15,12 9,18" />
               </svg>
               <span class="group-title">系统（{{ systemItems.length }}）</span>
-              <span v-if="!isEvents" class="group-actions" @click.stop>
-                <linshe-button variant="link" size="sm" @click="setAllChecked(true)">全选</linshe-button>
-                <linshe-button variant="link" size="sm" @click="setAllChecked(false)">清空</linshe-button>
-              </span>
               <span class="group-hint">{{ systemOpen ? '收起' : '展开' }}</span>
             </div>
             <CollapseTransition :show="systemOpen">
@@ -122,14 +108,13 @@
                   :key="item.id"
                   :item="item"
                   :is-events="isEvents"
-                  :selectable="!isEvents"
                   :publishing="publishing"
-                  @publish="openPublish"
                   @edit="startEdit"
                   @cancel="cancelEdit"
                   @save="saveItem"
                   @remove="removeItem"
-                  @toggle-check="toggleTopicCheck"
+                  @toggle-checked="toggleChecked"
+                  @publish="openPublish"
                 />
                 <div v-if="systemItems.length === 0" class="empty-hint">暂无系统条目</div>
               </div>
@@ -153,14 +138,13 @@
                   :key="item.id || item._tempKey"
                   :item="item"
                   :is-events="isEvents"
-                  :selectable="!isEvents"
                   :publishing="publishing"
-                  @publish="openPublish"
                   @edit="startEdit"
                   @cancel="cancelEdit"
                   @save="saveItem"
                   @remove="removeItem"
-                  @toggle-check="toggleTopicCheck"
+                  @toggle-checked="toggleChecked"
+                  @publish="openPublish"
                 />
                 <div v-if="customItems.length === 0" key="custom-empty" class="empty-hint">还没有自定义条目，用上方生成器或点「＋新增」添加</div>
               </TransitionGroup>
@@ -168,7 +152,9 @@
           </div>
       </div>
     </linshe-modal>
-    <linshe-modal v-model="publishOpen" title="选择角色" :transition-ms="300">
+
+    <!-- 「立即发送」角色选择（上游 v3.9.0 点题入口）：选一个角色，用这条话题立刻生成一条 -->
+    <linshe-modal v-model="publishOpen" title="选择角色">
       <div class="publish-fields">
         <p class="publish-topic">{{ isEvents ? '奇遇话题' : '朋友圈话题' }}：{{ publishItem?.name }}</p>
         <p v-if="charactersLoading" class="publish-hint" role="status">正在加载角色…</p>
@@ -196,7 +182,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, inject, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, inject, nextTick } from 'vue'
 import * as api from '../api/index.js'
 import LibraryItemCard from './LibraryItemCard.vue'
 import CollapseTransition from './CollapseTransition.vue'
@@ -218,6 +204,26 @@ const confirmFn = inject('confirm')
 const isEvents = computed(() => props.type === 'event-types')
 const title = computed(() => (isEvents.value ? '奇遇事件库' : '朋友圈话题库'))
 
+const items = ref([])
+const loading = ref(false)
+const systemOpen = ref(false) // 系统组默认折叠
+const customOpen = ref(true)
+
+const direction = ref('')
+const directionInput = ref(null)
+const generating = ref(false)
+const saving = ref(false)
+const previewItems = ref([])
+const previewVisible = ref(false)
+const previewLeavingCount = ref(0)
+
+const systemItems = computed(() => items.value.filter(i => i.source === 'default'))
+const customItems = computed(() => items.value.filter(i => i.source === 'custom'))
+
+// ── 「立即发送」（点题）──
+// 选一个角色，把这条话题/事件库条目立刻发出去生成一条朋友圈 / 奇遇。
+// 后端契约：朋友圈走 POST /api/moments/generate { character_id, topic_id }；
+//           奇遇走 POST /api/events/generate { characterId, eventTypeKey }。
 const publishOpen = ref(false)
 const publishItem = ref(null)
 const publishCharacterId = ref(null)
@@ -226,14 +232,6 @@ const charactersLoading = ref(false)
 const charactersError = ref('')
 const publishing = ref(false)
 const publishCharacterOptions = computed(() => publishCharacters.value.map(c => ({ label: c.display_name, value: c.id })))
-
-// 嵌套弹窗按 Esc 时只关闭角色选择窗，保留话题库。
-function onLibraryVisibilityChange(value) {
-  if (!value && publishOpen.value) return
-  emit('update:modelValue', value)
-}
-
-watch(() => [props.modelValue, props.type], () => { publishOpen.value = false })
 
 async function loadPublishCharacters() {
   if (charactersLoading.value) return
@@ -270,6 +268,7 @@ async function publishSelected() {
     toastFn(eventMode ? '奇遇已生成，可前往奇遇列表查看' : '朋友圈已发送', 'success')
     emit('published')
   } catch (err) {
+    // 后端语义化拒绝码翻成人话（与后端 400/404 一一对应）
     const errorMessages = {
       already_active_event: '这个角色还有未结束的奇遇，请先完成或取消后再试',
       events_disabled: '奇遇功能尚未启用，请先在设置中开启',
@@ -281,116 +280,19 @@ async function publishSelected() {
   }
 }
 
-const items = ref([])
-const loading = ref(false)
-const systemOpen = ref(false) // 系统组默认折叠
-const customOpen = ref(true)
-
-const direction = ref('')
-const directionInput = ref(null)
-const imagePicker = ref(null)
-const describingImage = ref(false)
-let imageRequest = null
-
-function cancelImageRecognition() {
-  imageRequest?.abort()
-  imageRequest = null
-  describingImage.value = false
-}
-
-watch(() => [props.modelValue, props.type], cancelImageRecognition)
-onBeforeUnmount(cancelImageRecognition)
-
-function onSceneImage(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  recognizeSceneImage(file)
-}
-
-function onScenePaste(event) {
-  const clipboard = event.clipboardData
-  const imageItem = Array.from(clipboard?.items || []).find(item => item.kind === 'file' && item.type.startsWith('image/'))
-  const file = imageItem?.getAsFile() || Array.from(clipboard?.files || []).find(file => file.type.startsWith('image/'))
-  if (!file) return // 普通文字粘贴保持原生行为
-  event.preventDefault()
-  recognizeSceneImage(file)
-}
-
-async function recognizeSceneImage(file) {
-  if (!file || describingImage.value || generating.value || saving.value) return
-  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(file.type)) {
-    return toastFn('请选择 PNG、JPG、WEBP、GIF 或 AVIF 图片', 'error')
-  }
-  if (file.size > 6 * 1024 * 1024) return toastFn('图片不能超过 6MB', 'error')
-  const controller = new AbortController()
-  imageRequest = controller
-  describingImage.value = true
-  const originalDirection = direction.value
-  const libraryType = props.type
-  try {
-    const image = await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = () => reject(new Error('图片读取失败，请重试'))
-      reader.readAsDataURL(file)
-    })
-    if (controller.signal.aborted) return
-    const result = await api.describeLibraryImage(libraryType, image, originalDirection, controller.signal)
-    if (controller.signal.aborted || imageRequest !== controller) return
-    if (!result.direction?.trim()) throw new Error('未识别到场景，请重试')
-    direction.value = result.direction
-    toastFn('场景已填入，可修改后开始幻想', 'success')
-  } catch (err) {
-    if (!controller.signal.aborted) toastFn(err.message || '图片识别失败，请重试', 'error')
-  } finally {
-    if (imageRequest === controller) {
-      imageRequest = null
-      describingImage.value = false
-      await nextTick()
-      directionInput.value?.focus()
-    }
-  }
-}
-const generating = ref(false)
-const saving = ref(false)
-const previewItems = ref([])
-const previewVisible = ref(false)
-const previewLeavingCount = ref(0)
-
-const systemItems = computed(() => items.value.filter(i => i.source === 'default'))
-const customItems = computed(() => items.value.filter(i => i.source === 'custom'))
-
-// ── 话题勾选（仅朋友圈话题库；奇遇事件库不启用）──
-// 勾选决定这条话题参不参与抽取，条目本身保留，随时能再勾回来。
-const checkedCount = computed(() => items.value.filter(i => i.checked !== 0).length)
-
-async function toggleTopicCheck(item) {
-  const next = item.checked === 0 ? 1 : 0
-  const prev = item.checked
-  item.checked = next
-  try {
-    await api.setTopicsChecked({ ids: [item.id], checked: next === 1 })
-  } catch (err) {
-    item.checked = prev
-    console.warn('[library] toggle topic check failed:', err?.message)
-  }
-}
-
-async function setAllChecked(checked) {
-  try {
-    await api.setTopicsChecked({ all: true, checked })
-    for (const it of items.value) it.checked = checked ? 1 : 0
-  } catch (err) {
-    console.warn('[library] set all checked failed:', err?.message)
-  }
-}
-
 // ── 加载 ──
 
 async function load() {
   loading.value = true
   try {
-    items.value = isEvents.value ? await api.listEventTypes() : await api.listTopics()
+    if (isEvents.value) {
+      items.value = await api.listEventTypes()
+    } else {
+      // 话题库：后端 checked 是 0/1 整数（老行可能没有该列 → 按 1「参与」兜底）。
+      // 卡片上的 LinsheSwitch 要布尔，这里统一归一化，避免 0/1 被当 truthy 显示成「开」。
+      const rows = await api.listTopics()
+      items.value = (rows || []).map(r => ({ ...r, checked: r.checked === undefined ? true : !!r.checked }))
+    }
   } catch (err) {
     toastFn(err.message, 'error')
   } finally {
@@ -407,6 +309,9 @@ watch(() => props.modelValue, async (v) => {
     load()
     await nextTick()
     directionInput.value?.focus()
+  } else {
+    // 关掉话题库时同步收起「立即发送」子弹窗，避免下次打开时残留上一个话题
+    publishOpen.value = false
   }
 })
 
@@ -415,13 +320,13 @@ watch(() => props.modelValue, async (v) => {
 
 function onDirectionEnter(e) {
   if (e.isComposing || e.keyCode === 229) return
-  if (generating.value || saving.value || describingImage.value) return
+  if (generating.value || saving.value) return
   e.target.blur()
   doGenerate()
 }
 
 async function doGenerate() {
-  if (generating.value || saving.value || describingImage.value) return
+  if (generating.value || saving.value) return
   generating.value = true
   try {
     const res = isEvents.value
@@ -498,7 +403,22 @@ function cleanPayload(item) {
       : (item.funFrom || [])
     return { key: item.key, name: item.name, durationMin: item.durationMin, urgency: item.urgency, funFrom, desc: item.desc }
   }
-  return { name: item.name, desc: item.desc }
+  // checked 只属话题库：是否参与「自动抽取」（手动点题不受它限制）。
+  // 老行没有该字段时后端按 1 兜底，前端也补 1，避免把 undefined 发上去变成 false。
+  return { name: item.name, desc: item.desc, checked: item.checked === false ? 0 : 1 }
+}
+
+/** 卡片上的「参与自动抽取」开关：就地改 + 立刻落库（失败回滚，与其它开关同口径） */
+async function toggleChecked(item) {
+  const next = item.checked ? 1 : 0
+  const prev = next ? 0 : 1
+  try {
+    await api.updateTopic(item.id, { name: item.name, desc: item.desc, checked: next })
+    toastFn(next ? '已参与自动抽取' : '已停止自动抽取（手动点题仍可用）', 'success')
+  } catch (err) {
+    item.checked = prev === 1
+    toastFn(err.message, 'error')
+  }
 }
 
 async function savePreviewItem(idx) {
@@ -630,14 +550,8 @@ function addItem() {
   padding: 0 4px 12px;
 }
 
-.publish-fields { display: flex; flex-direction: column; gap: 12px; }
-.publish-topic { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
-.publish-hint { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.6; }
-
 /* 生成器 */
 .gen-section { margin-bottom: 20px; }
-.image-direction-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.image-direction-hint { color: var(--text-secondary); font-size: var(--fs-xs); }
 .gen-row { display: flex; gap: 10px; align-items: stretch; }
 .gen-input-wrap { position: relative; flex: 1; min-width: 0; }
 .gen-input-wrap .gen-input { width: 100%; box-sizing: border-box; }
@@ -689,7 +603,7 @@ function addItem() {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
 }
-.preview-title { font-size: 13px; font-weight: 600; color: var(--accent-hover); }
+.preview-title { font-size: 13px; font-weight: 600; color: var(--accent-text); }
 .preview-actions { display: flex; gap: 8px; }
 
 /* 分组 */
@@ -703,8 +617,6 @@ function addItem() {
 .group-header svg.rotated { transform: rotate(90deg); }
 .group-title { font-size: 14px; font-weight: 700; color: var(--text-primary, #333); }
 .group-hint { font-size: 11px; color: var(--text-secondary, #888); }
-/* 全选 / 清空：靠右，且不要冒泡到分组头的展开收起 */
-.group-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .add-card {
   min-height: 130px;
   border: 1.5px dashed var(--accent, var(--accent));
@@ -744,7 +656,7 @@ function addItem() {
 .card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .tag {
   font-size: 11px; padding: 2px 8px; border-radius: 999px;
-  background: rgba(var(--accent-rgb),0.1); color: var(--accent-hover);
+  background: rgba(var(--accent-rgb),0.1); color: var(--accent-text);
 }
 .card-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
 
@@ -763,6 +675,11 @@ function addItem() {
   padding: 18px; text-align: center; background: var(--tint-faint);
   border-radius: 10px;
 }
+
+/* 「立即发送」子弹窗 */
+.publish-fields { display: flex; flex-direction: column; gap: 12px; }
+.publish-topic { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
+.publish-hint { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm, 12px); line-height: 1.6; }
 
 /* 卡片入库动效：预览卡向下退场，自定义卡从下方向上进入 */
 .preview-card-enter-active,

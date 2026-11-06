@@ -104,6 +104,7 @@ export function collectCharacterImageUrls(characterId, { limit = 120 } = {}) {
 
   // 8. 角色形象面板的场景立绘（包含「默认」work 槽）。生成/上传直接写此表，
   //    不登记 image_tasks；直接读取也能补齐已生成的历史图片。
+  //    （2026-10-14 补漏合并：上游 v3.9.0 有这一段，本地合并时漏了）
   const standingRows = db.prepare(`
     SELECT image_url FROM character_standings
     WHERE character_id = ? AND image_url IS NOT NULL AND image_url != ''
@@ -111,7 +112,8 @@ export function collectCharacterImageUrls(characterId, { limit = 120 } = {}) {
   `).all(characterIdNum, limit);
   for (const row of standingRows) push(row.image_url);
 
-  // 9. 角色当前头像与旧版默认立绘（work 槽未显式设置图片时的兜底）
+  // 9. 角色当前头像、旧版默认立绘与两个背景槽位（chat / galgame）
+  //    （chat / galgame 背景槽是本地增补，上游只有 avatar_path / standing_url；保留本地）
   const char = db.prepare('SELECT avatar_path, standing_url, chat_bg_path, galgame_bg_path FROM characters WHERE id = ?').get(characterIdNum);
   if (char) {
     push(char.avatar_path);

@@ -8,6 +8,8 @@ import { TOWN_BUSINESS_ROLES, inferTownBusinessKind, townBuildingKind } from './
 import { buildWalkGridFromLayers } from './townMapService.js';
 import { findPath } from './townPathfinding.js';
 import { broadcastTownMapUpdated } from './townBus.js';
+// 上游 v3.10.0：地点（town_locations）与 NPC（town_npcs）的能力默认值分开 ——
+// 地点不再携带 trade（店内买卖全部走功能模板货架/店铺舞台），否则会喂出打不开的「交易」入口。
 import { ensureTownCapabilities, defaultTownCapabilities, defaultTownLocationCapabilities, townCapabilities, townLocationCapabilities, upgradeTownNpcCapabilities, shouldHaveWorkPermission } from './townCapabilities.js';
 
 const parse = (value, fallback = {}) => { try { return JSON.parse(value) ?? fallback; } catch { return fallback; } };
@@ -170,7 +172,7 @@ export function reconcileTownResponsibilities({ db = getDb(), allowFallback = fa
       // Persist factual workplace without rewriting an existing personality, home or routine.
       db.prepare('UPDATE town_npcs SET workplace_key=? WHERE id=?').run(location.key, npc.id);
       if (!npc.capabilities_explicit) db.prepare('UPDATE town_npcs SET capabilities_json=? WHERE id=?')
-        .run(JSON.stringify(townCapabilities(location, defaultTownCapabilities(kind, npc.job))), npc.id);
+        .run(JSON.stringify(townLocationCapabilities(location, defaultTownLocationCapabilities(kind, npc.job))), npc.id);
       if (location.business_kind === 'none') db.prepare('UPDATE town_locations SET business_kind=? WHERE id=?').run(kind, location.id);
     }
     return { changed: selected.some(item => item.isNew), pending };

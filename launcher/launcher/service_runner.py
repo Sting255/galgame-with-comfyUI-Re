@@ -8,10 +8,17 @@
 """
 import os
 import sys
+import json
 from PySide6.QtCore import QObject, Signal, QProcess, QTimer, QUrl, QByteArray, QThread
+
+# 2026-11-06：后端（agent-core/src/services/procRestart.js）用这个退出码表示
+# 「我要换一个进程跑，不是崩溃」——导入备份后旧库句柄与旧 config 都失效，必须新进程重读。
+# 两边必须一致，改一处就要同步另一处。
+RESTART_EXIT_CODE = 75
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from .process_env import ensure_system_env
+from .service_config import service_port, belongs_to_project
 
 
 # ── 捆绑运行时发现 ──
@@ -197,7 +204,9 @@ class ServiceWorker(QObject):
 
     def __init__(self, svc_def: dict, project_path: str, parent=None):
         super().__init__(parent)
-        self._def = svc_def
+        self._def = dict(svc_def)
+        if self._def["name"] == "agent_core":
+            self._def["port"] = service_port(project_path)
         self._project_path = project_path
         self._proc: QProcess | None = None
         self._status = self.STATUS_STOPPED
@@ -253,6 +262,12 @@ class ServiceWorker(QObject):
         env = self._proc.processEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("NODE_ENV", "production")
+        if self.name == "agent_core":
+            env.insert("PORT", str(self.port))
+            # 2026-11-06：告诉后端「你现在被启动器托管」。
+            # 托管时后端不自己 spawn 新进程，而是用 RESTART_EXIT_CODE 退出、由这里拉起 ——
+            # 否则新进程的 stdout 是 ignore 的，启动器看不到它，界面只会停在"意外退出"。
+            env.insert("LINSHE_MANAGED_BY_LAUNCHER", "1")
         # 服务定义中的额外环境变量（如 MaiBot 的 PYTHONUTF8）
         for _key, _value in self._def.get("env", {}).items():
             env.insert(_key, _value)
@@ -307,7 +322,14 @@ class ServiceWorker(QObject):
         self._health_reply = None
         if self._status not in (self.STATUS_STARTING,):
             return
-        if reply.error() == QNetworkReply.NoError:
+        healthy = reply.error() == QNetworkReply.NoError
+        if healthy and self.name == "agent_core":
+            try:
+                body = json.loads(bytes(reply.readAll()).decode("utf-8"))
+                healthy = body.get("application") == "linshe" and body.get("pid") == self._pid
+            except (ValueError, TypeError):
+                healthy = False
+        if healthy:
             self._set_status(self.STATUS_RUNNING)
             self.health_changed.emit(self.name, True)
             self.output.emit(self.name, f"[{self.display}] ✓ :{self.port} healthy")
@@ -388,11 +410,22 @@ class ServiceWorker(QObject):
         self._pid = None
         if self._status == self.STATUS_STOPPING:
             self._set_status(self.STATUS_STOPPED)
+        elif exit_code == RESTART_EXIT_CODE:
+            # 2026-11-06：后端要求「换一个进程」——导入备份后旧库句柄与旧 config 都失效，
+            # 必须由新进程重新读库和 .env。由这里拉起，日志与状态都归启动器管。
+            self.output.emit(self.name, f"[{self.display}] 数据已恢复，正在自动重启…")
+            self._set_status(self.STATUS_STOPPING)   # 先落到"停"态，避免重启期间被判成崩溃
+            QTimer.singleShot(1200, self._restart_after_data_restore)
         else:
             # 意外退出
             self._set_status(self.STATUS_ERROR)
             self.output.emit(self.name, f"[ERROR] [{self.display}] 意外退出 (code: {exit_code})")
         self.health_changed.emit(self.name, False)
+
+    def _restart_after_data_restore(self):
+        """数据恢复后的自动重启：旧进程已退出、端口已释放，直接重开即可。"""
+        self._set_status(self.STATUS_STOPPED)
+        self.start()
 
     # ------------------------------------------------------------------
     # Internal — Status
@@ -441,10 +474,18 @@ class ServiceRunner(QObject):
 
     def start_all(self):
         """顺序启动：端口清理（后台线程） → vector → agent_core。"""
-        # 防止重复点击
+        # 防止重复点击 —— 必须覆盖**整个启动流程**，不能只看清理线程是否还在跑：
+        # 清理只要 1~2 秒，之后用户再点一次启动，第二次的端口清理会把**刚起来的新进程**
+        # 当成残留杀掉（日志表现：连续两次「启动: …」→ code 15/1 退出、端口反复被占）。
+        if getattr(self, "_starting", False):
+            self.output.emit("system", "[!] 正在启动中，请稍候（不要重复点击启动）")
+            return
         if hasattr(self, "_cleaner_thread") and self._cleaner_thread and self._cleaner_thread.isRunning():
             self.output.emit("system", "[!] 端口清理正在进行中，请稍后再试")
             return
+        self._starting = True
+        # 兜底复位：启动流程异常中断时不至于永久锁死
+        QTimer.singleShot(45000, lambda: setattr(self, "_starting", False))
 
         self._startup_cancelled = False
         self._clear_startup_connections()
@@ -476,6 +517,7 @@ class ServiceRunner(QObject):
         if self._startup_cancelled:
             return
         if not success:
+            self._starting = False
             self.status_summary.emit(
                 self.vector_worker.status, self.agent_worker.status, "start_failed"
             )
@@ -510,6 +552,7 @@ class ServiceRunner(QObject):
 
     def stop_all(self):
         """优雅停止：agent_core 先 stop → vector 后 stop。"""
+        self._starting = False
         self._startup_cancelled = True
         self._clear_startup_connections()
         self._workers["agent_core"].stop()
@@ -592,11 +635,12 @@ class ServiceRunner(QObject):
             self.status_summary.emit(v, a, "partial")
 
     def _kill_port_processes(self):
-        """杀死 3099 和 8765 端口上残留的项目进程。"""
+        """杀死 3099 和 8765 端口上残留的项目进程，并等端口真正空出来。"""
+        killed = False
         try:
             import psutil
 
-            ports = [SERVICES[s]["port"] for s in SERVICES]
+            ports = [w.port for w in self._workers.values()]
             keywords = [
                 "agent-core", "vector-service", "web-ui",
                 "app.js", "server:app", "uvicorn", "nodemon",
@@ -608,8 +652,9 @@ class ServiceRunner(QObject):
                         name = proc.name().lower()
                         if name in ("node.exe", "python.exe"):
                             cmdline = " ".join(proc.cmdline()).lower()
-                            if any(kw.lower() in cmdline for kw in keywords):
+                            if belongs_to_project(proc, self._project_path) and any(kw.lower() in cmdline for kw in keywords):
                                 proc.kill()
+                                killed = True
                                 self.output.emit(
                                     "system",
                                     f"  已终止残留进程: {proc.name()} (PID {conn.pid}) on port {conn.laddr.port}",
@@ -618,7 +663,36 @@ class ServiceRunner(QObject):
                         pass
         except Exception:
             pass  # psutil 不可用时静默跳过
+        # proc.kill() 是异步的：不等进程真正退出就拉起新进程，会撞
+        # 「WinError 10048 端口已占用」，向量服务/主控后端直接退出。
+        if killed:
+            self._wait_ports_released()
         self.output.emit("system", "端口清理完成")
+
+    def _wait_ports_released(self, timeout: float = 6.0):
+        """轮询到端口不再 LISTEN 为止；超时也放行，但明确提示。"""
+        try:
+            import time
+
+            import psutil
+        except Exception:
+            return
+        ports = {w.port for w in self._workers.values()}
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                busy = any(
+                    conn.laddr.port in ports and conn.status == "LISTEN"
+                    for conn in psutil.net_connections(kind="inet")
+                )
+            except Exception:
+                return
+            if not busy:
+                return
+            time.sleep(0.2)
+        self.output.emit(
+            "system", "  [!] 端口仍被占用，继续启动；若服务起不来，再点一次启动"
+        )
 
 
 # ------------------------------------------------------------------

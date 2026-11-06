@@ -1,4 +1,3 @@
-import { isMomentBackfillRunning } from './momentBackfill.js';
 /**
  * 回复队列调度器
  *
@@ -15,6 +14,7 @@ import { chatSync } from '../llm/llm-client.js';
 import { prepareNarrativePrompt } from './presets/narrative.js';
 import { buildConversationLorebookContext } from './lorebook/conversationContext.js';
 import { config } from '../config.js';
+import { parseSqlUtc } from './programTime.js';
 import { getCurrentActivity, syncSleepingState } from './scheduleManager.js';
 import { getTimeLight } from './timeLight.js';
 import { maybeStartScheduledBatch, maybeInitializeSchedule } from './scheduleBatch.js';
@@ -26,7 +26,14 @@ import {
 import { broadcast } from './unifiedStreamBus.js';
 import { getStandingDisplay } from './standingDisplay.js';
 import { getFreshUnsharedDream, markDreamShared } from './dreamService.js';
-import { maybeGenerateDailyNewspaper } from './newspaperService.js';
+// 用户信息块的唯一构造器：与"叫醒"链共用，避免两处各写一份再漂移（persona 曾被丢掉，见该函数注释）
+import { buildUserInfoBlock } from './wakeService.js';
+import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
+import { createTownActorRegistry } from './town/townActorRegistry.js';
+import { runProgramDayRollover } from './programDayRollover.js';
+// 上游 v3.9.0 合并：朋友圈回填自己会刷新到期日程，补发进行中时本调度器的日程刷新让位
+import { isMomentBackfillRunning } from './momentBackfill.js';
+// 上游 v4.0.0 合并：媒体内容页到点补帖与状态自愈（日报由 runProgramDayRollover 统一调度，此处不重复）
 import { maybeAutoGenerate as maybeAutoGenerateMedia, resetStaleMediaGenerating, initializeMediaAutoSchedule } from './mediaService.js';
 
 const CHECK_INTERVAL = 1 * 60 * 1000; // 1 分钟
@@ -54,6 +61,7 @@ export function startReplyQueueScheduler() {
   }, 10_000);
 }
 
+/** ⚠️ 死导出（2026-10-15 标注，只标注不删）：无调用点；与另外六个 `stop*Scheduler` 同批处理。 */
 export function stopReplyQueueScheduler() {
   if (timer) {
     clearInterval(timer);
@@ -70,9 +78,13 @@ async function tick() {
   processing = true;
 
   try {
-    // 0. 每日预告报纸《邻舍日报》：每天零点起补当天份（内部自带去重/节流/错误兜底，
-    //    fire-and-forget——生成含 LLM 与逐张配图，不能阻塞下面的调度）
-    maybeGenerateDailyNewspaper();
+    // 0. 世界翻篇检查（2026-10-01）：程序日期变了就跑一遍日常任务（日报 / 记忆整理…）。
+    //    这里覆盖"程序时间自然流过午夜"；手动调时走 timeControl 的立即触发。
+    //    同一天重复调用是空操作（处理过的日期落库），所以放在 tick 里没有额外开销。
+    //    fire-and-forget：内部任务含 LLM 与逐张配图，绝不能阻塞下面的调度。
+    runProgramDayRollover({ reason: 'tick' }).catch(err => {
+      console.warn('[rollover] tick 触发失败（已忽略）:', err?.message || err);
+    });
 
     // 0.5 媒体内容页：仅到点补一批新帖（fire-and-forget，内部节流与并发守卫）。
     // dev 启动时已初始化等待间隔；配图只由新批次或前端按需触发。
@@ -99,7 +111,7 @@ function maybeRefreshSchedules() {
 
 // ── 回复队列处理 ──
 
-async function processReplyQueue() {
+export async function processReplyQueue() {
   const db = getDb();
 
   // 取最早到期的一个角色（只取第一条来确定角色，然后拉该角色所有 waiting）
@@ -117,23 +129,16 @@ async function processReplyQueue() {
 
   // 拉取该角色所有 waiting 消息
   const allPending = db.prepare(`
-    SELECT * FROM reply_queue
+    UPDATE reply_queue SET status = 'processing'
     WHERE character_id = ? AND status = 'waiting'
-    ORDER BY created_at ASC
-  `).all(entry.character_id);
+    RETURNING *
+  `).all(entry.character_id).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
 
   if (allPending.length === 0) return;
 
   const ids = allPending.map(e => e.id);
 
-  // 原子性标记 processing（AND status='waiting' 确保与 wakeService 互斥）
   const placeholders = ids.map(() => '?').join(',');
-  const claimResult = db.prepare(`UPDATE reply_queue SET status = 'processing' WHERE id IN (${placeholders}) AND status = 'waiting'`).run(...ids);
-
-  if (claimResult.changes === 0) {
-    console.log(`[replyQueue] Entries for ${entry.display_name} already claimed by another process, skipping`);
-    return;
-  }
 
   const isSleepWakeup = entry.delay_minutes === -1;
 
@@ -166,6 +171,8 @@ async function processReplyQueue() {
     // 分句
     const segments = splitText(fullReply);
 
+    const msgIds = [];
+    db.transaction(() => {
     // 写入 raw_messages
     const rawResult = db.prepare(`
       INSERT INTO raw_messages (conversation_id, role, content)
@@ -174,7 +181,6 @@ async function processReplyQueue() {
     lorebookTurn.commit();
 
     // 写入 messages（分句展示）
-    const msgIds = [];
     for (let i = 0; i < segments.length; i++) {
       const seq = i; // 使用递增序号
       const msgResult = db.prepare(`
@@ -184,7 +190,7 @@ async function processReplyQueue() {
       msgIds.push(msgResult.lastInsertRowid);
     }
 
-    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders}) AND status = 'processing'`).run(...ids);
 
     // 睡觉醒来：更新角色状态，重置叫醒列
     if (isSleepWakeup) {
@@ -192,6 +198,7 @@ async function processReplyQueue() {
         .run(characterId);
       console.log(`[replyQueue] ${entry.display_name} woke up, sleep state cleared`);
     }
+    })();
 
     // 清除所有 waiting 状态的其他消息（同一批次已合并处理）
     // 不需要——它们已经在 allPending 里并标记为 processing→done
@@ -239,7 +246,7 @@ async function processReplyQueue() {
  * 为延迟回复构建 LLM 上下文
  * 复用 chat.js 的关键消息层结构，但不走流式
  */
-function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null) {
+export function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null) {
   const db = getDb();
   const characterId = entry.character_id;
   const conversationId = entry.conversation_id;
@@ -290,14 +297,12 @@ function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null
     relParts.push(`<oath_bond>你们之间有一个比普通关系更深一层的约定——${chatUserName}曾经郑重地送过你一枚戒指。这代表了独一无二的羁绊和承诺。在对话中，你的行为和情感会自然地带有"你是我最重要的人"的底色——不是因为规则要求，而是因为这层羁绊已经是你内心的一部分。</oath_bond>`);
   }
 
-  // 用户信息
-  if (config.user.nickname || config.user.gender || config.user.appearance) {
-    const infoParts = [];
-    infoParts.push(`消息中标记为"user"的人是"${chatUserName}"`);
-    if (config.user.gender) infoParts.push(`性别：${config.user.gender}`);
-    if (config.user.appearance) infoParts.push(`外观特征：${config.user.appearance}`);
-    relParts.push(`<user_info>${infoParts.join('。')}</user_info>`);
-  }
+  // 用户信息（昵称/性别/外观/自我描述 + 遵从约束）
+  // 2026-10-02 用户反馈「角色对话还是有一些不遵从设定，和玩家的性别与自我描述」：这里原先只推
+  // nickname / gender / appearance，**persona（玩家的自我描述）被整条丢掉**，与私聊主链口径不一致。
+  // 现在与叫醒链共用同一个构造器 `buildUserInfoBlock`（persona 曾被丢掉的来龙去脉写在那里）。
+  const userInfoBlock = buildUserInfoBlock(chatUserName);
+  if (userInfoBlock) relParts.push(userInfoBlock);
   if (relParts.length > 0) {
     msgs.push({ role: 'system', content: relParts.join('\n') });
   }
@@ -305,7 +310,7 @@ function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null
   // ── 计算延迟时长 ──
   const now = new Date();
   const firstCreatedAt = entry.created_at
-    ? new Date(entry.created_at.replace(' ', 'T'))
+    ? parseSqlUtc(entry.created_at)
     : null;
   const delayMinutes = firstCreatedAt
     ? Math.round((now.getTime() - firstCreatedAt.getTime()) / 60000)
@@ -324,7 +329,7 @@ function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null
   if (isSleepWakeup) {
     // 计算距预定起床时间过了多久（处理系统重启后延迟处理的情况）
     const scheduledAt = entry.scheduled_reply_at
-      ? new Date(entry.scheduled_reply_at.replace(' ', 'T'))
+      ? parseSqlUtc(entry.scheduled_reply_at)
       : null;
     const minutesSinceWakeup = scheduledAt
       ? (now.getTime() - scheduledAt.getTime()) / 60000
@@ -377,6 +382,17 @@ function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null
       role: 'system',
       content: `[系统说明] 你刚睡醒，昨晚做了个梦：「${dream.content}」。回复时可以自然提一句，不强求。`,
     });
+  }
+
+  // Read current records at generation time; never persist scene/context into queued user text.
+  if (config.features.town) {
+    try {
+      const lifeContext = createCharacterTownLifeContext({ db, clock: { now: Date.now },
+        registry: createTownActorRegistry(db), timeZone: config.town.timeZone })(characterId);
+      if (lifeContext) msgs.push({ role: 'system', content: lifeContext });
+    } catch (error) {
+      console.warn('[replyQueue] town life records unavailable:', error.message);
+    }
   }
 
   // 历史消息（最近的对话上下文）

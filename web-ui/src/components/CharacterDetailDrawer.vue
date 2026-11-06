@@ -65,7 +65,7 @@
               </linshe-button>
             </div>
 
-            <!-- Row 3: 日记入口单独占满一行 -->
+            <!-- 日记入口（上游 v3.9.0 合并）：单独占满一行 -->
             <linshe-button
               variant="secondary"
               class="dr-diary-row"
@@ -119,6 +119,17 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
 
             <!-- 时间轴 -->
             <div v-else class="dr-timeline">
+              <!-- 私密时刻（2026-10-02）：她今天有一段"一个人在屋里"的时间 —— 只给一个提示条，
+                   不剧透她在做什么（当面撞见才是玩法；见后端 privateMomentService）。 -->
+              <div v-if="privateMoment && privateMoment.has" class="dr-private" :class="{ 'is-now': privateMoment.active }">
+                <span class="dr-private-dot" aria-hidden="true"></span>
+                <span class="dr-private-text">
+                  {{ privateMoment.active
+                    ? `现在一个人在屋里（${privateMoment.startTime}~${privateMoment.endTime}）`
+                    : `今天有一段一个人待着的时间（${privateMoment.startTime}~${privateMoment.endTime}）` }}
+                </span>
+                <span class="dr-private-hint">{{ privateMoment.active ? '去看看她？' : '' }}</span>
+              </div>
               <div
                 v-for="(act, i) in activities"
                 :key="i"
@@ -197,7 +208,6 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
 import { computed, nextTick, ref, reactive, inject, watch, onUnmounted } from 'vue'
 import { useTooltip } from '../composables/useTooltip.js'
 import { updateScheduleActivity } from '../api/index.js'
-import { emitScheduleAgreement } from '../utils/characterReactionProducers.js'
 import LinsheButton from './ui/LinsheButton.vue'
 import DiaryIcon from './DiaryIcon.vue'
 import LinsheModal from './ui/LinsheModal.vue'
@@ -210,6 +220,11 @@ const props = defineProps<{
   loading: boolean
   peekBusy: boolean
   regenerating?: boolean
+  /**
+   * 私密时刻（2026-10-02 新玩法「自慰 / 你闯进来了」）：她今天有没有一段"一个人在屋里"的时间。
+   * 形状见后端 `GET /api/schedule/:id/private-moment`；缺省 null = 不显示（旧调用点零影响）。
+   */
+  privateMoment?: any
 }>()
 
 const emit = defineEmits(['close', 'peek', 'regenerate', 'chat', 'wakePhone', 'wakeDoor', 'peekAt', 'updated', 'diary'])
@@ -237,8 +252,6 @@ async function saveEdit() {
   try {
     const d = await updateScheduleActivity(props.char.id, editIndex.value, { ...editForm })
     // 成功提示由后端 schedule_changed 广播统一弹出，这里不重复提示
-    // 2.3：只记录「明确保存了日程约定」，不声称已经赴约
-    emitScheduleAgreement({ characterId: props.char.id, activity: editForm.activity, index: editIndex.value })
     emit('updated', d.activities || [])
     editOpen.value = false
   } catch (err: any) {
@@ -475,7 +488,7 @@ onUnmounted(() => {
 }
 .dr-btn svg { flex-shrink: 0; }
 
-/* 日记入口：单独一行、占满抽屉宽度 */
+/* 日记入口（上游 v3.9.0 合并）：单独一行、占满抽屉宽度 */
 .dr-diary-row {
   width: 100%;
   margin-top: 8px;
@@ -631,6 +644,27 @@ onUnmounted(() => {
   gap: 8px;
 }
 .dr-empty p { margin: 0; font-size: 0.9rem; }
+
+/* ── 私密时刻提示条（2026-10-02）：弱化、不抢时间轴；"现在"时才点亮 ── */
+.dr-private {
+  display: flex; align-items: center; gap: 8px;
+  margin: 2px 0 10px; padding: 7px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent);
+  font-size: 0.78rem; color: var(--text-secondary);
+  transition: border-color 0.3s var(--ease-standard, ease), background-color 0.3s var(--ease-standard, ease);
+}
+.dr-private.is-now {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent-4) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-4) 8%, transparent);
+  color: var(--text-primary);
+}
+.dr-private-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); flex-shrink: 0; }
+.dr-private.is-now .dr-private-dot { background: var(--accent-4); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-4) 20%, transparent); }
+.dr-private-text { flex: 1; min-width: 0; }
+.dr-private-hint { opacity: 0.75; white-space: nowrap; }
 
 /* ── Timeline ── */
 .tl-item {

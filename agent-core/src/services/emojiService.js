@@ -5,6 +5,9 @@ import { buildImageCrossRefInfo, buildCharacterAppearanceSection } from './chara
 import { saveBase64Image } from './imagePaths.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { resolveStandingOutfits, normalizeStandingOutfitScene, validateMissingOutfitPolicy, hasStandingOutfit, completeStandingOutfit } from './expressionStandingAppearance.js';
+// 角色 LoRA 解析：2026-10-17 收口到 `characterLoras.js`（全仓唯一实现，4 份本地实现已合并）。
+// 本文件在下方原样再导出，既有 import 点（expressionStandingService 等）不用改。
+import { parseCharacterLoras } from './characterLoras.js';
 
 export const DEFAULT_EMOJI_KEYS = [
   '开心', '难过', '哭', '生气', '哈哈大笑', '卖萌', '晕倒',
@@ -337,7 +340,7 @@ function prependFixedEmojiTags(prompt, tagsText) {
 
 /** 兜底 prompt：当创造助手返回 JSON 缺某个 key 时使用，固定 tag 由 prependFixedEmojiTags 统一前置 */
 function fallbackEmojiPrompt(char, key) {
-  const cross = buildImageCrossRefInfo(char, { outfits: null });
+  const cross = buildImageCrossRefInfo(char);
   const identity = cross.split('\n')[0] || char.display_name || 'character';
   return [
     `${key} expression`,
@@ -394,11 +397,11 @@ export function parseEmojiPromptJson(raw, char, keys = DEFAULT_EMOJI_KEYS, fixed
 function buildEmojiImageRule(styleMode) {
   const chibi = styleMode === EMOJI_STYLE_MODES.CHIBI_HEAD;
   const anchors = chibi
-    ? '发型、发色、瞳色、瞳孔/眼球特征、嘴巴、表情、头部配饰等可见辨识特征'
-    : '发型、发色、瞳色、标志性服装（上半身）、头部配饰等可见辨识特征；不要写鞋袜、腿部、体型（如 shoes, boots, stockings, tall figure，会拖成全身构图）';
+    ? '发型、发色、瞳色、瞳孔/眼球特征、嘴巴、表情、头部配饰等至少 3 项'
+    : '发型、发色、瞳色、标志性服装（上半身）、头部配饰、辨识特征等至少 6 项；不要写鞋袜、腿部、体型（如 shoes, boots, stockings, tall figure，会拖成全身构图）';
   const example = chibi
-    ? "'Furina \\(Genshin Impact\\) has white hair with blue streaks, blue eyes, star-shaped pupils, and a gold hair ornament. She grins happily.'"
-    : "'Furina \\(Genshin Impact\\) has white hair with blue streaks and blue eyes. She wears a blue top hat and lace gloves. She grins happily.'";
+    ? "'Furina \\(Genshin Impact\\) \\(white hair with blue streaks, blue eyes, star-shaped pupils, gold hair ornament\\) happy grin, smile'"
+    : "'Furina \\(Genshin Impact\\) \\(white hair with blue streaks, blue eyes, blue top hat, lace gloves\\) happy grin, smile'";
   const modeRule = chibi
     ? '猪鼻大头风格只保留大头与表情, 角色必须转成 Q版大头。允许项：发型、发色、瞳色、眼球/瞳孔特征、眉毛、嘴巴、表情、脸型、头部配饰。禁止项：任何服装、衣着、脖颈以下身体、胸部、腹部、腰部、臀部、腿部、鞋袜、choker/项链；禁止词包括但不限于 suit, midriff, exposed midriff, build, figure, chest, breast, waist, hips, legs, boots, stockings, skirt, pants, shorts, shoes, choker, necklace, torso, clothing, outfit。'
     : styleMode === EMOJI_STYLE_MODES.HALF_BODY_CHIBI
@@ -406,7 +409,7 @@ function buildEmojiImageRule(styleMode) {
       : '半身构图LINE风格表情包（构图由系统前置 tag 固定：half body, upper body, close-up），只描写表情、头部与肩臂/手的动作；禁止描写腿部、站姿、奔跑、跳跃、转身等全身或下半身动作，避免构图被拖成全身；不要写 chibi character、big head 等 Q版描述，半身模式保持角色原有头身比例；角色服装保持原设定即可，无需为场景换装。';
   return [
     '本任务生成 SDXL 表情包提示词，适用以下专用生图规则（替代通用生图规则）：',
-    `1. 角色写法（核心）：每个 prompt 中的角色一律以 'Name \\(Series\\)' 开头，保留角色标签及作品名的转义括号，随后用自然语言完整句子描述${anchors}，再描述该表情下的表情与肢体动作。外观不另加括号，不设特征数量下限，不为凑数编造特征。示例：${example}。`,
+    `1. 角色写法（核心）：每个 prompt 中的角色一律写成 'Name \\(Series\\)'，作品名后用括号注明${anchors}，随后接角色在该表情下的表情与肢体动作。示例：${example}。`,
     `2. ${modeRule}`,
     '3. 全英文，不出现中文；不使用未转义的双引号，需要引用时一律用单引号。',
   ].join('\n');
@@ -414,6 +417,8 @@ function buildEmojiImageRule(styleMode) {
 
 /** 调创造助手生成表情 prompt（json_object，温度 0.75），keys 缺省读取 DB 中可编辑的类别 */
 export async function generateEmojiPrompts(char, style = '', keys = null, options = {}, dependencies = {}) {
+  // 上游 v3.10.0：表情包与表情立绘共用「显式选装」口径 ——
+  // 不再从日程/临时服饰推导外观，必须用用户选定的 outfitScene。
   const outfitScene = normalizeStandingOutfitScene(options.outfitScene);
   validateMissingOutfitPolicy(options.missingOutfitPolicy);
   if (!hasStandingOutfit(char.id, outfitScene)) {
@@ -422,7 +427,7 @@ export async function generateEmojiPrompts(char, style = '', keys = null, option
   }
   const emojiKeys = keys || getEmojiCategories();
   const system0 = getSystemRules({ roleplay: false });
-  // 与表情立绘共用显式选装，禁止从日程或临时服饰重新推导。
+  // 完整外观段（含生效外观注入）剥掉「## 你的外观」标题行，由下方「角色外观：」标签替代
   const appearanceSection = buildCharacterAppearanceSection(char, { outfits: resolveStandingOutfits(char, outfitScene) });
   const appearance = appearanceSection ? appearanceSection.replace(/^##[^\n]*\n?/, '').trim() : '';
   const styleMode = getEmojiStyleMode();
@@ -439,14 +444,13 @@ export async function generateEmojiPrompts(char, style = '', keys = null, option
   const requirements = [
     `prompt 生成格式遵循前面生图规则中的角色写法，${emojiKeys.length} 条 prompt 中的角色写法必须保持一致。`,
     '在此前提下，每个 prompt 只描述该表情下的表情、神态与肢体动作，英文，不超过 80 词，不出现中文，不使用双引号（需要引用时一律用单引号）。',
+    // 上游 v3.10.0：显式选装后，服装只服从用户所选形象，不再按时间/日程推导。
     '角色外观已按用户所选形象组装。服装遵循其中的着装优先级，不自行按时间、日程或场景换装；用户明确要求修改外观时，以用户要求为准并删除冲突的旧特征。猪鼻大头模式仍禁止描写服装。',
   ];
   requirements.push(`不要写背景、画风、构图类描述（${tagsText}）。这些固定 tag 由系统在生成后自动前置到每条 prompt 开头，你重复输出只会浪费 token。`);
   requirements.push('输出严格 JSON object：键是上面的中文表情名，值是对应 prompt 字符串。不要 Markdown 代码块，不要解释。');
   // 输出示例演示双重转义：JSON 源码里的 \\( 解析后即生图规则要求的 \(；单个 \( 是非法 JSON 转义
-  const outputExample = JSON.stringify(Object.fromEntries(emojiKeys.map(key => [key,
-    `Name \\(Series\\) has white hair and blue eyes. Replace with this character's selected appearance and the expression for ${key}; English only, at most 80 words, no background/style/framing tags, follow the selected mode's clothing constraints.`,
-  ])));
+  const outputExample = '{"开心": "Name \\\\(Series\\\\) \\\\(hair color, eye color, signature outfit\\\\) happy grin, smile", "难过": "Name \\\\(Series\\\\) \\\\(hair color, eye color, signature outfit\\\\) teary eyes, sad frown"}';
   const system2 = `你是 LINE 表情包提示词生成助手。
 请为角色生成 ${emojiKeys.length} 种表情的 SDXL 英文提示词。
 
@@ -455,7 +459,7 @@ export async function generateEmojiPrompts(char, style = '', keys = null, option
 固定要求：
 ${requirements.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 
-完整输出格式示例（必须原样保留全部 ${emojiKeys.length} 个键，各值按其中的要求填写；角色名与外观锚点必须来自角色资料，不得照抄示例内容或字段说明）：
+输出格式示例（只演示格式与转义写法，示例仅展示前 2 个键，实际必须输出全部 ${emojiKeys.length} 个键；角色名与外观锚点必须来自角色资料，不得照抄示例内容）：
 ${outputExample}
 注意：生图规则中的角色写法 \\( 是指最终 prompt 文本；写进 JSON 字符串时必须把每个反斜杠写成两个，即 \\\\(，只写一个反斜杠属于非法 JSON 转义，会导致解析失败。`;
   const system3 = `${char.short_prompt || ''}\n\n角色外观：\n${appearance || '以 short_prompt 为准，保持角色原有辨识度'}`;
@@ -469,15 +473,19 @@ ${outputExample}
   }
   const userPrompt = userPromptParts.join('\n');
 
-  const messages = [
-      { role: 'system', content: system0 },
-      { role: 'system', content: system1 },
-      { role: 'system', content: system2 },
-      { role: 'system', content: system3 },
-      { role: 'user', content: userPrompt },
-    ];
+  // 上游 v3.10.0：允许注入 chat 实现（`dependencies.chat`），便于测试替身；
+  // 生产不传则走世界书包装器 chatSync（与表情立绘同一 LLM 收口）。
+  // lorebook 参数让世界书按「稳定指令 / 角色人格 / 用户方向」三层注入，
+  // cacheBoundary 指向 system3（角色人格）在 messages 里的位置。
+  const messagesForEmoji = [
+    { role: 'system', content: system0 },
+    { role: 'system', content: system1 },
+    { role: 'system', content: system2 },
+    { role: 'system', content: system3 },
+    { role: 'user', content: userPrompt },
+  ];
   const raw = await (dependencies.chat || chatSync)(
-    messages,
+    messagesForEmoji,
     {
       temperature: 0.7,
       response_format: { type: 'json_object' },
@@ -485,7 +493,7 @@ ${outputExample}
       lorebook: {
         personaTexts: [system3],
         staticTexts: [system0, system1, system2],
-        cacheBoundary: { index: messages.findIndex(message => message.content === system3), offset: 0 },
+        cacheBoundary: { index: messagesForEmoji.findIndex(message => message.content === system3), offset: 0 },
         characterName: displayName,
         history: [{ role: 'user', content: userPrompt }],
       },
@@ -495,23 +503,14 @@ ${outputExample}
   return parseEmojiPromptJson(raw, char, emojiKeys, tagsText);
 }
 
-/** 角色 loras 解析（与私聊生图保持一致） */
-export function parseCharacterLoras(char) {
-  if (!char?.loras) return [];
-  try {
-    const parsed = typeof char.loras === 'string' ? JSON.parse(char.loras) : char.loras;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(l => l.path && typeof l.path === 'string')
-      .map(l => ({
-        path: l.path,
-        weight: typeof l.weight === 'number' ? l.weight : 0.6,
-        triggerWord: l.triggerWord || '',
-      }));
-  } catch {
-    return [];
-  }
-}
+/**
+ * 角色 loras 解析（与私聊生图保持一致）
+ *
+ * 2026-10-17 收口：实现搬到 `characterLoras.js`（全仓唯一实现，4 份本地实现已合并）。
+ * 这里保留**同名再导出**是为了不改 6 个既有 import 点（expressionStandingService 等）；
+ * 它不是第二份实现 —— 真正的逻辑只在上面的模块里。
+ */
+export { parseCharacterLoras };
 
 /**
  * 提交 ComfyUI 生成单张表情包，并写入 data/images/emoji。

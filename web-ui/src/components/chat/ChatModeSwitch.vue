@@ -138,7 +138,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .chat-mode-switch { position: absolute; top: calc(100% + 8px); right: max(16px, env(safe-area-inset-right)); z-index: 6; width: 168px; color: var(--dialogue-ink); opacity: 0; transform: translate(12px, -6px); pointer-events: none; transition: opacity .3s var(--ease-standard), transform .3s var(--ease-standard); }
 .chat-mode-switch.is-revealed, .chat-mode-switch:has(:focus-visible) { opacity: 1; transform: translate(0, 0); }
-.mode-switch-action { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-secondary); box-shadow: var(--shadow-sm); color: var(--accent); font-size: 14px; font-weight: 600; letter-spacing: .02em; text-align: left; cursor: pointer; user-select: none; transition: transform .3s var(--ease-standard); }
+.mode-switch-action { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-secondary); box-shadow: var(--shadow-sm); color: var(--accent-text); font-size: 14px; font-weight: 600; letter-spacing: .02em; text-align: left; cursor: pointer; user-select: none; transition: transform .3s var(--ease-standard); }
 .is-revealed .mode-switch-action, .chat-mode-switch:has(:focus-visible) .mode-switch-action { pointer-events: auto; }
 .mode-switch-icon, .mode-switch-arrow { width: 19px; height: 19px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .mode-switch-arrow { width: 15px; height: 15px; margin-left: auto; color: var(--dialogue-muted); transition: transform .3s var(--ease-standard); }

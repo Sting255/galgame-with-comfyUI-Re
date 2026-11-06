@@ -102,9 +102,11 @@
 <script setup>
 import { computed, inject, ref, watch } from 'vue'
 import { useImageEditTasksStore } from '../stores/imageEditTasks.js'
+// 角色日记（上游 v3.9.0 合并）：右下角生成提示里「翻开看看 / 重试」直接用日记本 store
 import { useDiaryStore } from '../stores/diary.js'
 import BeforeAfterSlider from './BeforeAfterSlider.vue'
 import LinsheButton from './ui/LinsheButton.vue'
+// 上游 v3.9.0 合并：朋友圈回填 —— 补发任务的「停止」按钮
 import { stopBackfillMoments } from '../api/index.js'
 
 const store = useImageEditTasksStore()
@@ -198,10 +200,29 @@ store.connect()
 function actionLabel(action) {
   if (action === 'moment_backfill') return '补发动态'
   if (action === 'standing') return '立绘'
+  // 日记（上游 v3.9.0 合并）
   if (action === 'diary') return '日记'
   return action === 'upscale' ? 'HiresFix 细化' : '重新生成'
 }
 
+function cardTitleLabel(task) {
+  if (task.action === 'standing') return '生成立绘'
+  // 日记任务用角色名做标题（meta 由后端 startBackgroundTask 带过来）
+  if (isDiary(task)) return diaryTitle(task)
+  return actionLabel(task.action)
+}
+
+function cardStatusText(task) {
+  // 补发动态（上游 v3.9.0 合并）：用户主动停止算「已停止」，正常跑完算「完成」
+  if (task.action === 'moment_backfill' && task.status === 'ready') return task.result?.cancelled ? '已停止' : '完成'
+  if (task.status === 'failed') return '失败'
+  if (task.status === 'pending_confirm') return '待确认'
+  // 日记（上游 v3.9.0 合并）：写好了 / 生成中
+  if (isDiary(task)) return task.status === 'ready' ? '写好了' : '生成中'
+  return '中'
+}
+
+// ── 日记任务（上游 v3.9.0 合并） ──
 function isDiary(task) {
   return task?.action === 'diary'
 }
@@ -214,25 +235,38 @@ function diaryAvatar(task) {
   )
 }
 
-/** 日记任务用角色名做标题（meta 由后端 startBackgroundTask 带过来） */
 function diaryTitle(task) {
   const name = task?.meta?.characterName || '角色'
   return `${name}的日记`
 }
 
-function cardTitleLabel(task) {
-  if (task.action === 'scene_outfits') return `${task.meta?.characterName || '角色'}的服装与形象`
-  if (isDiary(task)) return diaryTitle(task)
-  return actionLabel(task.action)
+// ── 日记任务：没有「确认覆盖」这一步，写好了直接翻开日记本看 ──
+async function onViewDiary(task) {
+  const meta = task.meta || {}
+  if (!meta.characterId) return
+  await diaryStore.openBook({
+    characterId: meta.characterId,
+    characterName: meta.characterName || '',
+    characterAvatar: diaryAvatar(task),
+    date: meta.date,
+  })
+  store.discard(task).catch(() => {})
 }
 
-function cardStatusText(task) {
-  if (task.action === 'scene_outfits') return task.status === 'ready' ? '已完成' : task.status === 'failed' ? '生成失败' : '生成中'
-  if (task.action === 'moment_backfill' && task.status === 'ready') return task.result?.cancelled ? '已停止' : '完成'
-  if (task.status === 'failed') return '失败'
-  if (task.status === 'pending_confirm') return '待确认'
-  if (isDiary(task)) return task.status === 'ready' ? '写好了' : '生成中'
-  return '中'
+async function onRetryDiary(task) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    const meta = task.meta || {}
+    await diaryStore.generateFor(meta.characterId, meta.date)
+    toastFn?.('重新开始写日记', 'info')
+    await store.discard(task)
+  } catch (err) {
+    console.error('[ImageEditTaskFloater] diary retry failed:', err.message)
+    toastFn?.(err.message || '日记重试失败', 'error')
+  } finally {
+    busy.value = false
+  }
 }
 
 function progressPct(task) {
@@ -284,35 +318,6 @@ async function onDiscard(task) {
   } catch (err) {
     console.error('[ImageEditTaskFloater] discard failed:', err.message)
     toastFn?.(err.message || '保留原图失败', 'error')
-  } finally {
-    busy.value = false
-  }
-}
-
-// ── 日记任务：没有「确认覆盖」这一步，写好了直接翻开日记本看 ──
-async function onViewDiary(task) {
-  const meta = task.meta || {}
-  if (!meta.characterId) return
-  await diaryStore.openBook({
-    characterId: meta.characterId,
-    characterName: meta.characterName || '',
-    characterAvatar: diaryAvatar(task),
-    date: meta.date,
-  })
-  store.discard(task).catch(() => {})
-}
-
-async function onRetryDiary(task) {
-  if (busy.value) return
-  busy.value = true
-  try {
-    const meta = task.meta || {}
-    await diaryStore.generateFor(meta.characterId, meta.date)
-    toastFn?.('重新开始写日记', 'info')
-    await store.discard(task)
-  } catch (err) {
-    console.error('[ImageEditTaskFloater] diary retry failed:', err.message)
-    toastFn?.(err.message || '日记重试失败', 'error')
   } finally {
     busy.value = false
   }
@@ -399,20 +404,19 @@ async function onRetryDiary(task) {
 .iet-ring.is-done .iet-ring-label { color: var(--accent); font-size: 13px; }
 
 .iet-card.is-error { border-color: rgba(var(--accent-rgb), 0.5); }
-.iet-card.is-done { border-color: rgba(var(--accent-rgb), 0.32); }
-.iet-card.is-done .iet-state-icon { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
 
 .iet-card-body { display: flex; align-items: center; gap: 10px; }
 
+/* 日记任务头像（上游 v3.9.0 合并）：替代状态图标，一眼看出是谁在写日记 */
 .iet-avatar {
   width: 32px; height: 32px; flex: none;
   align-self: flex-start;
   display: grid; place-items: center;
   overflow: hidden;
   border-radius: 50%;
-  background: var(--bg-sunken);
-  color: var(--text-secondary);
-  font-size: 14px; font-weight: 700;
+  background: rgba(120, 90, 70, 0.12);
+  color: #6f675f;
+  font-size: 13px; font-weight: 700;
 }
 .iet-avatar img { width: 100%; height: 100%; object-fit: cover; }
 
@@ -434,6 +438,8 @@ async function onRetryDiary(task) {
 }
 
 .iet-card.is-error .iet-state-icon { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+.iet-card.is-done { border-color: rgba(var(--accent-rgb), 0.32); }
+.iet-card.is-done .iet-state-icon { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
 
 .iet-card-text { min-width: 0; flex: 1; }
 

@@ -335,7 +335,7 @@ class MainWindow(QMainWindow):
         self._home_page = HomePage(self._assets_dir, self._exe_dir)
         self._stack.addWidget(self._home_page)
 
-        self._log_page = LogPage()
+        self._log_page = LogPage(self._project_path)
         self._stack.addWidget(self._log_page)
 
         self._maibot_page = MaiBotPage(self._exe_dir)
@@ -766,7 +766,8 @@ class MainWindow(QMainWindow):
 
         if overall == "all_running" and self._config.get("auto_open_browser"):
             ip = get_local_ip()
-            url = f"http://localhost:3099?mobile_ip={ip}" if ip else "http://localhost:3099"
+            base_url = f"http://localhost:{self._runner.agent_worker.port}"
+            url = f"{base_url}?mobile_ip={ip}" if ip else base_url
             webbrowser.open(url)
             self._log_page.append_log(f"[系统] 🌐 浏览器已打开 {url}")
 

@@ -1,6 +1,7 @@
 // 世界观 / 全局规则 / 系统规则仓储（独立模块，缩小 db/index.js 体积）。
 // 依赖方向（单向）：db/index.js 打开数据库后注入句柄并再导出本模块的函数。
 import { config } from '../config.js';
+import { assertDatabaseAvailable } from './maintenance.js';
 import { SYSTEM_RULES_CONTENT, THINKING_CHAIN_ZH_PLACEHOLDER, THINKING_CHAIN_ZH_CONTENT, IMAGE_PROMPT_RULE, BUILTIN_RULE_KEYS } from '../builtinRules.js';
 
 let _db = null;
@@ -18,6 +19,7 @@ export function initWorldRepository(db) {
 }
 
 function handle() {
+  assertDatabaseAvailable();
   if (!_db) throw new Error('worldRepository: db handle not initialized (initWorldRepository)');
   return _db;
 }

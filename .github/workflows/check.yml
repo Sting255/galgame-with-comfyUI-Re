@@ -1,0 +1,31 @@
+name: Project checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: |
+            agent-core/package-lock.json
+            web-ui/package-lock.json
+      - run: npm ci --prefix agent-core
+      - run: npm ci --prefix web-ui
+      - name: Documentation and source inventory
+        run: npm run check
+      - name: Frontend lint
+        run: npm --prefix web-ui run lint
+      - name: Production build
+        run: npm --prefix web-ui run build

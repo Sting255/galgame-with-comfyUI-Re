@@ -1,4 +1,3 @@
-import { isMomentBackfillRunning } from './momentBackfill.js';
 /**
  * 朋友圈定时发帖调度器
  *
@@ -16,6 +15,8 @@ import { getMomentDelay, getMomentIntervalMs } from './momentTiming.js';
 import { getMomentIntervalSchedule, resetMomentIntervalSchedule, runIntervalMomentTick } from './momentIntervalScheduler.js';
 import { getTownMaps } from './town/townService.js';
 import { getPendingComplaint, markComplaintDone, postponeComplaint, buildComplaintTopic } from './newspaperService.js';
+// 上游 v3.9.0 合并：朋友圈回填进行中时，本调度器整轮让位（补发自己按角色串行发帖）
+import { isMomentBackfillRunning } from './momentBackfill.js';
 
 // 生成函数由路由层装配时注入（setMomentPostGenerator / setTownNpcPostGenerator），
 // 避免服务层静态反向依赖路由模块（service → route）。
@@ -114,6 +115,7 @@ async function maybePostNewspaperComplaint() {
 }
 
 async function tick() {
+  // 补发进行中：让位（补发会自己刷新到期日程并逐角色发帖，避免两边抢同一角色）
   if (processing || isMomentBackfillRunning()) {
     console.log('[momentScheduler] Previous post still generating, skip this tick');
     return;
@@ -314,6 +316,7 @@ export function startMomentScheduler() {
   }, 30_000);
 }
 
+/** ⚠️ 死导出（2026-10-15 标注，只标注不删）：无调用点；与另外六个 `stop*Scheduler` 同批处理。 */
 export function stopMomentScheduler() {
   nextNpcCheckAt = 0;
   if (startupTimer) {

@@ -6,6 +6,7 @@ import { generateImage } from './imageSkill.js';
 import { charArtistOverride } from './characterImageOpts.js';
 import { buildCharacterPersona } from './characterPersona.js';
 import { recordCompletedImageTask } from './imageTaskRecorder.js';
+import { isRefusal } from './refusalDetector.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { saveBase64Image } from './imagePaths.js';
 import { hybridSearch } from './memorySearch.js';
@@ -16,9 +17,16 @@ import { config } from '../config.js';
 import { ensureFontForCharacter } from './handwritingFontService.js';
 import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
 import { createTownActorRegistry } from './town/townActorRegistry.js';
+import {
+  isGroupMemoryLinkEnabled, listCharacterGroupConversationIds,
+  isGroupSourcedMemory, groupOriginPrefix, loadGroupNameMap,
+} from './groupMemoryLink.js';
 import { speakLetter } from './speechService.js';
 
 const CHECK_INTERVAL = 60 * 1000;
+
+/** 连续失败到几次就落 `failed` 终态、不再自动重试（2026-10-17 §P2-1：防毒信件无限烧额度）。 */
+export const MAX_RETRY_COUNT = 5;
 
 let timer = null;
 let processing = false;
@@ -39,6 +47,7 @@ export function startMailboxScheduler() {
   checkAndProcess();
 }
 
+/** ⚠️ 死导出（2026-10-15 标注，只标注不删）：无调用点；与另外六个 `stop*Scheduler` 同批处理。 */
 export function stopMailboxScheduler() {
   if (timer) { clearInterval(timer); timer = null; }
 }
@@ -202,12 +211,37 @@ async function processReply(db, letter) {
   } catch (err) {
     console.error(`[mailboxScheduler] letter #${letterId} failed:`, err.message);
 
+    // ── 失败终态（2026-10-17 复查 §P2-1）────────────────────────────────────
+    // 原行为：无限重试（backoff 封顶 10 分钟、`retry_count` 无上限）。
+    // 后果：一封「毒信件」（LLM 配置坏 / 生图长期失败）会**每 10 分钟烧 1 次 LLM + 3 张图、永远 pending**，
+    //   而用户在前端只看到"信一直没回"，看不出发生了什么。
+    //
+    // 新口径：连续失败到 MAX_RETRY_COUNT ⇒ `status='failed'` 落终态，不再自动重试。
+    //   · 前端早已认这个状态（`MailboxView.vue` / `LetterDetail.vue` / `MailboxModal.vue`
+    //     三处都有 `status === 'failed'` 分支，显示「回信失败」/「退回」）⇒ 用户终于看得见。
+    //   · 手动重投：`POST /api/mailbox/:id/retry`（failed → pending、retry_count 清零）。
+    //   · **启动回收语义不变**：`startMailboxScheduler` 仍把崩溃残留的 `processing` 重置为
+    //     `pending, retry_count=0` —— 那是崩溃恢复，不是"失败重试"，保留。
     const retryCount = (letter.retry_count || 0) + 1;
+    if (retryCount >= MAX_RETRY_COUNT) {
+      db.prepare('UPDATE mailbox_letters SET status = ?, retry_count = ? WHERE id = ?')
+        .run('failed', retryCount, letterId);
+      console.error(`[mailboxScheduler] letter #${letterId} gave up after ${retryCount} attempts → status=failed（不再自动重试，可在信箱页点「重新投递」）`);
+      broadcast('reply_failed', {
+        letter_id: letterId,
+        character_id: letter.character_id,
+        character_name: charName,
+        retry_count: retryCount,
+        reason: err.message,
+      });
+      return;
+    }
+
     const backoffMs = retryCount <= 1 ? 120000 : retryCount <= 2 ? 300000 : 600000;
     const nextRetry = new Date(Date.now() + backoffMs).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
     db.prepare('UPDATE mailbox_letters SET status = ?, retry_count = ?, reply_at = ? WHERE id = ?')
       .run('pending', retryCount, nextRetry, letterId);
-    console.log(`[mailboxScheduler] letter #${letterId} retry ${retryCount} → backoff ${backoffMs / 1000}s`);
+    console.log(`[mailboxScheduler] letter #${letterId} retry ${retryCount}/${MAX_RETRY_COUNT} → backoff ${backoffMs / 1000}s`);
   }
 }
 
@@ -253,10 +287,8 @@ async function generateReplyData(charId, charName, charBasePrompt, userContent, 
     ).join('\n'));
   }
 
-  const memories = await hybridSearch(userContent, { conversationId: convId, topK: 3, timeoutMs: 15000 }).catch(() => []);
-  if (memories.length > 0) {
-    mat2Parts.push('【相关长期记忆】\n' + memories.map(m => `- [${m.memory_type || '记忆'}] ${m.judgment}`).join('\n'));
-  }
+  const memorySection = await buildMailboxMemorySection(charId, userContent);
+  if (memorySection) mat2Parts.push(memorySection);
 
   const latestSummary = db.prepare(`
     SELECT summary FROM rolling_summaries WHERE conversation_id = ? ORDER BY id DESC LIMIT 1
@@ -365,7 +397,7 @@ ${l.reply_content}`;
   const taskMsg = `你收到了一封来自 ${userName} 的来信。请以"${charName}"的身份和口吻回复这封信，并用JSON格式返回以下内容：${imageGuideBlock}
 {
   "text": "你的回信正文（${textRange}，自然口语，真挚感人，符合你的性格和当前情绪）",
-  "paperPrompt": "描述一张信纸的画面（英文，用于Anima模型生图）。信纸中间大面积留白并且无衬线并且中间禁止有任何装饰（用于书写），四周有符合你角色性格特征的装饰（如花卉、纹章、图腾、几何图案、角色代表色、角色标志物等）。描述须具体。按照上述生图提示词编写规范输出。",
+  "paperPrompt": "描述一张信纸的画面（英文，用于Anima模型生图）。信纸中间大面积留白并且无衬线并且中间禁止有任何装饰（用于书写），四周有符合你角色性格特征的装饰（如花卉、纹章、图腾、几何图案、角色代表色、角色标志物等）。★纸张底色必须是浅色（米白／奶油／浅灰／浅粉这类），中部书写区保持低饱和浅底；禁止深色大面积铺底（深紫、深蓝、纯黑、暗夜星空），因为正文是深色字写在上面，底色一深就读不出来——角色的代表色只用在四周装饰上。描述须具体。按照上述生图提示词编写规范输出。",
   "portraitPrompt": "描述一张角色写信时的第三人称照片画面（英文，用于Anima模型生图）。需要包含：你(注意画面主角是你自己，用你自己人格描述里的外貌特征，不要被其他正文或者user干扰)正在哪里写这封信（书房/窗边/花园/床前/吧台/天台...）、此刻的表情神态、姿势动作、光线氛围。画面须有生活感和故事感，你眼睛不看镜头。按照上述生图提示词编写规范输出。",
   "illustrationPrompt": "描述一张配图画面（英文，用于Anima模型生图）。根据你的回信内容，提取信中提到的一个具体场景、意象或情绪画面。画面须与回信内容紧密关联。按照上述生图提示词编写规范输出。"
 }
@@ -398,10 +430,85 @@ ${userContent}
 }
 
 // ══════════════════════════════════════════════════════════════
+//  信件素材 · 长期记忆（本会话 + 她所在的群）
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 给群出处补全群名：只在**确实缺名**（群名表里没有、或干脆没传表）时才查一次
+ * `group_chats`，查不到就让 `groupOriginPrefix` 退化成【群聊】。
+ * 纯只读、有界（只查缺的那些 id），群名只是锦上添花，失败不打断写信。
+ */
+function completeGroupNames(groupNames, groupIds = []) {
+  const missing = new Set();
+  for (const id of Array.isArray(groupIds) ? groupIds : []) {
+    const key = String(id ?? '');
+    if (key && !(groupNames instanceof Map && groupNames.has(key))) missing.add(key);
+  }
+  if (missing.size === 0) return groupNames instanceof Map ? groupNames : new Map();
+  try {
+    return new Map([...(groupNames instanceof Map ? groupNames : []), ...loadGroupNameMap([...missing])]);
+  } catch (err) {
+    console.warn('[mailboxScheduler] 群名补查失败，群出处退化成【群聊】:', err.message);
+    return groupNames instanceof Map ? groupNames : new Map();
+  }
+}
+
+/**
+ * 检索范围 = 本会话 + 她所在的全部群会话（复用 `groupMemoryLink.listCharacterGroupConversationIds`，
+ * 与私聊召回同一套口径，不新造并行检索）。记忆总开关关闭时不查群、也不检索。
+ */
+export function resolveMailboxMemoryScope(charId, db = getDb()) {
+  if (!isGroupMemoryLinkEnabled()) return { conversationIds: [`char_${charId}`], groupConversationIds: [] };
+  const groupConversationIds = listCharacterGroupConversationIds(charId, db);
+  return { conversationIds: [`char_${charId}`, ...groupConversationIds], groupConversationIds };
+}
+
+/**
+ * 检索命中 → 信件素材行。
+ * 非群来源的行与改动前逐字节一致（`- [${memory_type}] ${judgment}`）；
+ * 群来源的行在前面插 `【群聊·<群名>】` / `【群聊】` 标出出处（复用 `groupOriginPrefix`），
+ * 免得她把群里的记忆当成和用户私下的经历写进信里。
+ */
+export function formatMailboxMemoryLines(memories = [], { groupNames = new Map(), groupIds = [] } = {}) {
+  const list = Array.isArray(memories) ? memories : [];
+  // 没有群来源命中（含只有带「群聊」tag 的 H2 记忆）时一次 group_chats 都不查：
+  // 没有群记忆的角色，输出与加群记忆之前逐字节一致，也不多发一次查询。
+  const names = list.some(isGroupSourcedMemory) ? completeGroupNames(groupNames, groupIds) : groupNames;
+  return list.map(memory => {
+    const prefix = groupOriginPrefix(memory, names);
+    return `- ${prefix}[${memory?.memory_type || '记忆'}] ${memory?.judgment}`;
+  }).join('\n');
+}
+
+/**
+ * 写信时的「相关长期记忆」素材段（含标题行）。空结果返回 null —— 调用方据此不产空段。
+ * `search` 可注入，便于单测在不起服务/不联网的前提下断言检索范围与素材文本。
+ */
+export async function buildMailboxMemorySection(charId, userContent, { search = hybridSearch, topK = 3, timeoutMs = 15000, db = getDb() } = {}) {
+  if (!isGroupMemoryLinkEnabled()) return null;
+  const { conversationIds, groupConversationIds } = resolveMailboxMemoryScope(charId, db);
+  const memories = await search(userContent, { conversationIds, topK, timeoutMs }).catch(() => []);
+  if (!Array.isArray(memories) || memories.length === 0) return null;
+  const groupNames = groupConversationIds.length > 0 ? loadGroupNameMap(groupConversationIds, db) : new Map();
+  return `【相关长期记忆】\n${formatMailboxMemoryLines(memories, { groupNames, groupIds: groupConversationIds })}`;
+}
+
+// ══════════════════════════════════════════════════════════════
 //  JSON 解析 + fallback
 // ══════════════════════════════════════════════════════════════
 
-function parseReplyJSON(raw, userContent) {
+/** JSON 不可用时的默认配图提示词（截断兜底与整段兜底共用一份）。 */
+const FALLBACK_REPLY_PROMPTS = {
+  paperPrompt: 'decorative letter paper, elegant stationery, floral border, soft cream tones, large blank center area',
+  portraitPrompt: 'close-up portrait, sitting at a desk writing a letter, warm candlelight, contemplative expression',
+  illustrationPrompt: 'dreamy illustration, warm colors, ethereal atmosphere, storybook style',
+};
+
+/**
+ * 把回信模型的原始输出解析成 { text, paperPrompt, portraitPrompt, illustrationPrompt }。
+ * 导出供单测直接钉住「JSON 被上游截断」这条兜底路径。
+ */
+export function parseReplyJSON(raw, userContent) {
   if (!raw) return null;
   const clean = raw.trim();
 
@@ -420,13 +527,28 @@ function parseReplyJSON(raw, userContent) {
     try { const p = JSON.parse(obj[0]); return validate(p); } catch {}
   }
 
+  // 3.5) **JSON 被截断**（上游提前停流，实测 deepseek-v4.1-flash 会在 500 多 token 就断，
+  //      末尾的 illustrationPrompt 只剩半句、缺闭合括号）⇒ 整块 parse 必然失败。
+  //      这时正则单独抽出 text 字段，回信正文仍然是干净的，不会把整坨 JSON 印到信纸上。
+  const textHit = clean.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (textHit) {
+    let text = '';
+    try { text = JSON.parse(`"${textHit[1]}"`); } catch { text = textHit[1]; }
+    text = String(text || '').trim();
+    if (text && !isRefusal(text)) {
+      console.log('[mailboxScheduler] JSON truncated, recovered text field only');
+      return { text: text.slice(0, 600), ...FALLBACK_REPLY_PROMPTS };
+    }
+  }
+
   // 4) fallback: 把整段当 text，用默认 prompt
+  //    但拒答不能当回信正文（2026-10-22）：返回 null，上层按「LLM reply generation returned empty」
+  //    抛错并重试，而不是把「我无法提供相关内容」写进信件并印在信纸上。
+  if (isRefusal(clean)) return null;
   console.log('[mailboxScheduler] JSON parse failed, using raw text fallback');
   return {
     text: clean.slice(0, 600),
-    paperPrompt: 'decorative letter paper, elegant stationery, floral border, soft cream tones, large blank center area',
-    portraitPrompt: 'close-up portrait, sitting at a desk writing a letter, warm candlelight, contemplative expression',
-    illustrationPrompt: 'dreamy illustration, warm colors, ethereal atmosphere, storybook style',
+    ...FALLBACK_REPLY_PROMPTS,
   };
 }
 

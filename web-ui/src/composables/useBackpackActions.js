@@ -1,6 +1,5 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { useBackpackStore } from '../stores/backpack.js'
-import { emitAppearanceApplied, emitAppearanceRestored } from '../utils/characterReactionProducers.js'
 
 /** 道具详情里的种类说明文案 */
 export const ITEM_KIND_LABELS = {
@@ -44,6 +43,8 @@ export function useBackpackActions({ confirm, toast }) {
   const showCharPicker = ref(false)
   const pendingItem = ref(null)
   const detailItem = ref(null)
+  // 催眠手机：不走通用道具流程，改用专用面板（{ open, character }）
+  const hypnosisPhone = ref({ open: false, character: null })
   // 小镇货摊买来的礼物：送出后等图片 + 故事（复用小镇服务/打工的胶片展示）
   const giftStage = ref({ open: false, session: null })
   const removingEffectId = ref(null)
@@ -156,6 +157,8 @@ export function useBackpackActions({ confirm, toast }) {
     pendingItem.value = null
     detailItem.value = null
     giftStage.value = { open: false, session: null }
+    // 催眠手机面板也一并收起：重开背包时没人会期待它还浮在上面
+    hypnosisPhone.value = { open: false, character: null }
   }
 
   // ── 开箱：全屏蓄力 → 等图片生成完毕 → 开盖揭示 ──
@@ -293,6 +296,13 @@ export function useBackpackActions({ confirm, toast }) {
     const item = pendingItem.value
     if (!item) return
     showCharPicker.value = false
+    // 催眠手机不是消耗品：它开的是「状态面板」，不是一次性的道具效果。
+    // 所以在这里提前分流，不调用 store.useItem（否则会被后端当成普通道具消耗掉）。
+    if (item.effect_key === 'hypnosis_phone') {
+      hypnosisPhone.value = { open: true, character: char }
+      pendingItem.value = null
+      return
+    }
     // 小镇货摊买来的道具不是消耗品，是送给角色的礼物：送出后由后端写一段 TA 怎么用它的小故事并配图。
     const isGift = item.source_type === 'trade'
     const effectHint = isGift
@@ -324,15 +334,6 @@ export function useBackpackActions({ confirm, toast }) {
           offerTitle: result.itemName || item.name,
         } }
       } else if (result.ok) {
-        // 外观类道具结算成功 → 角色通知；礼物叙事与已有效果台词由原流程负责，不重复说话（§2.2 / §2.3）
-        emitAppearanceApplied({
-          characterId: char.id,
-          itemName: result.item?.name || result.activeEffect?.item_name || item.name,
-          effectKey: result.activeEffect?.effect_key || result.effect?.effect_key || '',
-          effectId: result.activeEffect?.id ?? null,
-          kind: result.activeEffect?.kind || result.effect?.kind || '',
-          hasNarrative: false,
-        })
         toast?.(result.summary || '道具已使用', 'success')
       } else {
         toast?.(result.error || '使用失败', 'error')
@@ -378,16 +379,6 @@ export function useBackpackActions({ confirm, toast }) {
     try {
       const result = await store.removeActiveEffect(effect.id)
       if (result.ok) {
-        // P1：玩家主动移除生效中的外观效果；继承认知「换回原来那一套」，自动到期不算玩家操作
-        if (effect.character_id != null) {
-          emitAppearanceRestored({
-            characterId: effect.character_id,
-            itemName: effect.item_name || effect.effect_name || '',
-            effectKey: effect.effect_key || '',
-            effectId: effect.id ?? null,
-            kind: effect.kind || '',
-          })
-        }
         toast?.(`已移除 ${effect.character_name} 的「${effectName}」`, 'success')
       } else {
         toast?.(result.error || '移除失败', 'error')
@@ -420,6 +411,8 @@ export function useBackpackActions({ confirm, toast }) {
     // 道具使用 / 丢弃
     detailItem, openDetail, startUse, giftStage,
     showCharPicker, pendingItem, cancelPick, pickCharacter,
+    // 催眠手机（effect_key === 'hypnosis_phone' 时改开专用面板）
+    hypnosisPhone,
     onDiscard,
     resetUi,
   }

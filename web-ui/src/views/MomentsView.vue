@@ -5,6 +5,8 @@
       <span class="moments-title" @click="isMobile && toggleMobileSidebar()" :class="{ 'is-clickable': isMobile }">朋友圈</span>
       <div class="topbar-actions">
         <div class="lib-gear" role="button" tabindex="0" @keydown.enter.prevent="libraryOpen = true" @keydown.space.prevent="libraryOpen = true" @click="libraryOpen = true" title="话题库管理"><gear-icon :size="18" /></div>
+        <!-- 补发动态（上游 v3.9.0 合并 momentBackfill）：把今日还没发的角色补成朋友圈。
+             沿用页面既有的胶囊按钮样式与 is-disabled 禁用态，不另造皮肤。 -->
         <div class="btn-post" role="button" tabindex="0" :class="{ 'is-disabled': backfillRunning || backfillSubmitting }" :aria-disabled="backfillRunning || backfillSubmitting" @click.stop="startBackfill" @keydown.enter.prevent.stop="startBackfill" @keydown.space.prevent.stop="startBackfill">{{ backfillRunning || backfillSubmitting ? '补发中' : '补发动态' }}</div>
         <div class="btn-post" role="button" tabindex="0" :class="{ 'is-disabled': genPending }" :aria-disabled="genPending" @click.stop="!genPending && (showPicker = !showPicker)" @keydown.enter.prevent.stop="!genPending && (showPicker = !showPicker)" @keydown.space.prevent.stop="!genPending && (showPicker = !showPicker)">
           {{ genPending ? '扰动中' : '🎬 扰动世界线' }}
@@ -16,9 +18,6 @@
     <Transition name="picker-fade">
       <div v-if="showPicker" ref="pickerRef" class="picker-dropdown" @click.stop>
         <div class="picker-title">选择发朋友圈的角色：</div>
-        <div v-if="!characters.length" class="picker-empty">
-          还没有角色，先去酒馆招募吧。
-        </div>
         <div
           v-for="c in characters"
           :key="c.id"
@@ -28,9 +27,7 @@
           <div
             class="picker-avatar"
             :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }"
-          >
-{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
-</div>
+          >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
           <span>{{ c.display_name }}</span>
         </div>
       </div>
@@ -41,7 +38,8 @@
 
     <!-- 内容区 -->
     <div ref="scrollContainer" class="moments-feed" @scroll="onScroll">
-<!-- 用户自己发朋友圈：文字 + 粘贴/上传图片 -->
+
+      <!-- 用户自己发朋友圈：文字 + 粘贴/上传图片 -->
       <div class="moments-composer-wrap">
         <UserMomentComposer />
       </div>
@@ -57,9 +55,7 @@
             class="filter-avatar filter-all"
             :class="{ active: moments.filterCharacterId === null && !moments.filterUser }"
             @click="moments.setFilter(null)"
-          >
-全部
-</div>
+          >全部</div>
           <!-- 赞过筛选 -->
           <div
             class="filter-avatar filter-heart"
@@ -84,19 +80,32 @@
         </div>
       </div>
 
+      <!-- 离线补记提示（2026-11-06）：补记按真实时间落在列表中间，不提示等于让人去考古 -->
+      <div v-if="showOfflineHint" class="offline-hint" role="status">
+        <span class="offline-hint-text">你不在的这段时间，有 {{ offlinePosts.length }} 条动态</span>
+        <linshe-button variant="ghost" size="sm" @click="jumpToOffline">去看看</linshe-button>
+        <linshe-button variant="icon" size="sm" aria-label="不再提示" @click="offlineHintDismissed = true">✕</linshe-button>
+      </div>
+
       <!-- 帖子列表（stagger：首屏卡片错峰浮现） -->
       <TransitionGroup name="post-enter" tag="div" class="moments-list stagger" type="transition">
         <MomentCard
           v-for="post in moments.visiblePosts"
           :key="post.id"
           :post="post"
+          :data-post-id="post.id"
           @preview="onPreview"
           @share="onShare"
         />
       </TransitionGroup>
 
       <!-- 加载更多 -->
-      <div v-if="moments.loading" class="load-more">加载中...</div>
+      <!-- 加载失败与「真的没有内容」必须区分：以前请求失败会渲染成空白，用户以为数据丢了 -->
+      <div v-if="moments.loadError && !moments.posts.length" class="load-more">
+        <span>加载失败：{{ moments.loadError }}</span>
+        <linshe-button variant="secondary" size="sm" @click="moments.loadPosts()">重试</linshe-button>
+      </div>
+      <div v-else-if="moments.loading" class="load-more">加载中...</div>
       <div v-else-if="moments.filterUser && moments.filteredPosts.length === 0 && !moments.loading" class="load-more">— 还没有发过朋友圈 —</div>
       <div v-else-if="moments.filterLiked && moments.filteredPosts.length === 0 && !moments.loading" class="load-more">— 还没有赞过的帖子 —</div>
       <div v-else-if="moments.filterCharacterId !== null && moments.filteredPosts.length === 0 && !moments.loading" class="load-more">— ta还没有发朋友圈 —</div>
@@ -134,12 +143,28 @@ import ShareCard from '../components/ShareCard.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LibraryModal from '../components/LibraryModal.vue'
 import GearIcon from '../components/GearIcon.vue'
-
+// 上游 v3.9.0 合并：朋友圈回填 —— 补发任务复用 imageEditTasks store（同一套后台任务浮层）
 import { useImageEditTasksStore } from '../stores/imageEditTasks.js'
 import { backfillMoments } from '../api/index.js'
 
 const taskStore = useImageEditTasksStore()
 const toast = inject('toast', null)
+
+// ── 离线补记提示（2026-11-06）──
+// 补记的 created_at 落在过去，会沉在列表中间；这里给一个入口，别让用户去翻。
+const offlineHintDismissed = ref(false)
+const offlinePosts = computed(() => moments.visiblePosts.filter(post =>
+  String(post?.god_delivery_key || '').startsWith('offline:')
+  && post?.created_at
+  && Date.now() - new Date(String(post.created_at).replace(' ', 'T')).getTime() < 7 * 86400_000))
+const showOfflineHint = computed(() => !offlineHintDismissed.value && offlinePosts.value.length > 0)
+function jumpToOffline() {
+  const first = offlinePosts.value[0]
+  offlineHintDismissed.value = true
+  if (!first) return
+  const el = document.querySelector(`[data-post-id="${first.id}"]`)
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
 const confirm = inject('confirm')
 const backfillSubmitting = ref(false)
 const backfillRunning = computed(() => taskStore.tasks.some(t => t.action === 'moment_backfill' && t.status === 'running'))
@@ -223,8 +248,7 @@ function onFilterWheel(e) {
   if (!filterScrollFrame) filterScrollFrame = requestAnimationFrame(animateFilterScroll)
 }
 
-const characters = computed(() => [...chat.characters]
-  .sort((a, b) => (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')))
+const characters = computed(() => [...chat.characters].sort((a, b) => (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')))
 
 function onPreview({ images, index }) {
   previewImg.value = { imgs: images, index }
@@ -253,6 +277,8 @@ onMounted(async () => {
   moments.markSeen()
   // 点击空白关闭选择器
   document.addEventListener('click', onDocumentClick)
+  // 补发任务的进度/完成走 image_edit_task_* 事件；进入页面时确保 store 已连上
+  taskStore.refresh().catch(() => {})
 })
 
 onUnmounted(() => {
@@ -338,7 +364,7 @@ async function triggerGenerate(c) {
 .moments-header {
   padding: 14px 24px;
   border-bottom: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  background: rgba(255, 255, 255, 0.5);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   display: flex;
@@ -349,19 +375,17 @@ async function triggerGenerate(c) {
 }
 .header-hidden { transform: translateY(-100%); }
 .moments-title {
-  flex-shrink: 0;
-  white-space: nowrap;
   font-size: 18px; font-weight: 700; color: var(--text-bright);
 }
 .is-clickable { cursor: pointer; }
 
 /* 顶栏右侧按钮组（齿轮 + 扰动世界线） */
-.topbar-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 10px; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
 .lib-gear {
   width: 34px; height: 34px; border-radius: 50%;
   border: 2px solid transparent;
   background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-size: 18px; line-height: 1;
   cursor: pointer;
   transition: all 0.3s ease;
@@ -380,7 +404,8 @@ async function triggerGenerate(c) {
   border: 2px solid transparent;
   background: var(--grad-soft);
   background-size: 220% 100%;
-  color: var(--accent-hover);
+  /* 深一档：--accent-hover 在柔和渐变底上只有 3.1:1 */
+  color: var(--accent-text);
   font-size: 13px; font-weight: 600;
   cursor: pointer;
   letter-spacing: 1px;
@@ -415,10 +440,7 @@ async function triggerGenerate(c) {
   top: 60px;
   right: 24px;
   z-index: 100;
-  /* 别硬编码白色：这里原先写死 rgba(255,255,255,.95)，暗夜主题下会变成一块白板，
-     而文字用的是 var(--text-secondary)（暗色下是浅色），于是白底浅字几乎看不见。
-     --popover-bg 就是为这种浮层准备的，亮色下取值与原来完全相同，暗色下自动切换。 */
-  background: var(--popover-bg);
+  background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
@@ -441,11 +463,6 @@ async function triggerGenerate(c) {
   transition: background 0.15s;
 }
 .picker-item:hover { background: rgba(var(--accent-rgb), 0.08); }
-.picker-empty {
-  padding: 12px 10px 8px;
-  font-size: 12px; line-height: 1.6;
-  color: var(--text-secondary);
-}
 .picker-avatar {
   width: 32px; height: 32px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
@@ -538,7 +555,7 @@ async function triggerGenerate(c) {
 
 /* 「全部」按钮：只覆盖视觉属性，结构尺寸继承 .filter-avatar */
 .filter-all {
-  background: var(--bg-tertiary);
+  background: rgba(255,255,255,0.75);
   color: var(--text-secondary);
   font-size: 12px;
   width: 54px;
@@ -547,15 +564,16 @@ async function triggerGenerate(c) {
   opacity: 0.7;
 }
 .filter-all.active {
-  background: var(--accent);
-  color: #fff;
+  /* 实心选中态的底/字同主按钮：--accent + 白字只有 2.9:1 */
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
   border-color: var(--accent);
   opacity: 1;
 }
 
 /* 赞过筛选心形按钮 */
 .filter-heart {
-  background: var(--bg-tertiary);
+  background: rgba(255,255,255,0.75);
   color: var(--text-secondary);
   opacity: 0.7;
 }
@@ -565,6 +583,22 @@ async function triggerGenerate(c) {
   border-color: #ff4d6d;
   opacity: 1;
 }
+
+/* 离线补记提示条：一条就够了，不抢帖子的位置 */
+.offline-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 600px;
+  margin: 8px auto 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px dashed color-mix(in srgb, var(--accent-2) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 10%, var(--bg-secondary));
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.offline-hint-text { flex: 1 1 auto; min-width: 0; color: var(--text-bright); }
 
 .moments-list {
   max-width: 600px;
@@ -607,20 +641,9 @@ async function triggerGenerate(c) {
 @media (max-width: 767px) {
   .moments-view { position: relative; }
   .moments-header {
-    padding: 12px 10px;
-    gap: 8px;
+    padding: 12px 16px;
     position: absolute; top: 0; left: 0; right: 0; z-index: 20;
   }
-  .moments-title { font-size: 16px; }
-  .topbar-actions { gap: 4px; flex-shrink: 0; }
-  .topbar-actions .btn-post {
-    padding: 8px 8px;
-    font-size: 12px;
-    letter-spacing: 0;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  .topbar-actions .lib-gear { width: 30px; height: 34px; flex-shrink: 0; }
   .moments-feed { padding: 80px 10px 8px; }
   .moments-list { max-width: 100%; }
   .moments-filter-bar { max-width: 100%; padding: 0 0 6px 0; }

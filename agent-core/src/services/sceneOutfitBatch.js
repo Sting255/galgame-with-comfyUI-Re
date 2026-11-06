@@ -11,11 +11,13 @@ export function createSceneOutfitBatchRunner() {
       task.onProgress({ progress: 0, stage: '正在设计服装', phase: 'design' });
       const designed = await design();
       const outfits = scenes.map(scene => designed.find(o => o.scene === scene));
-      if (outfits.some(o => !o?.description?.trim() || !o?.name?.trim())) throw new Error('服装设计不完整，未保存或开始出图');
+      if (outfits.some(o => !o?.description?.trim() && o?.scene !== 'nude') || outfits.some(o => !o?.name?.trim())) {
+        throw new Error('服装设计不完整，未保存或开始出图');
+      }
       await save(outfits);
       const completed = [], failures = [];
       for (const [index, outfit] of outfits.entries()) {
-        const label = { casual: '私服', home: '居家', sleep: '睡衣' }[outfit.scene] || outfit.scene;
+        const label = { nude: '裸体', work: '常服', casual: '私服', home: '居家', sleep: '睡衣' }[outfit.scene] || outfit.scene;
         task.onProgress({ progress: (index + 1) / (outfits.length + 1), stage: `正在生成${label}形象（${index + 1}/${outfits.length}）`, phase: 'render' });
         try { completed.push({ scene: outfit.scene, image_url: await render(outfit.scene) }); }
         catch (error) { failures.push(`${label}：${error.message || error}`); }

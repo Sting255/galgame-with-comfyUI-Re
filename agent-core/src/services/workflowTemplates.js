@@ -15,19 +15,6 @@ function proPath() { return path.join(WORKFLOW_DIR, PRO_WORKFLOW); }
 function hiresAdvancedPath() { return path.join(WORKFLOW_DIR, HIRES_ADVANCED_WORKFLOW); }
 function hiresPath() { return path.join(WORKFLOW_DIR, HIRES_WORKFLOW); }
 
-/**
- * 解析自定义工作流文件名 → 绝对路径。
- * 出于安全只接受 workflow/ 目录内的 .json 文件名（不含路径分隔符）。
- * 文件不存在、名字非法或非 .json 时返回 null，由调用方决定回退策略。
- */
-export function resolveCustomWorkflowPath(filename) {
-  if (!filename || typeof filename !== 'string') return null;
-  if (filename.includes('/') || filename.includes('\\')) return null;
-  if (!filename.toLowerCase().endsWith('.json')) return null;
-  const p = path.join(WORKFLOW_DIR, filename);
-  return fs.existsSync(p) ? p : null;
-}
-
 export function checkWorkflowHealth() {
   return {
     activeExists: fs.existsSync(activePath()),
@@ -40,6 +27,19 @@ export function checkWorkflowHealth() {
 
 export function ensureWorkflowDir() {
   if (!fs.existsSync(WORKFLOW_DIR)) fs.mkdirSync(WORKFLOW_DIR, { recursive: true });
+}
+
+/**
+ * 把「自定义工作流」的**文件名**解析成 workflow/ 下的绝对路径（上游 v3.10.0 口径）。
+ * 只接受裸文件名：带路径分隔符 / 非 .json 一律拒绝（防目录穿越）；不存在返回 null。
+ * 调用方拿到 null 时必须回退内置工作流，别让生图因为一个失联的自定义模板直接失败。
+ */
+export function resolveCustomWorkflowPath(filename) {
+  if (!filename || typeof filename !== 'string') return null;
+  if (filename.includes('/') || filename.includes('\\')) return null;
+  if (!filename.toLowerCase().endsWith('.json')) return null;
+  const p = path.join(WORKFLOW_DIR, filename);
+  return fs.existsSync(p) ? p : null;
 }
 
 export function restoreWorkflow() {

@@ -258,7 +258,7 @@ class SettingsPage(QWidget):
         layout.addWidget(_separator())
 
         # --- 开关 ---
-        self.auto_browser_check = Switch("启动后自动打开浏览器 (http://localhost:3099)")
+        self.auto_browser_check = Switch("启动后自动打开邻舍网页")
         layout.addWidget(self.auto_browser_check)
 
         self.toast_check = Switch("启动前提示确认 ComfyUI 已运行")
@@ -386,9 +386,9 @@ class SettingsPage(QWidget):
             '<span style="color: #C9C0BB; font-size: 11px;"> · </span>'
         ))
         repo_label = QLabel(
-            '<a href="https://github.com/icecranberry/galgame-with-comfyUI"'
+            '<a href="https://github.com/Sting255/linshe-gai"'
             ' style="color: #B09890; text-decoration: none; font-size: 11px;">'
-            'github.com/icecranberry/galgame-with-comfyUI</a>'
+            'github.com/Sting255/linshe-gai</a>'
         )
         repo_label.setOpenExternalLinks(True)
         repo_row.addWidget(repo_label)

@@ -38,12 +38,41 @@
     <!-- 配图 -->
     <div v-if="currentImage" class="preview-image-wrap">
       <img :src="currentImage" class="preview-image" loading="lazy" alt="" />
+      <!-- 补图成功的短提示（3 秒后自己消失，不挡内容） -->
+      <Transition name="regen-fade">
+        <span v-if="regenMsg" class="preview-regen-msg">{{ regenMsg }}</span>
+      </Transition>
     </div>
-    <div v-else class="preview-image-placeholder">
+    <!-- 没图：分清「还在生成」和「生成失败」——以前两种情况都只说「生成中」，是句谎 -->
+    <div v-else class="preview-image-placeholder" :class="{ 'is-failed': regenFailed }">
       <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21,15 16,10 5,21" />
       </svg>
-      <span>配图生成中…</span>
+      <template v-if="regenFailed">
+        <span class="placeholder-fail-title">这张配图没生成出来</span>
+        <span class="placeholder-fail-reason">{{ regenError || event.error_message }}</span>
+        <linshe-button
+          v-if="canRegenImage"
+          variant="secondary"
+          size="sm"
+          class="regen-image-btn"
+          :loading="regenBusy"
+          :disabled="regenBusy"
+          @click.stop="doRegenImage"
+        >{{ regenBusy ? '正在重画…' : '重新配图' }}</linshe-button>
+      </template>
+      <template v-else>
+        <span>{{ regenError || '配图生成中…' }}</span>
+        <linshe-button
+          v-if="canRegenImage"
+          variant="secondary"
+          size="sm"
+          class="regen-image-btn"
+          :loading="regenBusy"
+          :disabled="regenBusy"
+          @click.stop="doRegenImage"
+        >{{ regenBusy ? '正在重画…' : '重新配图' }}</linshe-button>
+      </template>
     </div>
 
     <!-- 底部信息 -->
@@ -70,7 +99,7 @@
           <span class="detail-title-badge" :class="{ urgent: countdownMinutes < 10 }">{{ isExpired ? '已结束' : countdownText }}</span>
         </div>
 
-        <!-- 建筑功能模板事件：规则执行、内容预生成，由功能内容组件承载 -->
+        <!-- 建筑功能模板事件（上游 v3.9.0 合并）：规则执行、内容预生成，由功能内容组件承载 -->
         <div v-if="isBuildingFeature" class="branch-scroll" ref="scrollEl" @click.self="closeDetail" @wheel.prevent="onWheelScroll">
           <div class="branch-track">
             <div class="branch-card is-current">
@@ -95,7 +124,8 @@
             >
               <div class="branch-img-wrap">
                 <img v-if="step.image" :src="step.image" class="branch-img" loading="lazy" decoding="async" @click.stop="previewImg = step.image" />
-                <div v-else class="branch-img-empty">配图生成中…</div>
+                <!-- §3.5：这一步没配图时，别再对已结束的奇遇说"生成中" -->
+                <div v-else class="branch-img-empty">{{ compact ? '这一步没有配图' : '配图生成中…' }}</div>
               </div>
               <div class="branch-text">
                 <div class="choice-made-box">
@@ -103,13 +133,6 @@
                   <div v-if="i > 0" class="choice-made-text">「{{ step.choice_label }}」</div>
                 </div>
                 <div class="branch-desc">{{ step.summary }}</div>
-                <!-- M7 叙事增强：开场场景的角色对白（ambient 奇遇，模型过契约才存在，缺失即不渲染） -->
-                <div v-if="i === 0 && narrativeLines.length" class="branch-narrative">
-                  <div v-for="(line, li) in narrativeLines" :key="li" class="narrative-line">
-                    <span class="narrative-speaker">{{ line.displayName }}</span>
-                    <span class="narrative-text">{{ line.text }}</span>
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -134,7 +157,7 @@
                 <!-- 排队中（尚未发送 HTTP，可取消重新选择） -->
                 <div v-else-if="event._queued" class="choice-loading is-queued">
                   <div class="loading-spinner"></div>
-                  <span>故事推进中…</span>
+                  <span>正在排队，轮到后自动推进…</span>
                   <div class="queued-back-btn" role="button" tabindex="0" @click.stop="onCancelQueue" @keydown.enter.prevent="onCancelQueue" @keydown.space.prevent="onCancelQueue">← 返回重选</div>
                 </div>
                 <div v-else class="vn-choices">
@@ -194,10 +217,12 @@ import { useRouter } from 'vue-router'
 import { useEventsStore } from '../stores/events.js'
 import * as api from '../api/index.js'
 import ImageLightbox from './ImageLightbox.vue'
-import TownBuildingFeatureContent from './town/TownBuildingFeatureContent.vue'
 import LinsheButton from './ui/LinsheButton.vue'
+// 建筑功能模板事件（上游 v3.9.0 合并）：event.sourceType === 'building_feature' 时由它承载正文
+import TownBuildingFeatureContent from './town/TownBuildingFeatureContent.vue'
 
 const confirmFn = inject('confirm')
+const toastFn = inject('toast', () => {})
 const router = useRouter()
 
 const props = defineProps({
@@ -209,6 +234,7 @@ const props = defineProps({
 const emit = defineEmits(['updated', 'closed'])
 const store = useEventsStore()
 
+// ── 建筑功能模板事件（上游 v3.9.0 合并）──
 const isBuildingFeature = computed(() => props.event?.sourceType === 'building_feature')
 function onBuildingFeatureDone(operation) {
   emit('updated', { event: { ...props.event, status: 'completed', result: operation.result || null } })
@@ -279,12 +305,6 @@ const choiceHistory = computed(() => {
   return []
 })
 
-// M7 叙事增强：ambient 奇遇开场场景的角色对白（后端已过契约校验的模型输出，缺失则不渲染）
-const narrativeLines = computed(() => {
-  const lines = props.event?.narrative?.lines
-  return Array.isArray(lines) ? lines.filter(l => l?.displayName && l?.text) : []
-})
-
 const currentImage = computed(() => {
   if (choiceHistory.value.length > 0) return choiceHistory.value[choiceHistory.value.length - 1].image || props.event.image
   return props.event.image
@@ -308,6 +328,44 @@ function onRegenerated(newUrl) {
 
 function onDeleted(deletedUrl) {
   previewImg.value = null
+}
+
+/**
+ * §3.5（2026-10-01）：**奇遇没图时的补图入口**。
+ *
+ * 以前这里只有一句「配图生成中…」—— 生成失败时它也是一句这个，用户等一张永远不来的图、
+ * 也没有任何补救办法（只能删掉奇遇重开）。现在：
+ *   · 后端把失败原因写进 `character_events.error_message`（新奇的奇遇也会带上）；
+ *   · 卡片这里按 `error_message` 分出「生成中」和「生成失败」两种状态；
+ *   · 失败时给一个「重新配图」按钮，点了就用行里存的 prompt 重跑一次生图。
+ */
+const regenBusy = ref(false)
+const regenError = ref('')
+const regenMsg = ref('')          // 成功后的短提示（几秒后自动消失）
+const regenFailed = computed(() => !!String(props.event?.error_message || '').trim())
+/** 只在「活跃奇遇 + 没有图」时给补图入口；历史/已结束的奇遇不给，避免被当成"修历史" */
+const canRegenImage = computed(() => !currentImage.value && !props.compact && !!props.event?.id)
+
+async function doRegenImage() {
+  if (regenBusy.value) return
+  regenBusy.value = true
+  regenError.value = ''
+  regenMsg.value = ''
+  try {
+    const res = await api.regenerateEventImage(props.event.id)
+    if (res?.ok && res.image) {
+      props.event.image = res.image
+      props.event.error_message = null
+      regenMsg.value = '配图好了'
+      setTimeout(() => { regenMsg.value = '' }, 3000)
+    } else {
+      regenError.value = res?.error || '还是没出图，过一会儿再试'
+    }
+  } catch (err) {
+    regenError.value = err?.message || '补图请求失败了'
+  } finally {
+    regenBusy.value = false
+  }
 }
 
 const previewText = computed(() => {
@@ -341,14 +399,17 @@ function openDetail() {
 function closeDetail() {
   detailOpen.value = false
   emit('closed')
-  choosing.value = false // 关闭详情时重置选择状态
 }
 
 async function onDelete() {
   showMenu.value = false
   const ok = await confirmFn({ title: '删除奇遇', message: '确定要删除这条奇遇吗？', okText: '删除', danger: true })
   if (!ok) return
-  await store.deleteEvent(props.event.id)
+  try {
+    await store.deleteEvent(props.event.id)
+  } catch (err) {
+    toastFn(`删除失败：${err?.message || '请稍后重试'}`, 'error')
+  }
 }
 
 function formatTime(dt) {
@@ -376,25 +437,15 @@ function onWheelScroll(e) {
 }
 
 async function onChoose(choice) {
-  if (choosing.value) return
-  // vn-submit 改为 div 后的禁用守卫（原 :disabled="!customText.trim()"，模板中 ref 自动解包，脚本内需 .value）
+  if (choosing.value || props.event.processing) return
   if (choice === 'C' && !customText.value.trim()) return
   const eventId = props.event.id
+  const draft = customText.value
   choosing.value = true
-  const customTextValue = customText.value
-  customText.value = ''
-  console.log(`[EventCard] onChoose START event=${eventId} choice=${choice} customText="${customTextValue}"`)
-
   try {
-    const result = await store.makeChoice(eventId, choice, choice === 'C' ? customTextValue : '')
-    console.log(`[EventCard] onChoose DONE event=${eventId} concluded=${result?.concluded} queued=${result === null}`)
-    if (!result) {
-      // 已排队：choosing 重置（本地状态），但 event.processing 为 true（store 状态）
-      // 模板 v-if="choosing || event.processing" → 仍然显示 loading
-      // SSE event_update 到达后 event.processing=false → loading 消失 + 新选项出现
-      choosing.value = false
-      return
-    }
+    const result = await store.makeChoice(eventId, choice, choice === 'C' ? draft : '')
+    if (!result || result.cancelled) return
+    if (choice === 'C' && customText.value === draft) customText.value = ''
     if (result.concluded) {
       emit('updated', { concluded: true })
       closeDetail()
@@ -405,11 +456,10 @@ async function onChoose(choice) {
       })
     }
   } catch (err) {
-    console.error(`[EventCard] onChoose ERROR event=${eventId}:`, err?.message || err)
+    toastFn(`推进失败：${err?.message || '请稍后重试'}，可重新选择`, 'error')
+  } finally {
+    choosing.value = false
   }
-
-  choosing.value = false
-  console.log(`[EventCard] onChoose END event=${eventId} choosing reset`)
 }
 
 /** 取消排队中的选择：从队列移除 + 恢复可点击状态 */
@@ -417,7 +467,6 @@ function onCancelQueue() {
   const eventId = props.event.id
   console.log(`[EventCard] cancelQueue event=${eventId}`)
   store.cancelQueuedChoice(eventId)
-  choosing.value = false
 }
 
 /** 撤回上一次分支选择，回到上一步 */
@@ -437,7 +486,7 @@ async function onUndo() {
       })
     }
   } catch (err) {
-    console.error(`[EventCard] undo ERROR event=${eventId}:`, err?.message || err)
+    toastFn(`撤销失败：${err?.message || '请稍后重试'}`, 'error')
   }
 
   undoing.value = false
@@ -445,13 +494,16 @@ async function onUndo() {
 
 // 到期自动触发结局（非 compact 模式，即活跃事件到期时主动调用后端生成结局）
 let _expiredTriggered = false
+let concludeTimer = null
+onUnmounted(() => clearTimeout(concludeTimer))
 watch(isExpired, (val) => {
   console.log(`[EventCard] isExpired changed to ${val} for "${props.event?.title}" (compact=${props.compact}, alreadyTriggered=${_expiredTriggered})`)
   if (val && !props.compact && !_expiredTriggered) {
     _expiredTriggered = true
     const eventId = props.event.id
     console.log(`[EventCard] Scheduling auto-conclude for event ${eventId} in 2s...`)
-    setTimeout(async () => {
+    concludeTimer = setTimeout(async () => {
+      if (props.event.processing || !isExpired.value) { _expiredTriggered = false; return }
       try {
         console.log(`[EventCard] Calling concludeEvent API for ${eventId}`)
         const res = await api.concludeEvent(eventId)
@@ -520,6 +572,28 @@ watch(isExpired, (val) => {
   color: var(--text-secondary); font-size: 12px; opacity: 0.4;
 }
 
+/* §3.5 补图：失败态不再是"生成中"那行灰字，而是一块能读、能点的区域 */
+.preview-image-placeholder.is-failed { opacity: 1; padding: 0 16px; text-align: center; }
+.placeholder-fail-title { color: var(--text-primary); font-size: 13px; opacity: 0.85; }
+.placeholder-fail-reason {
+  font-size: 11px; line-height: 1.5; opacity: 0.7;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  max-width: 260px;
+}
+.regen-image-btn { margin-top: 4px; }
+/* 补图成功的短提示：贴在图右下角，3 秒后自己消失（不占布局、不挡图） */
+.preview-image-wrap { position: relative; }
+.preview-regen-msg {
+  position: absolute; right: 8px; bottom: 8px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  color: var(--text-secondary); font-size: 11px; line-height: 1.6;
+  backdrop-filter: blur(6px);
+}
+/* 与设计系统一致：0.3 秒渐入渐出，动画跑完再卸载由 Vue Transition 负责 */
+.regen-fade-enter-active, .regen-fade-leave-active { transition: opacity 0.3s ease; }
+.regen-fade-enter-from, .regen-fade-leave-to { opacity: 0; }
+
 /* 底部信息 */
 .preview-footer {
   padding: 12px 16px 14px;
@@ -551,7 +625,8 @@ watch(isExpired, (val) => {
   padding: 2px 8px;
   border-radius: 8px;
   background: rgba(var(--accent-rgb), 0.10);
-  font-size: 14px; color: var(--accent); font-weight: 600;
+  /* 文字用深一档：--accent 在浅底上只有 2.5:1（2026-10-30 对比度审计） */
+  font-size: 14px; color: var(--accent-text); font-weight: 600;
   line-height: 1.45;
   word-break: break-word;
 }
@@ -562,7 +637,7 @@ watch(isExpired, (val) => {
   padding: 3px 10px; border-radius: 10px; background: var(--bg-secondary);
   white-space: nowrap; flex-shrink: 0;
 }
-.preview-badge.urgent { color: var(--danger); background: rgba(var(--accent-rgb), 0.08); }
+.preview-badge.urgent { color: #b33030; background: rgba(var(--accent-rgb), 0.08); }   /* --danger(#e25c5c) 在浅底上 3.0:1 */
 /* 徽标允许收缩省略，避免把名字/标题挤成竖排；compact 的 12px 覆盖不作用于历史时间（恢复 10px 小字保证完整显示） */
 .preview-badge.history-time { color: var(--text-secondary); background: transparent; padding: 0; font-size: 10px; flex-shrink: 1; min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; }
 .event-preview.is-compact .preview-badge.history-time { font-size: 10px; padding: 0; }
@@ -691,7 +766,7 @@ watch(isExpired, (val) => {
 }
 
 .detail-title-badge {
-  font-size: 11px; color: rgba(255,255,255,0.6);
+  font-size: 11px; color: rgba(255,255,255,0.92);   /* 0.6 太淡，压在图上看不清 */
   padding: 3px 10px; border-radius: 10px;
   background: rgba(255,255,255,0.1);
   display: flex; align-items: center; gap: 4px;
@@ -782,21 +857,6 @@ watch(isExpired, (val) => {
 .branch-desc {
   font-size: 15px; line-height: 1.75; color: var(--text-bright);
 }
-
-/* ── M7 叙事增强：开场角色对白（与 branch-desc 同一 token 语言） ── */
-.branch-narrative {
-  margin-top: 10px;
-  padding: 8px 12px;
-  border-left: 2.5px solid rgba(var(--accent-rgb),0.35);
-  background: rgba(var(--accent-rgb),0.04);
-  border-radius: 0 8px 8px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.narrative-line { font-size: 13.5px; line-height: 1.65; }
-.narrative-speaker { color: rgba(var(--accent-rgb),0.85); font-weight: 600; margin-right: 8px; }
-.narrative-text { color: var(--text-bright); opacity: 0.85; }
 
 /* ── "选择了" 框体 ── */
 .choice-made-box {

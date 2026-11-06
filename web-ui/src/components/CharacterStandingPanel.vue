@@ -1,6 +1,6 @@
 <template>
   <!-- 角色立绘：桌面端是主面板左侧的悬浮窗（默认），手机端内联在详情卡正文末尾（inline） -->
-  <div class="detail-standing" :class="{ 'is-inline': inline }" :style="{ '--standing-slide-offset': `${slideDirection * 36}px` }">
+  <div class="detail-standing" :class="{ 'is-inline': inline }">
     <div class="standing-panel">
       <div
         class="standing-panel-header"
@@ -19,55 +19,60 @@
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </div>
-      <!-- 四套形象（工装/私服/居家/睡衣）左右切换 -->
-      <div v-if="ctl.hasScenes" class="standing-switch" @wheel="onSceneWheel">
-        <linshe-button
-variant="icon" size="sm"
-          :disabled="ctl.busy || sceneSwitching || (ctl.scenes?.length || 0) <= 1"
-          title="上一个形象" aria-label="上一个形象" @click.stop="switchScene(-1)"
->
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
-        </linshe-button>
-        <div class="standing-switch-label">
-          <Transition name="standing-slide">
-            <span :key="sceneKey" class="standing-label-text">{{ ctl.sceneLabel || '形象' }}</span>
-          </Transition>
+      <!-- 立绘 ↔ 世界观 一致性提示（2026-10-01，用户：「同步形象展示那边的立绘，需要根据现在的世界观去生成」）
+           数据来自 GET /api/characters 下发的 standing_stale（服务端用「世界观 id + 内容哈希」比对生成时记下的签名）。
+           reason='unknown' = 生成于该机制之前，无法确认；'world_changed' = 世界观换了或改了内容。 -->
+      <Transition name="sp-fade">
+        <div
+          v-if="character?.standing_stale"
+          class="standing-stale"
+          :title="character.standing_stale_reason === 'unknown'
+            ? '这张立绘生成于「世界观记录」之前，系统无法确认它是否吻合当前世界观'
+            : '世界观已更改，这张立绘还是上一套世界观的形象'"
+        >
+          <span class="standing-stale-dot" aria-hidden="true"></span>
+          <span class="standing-stale-text">立绘与当前世界观不一致，点「重新生成立绘」按现在世界观同步</span>
         </div>
-        <linshe-button
-variant="icon" size="sm"
-          :disabled="ctl.busy || sceneSwitching || (ctl.scenes?.length || 0) <= 1"
-          title="下一个形象" aria-label="下一个形象" @click.stop="switchScene(1)"
->
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
-        </linshe-button>
+      </Transition>
+      <!-- 场景立绘切换条：五套场景都列出来（**没图的也能选中**，否则新角色永远没有入口上传场景图）。
+           特殊交互元素（胶囊切换）按 AGENTS.md 白名单用 div[role=button]，不套 LinsheButton、不写裸 button。 -->
+      <div v-if="sceneOptions.length" class="scene-standing-bar" role="tablist" aria-label="场景形象">
+        <div
+          v-for="s in sceneOptions"
+          :key="s.scene"
+          role="tab"
+          class="scene-standing-chip"
+          :class="{ active: sceneView === s.scene, 'is-fallback': s.is_fallback, 'is-empty': !s.image_url }"
+          :title="s.image_url
+            ? (s.is_fallback ? `${s.sceneLabel}（用默认立绘兜底）` : s.sceneLabel)
+            : `${s.sceneLabel}（还没配图，可点「上传本场景」或生成）`"
+          @click="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
+        >{{ s.sceneLabel }}</div>
       </div>
       <div
         class="standing-stage"
         role="button"
         tabindex="0"
-        :title="ctl.funcOpen ? (ctl.displayUrl ? '点击查看大图' : '尚未生成形象') : '点击展开立绘操作'"
+        :title="ctl.funcOpen && character?.standing_url && !currentSceneEmpty ? '再点一次查看大图' : '点击展开立绘操作'"
         @click="ctl.onStageClick"
         @keydown.enter.prevent="ctl.onStageClick"
         @keydown.space.prevent="ctl.onStageClick"
         @wheel="onSceneWheel"
       >
-        <Transition name="standing-slide" @after-enter="sceneSwitching = false" @enter-cancelled="sceneSwitching = false">
-          <div :key="sceneKey" class="standing-frame">
-        <img v-if="ctl.displayUrl" :src="ctl.displayUrl" class="standing-img" alt="" />
+        <img v-if="!currentSceneEmpty && ctl.displayUrl" :src="ctl.displayUrl" class="standing-img" alt="" />
         <div v-else-if="!ctl.busyForChar" class="standing-empty">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
           </svg>
-          <p class="standing-empty-title">尚未生成{{ ctl.sceneLabel }}形象</p>
-          <p class="standing-empty-hint">点下方「生成形象」让邻舍按这套服装画一张</p>
+          <!-- 选中了某套场景但它还没图时，别拿默认立绘冒充（会让人以为已经有图） -->
+          <p class="standing-empty-title">{{ currentSceneEmpty ? `${currentSceneLabel}还没有立绘` : '尚未生成立绘' }}</p>
+          <p class="standing-empty-hint">{{ currentSceneEmpty ? '点一下展开操作，再点「上传本场景」或生成' : '' }}</p>
         </div>
-          </div>
-        </Transition>
         <!-- 生成中：扫描线 + 轮播趣语（与角色招募同款） -->
         <div v-if="ctl.busyForChar" class="standing-loading">
           <div class="standing-scan-line"></div>
           <div class="standing-spinner"></div>
-          <span class="standing-loading-text">{{ ctl.loadingText }}</span>
+          <span class="standing-loading-text">{{ ctl.reimageing ? '正在重绘立绘…' : '正在生成立绘…' }}</span>
           <span class="standing-loading-tip">{{ ctl.tip }}</span>
         </div>
       </div>
@@ -98,15 +103,16 @@ variant="icon" size="sm"
           <div class="standing-func-btns">
             <template v-if="ctl.hasPrompt">
               <linshe-button variant="secondary" :size="controlSize" :loading="ctl.generating" :disabled="ctl.busy" @click="ctl.generate">重新生成提示词</linshe-button>
-              <linshe-button variant="primary" :size="controlSize" :loading="ctl.generating" :disabled="ctl.busy" @click="ctl.regenerate">再次Roll图</linshe-button>
+              <linshe-button variant="primary" :size="controlSize" :loading="ctl.reimageing" :disabled="ctl.busy" @click="ctl.regenerate">再次Roll图</linshe-button>
             </template>
             <template v-else>
-              <linshe-button variant="primary" :size="controlSize" :loading="ctl.generating" :disabled="ctl.busy" @click="ctl.generate">生成「{{ ctl.sceneLabel }}」形象</linshe-button>
+              <linshe-button variant="primary" :size="controlSize" :loading="ctl.generating" :disabled="ctl.busy" @click="ctl.generate">生成形象</linshe-button>
             </template>
           </div>
           <div class="standing-manage-btns">
-            <linshe-button variant="secondary" :size="controlSize" :disabled="ctl.busy || ctl.uploading" @click="pickFile">上传形象</linshe-button>
-            <linshe-button v-if="ctl.displayUrl" variant="ghost" :size="controlSize" :disabled="ctl.busy" @click="ctl.remove">删除形象</linshe-button>
+            <linshe-button variant="secondary" :size="controlSize" :disabled="ctl.busy || ctl.uploading" @click="pickFile('default')">上传形象</linshe-button>
+            <linshe-button v-if="sceneView" variant="secondary" :size="controlSize" :disabled="ctl.busy || ctl.sceneUploading" @click="pickFile('scene')">上传本场景</linshe-button>
+            <linshe-button v-if="character?.standing_url" variant="ghost" :size="controlSize" :disabled="ctl.busy" @click="ctl.remove">删除形象</linshe-button>
           </div>
         </div>
       </Transition>
@@ -125,7 +131,7 @@ import LinsheInput from './ui/LinsheInput.vue'
 
 const props = defineProps({
   character: { type: Object, default: null },
-  /** 父组件的立绘接口：{ funcOpen, requirement, hasPrompt, generating, busy, busyForChar, uploading, tip, displayUrl, mode, scenes, sceneLabel, prevScene, nextScene, ...动作 } */
+  /** 父组件的立绘接口：{ funcOpen, requirement, hasPrompt, generating, reimageing, busy, busyForChar, uploading, tip, displayUrl, mode, ...动作 } */
   ctl: { type: Object, required: true },
   /** true = 内联在正文里（手机端）；false = 悬浮在主面板左侧（桌面端） */
   inline: { type: Boolean, default: false },
@@ -185,20 +191,78 @@ watch(() => props.ctl.scenes?.map(scene => scene.image_url).filter(Boolean) || [
 // 手机端内联时控件用 md（点按更稳），桌面端悬浮窗保持 sm
 const controlSize = computed(() => (props.inline ? 'md' : 'sm'))
 
-// 隐藏的 file input 是面板唯一的自有 DOM：选到文件后交给 ctl.uploadFile 校验 / 上传
+// 场景立绘（2026-10-13）：只列出**有图**的那些（work 缺图时后端以默认立绘兜底，也算有图）
+const sceneOptions = computed(() => props.ctl.sceneStandings || [])
+// 当前选中哪套（'' = 看角色默认立绘）；ctl 里是 ref，reactive 里自动解包
+const sceneView = computed(() => props.ctl.sceneView || '')
+// 选中的场景还没有显式立绘：舞台上不能拿默认立绘冒充（否则用户以为已经配好图了）
+const currentSceneEmpty = computed(() => Boolean(sceneView.value)
+  && !(props.ctl.sceneStandings || []).find(s => s.scene === sceneView.value)?.image_url)
+const currentSceneLabel = computed(() => (props.ctl.sceneStandings || [])
+  .find(s => s.scene === sceneView.value)?.sceneLabel || '这套场景')
+
+// 隐藏的 file input 是面板唯一的自有 DOM：选到文件后交给 ctl.uploadFile / ctl.sceneUploadFile 校验上传。
+// fileTarget 区分「上传默认立绘」和「上传当前场景立绘」—— 两者落点不同（characters.standing_url vs character_standings）。
 const fileInput = ref(null)
-function pickFile() {
-  if (props.ctl.busy || props.ctl.uploading) return
+const fileTarget = ref('default')
+function pickFile(target = 'default') {
+  if (props.ctl.busy || props.ctl.uploading || props.ctl.sceneUploading) return
+  fileTarget.value = target
   fileInput.value?.click()
 }
 function onFileChange(e) {
   const file = e.target.files?.[0]
   e.target.value = ''
-  if (file) props.ctl.uploadFile(file)
+  if (!file) return
+  if (fileTarget.value === 'scene') props.ctl.sceneUploadFile?.(file)
+  else props.ctl.uploadFile(file)
 }
 </script>
 
 <style scoped>
+/* 立绘 ↔ 世界观 不一致提示（2026-10-01）：一条窄提示条，落在面板头部与画面之间。
+   配色沿用告警语义的既有 token（不引入新色），节奏沿用 0.3s（AGENTS.md）。 */
+/* 场景立绘切换条（2026-10-13）：一行胶囊，点一下看那套场景的形象 */
+.scene-standing-bar { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
+.scene-standing-chip {
+  padding: 3px 10px; border-radius: 999px;
+  border: 1.5px solid var(--glass-border);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.scene-standing-chip:hover { border-color: var(--accent); color: var(--text-primary); }
+.scene-standing-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scene-standing-chip.is-fallback { opacity: 0.7; }
+/* 没配图的场景也列出来（可选中后上传），但视觉上弱化，避免误以为已有图 */
+.scene-standing-chip.is-empty { opacity: 0.55; border-style: dashed; }
+.scene-standing-chip.is-empty.active { opacity: 0.85; border-style: solid; }
+
+.standing-stale {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.10);
+  border: 1px solid rgba(var(--accent-rgb), 0.22);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  transition: opacity 0.3s var(--ease-standard), transform 0.3s var(--ease-standard);
+}
+.standing-stale-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.standing-stale-text { flex: 1 1 auto; }
+.sp-fade-enter-active, .sp-fade-leave-active { transition: opacity 0.3s var(--ease-standard); }
+.sp-fade-enter-from, .sp-fade-leave-to { opacity: 0; }
 /* ═══ 立绘面板 ═══
    默认（桌面端）：主面板左侧的悬浮窗，与右侧 float 面板镜像；
    .is-inline（手机端）：收进详情卡正文末尾，换成与正文卡片同款的玻璃卡。 */
@@ -208,6 +272,21 @@ function onFileChange(e) {
   top: 2.5vh;
   width: 300px;
   z-index: 0;
+}
+/* 立绘面板必须有高度上限 + 内部滚动：
+   展开功能区后内容会超过一屏（900px 高时「上传本场景」曾落到 y≈904，鼠标点不到）。
+   悬浮（桌面）与内联（窄屏/手机，在弹窗正文里）两种情况都要限制，只是可用高度不同。 */
+.detail-standing:not(.is-inline) {
+  max-height: 95vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.detail-standing.is-inline {
+  max-height: calc(100vh - 240px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 .standing-panel {
   display: flex; flex-direction: column;
@@ -236,33 +315,6 @@ function onFileChange(e) {
 .standing-panel-header:hover { color: var(--accent); background: rgba(var(--accent-rgb), 0.06); }
 .standing-chevron { margin-left: auto; transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
 .standing-chevron.open { transform: rotate(180deg); }
-/* 四套形象左右切换条 */
-.standing-switch {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px;
-  margin: 0 2px 8px;
-}
-.standing-switch-label {
-  position: relative; height: 24px; line-height: 24px;
-  flex: 1; min-width: 0;
-  text-align: center;
-  font-size: 12px; font-weight: 600; color: var(--accent);
-  letter-spacing: 0.5px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.standing-label-text { position: absolute; inset: 0; overflow: hidden; text-overflow: ellipsis; }
-.standing-frame { position: absolute; inset: 0; }
-.standing-slide-enter-active, .standing-slide-leave-active {
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease;
-  pointer-events: none;
-  will-change: transform, opacity;
-}
-.standing-slide-enter-from { opacity: 0; transform: translate3d(var(--standing-slide-offset), 0, 0); }
-.standing-slide-leave-to { opacity: 0; transform: translate3d(calc(-1 * var(--standing-slide-offset)), 0, 0); }
-@media (prefers-reduced-motion: reduce) {
-  .standing-slide-enter-active, .standing-slide-leave-active { transition: none; }
-  .standing-slide-enter-from, .standing-slide-leave-to { transform: none; }
-}
 .standing-stage {
   position: relative;
   aspect-ratio: 1 / 2;

@@ -48,9 +48,9 @@
     </div>
   </Teleport>
 
-  <!--  角色通知（右下角轻通知）：非模态、可叠多条、独立层级与命名 class 
-       与右上角系统 Toast 共用同一套暖纸皮肤与动效语言，但不继承
-       .__toast__root 的 99999 强制层级；新卡片从下往上顶，最多叠 3 条。 -->
+  <!--  角色通知（右下角轻通知）：非模态、可叠多条、独立层级与命名 class
+        与右上角系统 Toast 共用同一套暖纸皮肤与动效语言，但不继承
+        .__toast__root 的 99999 强制层级；新卡片从下往上顶，最多叠 3 条。 -->
   <Teleport v-if="ready" to="body">
     <TransitionGroup name="ct" tag="div" class="character-toast-host">
       <div
@@ -98,7 +98,8 @@
         <span class="live-toast-life character-toast-life" aria-hidden="true"></span>
       </div>
     </TransitionGroup>
-  </Teleport></template>
+  </Teleport>
+</template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
@@ -191,15 +192,15 @@ function pinLeaving(el) {
   el.style.height = `${rect.height}px`
 }
 
+onMounted(() => {
+  setTimeout(() => { ready.value = true })
+})
+
 //  角色通知（右下角）：素材加载失败由宿主回退头像 / 首字占位，不重置计时 
 function initialOf(card) {
   const name = String(card?.name || '').trim()
   return name ? Array.from(name)[0] : '角'
 }
-
-onMounted(() => {
-  setTimeout(() => { ready.value = true })
-})
 
 defineExpose({ show })
 </script>
@@ -371,7 +372,7 @@ defineExpose({ show })
   to   { opacity: 1; }
 }
 
-/* ── 移动端：收紧边距,宽度不越界 ── */
+/* ── 移动端:收紧边距,宽度不越界 ── */
 @media (max-width: 640px) {
   .live-toast-host {
     top: max(12px, env(safe-area-inset-top, 12px));

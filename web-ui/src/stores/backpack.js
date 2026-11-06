@@ -10,6 +10,7 @@ export const useBackpackStore = defineStore('backpack', () => {
   const chestLoaded = ref(false)
   const activeEffects = ref([])
   const loading = ref(false)
+  const loadError = ref(null)
 
   let pollTimer = null
   let _unsubItemReady = null
@@ -30,8 +31,11 @@ export const useBackpackStore = defineStore('backpack', () => {
       chest.value = data.chest || chest.value
       chestLoaded.value = true
       activeEffects.value = data.activeEffects || []
+      loadError.value = null
     } catch (err) {
       console.error('[backpack] fetchItems error:', err)
+      // 失败不能和「没有生效效果」混在一起（2026-10-22）
+      loadError.value = err?.message || '加载失败'
     } finally {
       loading.value = false
     }
@@ -124,7 +128,7 @@ export const useBackpackStore = defineStore('backpack', () => {
   }
 
   return {
-    items, pendingItems, chest, activeEffects, loading,
+    items, pendingItems, chest, activeEffects, loading, loadError,
     usableItems, chestReady,
     fetchItems, openChest, collectItem, useItem, discardItem, removeActiveEffect,
     startPolling, stopPolling, _tickCooldown,

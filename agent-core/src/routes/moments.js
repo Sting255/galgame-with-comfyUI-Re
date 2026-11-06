@@ -3,6 +3,8 @@ import { scheduleMomentCompanions } from '../services/scheduleParticipants.js';
 import { Router } from 'express';
 import { saveBase64Image } from '../services/imagePaths.js';
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlobalRule } from '../db/index.js';
+import { chatSync } from '../llm/llm-client.js';
+// 上游 v4.0.0 合并：朋友圈走酒馆预设/世界书链路（与聊天同一套注入口径）
 import { chatWithPreset } from '../services/presets/narrative.js';
 import { config } from '../config.js';
 import { getMomentDelay } from '../services/momentTiming.js';
@@ -12,7 +14,7 @@ import { buildCharacterPersona, ensureImagePromptIdentity } from '../services/ch
 import { getGodWorldContext } from '../services/godSays/worldContext.js';
 import { createCharacterTownLifeContext } from '../services/characterTownLifeContext.js';
 import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
-import { recordCompletedImageTask } from '../services/imageTaskRecorder.js';
+import { recordCompletedImageTask, recordFailedImageTask } from '../services/imageTaskRecorder.js';
 import { broadcast as broadcastToUnified } from '../services/unifiedStreamBus.js';
 import { getTimeTag, getLightNoteWithWeather } from '../services/timeLight.js';
 import { getCurrentActivity } from '../services/scheduleManager.js';
@@ -21,18 +23,22 @@ import { publishUserMoment } from '../services/momentUserPostService.js';
 import { handleUserComment } from '../services/momentCommentService.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 import { DEFAULT_MOMENT_IMAGE_PROMPT, parseMomentResponse, sanitizeMomentContent } from '../services/momentResponseParser.js';
-import { MOMENT_FORMS, weightedPick, pickMomentImageCount, MOMENT_SINGLE_FOCUS_RULE, MOMENT_TONE_RULES, MOMENT_IMAGE_RULES, buildMomentOutputFormat, buildMomentMotiveDirective, buildMomentScheduleContext, buildMomentMultiImageRule, MOMENT_RECORD_BACKDROP_RULE, pickMomentFocus, buildMomentFocusDirective } from '../services/momentForms.js';
-import { MOMENT_DREAM_IMAGE_RULES, MOMENT_DREAM_IMAGE_REQUIREMENT } from '../services/momentForms.js';
-
+import { MOMENT_FORMS, weightedPick, pickMomentImageCount, MOMENT_SINGLE_FOCUS_RULE, MOMENT_TONE_RULES, MOMENT_IMAGE_RULES, buildMomentOutputFormat, buildMomentMotiveDirective, buildMomentScheduleContext, buildMomentMultiImageRule, MOMENT_RECORD_BACKDROP_RULE, MOMENT_DREAM_IMAGE_RULES, MOMENT_DREAM_IMAGE_REQUIREMENT } from '../services/momentForms.js';
+// 上游 v4.0.0 合并：朋友圈焦点机制（本次内容主次），未启用时行为与 v3.10.0 一致
+import { pickMomentFocus, buildMomentFocusDirective } from '../services/momentForms.js';
+// 上游 v3.9.0 合并：朋友圈回填（momentBackfill）——把「今日还没发的角色」补成朋友圈。
+// 只增不改：下面两个路由与 generateMomentPost 的 backfill 分支是追加进来的。
 import { startMomentBackfill, stopMomentBackfill, isMomentBackfillRunning } from '../services/momentBackfill.js';
 
 const router = Router();
+// POST /api/moments/backfill/:taskId/stop — 停止正在进行的补发（当前条生成完成后结束）
 router.post('/backfill/:taskId/stop', (req, res) => {
   try {
     stopMomentBackfill(req.params.taskId);
     res.json({ stopping: true });
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
+// POST /api/moments/backfill — 补发今日动态：先补齐到期日程，再按今日已过时刻分层抽样发帖
 router.post('/backfill', (req, res) => {
   try {
     res.json({ task_id: startMomentBackfill(generateMomentPost, {
@@ -162,6 +168,8 @@ router.post('/mark-read', (req, res) => {
 
 // GET /api/moments — keyset 分页返回帖子：默认最新 1000 条；?before_id=<id> 续拉比它更旧的一批
 // hasMore 通过多取一条探测；列表不返回 prompt（feed 渲染用不到，重新生成配图走 POST /:id/regenerate-image 自行读库）
+// 2026-10-14 补漏合并：上游 v3.9.0 已是 keyset 分页，本地合并时漏掉、退化成"全量返回"，
+// 导致 /api/moments 一次把全部历史动态 + prompt 都吐给前端。按上游逐字补回（只替换本 handler）。
 router.get('/', (req, res) => {
   const db = getDb();
   const nickname = userNickname();
@@ -274,7 +282,7 @@ router.get('/:id', (req, res) => {
   });
 });
 
-// POST /api/moments/generate — 手动触发某角色发帖
+// POST /api/moments/generate — 手动触发某角色发帖（可选 topic_id：从话题库点题）
 router.post('/generate', async (req, res) => {
   const { character_id, topic_id } = req.body;
   if (!character_id) return res.status(400).json({ error: 'character_id is required' });
@@ -284,6 +292,7 @@ router.post('/generate', async (req, res) => {
   if (!character) return res.status(404).json({ error: 'Character not found' });
 
   try {
+    // 【上游 v3.9.0 合并补回】topic_id 透传：用户点题时按 id 读原条目，失效话题返回 400/404
     const result = await generateMomentPost(character, { manual: true, topicId: topic_id });
     res.json(result);
   } catch (err) {
@@ -381,15 +390,26 @@ router.delete('/:id/comments/:commentId', (req, res) => {
 // ──────────────── 点赞 ────────────────
 
 // POST /api/moments/:id/like — 切换点赞状态（toggle）
+// ⚠ 2026-10-14 修：原先不校验帖子是否存在，直接 INSERT INTO moment_likes(post_id)。
+//   post_id 有 `REFERENCES moment_posts(id)` 外键 ⇒ 帖子不存在（已被删/过期，而前端还拿着旧列表）时
+//   撞外键约束抛异常，且本 handler 没有 try/catch ⇒ 返回 500 Internal server error。
+//   现在先查存在性返回 404（与本文件其它路由同口径），并整体兜住异常。
 router.post('/:id/like', (req, res) => {
-  const db = getDb();
-  const existing = db.prepare('SELECT id FROM moment_likes WHERE post_id = ?').get(req.params.id);
-  if (existing) {
-    db.prepare('DELETE FROM moment_likes WHERE post_id = ?').run(req.params.id);
-    res.json({ liked: false });
-  } else {
-    db.prepare('INSERT INTO moment_likes (post_id) VALUES (?)').run(req.params.id);
-    res.json({ liked: true });
+  try {
+    const db = getDb();
+    const post = db.prepare('SELECT id FROM moment_posts WHERE id = ?').get(req.params.id);
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    const existing = db.prepare('SELECT id FROM moment_likes WHERE post_id = ?').get(req.params.id);
+    if (existing) {
+      db.prepare('DELETE FROM moment_likes WHERE post_id = ?').run(req.params.id);
+      res.json({ liked: false });
+    } else {
+      db.prepare('INSERT INTO moment_likes (post_id) VALUES (?)').run(req.params.id);
+      res.json({ liked: true });
+    }
+  } catch (err) {
+    console.error('[moments] like error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -510,9 +530,27 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
           scene: 'moments',
           priority: manual ? 'high' : 'low',
           ...loraOpts,
+          // 角色级负面词只在「画面里只有发帖者本人」时注入：多人同框没有唯一主角，
+          // 拿谁的负面词都可能在排斥别人身上的正常元素
+          ...(otherChars.length === 0 && character.negative_prompt
+            ? { characterNegative: character.negative_prompt }
+            : {}),
         });
 
-        if (!genResult.success || genResult.images.length === 0) continue;
+        if (!genResult.success || genResult.images.length === 0) {
+          // 2026-10-01：失败要落库（原来只 `continue`，库里零痕迹 ⇒ 事后分不出
+          // 「没触发配图 / 生成失败 / 文件被导入弄丢」，用户一律报成「生不出来」）
+          recordFailedImageTask({
+            conversationId: `char_${character.id}_moments`,
+            promptOriginal: imagePrompts[i],
+            errorMessage: genResult.error || 'ComfyUI 未返回图片',
+            style: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
+            resolution: `${width}x${height}`,
+            workflowTemplate: genResult.wfMode || null,
+            db,
+          });
+          continue;
+        }
 
         const usedPrompt = genResult.promptRefined || promptWithIdentity;
         usedPrompts.push(usedPrompt);
@@ -537,6 +575,14 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
         });
       } catch (err) {
         console.error(`[moments] Image ${i + 1}/${imagePrompts.length} failed for post ${postId}:`, err.message);
+        recordFailedImageTask({
+          conversationId: `char_${character.id}_moments`,
+          promptOriginal: imagePrompts[i],
+          errorMessage: err.message,
+          style: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
+          resolution: `${width}x${height}`,
+          db,
+        });
       }
     }
   } catch (err) {
@@ -574,7 +620,18 @@ async function generateTownNpcMomentImages(npc, imagePrompts, opts = {}) {
           scene: 'moments',
           priority: 'high',
         });
-        if (!genResult.success || genResult.images.length === 0) continue;
+        if (!genResult.success || genResult.images.length === 0) {
+          recordFailedImageTask({
+            conversationId: `town_npc_${npc.id}_moments`,
+            promptOriginal: imagePrompts[i],
+            errorMessage: genResult.error || 'ComfyUI 未返回图片',
+            style: config.comfyui.momentsArtist,
+            resolution: `${width}x${height}`,
+            workflowTemplate: genResult.wfMode || null,
+            db,
+          });
+          continue;
+        }
 
         const usedPrompt = genResult.promptRefined || imagePrompts[i];
         usedPrompts.push(usedPrompt);
@@ -598,6 +655,14 @@ async function generateTownNpcMomentImages(npc, imagePrompts, opts = {}) {
         });
       } catch (err) {
         console.error(`[moments] NPC image ${i + 1}/${imagePrompts.length} failed for post ${postId}:`, err.message);
+        recordFailedImageTask({
+          conversationId: `town_npc_${npc.id}_moments`,
+          promptOriginal: imagePrompts[i],
+          errorMessage: err.message,
+          style: config.comfyui.momentsArtist,
+          resolution: `${width}x${height}`,
+          db,
+        });
       }
     }
   } catch (err) {
@@ -611,6 +676,10 @@ async function generateTownNpcMomentImages(npc, imagePrompts, opts = {}) {
 /**
  * 生成一条朋友圈帖子（文案 + 配图）
  * 单次 LLM 调用输出 { text, imagePrompt[, imagePrompt2[, imagePrompt3]] }，确保图文一致
+ *
+ * 【上游 v3.9.0 合并：朋友圈回填】opts.backfill=true 时这是补发任务（momentBackfill）
+ * 逐条驱动的生成入口：回填自己持有互斥，所以不走「该角色正在生成」的拒绝分支，
+ * 而是等待在飞的自动发帖完成，避免抢占同一角色。
  */
 const generatingCharacters = new Map();
 async function generateMomentPost(character, opts = {}) {
@@ -633,8 +702,10 @@ async function generateMomentPost(character, opts = {}) {
 async function generateMomentPostImpl(character, opts = {}) {
   const db = getDb();
 
-  // 手动点题按 id 读取原条目；checked 只影响自动抽取，不限制手动发送。
+  // 【上游 v3.9.0 合并补回】手动点题按 id 读取原条目；checked 只影响自动抽取，不限制手动发送。
   // 在创建帖子和更改调度时间前验证，失效话题不能悄悄退回随机抽题。
+  // ⚠ 2026-10-14 修：本地这份此前丢了整段实现，却在 styleDirective 处引用 selectedTopic
+  //   ⇒ 每次生成朋友圈都抛 `selectedTopic is not defined`（真机日志实测：流萤/三月七 全部失败）。
   let selectedTopic = null;
   if (opts.topicId != null) {
     if (!Number.isSafeInteger(opts.topicId) || opts.topicId <= 0) {
@@ -672,7 +743,7 @@ async function generateMomentPostImpl(character, opts = {}) {
   // 1. 一维/二维组合选取，代码侧硬随机避免 LLM 偏见
 
   const SPECIAL_MODES = [
-    { name: '做梦/幻想', desc: '候选动因：分享怪梦或白日梦。按本次内容主次决定是否采用；采用后描述一场具体的梦境或超现实体验，配图呈现梦内的超现实意象与梦幻光影' },
+    { name: '做梦/幻想', desc: '候选动因：分享怪梦或白日梦。仅在非常契合当前日程或未提供日程时采用；采用后可描述梦境场景、超现实体验或脑洞，配图可用超现实或梦幻风格' },
   ];
 
   // 5% 特殊叙事模式 / 10% 完全自由发挥 / 85% Topic 模式
@@ -717,9 +788,9 @@ async function generateMomentPostImpl(character, opts = {}) {
   //     其余（自由模式与主路径）→ 按时段加权抽取（深夜偏爱纯图党/自言自语，模拟真人深夜状态）
   let pickedForm = null;
   if (isSpecialMode) {
-    pickedForm = { name: '叙事长文', desc: '采用梦境或幻想动因时，可以把最想分享的梦内经历讲清；否则围绕当前日程表达真实感想，不凑长文', len: '梦境叙事100-400字，否则按日程写30-320字的短文' };
+    pickedForm = { name: '叙事长文', desc: '采用梦境或幻想动因时，可以把最想分享的梦内经历讲清；否则围绕当前日程表达真实感想，不凑长文', len: '梦境叙事80-400字，否则按日程写30-160字的短文' };
   } else {
-    const _hour = (opts.postedAt || new Date()).getHours();
+    const _hour = new Date().getHours();
     const _isNight = _hour >= 22 || _hour < 5;
     const formWeights = {};
     for (const f of MOMENT_FORMS) formWeights[f.name] = f.weight * (_isNight && f.nightBoost ? 1.8 : 1.0);
@@ -816,6 +887,9 @@ async function generateMomentPostImpl(character, opts = {}) {
   const permissionPrompt = worldSetting
     ? getSystemRulesWithWorld()
     : getSystemRules();
+  const worldIntegrationNote = worldSetting
+    ? getWorldIntegrationRule('moments')
+    : null;
 
   const multiPersonImageNote = multiPersons.length > 0 ? `
 - **多人画面**：包含你和${multiPersons.map(p => p.otherName).join('、')}，另指定同框的用户也计入人数；每人独立描述，参与同一活动。` : '';
@@ -833,7 +907,7 @@ async function generateMomentPostImpl(character, opts = {}) {
     ? '\n- **誓约画面特征**：imagePrompt 必须明确描述角色左手无名指戴着一枚清晰可见的银白细戒指；只在画面中体现，text 不提及戒指。'
     : '';
 
-  const now = opts.postedAt || new Date();
+  const now = new Date();
   const weatherNote = getLightNoteWithWeather(now);
   const weatherHint = weatherNote ? `Environment reference：${weatherNote}。` : '';
 
@@ -858,8 +932,8 @@ async function generateMomentPostImpl(character, opts = {}) {
   let prevMomentText = '';
   try {
     prevMomentText = db.prepare(
-      `SELECT content FROM moment_posts WHERE character_id = ? AND status = 'done' AND content != '' AND created_at <= ? ORDER BY created_at DESC LIMIT 1`
-    ).get(character.id, toSQLite(now.toISOString()))?.content || '';
+      `SELECT content FROM moment_posts WHERE character_id = ? AND status = 'done' AND content != '' ORDER BY created_at DESC LIMIT 1`
+    ).get(character.id)?.content || '';
   } catch { /* ignore */ }
 
   // 5% 概率保留自然的口语停顿，不靠故意错字制造生活感
@@ -897,7 +971,7 @@ ${imageFormatRule}
     const jsonFmt = buildMomentOutputFormat({
       imageCount,
       textRequirement: textShape,
-      textLength: pickedForm?.len || '30-320字',
+      textLength: pickedForm?.len || '30-160字',
       imageRequirement: isSpecialMode ? MOMENT_DREAM_IMAGE_REQUIREMENT : '',
     });
 
@@ -905,7 +979,7 @@ ${imageFormatRule}
 
     // 主次判断放在动态尾部，不改变共用静态前缀。
     // 张数、形态、天气等每次不同的内容全部压在这里，静态前缀到输出格式为止。
-    const dynamicRules = `- text 用中文，imagePrompt 用英文；正文字数范围：${pickedForm?.len || '30-320字'}，不凑字，保留关键意思
+    const dynamicRules = `- text 用中文，imagePrompt 用英文；正文字数范围：${pickedForm?.len || '30-160字'}，不凑字，保留关键意思
 ${multiImageRule}
 ${pickedForm ? `- **发布形态参考（可不用）**：${pickedForm.desc}。` : ''}
 ${isSpecialMode ? '- **梦境采纳条件**：动因为主时可以直接分享梦境，简要日程只作背景，不必解释梦与日程的联系；日程为主时，仅在梦境动因自然契合日程时采用，否则忽略梦境及其配图建议。采用后正文分清梦与现实，配图只取梦内同一场景。' : ''}
@@ -944,8 +1018,7 @@ ${dynamicRules}`;
 你打开自己的朋友圈，准备把此刻想分享的东西发给熟人。哪些想说、哪些留给自己，由你决定。写下你准备发出的原话——只写你真正会发出去的那句话，不要写成说明、总结、第三人称介绍或对指令的复述；配上你想分享的画面。
 按约定的 JSON 格式返回。${styleTail}`;
 
-  // 共用固定规则 → 生效中的世界事件 → 本次输出要求 → 人设 → 场景 → user。
-  // 世界事件在生效期内逐字稳定，放在随机格式、天气与跨角色变化之前复用前缀。
+  // msgs[0] 舞台 → [世界观] → msgs[1] 任务 → msgs[2] 角色 → msgs[3] 交互(多人) → user
   const msgs = [{ role: 'system', content: permissionPrompt }];
   if (worldSetting) msgs.push({ role: 'system', content: getWorldIntegrationRule('moments') });
   const postingTaskIndex = msgs.length;
@@ -986,10 +1059,17 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
       });
     }
   }
+  const worldRulePrefix = worldSetting
+    ? '请遵循<world_setting>来发朋友圈，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。\n\n'
+    : '';
+  // 【上游 v3.9.0 合并补回】用户点题：注入指定话题，并要求本次围绕它出图
   if (selectedTopic) {
-    msgs.push({ role: 'system', content: `【本次分享话题】\n名称：${selectedTopic.name}\n描述：${selectedTopic.desc || selectedTopic.name}` });
+    msgs.push({ role: 'system', content: `【用户指定的朋友圈话题】\n名称：${selectedTopic.name}\n描述：${selectedTopic.desc || selectedTopic.name}` });
   }
-  msgs.push({ role: 'user', content: userMsg });
+  // ⚠ 本地特有的 worldRulePrefix（世界观优先）必须保留，上游没有这段
+  msgs.push({ role: 'user', content: worldRulePrefix + (selectedTopic
+    ? `${userMsg} 本次围绕用户指定话题生成图文，严格按 JSON 格式输出。`
+    : userMsg) });
 
   let text = '', imagePrompt = '', imageUrls = [];
   let imagePrompts = [];
@@ -998,7 +1078,7 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
   // 梦境候选与自由模式不额外注入生活记录；已注入的当前日程仍按上方优先级处理。
   if (config.features.town === true && !isFreeMode && !isSpecialMode) {
     try {
-      const lifeContext = createCharacterTownLifeContext({ db, clock: { now: () => now.getTime() },
+      const lifeContext = createCharacterTownLifeContext({ db, clock: { now: Date.now },
         registry: createTownActorRegistry(db), timeZone: config.town.timeZone })(character.id);
       if (lifeContext) msgs.splice(msgs.length - 1, 0, { role: 'system', content: `${MOMENT_RECORD_BACKDROP_RULE}\n\n${lifeContext}` });
     } catch (err) { console.warn('[moments] town life records unavailable:', err?.message); }
@@ -1047,9 +1127,9 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
   // 4. 更新帖子
   db.prepare(`
     UPDATE moment_posts
-    SET content = ?, prompt = ?, images = ?, status = 'done', created_at = COALESCE(?, created_at)
+    SET content = ?, prompt = ?, images = ?, status = 'done'
     WHERE id = ?
-  `).run(text, imagePrompt, JSON.stringify(imageUrls), opts.postedAt ? toSQLite(opts.postedAt.toISOString()) : null, postId);
+  `).run(text, imagePrompt, JSON.stringify(imageUrls), postId);
 
   // 5. 维护默认档的逐角色排期；自定义档由全局计时触发，不消费此时间。
   const nextDelay = getMomentDelay(config.features);
@@ -1069,7 +1149,7 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
     avatar_path: character.avatar_path,
     
     status: 'done',
-    created_at: (opts.postedAt || new Date()).toISOString(),
+    created_at: new Date().toISOString(),
   });
 
   // 异步触发关系网朋友互动（5 秒后启动，不阻塞，完全独立于用户）
@@ -1089,7 +1169,7 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
     avatar_path: character.avatar_path,
     
     status: 'done',
-    created_at: (opts.postedAt || new Date()).toISOString(),
+    created_at: new Date().toISOString(),
   };
 
   } catch (err) {
@@ -1147,6 +1227,9 @@ async function generateSpecialScheduleMoment({ characterId, activity }) {
   const permissionPrompt = worldSetting
     ? getSystemRulesWithWorld()
     : getSystemRules();
+  const worldIntegrationNote = worldSetting
+    ? getWorldIntegrationRule('moments')
+    : null;
 
   const imagePromptRule = getGlobalRule('image_prompt');
   const imagePromptGuide = imagePromptRule?.rule_content || '';
@@ -1175,6 +1258,7 @@ async function generateSpecialScheduleMoment({ characterId, activity }) {
 ${MOMENT_SINGLE_FOCUS_RULE}
 ${appendWorldLanguageStyle(`${MOMENT_TONE_RULES}
 ${MOMENT_IMAGE_RULES}`)}
+${worldSetting ? '- **世界观驱动**：你的朋友圈发生在<world_setting>中，不是在真空或现实世界中。' : ''}
 - text 中的事符合当前时间，不用特意报时。
 
 生图格式（每个 imagePrompt 均适用）：
@@ -1199,10 +1283,9 @@ ${weatherHint}`;
 按约定的 JSON 格式返回。${styleTail}`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
-  if (worldSetting) msgs.push({ role: 'system', content: getWorldIntegrationRule('moments') });
+  if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
   msgs.push({ role: 'system', content: postingTask });
-  const lorePersona = buildCharacterPersona(character, { variant: 'full' });
-  msgs.push({ role: 'system', content: lorePersona });
+  msgs.push({ role: 'system', content: buildCharacterPersona(character, { variant: 'full' }) });
   // 约定对象「我」的外观设定：画面必须带上这个人
   msgs.push({
     role: 'system',
@@ -1222,11 +1305,11 @@ imagePrompt 中${userName}的外观以上述描述为准。`,
   const postId = postResult.lastInsertRowid;
 
   try {
-    const result = await chatWithPreset(msgs, {
+    const result = await chatSync(msgs, {
       temperature: 0.8,
+      max_tokens: 2048,
       response_format: { type: 'json_object' },
       label: '日程赴约朋友圈',
-      lorebook:{personaTexts:[lorePersona],characterName:character.display_name,scenario:doing},
     });
     const parsed = parseMomentResponse(result);
     let text = parsed.text || '出门赴约啦～';

@@ -40,6 +40,8 @@ async function load(){
   const own=controller
   requests.after('timeout',10000,()=>own.abort())
   try{
+    // 立绘互动配置与触摸台词同源（上游 v3.9.0 契约）：后端一次给出 { isSleeping, touchLines }，
+    // 睡眠标记不再由前端硬编码 —— 硬编码会让「她正在休息」永远判不出来。
     const value=await getStandingInteraction(id,{signal:own.signal})
     if(!requests.current(ticket))return
     data.value=value;loadError.value='';retryDelay=1000

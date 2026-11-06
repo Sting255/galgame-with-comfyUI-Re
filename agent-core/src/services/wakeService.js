@@ -11,6 +11,9 @@ import { chatSync } from '../llm/llm-client.js';
 import { prepareNarrativePrompt } from './presets/narrative.js';
 import { buildConversationLorebookContext } from './lorebook/conversationContext.js';
 import { config } from '../config.js';
+// 玩家信息块的**唯一实现**在 characterPersona（私聊/群聊两条主链也用它）。
+// 这里 import 时改名，避免和本文件下面那个同名适配层互相遮蔽（否则会自己调自己、无限递归）。
+import { buildUserInfoBlock as buildPersonaUserInfoBlock } from './characterPersona.js';
 import { splitText } from '../utils/sentenceSplitter.js';
 import {
   loadEmotionState, getCompositeEmotion,
@@ -30,6 +33,42 @@ const WAKE_REPLY_RULES = `【叫醒回应】
 - 即使人设或其他文风要求偏长篇、文学描写，本次仍只给上述短台词，不输出解释、分析或 JSON。`;
 
 /**
+ * 组装 `<user_info>` 块（玩家本人的设定：昵称 / 性别 / 外观 / 自我描述）。
+ *
+ * 2026-10-02 用户反馈「角色对话还是有一些不遵从设定，和玩家的性别与自我描述」：
+ * 两条"非主链"（叫醒 wakeService、延迟回复 replyQueueScheduler）原先只推 nickname / gender / appearance，
+ * **persona（玩家的自我描述）被整条丢掉**；而私聊主链（`routes/chat.js` 的 `<user_info>`）是带「其他说明：」的
+ * ⇒ 同一份用户设定在不同链路口径不一致，用户感知就是"有时听设定、有时不听"。
+ *
+ * ⚠️ 2026-10-02 第二次收口：**本函数现在只是适配层**，正文（字段拼装 + 遵从约束句）住在
+ * `services/characterPersona.js` 的 `buildUserInfoBlock` —— 因为私聊/群聊两条主链也要同一份措辞，
+ * 一个概念两处实现迟早"改一处漏一处"（persona 就是这么被漏掉的）。
+ * 这里只负责两件私聊/群聊链不需要的事：
+ *   1. **包上 `<user_info>…</user_info>` 标签**（叫醒/延迟回复链的历史契约，调用方直接塞 prompt）；
+ *   2. **空值门控**：四个字段全空 ⇒ 返回 `null`，调用方据此不推这一段。
+ *
+ * 三条口径（以后改这里别退回去）：
+ * 1. 四个字段都要进，persona 用「其他说明：」措辞，与私聊主链**逐字一致**；
+ * 2. **门控也要带上 persona** —— 否则"只有 persona、其余为空"时整块会被跳过（用户的自我描述写了等于没写）；
+ * 3. 末尾必须有**遵从约束**：同 prompt 里 `<user_relation>` 明确写着身份优先级最高，而这里原来只是一句事实陈述，
+ *    模型容易不当回事（把玩家写成相反性别、或直接拿角色自己的性别/身份顶替）。
+ *
+ * @param {string} userName 展示给模型看的玩家名
+ * @returns {string|null} 四个字段全空时返回 null（调用方据此决定要不要推这一段）
+ */
+export function buildUserInfoBlock(userName) {
+  const u = config.user || {};
+  // 门控：四个字段里有任意一个"非空字符串"才算填过。
+  // 只认字符串是为了和 characterPersona 那边的口径一致（`appearance: 0` 之类不能被当成"填了"）。
+  const hasAny = ['nickname', 'gender', 'appearance', 'persona']
+    .some((k) => typeof u[k] === 'string' && u[k].trim());
+  if (!hasAny) return null;
+  // worldHint 显式关掉：那两句世界观性别衔接是给私聊/群聊主链的，叫醒与延迟回复链保持原有文本形态。
+  const body = buildPersonaUserInfoBlock(u, { style: 'chat', displayName: userName, worldHint: false });
+  return `<user_info>${body}</user_info>`;
+}
+
+/**
  * 处理叫醒：构建 LLM 上下文 → 生成回复 → 写入 DB → 广播 SSE
  */
 export async function processWakeUp(characterId, mode, attempts = null) {
@@ -47,20 +86,13 @@ export async function processWakeUp(characterId, mode, attempts = null) {
   const { messages: msgs, staticTexts, cacheBoundary } = buildWakeContext(char, conversationId, userName, mode, attempts, dream);
 
   // ── 原子性抢占 reply_queue 中的积压消息 ──
-  // 使用 UPDATE + AND status='waiting' 确保与 replyQueueScheduler 互斥
-  const claimResult = db.prepare(`
+  // RETURNING 只返回本次认领的行，不能接管调度器已持有的 processing 条目。
+  const pendingEntries = db.prepare(`
     UPDATE reply_queue SET status = 'processing'
     WHERE character_id = ? AND status = 'waiting'
-  `).run(characterId);
-
-  const hasBacklog = claimResult.changes > 0;
-
-  // 抢占成功后读取已标记的条目（用于后续删除 + 统计）
-  const pendingEntries = hasBacklog ? db.prepare(`
-    SELECT * FROM reply_queue
-    WHERE character_id = ? AND status = 'processing'
-    ORDER BY created_at ASC
-  `).all(characterId) : [];
+    RETURNING *
+  `).all(characterId);
+  const hasBacklog = pendingEntries.length > 0;
 
   if (!hasBacklog) {
     // 检查是否有 reply_queue 条目（被 replyQueueScheduler 抢先处理了）
@@ -77,6 +109,8 @@ export async function processWakeUp(characterId, mode, attempts = null) {
   // ── 调用 LLM 生成回复 ──
   let fullReply;
   let lorebookTurn;
+  let segments;
+  const msgIds = [];
   try {
     lorebookTurn = await prepareNarrativePrompt(msgs, {
       ...buildConversationLorebookContext(db, {conversationId, character:char, kind:`wake:${mode}`, userName}), maxOutputTokens:512,
@@ -86,43 +120,35 @@ export async function processWakeUp(characterId, mode, attempts = null) {
       temperature: 0.7,
       label: `wake-up:${char.display_name}:${mode}`,
     });
+
+    if (!fullReply || !fullReply.trim()) throw new Error('Empty reply from LLM');
+    segments = splitText(fullReply);
+    // 正文、气泡、世界书使用记录和队列完成一起提交；写库失败不留下半条回复。
+    db.transaction(() => {
+      const rawResult = db.prepare(`
+        INSERT INTO raw_messages (conversation_id, role, content)
+        VALUES (?, 'assistant', ?)
+      `).run(conversationId, fullReply);
+      for (let i = 0; i < segments.length; i++) {
+        const result = db.prepare(`
+          INSERT INTO messages (conversation_id, raw_id, role, content, seq)
+          VALUES (?, ?, 'assistant', ?, ?)
+        `).run(conversationId, rawResult.lastInsertRowid, segments[i], i);
+        msgIds.push(result.lastInsertRowid);
+      }
+      lorebookTurn.commit();
+      const remove = db.prepare("DELETE FROM reply_queue WHERE id = ? AND status = 'processing'");
+      for (const entry of pendingEntries) remove.run(entry.id);
+    })();
   } catch (err) {
-    // LLM 调用失败，恢复 reply_queue 条目状态
+    // 包括空正文和写库失败；只恢复本次认领的条目。
     // 角色已被叫醒，不能再等原 sleep_until —— 改为 3 分钟后由 replyQueueScheduler 接手
     if (hasBacklog && pendingEntries.length > 0) {
       const ids = pendingEntries.map(e => e.id);
       const placeholders = ids.map(() => '?').join(',');
-      db.prepare(`UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+3 minutes') WHERE id IN (${placeholders})`).run(...ids);
+      db.prepare(`UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+3 minutes') WHERE id IN (${placeholders}) AND status = 'processing'`).run(...ids);
     }
     throw err;
-  }
-
-  if (!fullReply || fullReply.trim().length === 0) {
-    throw new Error('Empty reply from LLM');
-  }
-
-  // ── 分句 → 写入 raw_messages + messages ──
-  const segments = splitText(fullReply);
-
-  const rawResult = db.prepare(`
-    INSERT INTO raw_messages (conversation_id, role, content)
-    VALUES (?, 'assistant', ?)
-  `).run(conversationId, fullReply);
-  lorebookTurn.commit();
-
-  const msgIds = [];
-  for (let i = 0; i < segments.length; i++) {
-    const msgResult = db.prepare(`
-      INSERT INTO messages (conversation_id, raw_id, role, content, seq)
-      VALUES (?, ?, 'assistant', ?, ?)
-    `).run(conversationId, rawResult.lastInsertRowid, segments[i], i);
-    msgIds.push(msgResult.lastInsertRowid);
-  }
-
-  if (pendingEntries.length > 0) {
-    const ids = pendingEntries.map(e => e.id);
-    const placeholders = ids.map(() => '?').join(',');
-    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders})`).run(...ids);
   }
 
   // 临时唤醒到期定时器已由 wake 端点在写库后立即注册（不依赖本函数成功）
@@ -220,13 +246,10 @@ function buildWakeContext(char, conversationId, userName, mode, attempts, dream 
   if (userRel?.is_oath) {
     relParts.push(`<oath_bond>你们之间有一个比普通关系更深一层的约定——${userName}曾经郑重地送过你一枚戒指。这代表了独一无二的羁绊和承诺。在对话中，你的行为和情感会自然地带有"你是我最重要的人"的底色——不是因为规则要求，而是因为这层羁绊已经是你内心的一部分。</oath_bond>`);
   }
-  if (config.user.nickname || config.user.gender || config.user.appearance) {
-    const infoParts = [];
-    infoParts.push(`消息中标记为"user"的人是"${userName}"`);
-    if (config.user.gender) infoParts.push(`性别：${config.user.gender}`);
-    if (config.user.appearance) infoParts.push(`外观特征：${config.user.appearance}`);
-    relParts.push(`<user_info>${infoParts.join('。')}</user_info>`);
-  }
+  // 用户信息（昵称/性别/外观/自我描述 + 遵从约束）—— 统一走 buildUserInfoBlock，
+  // 与私聊主链、延迟回复链共用同一口径（见该函数上方注释：persona 曾被整条丢掉）。
+  const userInfoBlock = buildUserInfoBlock(userName);
+  if (userInfoBlock) relParts.push(userInfoBlock);
   if (relParts.length > 0) {
     msgs.push({ role: 'system', content: relParts.join('\n') });
   }

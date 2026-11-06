@@ -31,7 +31,6 @@ export const DEFAULT_SYSTEM_SETTINGS = {
   comfy_event_height: '900',
   // Feature Flags
   feature_emotion: 'true',
-  feature_soul: 'true',
   feature_memory: 'true',
   feature_replyGuesses: 'true',
   feature_forceImageGen: 'false',
@@ -41,8 +40,6 @@ export const DEFAULT_SYSTEM_SETTINGS = {
   feature_proactiveChatFreq: '1',
   feature_events: 'true',
   feature_eventFreq: '1',
-  // 朋友圈发帖频率：1 = 沿用原有 2~8 小时周期；0 = 关闭自动发帖。
-  feature_momentFreq: '1',
   feature_disturbMode: 'false',
   feature_serializeBackgroundLLM: 'false',
   feature_backgroundLLMMaxConcurrency: '3',

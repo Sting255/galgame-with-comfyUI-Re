@@ -1,3 +1,6 @@
+
+import { buildImagePromptRuleBlock } from '../builtinRules.js';
+import { isRefusal } from './refusalDetector.js';
 import { appendWorldLanguageStyle } from './worldLanguageStyle.js';
 /**
  * 朋友圈关系网互动服务
@@ -12,14 +15,12 @@ import { appendWorldLanguageStyle } from './worldLanguageStyle.js';
  */
 
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting } from '../db/index.js';
-import { recallMomentMemories, formatMomentMemories } from './momentMemoryRecall.js';
-import { stripMomentImageRequest } from './momentImageRequest.js';
-import { chatWithPreset } from './presets/narrative.js';
+import { chatSync } from '../llm/llm-client.js';
 import { config } from '../config.js';
 import { broadcast as broadcastToUnified } from './unifiedStreamBus.js';
 import { cropPersonalityForEmotion } from './emotionEngine.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
-import { MOMENT_COMMENT_RULES, buildMomentImagePromptNote, firstMomentImagePrompt } from './momentForms.js';
+import { MOMENT_COMMENT_RULES, buildMomentImagePromptNote } from './momentForms.js';
 
 // Sigmoid 参数（与 moments.js 多人模式一致）
 const MULTI_P_MIN = 0.30;
@@ -88,7 +89,7 @@ function formatThreadContext(threadComments, friendName, posterName, userName) {
 /**
  * 朋友首轮评论（看到帖子后的第一反应）
  */
-export async function generateFriendInitialComment(friend, posterChar, post, relDesc, deps = {}) {
+async function generateFriendInitialComment(friend, posterChar, post, relDesc) {
   const worldSetting = getWorldSetting();
   const permissionPrompt = worldSetting
     ? getSystemRulesWithWorld()
@@ -120,29 +121,29 @@ ${appendWorldLanguageStyle(MOMENT_COMMENT_RULES)}
 - 看你的性格和你们的关系，决定是调侃、关心、吐槽，还是只起个哄`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
+  // Authoritative image rules: the author requires this block in EVERY image path.
+  // This path lets the model write the picture description itself.
+  msgs.push({ role: 'system', content: buildImagePromptRuleBlock() });
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
   msgs.push({ role: 'system', content: friend.other_prompt });
   if (otherContext) msgs.push({ role: 'system', content: otherContext });
   msgs.push({ role: 'system', content: contextTask });
-
-  const memories = await recallMomentMemories([`char-${friend.other_id}`], {
-    postText: stripMomentImageRequest(post.content), imageText: firstMomentImagePrompt(post.prompt),
-  }, deps);
-  if (memories.length) msgs.push({ role: 'system', content: formatMomentMemories(memories, friendName) });
 
   const worldRulePrefix = worldSetting
     ? '请遵循当前<world_setting>来评论朋友圈，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。\n\n'
     : '';
   msgs.push({ role: 'user', content: worldRulePrefix + '去评论区留个言吧：' });
 
-  const result = await (deps.chatSync || chatWithPreset)(msgs, { temperature: 0.7, label: '朋友首评', lorebook:{personaTexts:[friend.other_prompt],characterName:friendName,history:[{role:'user',content:post.content}],scenario:post.content} });
+  const result = await chatSync(msgs, { temperature: 0.7, max_tokens: 128, label: '朋友首评' });
+  // 拒答不能当评论发出（2026-10-22）：返回空串，调用方按「没生成出评论」跳过这条。
+  if (isRefusal(result)) return '';
   return result.trim().replace(/^["']|["']$/g, '').slice(0, 200);
 }
 
 /**
  * 发帖人回复朋友的评论
  */
-export async function generatePosterReplyToFriend(posterChar, friend, post, friendComment, threadContext, deps = {}) {
+async function generatePosterReplyToFriend(posterChar, friend, post, friendComment, threadContext) {
   const worldSetting = getWorldSetting();
   const permissionPrompt = worldSetting
     ? getSystemRulesWithWorld()
@@ -178,31 +179,29 @@ ${appendWorldLanguageStyle(MOMENT_COMMENT_RULES)}
 - 可以参考上下文，但不要重复自己说过的话`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
+  // Authoritative image rules: the author requires this block in EVERY image path.
+  // This path lets the model write the picture description itself.
+  msgs.push({ role: 'system', content: buildImagePromptRuleBlock() });
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
   msgs.push({ role: 'system', content: posterChar.base_prompt });
   if (otherContext) msgs.push({ role: 'system', content: otherContext });
   msgs.push({ role: 'system', content: contextTask });
-
-  const memories = await recallMomentMemories([`char-${posterChar.id}`], {
-    postText: stripMomentImageRequest(post.content), commentText: friendComment,
-    threadText: (threadContext || []).slice(-6).map(c => c.content),
-    imageText: firstMomentImagePrompt(post.prompt),
-  }, deps);
-  if (memories.length) msgs.push({ role: 'system', content: formatMomentMemories(memories, posterName) });
 
   const worldRulePrefix = worldSetting
     ? '请遵循当前<world_setting>来回复朋友圈评论，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。\n\n'
     : '';
   msgs.push({ role: 'user', content: worldRulePrefix + `回复${friendName}的最后一条评论：` });
 
-  const result = await (deps.chatSync || chatWithPreset)(msgs, { temperature: 0.7, label: '发帖人回朋友', lorebook:{personaTexts:[posterChar.base_prompt],characterName:posterName,history:[{role:'user',content:post.content},...(threadContext || []).map(c=>({role:'assistant',content:c.content})),{role:'user',content:friendComment}],scenario:post.content} });
+  const result = await chatSync(msgs, { temperature: 0.7, max_tokens: 128, label: '发帖人回朋友' });
+  // 拒答不能当评论发出（2026-10-22）：返回空串，调用方按「没生成出评论」跳过这条。
+  if (isRefusal(result)) return '';
   return result.trim().replace(/^["']|["']$/g, '').slice(0, 200);
 }
 
 /**
  * 朋友续评（30% 连锁触发后的再次回复）
  */
-export async function generateFriendContinuation(friend, posterChar, post, threadContext, deps = {}) {
+async function generateFriendContinuation(friend, posterChar, post, threadContext) {
   const worldSetting = getWorldSetting();
   const permissionPrompt = worldSetting
     ? getSystemRulesWithWorld()
@@ -240,24 +239,22 @@ ${appendWorldLanguageStyle(MOMENT_COMMENT_RULES)}
 - 可以顺着话题聊下去，也可以自然转移`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
+  // Authoritative image rules: the author requires this block in EVERY image path.
+  // This path lets the model write the picture description itself.
+  msgs.push({ role: 'system', content: buildImagePromptRuleBlock() });
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
   msgs.push({ role: 'system', content: friend.other_prompt });
   if (otherContext) msgs.push({ role: 'system', content: otherContext });
   msgs.push({ role: 'system', content: contextTask });
-
-  const memories = await recallMomentMemories([`char-${friend.other_id}`], {
-    postText: stripMomentImageRequest(post.content), commentText: threadContext.at(-1)?.content,
-    threadText: threadContext.slice(-6, -1).map(c => c.content),
-    imageText: firstMomentImagePrompt(post.prompt),
-  }, deps);
-  if (memories.length) msgs.push({ role: 'system', content: formatMomentMemories(memories, friendName) });
 
   const worldRulePrefix = worldSetting
     ? '请遵循当前<world_setting>来继续朋友圈评论，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。\n\n'
     : '';
   msgs.push({ role: 'user', content: worldRulePrefix + '继续聊天：' });
 
-  const result = await (deps.chatSync || chatWithPreset)(msgs, { temperature: 0.7, label: '朋友续评', lorebook:{personaTexts:[friend.other_prompt],characterName:friendName,history:[{role:'user',content:post.content},...threadContext.map(c=>({role:c.author_type==='character'?'assistant':'user',content:c.content}))],scenario:post.content} });
+  const result = await chatSync(msgs, { temperature: 0.7, max_tokens: 128, label: '朋友续评' });
+  // 拒答不能当评论发出（2026-10-22）：返回空串，调用方按「没生成出评论」跳过这条。
+  if (isRefusal(result)) return '';
   return result.trim().replace(/^["']|["']$/g, '').slice(0, 200);
 }
 
@@ -363,6 +360,11 @@ async function runInteractionThread(post, posterChar, friend) {
   // ── Step 1: 朋友首轮评论 ──
   console.log(`[momentInteraction] ${friendName} → 首轮评论 post ${post.id}`);
   const friendComment = await generateFriendInitialComment(friend, posterChar, post, relDesc);
+  // 首评被拒答/为空 ⇒ 这条互动链没有起点，直接结束（不要写一条空评论或拒答原文）
+  if (!friendComment) {
+    console.log('[momentInteraction] 首轮评论为空（疑似拒答），跳过本次互动');
+    return;
+  }
 
   const ins1 = db.prepare(`
     INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)
@@ -398,6 +400,10 @@ async function runInteractionThread(post, posterChar, friend) {
   // ── Step 2: 发帖人回复（必定） ──
   console.log(`[momentInteraction] ${posterName} → 回复 ${friendName}`);
   const posterReply = await generatePosterReplyToFriend(posterChar, friend, post, friendComment, null);
+  if (!posterReply) {
+    console.log('[momentInteraction] 发帖人回复为空（疑似拒答），结束本次互动');
+    return;
+  }
 
   const ins2 = db.prepare(`
     INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)
@@ -461,6 +467,10 @@ async function runInteractionThread(post, posterChar, friend) {
     // 朋友续评
     console.log(`[momentInteraction] ${friendName} → 续评 round ${round}`);
     const friendCont = await generateFriendContinuation(friend, posterChar, post, threadComments);
+    if (!friendCont) {
+      console.log('[momentInteraction] 朋友续评为空（疑似拒答），终止本轮互动');
+      break;
+    }
 
     const insF = db.prepare(`
       INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)
@@ -500,6 +510,10 @@ async function runInteractionThread(post, posterChar, friend) {
     for (const tc of threadComments2) tc._posterId = posterId;
 
     const posterReply2 = await generatePosterReplyToFriend(posterChar, friend, post, friendCont, threadComments2);
+    if (!posterReply2) {
+      console.log('[momentInteraction] 发帖人二次回复为空（疑似拒答），终止本轮互动');
+      break;
+    }
 
     const insP = db.prepare(`
       INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)

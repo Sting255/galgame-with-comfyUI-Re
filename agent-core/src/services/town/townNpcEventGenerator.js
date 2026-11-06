@@ -1,3 +1,4 @@
+import { withEventProcessing } from '../eventProcessing.js';
 /**
  * 镇民 NPC 奇遇生成器
  *
@@ -10,27 +11,24 @@
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlobalRule } from '../../db/index.js';
 import { chatWithPreset } from '../presets/narrative.js';
 import { generateImageRaw as defaultGenerateImageRaw } from '../imageSkill.js';
-import { recordCompletedImageTask } from '../imageTaskRecorder.js';
+import { recordCompletedImageTask, recordFailedImageTask } from '../imageTaskRecorder.js';
 import { saveBase64Image } from '../imagePaths.js';
 import { config } from '../../config.js';
 import { getTimeTag, getLightNoteWithWeather } from '../timeLight.js';
 import { getWorldIntegrationRule } from '../../builtinRules.js';
 import { extractFirstJson, repairJson } from '../eventGenerator.js';
-import { createTownNarrativeService } from './townNarrativeService.js';
 import {
   broadcastNewEvent,
   broadcastEventUpdate,
   broadcastEventConclusion,
 } from '../eventNotificationBus.js';
+// 亲密看板：镇民奇遇的画面记账。镇民奇遇落在 town_npc_events、不走 concludeEvent，
+// 所以角色奇遇那套收尾记账覆盖不到它（详见 townIntimateRecord.js 的归因规则）
+import { recordIntimateForTownEvent } from './townIntimateRecord.js';
 
 export const TOWN_NPC_EVENT_TYPE_KEY = 'town.custom';
 export const TOWN_NPC_AMBIENT_EVENT_TYPE_KEY = 'town.ambient';
 export const TOWN_NPC_EVENT_DURATION_MIN = 60;
-
-// ambient 场景兼容：仅在玩家手动创建时，
-// 给已落库的场景补一段角色对白。纯表现层——契约不过/预算耗尽/零模型一律不落
-// narrative_json，卡片维持纯描述；叙事永不参与事件结算。
-const townNarrative = createTownNarrativeService({ narrativeConfig: config.town.narrative });
 
 // ── ID 与素材工具 ──
 
@@ -59,17 +57,11 @@ function toISO(dt) {
   return dt.replace(' ', 'T') + '.000Z';
 }
 
-/** narrative_json → 前端对话块（解析失败视同无叙事，不阻塞卡片渲染）。 */
-function narrativeOf(row) {
-  if (!row?.narrative_json) return null;
-  try { return JSON.parse(row.narrative_json); } catch { return null; }
-}
-
 /** 活跃事件行 → 前端 EventCard 可直接消费的 DTO（id 加 town: 前缀避免与角色事件撞号）。 */
 export function townNpcEventDto(row, npcName = null) {
   if (!row) return null;
   const npc = npcName ?? getDb().prepare('SELECT display_name FROM town_npcs WHERE id=?').get(row.npc_id)?.display_name;
-  const dto = {
+  return {
     ...row,
     id: townNpcEventRef(row.id),
     npc_event: true,
@@ -80,16 +72,13 @@ export function townNpcEventDto(row, npcName = null) {
     created_at: toISO(row.created_at),
     expires_at: toISO(row.expires_at),
     last_interaction_at: row.last_interaction_at ? toISO(row.last_interaction_at) : null,
-    narrative: narrativeOf(row),
   };
-  delete dto.narrative_json; // 原始串不透出，前端只读解析后的 narrative
-  return dto;
 }
 
 /** 历史事件行 → 前端 DTO（与 event_history 的 final_image 口径对齐）。 */
 export function townNpcEventHistoryDto(row) {
   if (!row) return null;
-  const dto = {
+  return {
     ...row,
     image: row.final_image,
     id: townNpcEventRef(row.id),
@@ -102,10 +91,7 @@ export function townNpcEventHistoryDto(row) {
     expires_at: toISO(row.ended_at),
     created_at: row.created_at ? toISO(row.created_at) : null,
     last_interaction_at: null,
-    narrative: narrativeOf(row),
   };
-  delete dto.narrative_json;
-  return dto;
 }
 
 function npcPersonaBlock(npc, playerName, playerAppearance) {
@@ -152,15 +138,13 @@ function townPlayerInfo(db) {
  * @param {string} [options.customPrompt] - 事件方向（来自小镇互动的线索）
  * @param {string} [options.locationName] - 起点地点名
  * @param {string} [options.playerName] - 玩家名
- * @param {boolean} [options.manual] - 必须为 true，仅允许玩家手动触发（生图走高优先级）
+ * @param {boolean} [options.manual] - 手动触发（生图走高优先级）
  * @param {Function} [options.beforePersist] - 落库前守卫（事务内）
  * @param {Function} [options.afterPersist] - 落库后回填（事务内，收 eventId）
  * @param {object} [options.llm] - 测试注入 { chatSync }
  * @param {object} [options.image] - 测试注入 { generateImageRaw }
  */
 export async function generateTownNpcEvent(npc, options = {}) {
-  // NPC 奇遇只能由玩家主动发起；在数据库、模型和图片调用之前拒绝后台创建。
-  if (options.manual !== true) throw new Error('NPC_EVENT_REQUIRES_PLAYER_ACTION');
   const db = getDb();
   const now = new Date();
   const chatSync = options.llm?.chatSync || chatWithPreset;
@@ -183,6 +167,9 @@ export async function generateTownNpcEvent(npc, options = {}) {
   const imageRules = getGlobalRule('image_prompt');
   const imageRulesText = imageRules?.rule_content || '';
   const worldIntegrationBlock = worldSetting ? getWorldIntegrationRule('event') : '';
+  const worldPenetrationLine = worldSetting
+    ? '- **严格遵循<world_setting>**：这个奇遇发生在上述<world_setting>中，不是发生在真空或现实世界中。所有感官细节和角色反应必须忠实地在<world_setting>规则下展开。事件方向是一个叙事钩子——它的具体呈现方式必须被<world_setting>重新塑造。\n'
+    : '';
 
   const { playerName, playerAppearance } = options.playerName
     ? { playerName: options.playerName, playerAppearance: '' }
@@ -208,8 +195,8 @@ export async function generateTownNpcEvent(npc, options = {}) {
 
   // [2] JSON 格式（与角色奇遇同构，字段约束按镇民奇遇改写；ambient 开场玩家不在现场）
   const sceneConstraint = isAmbient
-    ? `"description": "场景叙述（80-150字。以角色当下的动作、感受和对话展开，必要时简短交代背景与原因：镇民${displayName}和${companion?.name || '另一位镇民'}必须同时出现在现场，两人的动作与对话共同推进，此时玩家${playerName}还没有加入，不要描写玩家。行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及）"`
-    : `"description": "场景叙述（80-150字。以角色当下的动作、感受和对话展开，必要时简短交代背景与原因：玩家${playerName}和${displayName}必须同时出现在现场，两人的动作与对话共同推进，叙述要能看出两人各自在做什么。行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及）"`;
+    ? `"description": "场景叙述（80-150字。不要像讲故事，而像镜头正在发生：镇民${displayName}和${companion?.name || '另一位镇民'}必须同时出现在现场，两人的动作与对话共同推进，此时玩家${playerName}还没有加入，不要描写玩家。行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及）"`
+    : `"description": "场景叙述（80-150字。不要像讲故事，而像镜头正在发生：玩家${playerName}和${displayName}必须同时出现在现场，两人的动作与对话共同推进，叙述要能看出两人各自在做什么。行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及）"`;
   const choiceConstraint = isAmbient
     ? `"choiceA": "选项A（具体行动，8-15字。是玩家${playerName}注意到这场面后可以立刻介入做的事——玩家在附近，随时能走近）",
   "choiceB": "选项B（玩家介入的另一种方式，与A在动机、策略或代价上有实际差异，能从当下处境自然推出并符合小镇日常。8-15字）"`
@@ -218,10 +205,17 @@ export async function generateTownNpcEvent(npc, options = {}) {
 
   const formatPrompt = `请严格按照以下 JSON 格式输出，不要任何解释或额外文字：
 
+【prompt 字段的写作规范】
+${imagePromptInstruction}${weatherHint}${twoPersonNote}
+
+⚠️ 上面这段是**规范**，不是内容：照它的要求**自己写一段画面描述**填进 prompt 字段，
+**绝对不要把它原文抄进 JSON**，也不要出现「Describe the image」「Follow this progression」
+「Scene Setting」「Environment & Props」「Hard Rules」这类规范字样。
+
 {
   "title": "事件标题（≤8字，口语感叹。从你刚写完的现场里抓最戳人的那个瞬间，用当事人的第一反应喊出来——不要给事件'取名'。正确：这缸布全废了？！|你的手在抖啊。错误：裁缝铺的麻烦|意外的委托——这些是在概括事件。禁止万能感叹'天哪''不是吧'——必须带上这个奇遇的具体信息点）",
   ${sceneConstraint},
-  "prompt": "${imagePromptInstruction}${weatherHint}${twoPersonNote}",
+  "prompt": "（这里填**你写好的那一整段英文画面描述**：按上面的规范，写清场景环境、两位当事人在做什么、道具与光线氛围；整段连贯英文，严禁中文，严禁照抄上面的规范原文）",
   ${choiceConstraint}
 }
 
@@ -251,7 +245,7 @@ export async function generateTownNpcEvent(npc, options = {}) {
 - 叙述贴着现场中两人的感知与动作，不跳出场景解释世界
 
 【正文——写现场，不写剧情总结】
-镜头直接落在一个正在发生的动作上。背景、关系和原因可以随动作呈现，也可以用简短叙述交代，以读者能理解人物动机和事情经过为准。
+镜头直接落在一个正在发生的动作上。背景、关系、原因，都随着动作自然露出来，而不是提前说明。
 
 【结尾——停在行动门槛】
 结尾停在一个具体动作即将发生之前，下一步由玩家决定。
@@ -266,10 +260,13 @@ ${timeTag}${locationLine}
     { role: 'system', content: formatPrompt },
     { role: 'system', content: `${openingRoleLine}
 
+${worldPenetrationLine}
 【镇民锚定】${displayName}的行为必须贴合上面资料里的人格与小镇岗位职责；不要声称ta搬入了小镇、改变了工作岗位，或做出与身份相悖的事。
 【天气约束】description中行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及` },
     { role: 'system', content: personaMsg },
-    { role: 'user', content: directorPrompt },
+    { role: 'user', content: worldSetting
+      ? `请遵循当前<world_setting>来生成奇遇，镇民资料如果和<world_setting>有冲突，则以<world_setting>最高优先级。\n\n${directorPrompt}`
+      : directorPrompt },
   ];
 
   let eventData;
@@ -328,9 +325,29 @@ ${timeTag}${locationLine}
       console.log(`[townNpcEventGen] Image generated for ${npc.display_name}: ${imageUrl}`);
     } else {
       console.warn(`[townNpcEventGen] Image generation returned no images for ${npc.display_name}`);
+      // 2026-10-01：失败落库（原来只 warn，库里零痕迹）
+      recordFailedImageTask({
+        conversationId: `town_npc_${npc.id}_events`,
+        promptOriginal: originalEventPrompt,
+        promptRefined: eventData.prompt,
+        errorMessage: genResult.error || 'ComfyUI 未返回图片',
+        style: config.comfyui.eventArtist,
+        resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
+        workflowTemplate: genResult.wfMode || null,
+        db,
+      });
     }
   } catch (err) {
     console.error(`[townNpcEventGen] Image generation failed for ${npc.display_name}:`, err.message);
+    recordFailedImageTask({
+      conversationId: `town_npc_${npc.id}_events`,
+      promptOriginal: originalEventPrompt,
+      promptRefined: eventData.prompt,
+      errorMessage: err.message,
+      style: config.comfyui.eventArtist,
+      resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
+      db,
+    });
     // 无图片也继续
   }
 
@@ -377,37 +394,29 @@ ${timeTag}${locationLine}
     return id;
   }).immediate();
 
-  // 保留手动 ambient 场景的对白补充能力，预算与契约由 narrate 处理。
-  // 常规玩家邀请（town.custom）不追加叙事；此处不会创建新的奇遇。
-  if (isAmbient && config.features.townLLM && config.features.townAutoLLM) {
-    try {
-      const { source, narrative } = await townNarrative.narrate({
-        sourceEventId: townNpcEventRef(eventId),
-        factsVersion: 1,
-        facts: {
-          text: `事件「${eventData.title}」：${eventData.description}`,
-          fallbackSummary: eventData.description.slice(0, 80),
-          fallbackLine: `${npc.display_name}正忙着手头的事。`,
-        },
-        allowedSpeakers: [
-          { actorId: `npc:${npc.id}`, displayName: npc.display_name },
-          ...(companion ? [{ actorId: `companion:${npc.id}`, displayName: companion.name }] : []),
-        ],
-        choices: [], // 对白增强口径：不重标选项，玩家按钮仍用 choice_a/b
-        worldId: options.worldId ?? 'town',
-        nowUtcMs: now.getTime(),
-        mode: 'auto',
-        chatSync,
+  const event = db.prepare(`SELECT * FROM town_npc_events WHERE id = ?`).get(eventId);
+
+  // 亲密看板：镇民奇遇记账（零 LLM 的确定性 tag 归类）。
+  // 只有"已关联酒馆角色"的镇民才有 characters 行可归属，纯 NPC 直接跳过；
+  // 环境奇遇（两位镇民同框）记 partnerKind='npc'，常规奇遇（镇民+玩家）记 'user'。
+  // 失败只告警——看板统计绝不能影响奇遇创建主流程；幂等靠显式 sourceUid（见 townIntimateRecord.js）。
+  try {
+    const linkedCharId = Number.parseInt(npc.character_id, 10) || 0;
+    if (linkedCharId > 0 && eventData.prompt) {
+      const recorded = recordIntimateForTownEvent({
+        characterId: linkedCharId,
+        eventId,
+        prompt: eventData.prompt,
+        partnerKind: isAmbient ? 'npc' : 'user',
       });
-      if (source === 'model') {
-        db.prepare('UPDATE town_npc_events SET narrative_json = ? WHERE id = ?').run(JSON.stringify(narrative), eventId);
+      if (recorded.inserted > 0) {
+        console.log(`[townNpcEventGen] intimate recorded for town event ${eventId}: +${recorded.inserted}`);
       }
-    } catch (err) {
-      console.warn('[townNpcEventGen] narrative enhancement skipped:', err?.message || err);
     }
+  } catch (err) {
+    console.warn('[intimate] town event record failed:', err.message);
   }
 
-  const event = db.prepare(`SELECT * FROM town_npc_events WHERE id = ?`).get(eventId);
   broadcastNewEvent(townNpcEventDto(event));
 
   console.log(`[townNpcEventGen] Event created for ${npc.display_name}: "${event.title}" (expires=${expiresAt})`);
@@ -425,7 +434,6 @@ export async function generateTownNpcNextBranch(npc, event, choice, deps = {}) {
   const chatSync = deps.llm?.chatSync || chatWithPreset;
   const generateImageRaw = deps.image?.generateImageRaw || defaultGenerateImageRaw;
   const branchTimeExtensionMinutes = 5;
-  const branchTimeExtensionWindowMs = 15 * 60 * 1000;
 
   // 0. 原子性标记处理中（CAS：仅 processing=0 时置 1），防止并发重复提交
   const casResult = db.prepare(
@@ -444,12 +452,10 @@ export async function generateTownNpcNextBranch(npc, event, choice, deps = {}) {
       return null;
     }
 
-    // 有效选择仅在剩余 15 分钟以内续时，仍在生成前生效。
-    if (expiresAt.getTime() - now.getTime() <= branchTimeExtensionWindowMs) {
-      db.prepare(`UPDATE town_npc_events SET expires_at = datetime(expires_at, '+' || ? || ' minutes') WHERE id = ?`)
-        .run(branchTimeExtensionMinutes, event.id);
-      event.expires_at = db.prepare(`SELECT expires_at FROM town_npc_events WHERE id = ?`).get(event.id).expires_at;
-    }
+    // 用户已成功提交一个有效分支选择，立即延长倒计时，避免分支生成期间事件到期。
+    db.prepare(`UPDATE town_npc_events SET expires_at = datetime(expires_at, '+' || ? || ' minutes') WHERE id = ?`)
+      .run(branchTimeExtensionMinutes, event.id);
+    event.expires_at = db.prepare(`SELECT expires_at FROM town_npc_events WHERE id = ?`).get(event.id).expires_at;
 
     // 2. 构建 choice_history 文本
     const choiceHistory = JSON.parse(event.choice_history || '[]');
@@ -465,6 +471,9 @@ export async function generateTownNpcNextBranch(npc, event, choice, deps = {}) {
     const imageRules = getGlobalRule('image_prompt');
     const imageRulesText = imageRules?.rule_content || '';
     const worldIntegrationBlock = worldSetting ? getWorldIntegrationRule('event') : '';
+    const worldPenetrationLine = worldSetting
+      ? '- **严格遵循<world_setting>**：这个奇遇发生在上述<world_setting>中，不是发生在真空或现实世界中。所有感官细节和角色反应必须忠实地在<world_setting>规则下展开。事件方向只是一个叙事钩子——它的具体呈现方式必须被<world_setting>重新塑造。\n'
+      : '';
     const { playerName, playerAppearance } = townPlayerInfo(db);
     const displayName = npc.display_name;
 
@@ -476,6 +485,13 @@ export async function generateTownNpcNextBranch(npc, event, choice, deps = {}) {
 
     const formatPrompt = `请严格按照以下 JSON 格式输出，不要任何解释或额外文字：
 
+【prompt 字段的写作规范】
+${branchImagePromptInstruction}${weatherHint}${twoPersonNote}
+
+⚠️ 上面这段是**规范**，不是内容：照它的要求**自己写一段画面描述**填进 prompt 字段，
+**绝对不要把它原文抄进 JSON**，也不要出现「Describe the image」「Follow this progression」
+「Scene Setting」「Environment & Props」「Hard Rules」这类规范字样。
+
 {
   "description": "选择后的场景叙述，兑现上一个选择，写清实际结果和两人的反应，玩家${playerName}和${displayName}必须同时出现在现场。让事情有所进展，不必每幕制造转折（80-150字）。采用紧密第三人称，贴着现场中两人的感知与动作，必要时简短交代背景、原因和感受。写清上一个选择的结果，再停在下一步可采取行动的位置，不替玩家决定下一步。行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及。",
   "prompt": "${branchImagePromptInstruction}${twoPersonNote}",
@@ -485,7 +501,6 @@ export async function generateTownNpcNextBranch(npc, event, choice, deps = {}) {
 
     const directorPrompt = `事件标题：${event.title}
 ${historyText}
-${weatherHint}
 
 **核心要求——选择带来实际进展**：先兑现所选行动，写清实际结果和两人的反应。顺利完成一件事、态度变化、具体发现或一段有分寸的对话都可以推进事件，不必每幕制造意外。自然出现的转折须有已有情节与人物动机的依据，符合世界规则，不能取消或改写玩家已经选择的行动。
 
@@ -510,16 +525,20 @@ ${weatherHint}
 - 已解决的问题和已获得的成果继续有效，不为制造意外把剧情重置到原来的困境。
 - 同一小目标若已拖延多幕，本幕给它明确结果，再提供有实际差异的后续选择，不必引入新冲突；用户明确要求重复尝试时照做并写出不同反馈。
 
+
 ${event.event_type_key === TOWN_NPC_AMBIENT_EVENT_TYPE_KEY && event.current_branch === 0
     ? `\n这是由镇民自发场景升级成的奇遇：开场时玩家${playerName}还在画面之外，现在${playerName}刚按选项介入现场——本幕要自然描写${playerName}走进这一幕的衔接，之后的画面里${playerName}与${displayName}同框。`
     : ''}
 
+${worldPenetrationLine}
 【天气约束】description中行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及` },
       // 与角色奇遇分支同款：人格卡作为稳定 system 段在每一幕都注入
       { role: 'system', content: `以下是小镇镇民「${displayName}」的资料，供你参考ta的外貌、身份和行为模式：
 
 ${npcPersonaBlock(npc, playerName, playerAppearance)}` },
-      { role: 'user', content: directorPrompt + prevSceneBlock },
+      { role: 'user', content: worldSetting
+        ? `请遵循当前<world_setting>来推进奇遇，镇民资料如果和<world_setting>有冲突，则以<world_setting>最高优先级。\n\n${directorPrompt}${prevSceneBlock}`
+        : directorPrompt + prevSceneBlock },
     ];
 
     let branchData = null;
@@ -627,6 +646,9 @@ ${npcPersonaBlock(npc, playerName, playerAppearance)}` },
  */
 export function expireTownNpcEvent(npc, event, outcome = 'expired') {
   const db = getDb();
+  // 调度器取列表后可能等待了其它结局，重新确认该事件尚未被分支请求占用。
+  event = db.prepare('SELECT * FROM town_npc_events WHERE id = ? AND processing = 0').get(event.id);
+  if (!event) return null;
   const { playerName } = townPlayerInfo(db);
   const displayName = npc.display_name;
   const conclusionData = {
@@ -646,8 +668,8 @@ function archiveNpcEvent(npc, event, outcome, conclusionData) {
   db.transaction(() => {
     db.prepare(`
     INSERT INTO town_npc_event_history (id, npc_id, event_type_key, title, description, final_image, summary, conclusion,
-      choice_history, total_branches, engaged, outcome, world_id, world_epoch, location_key, created_at, narrative_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      choice_history, total_branches, engaged, outcome, world_id, world_epoch, location_key, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
       event.id,
       npc.id, event.event_type_key,
@@ -658,7 +680,6 @@ function archiveNpcEvent(npc, event, outcome, conclusionData) {
       event.engaged, outcome,
       event.world_id, event.world_epoch, event.location_key,
       event.created_at,
-      event.narrative_json ?? null,
     );
     db.prepare(`DELETE FROM town_npc_events WHERE id = ?`).run(event.id);
   }).immediate();
@@ -683,6 +704,11 @@ function archiveNpcEvent(npc, event, outcome, conclusionData) {
  * 生成结局并移入历史表（镇民无记忆系统，不写记忆）
  */
 export async function concludeTownNpcEvent(npc, event, outcome, deps = {}) {
+  return withEventProcessing('town_npc_events', event.id,
+    current => concludeLockedNpcEvent(npc, current, outcome, deps));
+}
+
+async function concludeLockedNpcEvent(npc, event, outcome, deps) {
   const db = getDb();
   const chatSync = deps.llm?.chatSync || chatWithPreset;
   console.log(`[townNpcEventGen] Concluding event "${event.title}" for ${npc.display_name} (engaged=${event.engaged}, outcome=${outcome})`);
@@ -690,6 +716,9 @@ export async function concludeTownNpcEvent(npc, event, outcome, deps = {}) {
   const worldSetting = getWorldSetting();
   const permissionPrompt = worldSetting ? getSystemRulesWithWorld() : getSystemRules();
   const worldIntegrationNote = worldSetting ? getWorldIntegrationRule('eventConclusion') : null;
+  const worldConsistencyLine = worldSetting
+    ? '- **<world_setting>一致性**：结局和摘要必须反映<world_setting>的基本规则。\n'
+    : '';
   const { playerName, playerAppearance } = townPlayerInfo(db);
   const displayName = npc.display_name;
 
@@ -703,11 +732,11 @@ export async function concludeTownNpcEvent(npc, event, outcome, deps = {}) {
 ${historyText}
 当前场景：${event.description}
 
-为读者自然收束这段经历，交代结果和人物感受。要求：
-- 【叙事视角·最高优先级】全程第三人称叙事：镇民主语用「${displayName}」或「她/他」，玩家主语用「${playerName}」，叙事部分严禁出现「我」「我的」「我们」等第一人称称谓（唯一例外是台词引号内）
-- 写清本次事件如何收束及其对人物的影响，适当承接关键经过，避免逐幕重复
-- 人物的感受、对话和细节按情节需要自然呈现，保持镇民口吻，不规定篇幅比例或强加吐槽
-- 根据情节自然结束，可以用叙述、台词或动作交代落点；不必另造悬念或转折
+这是写给读者看的小说结尾，不是事件总结。要求：
+${worldConsistencyLine}- 【叙事视角·最高优先级】全程第三人称叙事：镇民主语用「${displayName}」或「她/他」，玩家主语用「${playerName}」，叙事部分严禁出现「我」「我的」「我们」等第一人称称谓（唯一例外是台词引号内）
+- 只聚焦 1~2 个最有戏的瞬间展开，其余经过一笔带过或不写；严禁按时间顺序复述全程的流水账写法
+- 至少三分之一篇幅是"人味"：镇民的内心吐槽、和环境的一点小摩擦、或一个出乎意料的小细节
+- 结尾用一句台词或一个小动作收束，留点余韵；禁止"就这样结束了"式的总结句
 - 结局叙述 100~180 字，将直接展示在页面上，作为事件的正式收尾
 - 摘要 100~180 字，第三人称客观记录整个事件的起因、经过、转折和结果（保持客观简洁即可，无需文学性）
 
@@ -718,7 +747,9 @@ ${historyText}
     { role: 'system', content: permissionPrompt },
     ...(worldIntegrationNote ? [{ role: 'system', content: worldIntegrationNote }] : []),
     { role: 'system', content: `以下是小镇镇民「${displayName}」的资料，供你参考ta的外貌、身份和行为模式：\n\n${npcPersonaBlock(npc, playerName, playerAppearance)}` },
-    { role: 'user', content: taskPrompt },
+    { role: 'user', content: worldSetting
+      ? `请遵循当前<world_setting>来收束奇遇。\n\n${taskPrompt}`
+      : taskPrompt },
   ];
 
   let conclusionData;

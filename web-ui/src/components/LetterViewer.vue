@@ -28,7 +28,7 @@
           ><img :src="letter.portrait_path" alt="" draggable="false" /></div>
 
           <div class="paper-text-area text-area-compact">
-            <div ref="textRef" class="paper-text handwritten text-compact" :style="handwritingFontStyle" @wheel.passive="onTextScroll">{{ displayText }}</div>
+            <div ref="textRef" class="paper-text handwritten text-compact" :class="{ 'on-dark-paper': paperIsDark }" :style="handwritingFontStyle" @wheel.passive="onTextScroll">{{ displayText }}</div>
           </div>
 
           <div v-if="letter.illustration_path" ref="illustrationRef" class="paper-illustration illustration-compact"
@@ -52,7 +52,7 @@
         ><img :src="letter.portrait_path" alt="" draggable="false" /></div>
 
         <div class="paper-text-area">
-          <div ref="textRef" class="paper-text handwritten" :style="handwritingFontStyle" @wheel.passive="onTextScroll">{{ displayText }}</div>
+          <div ref="textRef" class="paper-text handwritten" :class="{ 'on-dark-paper': paperIsDark }" :style="handwritingFontStyle" @wheel.passive="onTextScroll">{{ displayText }}</div>
         </div>
 
         <div v-if="showScrollHint" class="scroll-hint" @click="scrollTextDown">
@@ -130,6 +130,52 @@ const paperBgStyle = computed(() => {
   }
   return {}
 })
+
+/**
+ * 信纸是 AI 按提示词现生成的 1200×900 图，底色不可控 —— 遇到深色纸（星空、夜景、
+ * 浓色调）时，原来固定的深棕文字（#3a2a1a）与背景对比度不到 2:1，正文基本看不见
+ * （2026-10-30 用户实报，附截图）。这里量一下纸的亮度，深色纸改用浅色字 + 描边阴影。
+ *
+ * 判定用感知亮度加权（人眼对绿最敏感），而不是简单平均 RGB —— 紫色/蓝色纸常常
+ * 平均亮度看着不低、实际读起来很暗。
+ */
+const paperIsDark = ref(false)
+
+function measurePaperLuma(url) {
+  return new Promise(resolve => {
+    if (!url) return resolve(false)
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      try {
+        const size = 32
+        const canvas = document.createElement('canvas')
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(img, 0, 0, size, size)
+        const { data } = ctx.getImageData(0, 0, size, size)
+        let sum = 0
+        let n = 0
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] < 128) continue // 透明像素不参与
+          sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+          n++
+        }
+        resolve(n > 0 && sum / n < 120) // 0~255，低于 120 视为深色纸
+      } catch {
+        resolve(false) // canvas 取不到像素（不应发生，图是同源的），退回旧表现
+      }
+    }
+    img.onerror = () => resolve(false)
+    img.src = url
+  })
+}
+
+watch(() => props.letter?.paper_path, async path => {
+  paperIsDark.value = false
+  paperIsDark.value = await measurePaperLuma(path)
+}, { immediate: true })
 
 function computeTranslate(source, target) {
   const dx = source.left - target.left + (source.width - target.width) / 2
@@ -481,6 +527,15 @@ onUnmounted(() => {
   scrollbar-width: none; -ms-overflow-style: none;
 }
 .paper-text::-webkit-scrollbar { display: none; }
+
+/* 深色信纸（AI 生成的底色不可控）：改浅色字 + 双层阴影，保证在星空/夜景这类纸上可读。
+   阴影分两层——近距离深影压住背景细节，远距离柔光把字形从底色里「托」出来。 */
+.paper-text.on-dark-paper {
+  color: #f8f4ec;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.85),
+    0 2px 10px rgba(0, 0, 0, 0.55);
+}
 
 /* Illustration - right */
 .paper-illustration {

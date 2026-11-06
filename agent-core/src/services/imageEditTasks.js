@@ -46,13 +46,16 @@ function serializeTask(task) {
     progress: task.progress,
     error: task.error || null,
     createdAt: task.createdAt,
+    // 2026-10-13 上游 v3.9.0 合并：被动型后台任务（日记生成）要把 meta / result 透给前端，
+    // 右下角生成提示靠 task.meta.characterId / characterName / date 才能定位到角色与日期。
     meta: task.meta || null,
     result: task.result || null,
   };
 }
 
 function cleanupStageFiles(stageBase) {
-  if (!stageBase) return;   // 被动型后台任务（无暂存文件）直接跳过
+  // 被动型后台任务没有暂存文件（stageBase 为 null），直接跳过
+  if (!stageBase) return;
   const dir = getPendingDir();
   if (!fs.existsSync(dir)) return;
   const prefix = path.basename(stageBase) + '.';
@@ -61,6 +64,52 @@ function cleanupStageFiles(stageBase) {
       try { fs.unlinkSync(path.join(dir, name)); } catch {}
     }
   }
+}
+
+/**
+ * 提交一个「被动型」后台任务：只有开始 / 进度 / 成功 / 失败，没有暂存图与「确认覆盖」这一步。
+ * 日记生成这类不需要用户挑图的后台任务用它——走同一套 image_edit_task_* 事件与 listEditTasks()，
+ * 右下角的生成提示（ImageEditTaskFloater）自动复用，无需新增事件类型与白名单。
+ *
+ * 【上游合并口径】本函数从上游 v3.9.0 合并进来（本地原本没有），供 services/diaryGenerator.js 使用。
+ * 只增不改：startEditTask 及其余导出保持原样。
+ *
+ * @param {object} spec
+ * @param {string} spec.action - 任务标识（前端按它决定文案与操作，如 'diary'）
+ * @param {object} [spec.meta] - 透传给前端的上下文（角色 id / 日期等，保持轻量）
+ * @returns {{ id: string, onProgress: Function, succeed: Function, fail: Function }}
+ */
+export function startBackgroundTask({ action, meta }) {
+  const id = randomUUID();
+  const token = randomBytes(12).toString('hex');
+  const task = {
+    id, action, url: '', targetPath: null, finalize: null, restart: null, meta, token, stageBase: null,
+    status: 'running', progress: null, previewUrl: null, error: null, createdAt: Date.now(),
+  };
+  tasks.set(id, task);
+  broadcast('image_edit_task_start', serializeTask(task));
+
+  return {
+    id,
+    onProgress(p) {
+      if (task.status !== 'running') return;
+      task.progress = normalizeProgress(p);
+      broadcast('image_edit_task_progress', serializeTask(task));
+    },
+    succeed(result = {}) {
+      if (task.status !== 'running') return;
+      task.status = 'ready';
+      task.progress = null;
+      task.result = result || null;
+      broadcast('image_edit_task_done', serializeTask(task));
+    },
+    fail(err) {
+      if (task.status !== 'running') return;
+      task.status = 'failed';
+      task.error = err?.message || String(err || '任务失败');
+      broadcast('image_edit_task_error', serializeTask(task));
+    },
+  };
 }
 
 /**
@@ -121,49 +170,6 @@ export function listEditTasks() {
   return [...tasks.values()]
     .filter(t => t.status === 'running' || t.status === 'pending_confirm' || t.status === 'ready' || t.status === 'failed')
     .map(serializeTask);
-}
-
-/**
- * 提交一个「被动型」后台任务：只有开始 / 进度 / 成功 / 失败，没有暂存图与「确认覆盖」这一步。
- * 日记生成这类不需要用户挑图的后台任务用它——走同一套 image_edit_task_* 事件与 listEditTasks()，
- * 右下角的生成提示（ImageEditTaskFloater）自动复用，无需新增事件类型与白名单。
- *
- * @param {object} spec
- * @param {string} spec.action - 任务标识（前端按它决定文案与操作，如 'diary'）
- * @param {object} [spec.meta] - 透传给前端的上下文（角色 id / 日期等，保持轻量）
- * @returns {{ id: string, onProgress: Function, succeed: Function, fail: Function }}
- */
-export function startBackgroundTask({ action, meta }) {
-  const id = randomUUID();
-  const token = randomBytes(12).toString('hex');
-  const task = {
-    id, action, url: '', targetPath: null, finalize: null, restart: null, meta, token, stageBase: null,
-    status: 'running', progress: null, previewUrl: null, error: null, createdAt: Date.now(),
-  };
-  tasks.set(id, task);
-  broadcast('image_edit_task_start', serializeTask(task));
-
-  return {
-    id,
-    onProgress(p) {
-      if (task.status !== 'running') return;
-      task.progress = normalizeProgress(p);
-      broadcast('image_edit_task_progress', serializeTask(task));
-    },
-    succeed(result = {}) {
-      if (task.status !== 'running') return;
-      task.status = 'ready';
-      task.progress = null;
-      task.result = result || null;
-      broadcast('image_edit_task_done', serializeTask(task));
-    },
-    fail(err) {
-      if (task.status !== 'running') return;
-      task.status = 'failed';
-      task.error = err?.message || String(err || '任务失败');
-      broadcast('image_edit_task_error', serializeTask(task));
-    },
-  };
 }
 
 export function getEditTask(id) {
@@ -239,7 +245,7 @@ export function pruneEditTasks(maxAgeMs = STALE_MS) {
   const referenced = new Set();
   for (const task of tasks.values()) {
     if (task.pendingPath) referenced.add(path.basename(task.pendingPath));
-    else if (task.stageBase) referenced.add(path.basename(task.stageBase) + '.');
+    else referenced.add(path.basename(task.stageBase) + '.');
   }
 
   for (const name of fs.readdirSync(dir)) {

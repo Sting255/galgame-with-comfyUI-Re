@@ -198,7 +198,7 @@ defineExpose({ open, close })
   padding: 4px 12px 4px 10px;
   border-radius: 999px;
   background: rgba(var(--accent-rgb), 0.12);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -265,7 +265,7 @@ defineExpose({ open, close })
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.03em;
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -348,7 +348,7 @@ defineExpose({ open, close })
   padding: 1px 5px;
   border-radius: 5px;
   background: rgba(var(--accent-rgb), 0.1);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-size: 12px;
 }
 
@@ -397,7 +397,7 @@ defineExpose({ open, close })
 .cl-link-ico {
   display: inline-flex;
   flex-shrink: 0;
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 .cl-link-ico svg {
   width: 14px;
@@ -424,7 +424,7 @@ defineExpose({ open, close })
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-variant-numeric: tabular-nums;
 }
 

@@ -174,7 +174,7 @@ const replyAvatarStyle = computed(() => (
 
 .comment-char-name {
   font-size: 12px; font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);   /* 名字是可读正文，不用装饰色 */
 }
 .comment-user-name {
   font-size: 12px; font-weight: 600;

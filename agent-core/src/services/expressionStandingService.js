@@ -3,6 +3,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import sharp from 'sharp';
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting } from '../db/index.js';
+import { getWorldIntegrationRule } from '../builtinRules.js';
 import { config } from '../config.js';
 import { chatSync } from './lorebook/runtime.js';
 import { buildStandingPersona, normalizeStandingOutfitScene, hasStandingOutfit, inspectStandingOutfits, validateMissingOutfitPolicy, completeStandingOutfit } from './expressionStandingAppearance.js';
@@ -15,9 +16,12 @@ import { getImageDir, buildImageUrl, deleteImageFileByUrl } from './imagePaths.j
 import { postProcessAsset } from './town/assetPostProcess.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { getStandingDisplay } from './standingDisplay.js';
-import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
+// 上游 v3.9.0 合并：立绘互动 —— 空手触摸台词（整套立绘附带生成 + 单独重生成）
 import { buildTouchLineMessages, readTouchLines, startTouchLines, hasTouchLines } from './standingTouchLines.js';
-import { getWorldIntegrationRule } from '../builtinRules.js';
+import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
+// 世界观签名（与主立绘同一套口径，见 services/worldSignature.js）：槽位生成时记下"哪个世界观"
+import { currentWorldSignature, isStandingStale } from './worldSignature.js';
+// 上游 v4.0.0 合并：台词语音 —— 立绘触摸台词的朗读状态随立绘列表一起下发
 import { readStandingTouchLines } from './standingTouchSpeechRuntime.js';
 
 const CATEGORY = 'expression_standing';
@@ -52,10 +56,16 @@ export function listExpressionStandings(id) {
   character(id);
   const rows = getDb().prepare('SELECT * FROM character_expression_standings WHERE character_id=?').all(id);
   return {
+    // 【上游 v3.9.0 合并：立绘互动】台词状态随立绘列表一起下发，立绘管理页的状态行不用再单独请求。
+    // 【上游 v4.0.0 合并：台词语音】改走 speech 运行时读取，顺带带上每条台词的音频状态
     touchLines: readStandingTouchLines(getDb(), id),
     slots: standingSlots().map(s => {
       const row = rows.find(r => r.slot_id === s.id);
-      return { ...s, ...row, generation: JSON.parse(row?.config_json || '{}'), bounds: JSON.parse(row?.bounds_json || 'null') };
+      const slot = { ...s, ...row, generation: JSON.parse(row?.config_json || '{}'), bounds: JSON.parse(row?.bounds_json || 'null') };
+      // 世界观一致性（2026-10-01，与主立绘同一口径）：这一槽是否还吻合"当前世界观"。
+      // 逐槽判定：换世界观后只需重出缺的那些，不必整批 16 张（与 §一-3 的槽位级只补缺口径一致）。
+      const info = isStandingStale({ standing_url: slot.image_url, standing_world_sig: slot.world_sig });
+      return { ...slot, world_stale: info.stale, world_stale_reason: info.reason };
     }),
     jobs: getDb().prepare('SELECT * FROM expression_standing_jobs WHERE character_id=? ORDER BY created_at DESC,rowid DESC LIMIT 10').all(id).map(job => ({ ...job, resumable: job.status === 'failed' && job.error === '服务重启导致生成中断，请重试' })),
     busy: busyCharacters.has(Number(id)),
@@ -65,7 +75,11 @@ export function listExpressionStandings(id) {
 function snapshotConfig(char) {
   return structuredClone({ ...captureImageGenerationConfig('portrait'), artist: charArtistOverride(char) ?? config.comfyui.momentsArtist, loras: parseCharacterLoras(char), ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}), width: 768, height: 1536 });
 }
-/** One snapshot for the tavern manager, including characters with no saved slots. */
+/**
+ * One snapshot for the tavern manager, including characters with no saved slots.
+ * 【2026-10-14 补漏合并】上游 v3.9.0 有此函数，本地合并时整段漏掉，导致
+ * `test/standingManager.test.js` 四条用例 import 失败。按上游逐字补回，未改任何口径。
+ */
 export function listStandingOverview() {
   const db = getDb();
   const slots = standingSlots();
@@ -100,6 +114,11 @@ export function previewCharacterStandingBatch(id, { outfitScene = 'work', reuseP
   return inspectStandingOutfits(reusePrompts || busyCharacters.has(Number(id)) ? [] : [char], outfitScene);
 }
 
+/**
+ * 全角色批量立绘：mode='all' 整批重出，mode='missing' 只补缺槽。
+ * 【2026-10-14 补漏合并】同上游 v3.9.0，本地漏掉。
+ * 【2026-10-18 v3.9.1 合并】并入上游的 outfitScene / missingOutfitPolicy 预检与裁决。
+ */
 export function startAllStandingBatches({ mode, requirement = '', outfitScene = 'work', missingOutfitPolicy } = {}, dependencies) {
   const preview = previewStandingBatches({ mode, outfitScene });
   validateMissingOutfitPolicy(missingOutfitPolicy);
@@ -119,14 +138,17 @@ export function startAllStandingBatches({ mode, requirement = '', outfitScene = 
   }
   return result;
 }
-
-export async function generateStandingPrompts(char, slots, requirement, persona, outfitScene = 'work') {
+export async function generateStandingPrompts(
+  char, slots, requirement,
+  persona = buildCharacterPersona(char, { variant: 'short', person: char.display_name }),
+  outfitScene = 'work',
+) {
   const messages = buildStandingPromptMessages({
     systemRules: getWorldSetting() ? getSystemRulesWithWorld({ roleplay: false }) : getSystemRules({ roleplay: false }),
     worldRule: getWorldSetting() ? getWorldIntegrationRule('interaction') : '',
     slots, persona: persona ?? buildStandingPersona(char, outfitScene), requirement, outfitScene,
   });
-  const raw = await chatSync(messages, { temperature: 0.7, response_format: { type: 'json_object' }, label: '批量立绘提示词' });
+  const raw = await chatSync(messages, { temperature: 0.7, max_tokens: Math.min(8192, Math.max(2048, slots.length * 512 + 512)), response_format: { type: 'json_object' }, label: '批量立绘提示词' });
   return parseStandingPrompts(raw, slots);
 }
 
@@ -159,7 +181,7 @@ async function commitImage(id, slot, buffer, { removeBg = true, source = true } 
   try {
     fs.writeFileSync(path.join(dir, filename), output);
     if (source) fs.writeFileSync(path.join(dir, sourceName), await sharp(sourceBuffer, { limitInputPixels: 67108864 }).png().toBuffer());
-    const result = getDb().prepare(`UPDATE character_expression_standings SET image_url=?,source_url=CASE WHEN ? IS NULL THEN source_url ELSE ? END,bounds_json=?,status='done',error=NULL,version=version+1 WHERE character_id=? AND slot_id=? AND version=?`).run(url, source ? sourceName : null, source ? buildImageUrl(CATEGORY, sourceName) : null, JSON.stringify(bounds), id, slot, previous.version);
+    const result = getDb().prepare(`UPDATE character_expression_standings SET image_url=?,source_url=CASE WHEN ? IS NULL THEN source_url ELSE ? END,bounds_json=?,world_sig=?,status='done',error=NULL,version=version+1 WHERE character_id=? AND slot_id=? AND version=?`).run(url, source ? sourceName : null, source ? buildImageUrl(CATEGORY, sourceName) : null, JSON.stringify(bounds), currentWorldSignature(), id, slot, previous.version);
     if (!result.changes) throw fail('立绘已被修改或角色已删除，请刷新', 409);
   } catch (error) {
     for (const file of [filename, sourceName]) { try { fs.unlinkSync(path.join(dir, file)); } catch {} }
@@ -169,25 +191,6 @@ async function commitImage(id, slot, buffer, { removeBg = true, source = true } 
     if (old) { try { deleteImageFileByUrl(old); } catch { /* A stale file must not invalidate the committed image. */ } }
   }
   notify(id);
-}
-
-export function generateStandingTouchLines(char) {
-  const relationship=getDb().prepare('SELECT relationship_text, affinity, is_oath FROM user_relationships WHERE character_id=?').get(char.id);
-  const messages=buildTouchLineMessages(char, {
-    relationship,userName:config.user.nickname || '用户',
-    systemRules:getSystemRulesWithWorld({roleplay:false}),
-    worldRule:getWorldSetting()?getWorldIntegrationRule('interaction'):'当前未启用世界观，按角色资料与本次任务创作，不补造世界设定。',
-  });
-  return chatSync(messages, { temperature: 0.8, response_format: { type: 'json_object' }, label: '立绘触摸台词', signal: AbortSignal.timeout(90000), timeout: 90000, retries: 0, maxRetries: 0, freeEggFailover: false });
-}
-
-export function regenerateStandingTouchLines(id, expectedVersion) {
-  const char=character(id),db=getDb(),current=readTouchLines(db,char.id);
-  if(current.status==='generating')throw fail('台词正在生成，请稍候',409);
-  if(expectedVersion!==current.version)throw fail('台词已更新，请重新读取',409);
-  startTouchLines({db,character:char,generate:generateStandingTouchLines,emit:broadcast})
-    ?.catch(error=>console.warn('[standing-touch] 台词保存失败:',error.message));
-  return readTouchLines(db,char.id);
 }
 
 export function startStandingBatch(id, { slotIds, requirement = '', outfitScene = 'work', missingOutfitPolicy, reusePrompts = false } = {}, { promptGenerator = generateStandingPrompts, imageGenerator = generateImageRaw, touchLinesGenerator = generateStandingTouchLines, outfitGenerator, personaSnapshot } = {}) {
@@ -292,9 +295,14 @@ export function startStandingBatch(id, { slotIds, requirement = '', outfitScene 
     control.failures = 0;
   };
   queue = queue.then(run, run);
+  // 【上游 v3.9.0 合并：立绘互动】整套立绘（全槽位、非复用提示词）且该角色还没有台词时，
+  // 并行启动一个独立的台词后台任务。单张补图 / 复用提示词重试都不额外生成台词；
+  // 台词任务与图片队列互不等待，失败也不影响立绘出图。
   if (slots.length === all.length && !reusePrompts && !hasTouchLines(readTouchLines(db,id))) {
     // A text-task startup/storage failure must not strand the queued image job.
     try {
+      // 【2026-10-14 补漏合并】上游 v3.9.0 从这里注入 touchLinesGenerator（便于测试打桩）；
+      // 本地漏了该形参而写死 generateStandingTouchLines，补回注入位，默认值不变。
       startTouchLines({ db, character: char, generate: touchLinesGenerator, emit: broadcast })
         ?.catch(error => console.warn('[standing-touch] 后台台词任务保存失败:', error.message));
     } catch (error) { console.warn('[standing-touch] 后台台词任务启动失败:', error.message); }
@@ -344,6 +352,32 @@ export function controlStandingBatch(id, jobId, action, dependencies) {
   } else throw fail('无效的任务操作');
   notify(id);
   return { ok: true };
+}
+
+/**
+ * 生成一套立绘触摸台词（10 个部位 × 3 句）。
+ * 固定四条 system 消息（破甲规则与世界观 / 世界观强化 / 完整角色人格 / 触摸任务与 JSON 示例），
+ * 90 秒总超时、关闭重试；台词失败不影响立绘出图。
+ * 【上游 v3.9.0 合并：立绘互动】
+ */
+export function generateStandingTouchLines(char) {
+  const relationship=getDb().prepare('SELECT relationship_text, affinity, is_oath FROM user_relationships WHERE character_id=?').get(char.id);
+  const messages=buildTouchLineMessages(char, {
+    relationship,userName:config.user.nickname || '用户',
+    systemRules:getSystemRulesWithWorld({roleplay:false}),
+    worldRule:getWorldSetting()?getWorldIntegrationRule('interaction'):'当前未启用世界观，按角色资料与本次任务创作，不补造世界设定。',
+  });
+  return chatSync(messages, { temperature: 0.8, max_tokens: 3000, response_format: { type: 'json_object' }, label: '立绘触摸台词', signal: AbortSignal.timeout(90000), timeout: 90000, retries: 0, maxRetries: 0, freeEggFailover: false });
+}
+
+/** 单独重生成一整套台词（立绘管理「反馈台词管理」里用，不重画图片） */
+export function regenerateStandingTouchLines(id, expectedVersion) {
+  const char=character(id),db=getDb(),current=readTouchLines(db,char.id);
+  if(current.status==='generating')throw fail('台词正在生成，请稍候',409);
+  if(expectedVersion!==current.version)throw fail('台词已更新，请重新读取',409);
+  startTouchLines({db,character:char,generate:generateStandingTouchLines,emit:broadcast})
+    ?.catch(error=>console.warn('[standing-touch] 台词保存失败:',error.message));
+  return readTouchLines(db,char.id);
 }
 
 export function decodeImage(value) {

@@ -1,13 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as api from '../api/index.js'
+import { onEvent } from './unifiedStream.js'
 
 /**
  * 《邻舍日报》未读状态（唯一来源）
  *
  * 报纸每天清晨由后端印出，前端「未读」＝ 今天已有报纸 && 这一期还没被打开看过。
  * 已读日期记在 localStorage，沿用历史键名（升级不丢已读状态）；
- * 未读标志同时驱动网络导航红点、传统报纸页签与日报预览；打开整张报纸后才标记已读。
+ * 未读标志同时驱动酒馆页入口卡红点与 NavBar 酒馆项红点（同一套 nav-dot 语言）。
  */
 
 /** 已读期号日期（YYYY-MM-DD）：与历史版本同键，不要改 */
@@ -35,6 +36,7 @@ export const useNewspaperStore = defineStore('newspaper', () => {
   const loading = ref(false)
 
   let pollTimer = null
+let unsubscribeRollover = null
   let _pollingRefs = 0
 
   /** 今天的报纸已印出、且这一期没看过 */
@@ -74,6 +76,9 @@ export const useNewspaperStore = defineStore('newspaper', () => {
     if (_pollingRefs > 1) return
     fetchToday()
     pollTimer = setInterval(fetchToday, POLL_INTERVAL_MS)
+    // 世界翻篇（程序日期变了）立刻拉新一期，不用等下一个 60s 轮询
+    // （2026-10-01 用户：「日报的板块如果日期更新了也要去更新日报」；后端在 programDayRollover 里广播）
+    unsubscribeRollover = onEvent('program_day_rollover', () => { fetchToday() })
   }
 
   function stopPolling() {
@@ -82,6 +87,10 @@ export const useNewspaperStore = defineStore('newspaper', () => {
     if (pollTimer) {
       clearInterval(pollTimer)
       pollTimer = null
+    }
+    if (unsubscribeRollover) {
+      unsubscribeRollover()
+      unsubscribeRollover = null
     }
   }
 

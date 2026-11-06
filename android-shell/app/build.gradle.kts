@@ -11,8 +11,8 @@ android {
         applicationId = "com.linshe.shell"
         minSdk = 26
         targetSdk = 34
-        versionCode = 15
-        versionName = "2.4"
+        versionCode = 12
+        versionName = "2.1"
     }
 
     signingConfigs {

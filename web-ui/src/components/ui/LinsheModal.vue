@@ -1,15 +1,17 @@
 <template>
+  <!-- `defer`：宿主与弹窗同批挂载时（首次直达页面、路由切回），Teleport 会把目标解析
+       推迟到宿主插入之后，不需要任何轮询。上游 v3.9.0 就是这个口径。
+       2026-10-15 曾改成"探测锚点 + 8 次轮询解析宿主"：在真实浏览器里能用，但依赖
+       document.querySelector 与真实 DOM 的 parentNode，在 node --test 的假 renderer 下
+       永远解析不到宿主（遮罩退到 body），而且那套轮询把测试文件挂死过 —— 已按上游退回。 -->
   <Teleport :to="anchor || 'body'" defer>
-    <!-- 首次直达页面时，anchor 宿主与弹窗同批挂载；等宿主插入后再解析目标。 -->
-    <Transition name="modal-fade" :duration="transitionMs" @after-leave="afterLeave">
-      <div v-if="isOpen" ref="overlay" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating }" :style="overlayStyle" @pointerdown="onBackdropPointerDown" @click.self="onBackdropClick">
-        <div ref="panel" class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic' }, panelClass]" role="dialog" :aria-modal="floating ? undefined : true" :aria-label="title || undefined" tabindex="-1" @click.stop>
+    <Transition name="modal-fade" :duration="transitionMs">
+      <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating }" :style="transitionMs ? {'--linshe-modal-duration':`${transitionMs}ms`} : undefined" @click.self="!floating && close()">
+        <div class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic' }, panelClass]" @click.stop>
           <div class="modal-header">
-            <slot name="title"><h3 class="modal-title">{{ title }}</h3></slot>
+            <h3 class="modal-title">{{ title }}</h3>
             <span v-if="$slots['header-extra']" class="modal-header-extra"><slot name="header-extra" /></span>
-            <slot v-if="showClose" name="close" :close="close" :disabled="closeDisabled || checkingClose">
-              <linshe-close-button :disabled="closeDisabled || checkingClose" @click="close()" />
-            </slot>
+            <slot name="close" :close="close"><linshe-button variant="icon" aria-label="关闭" @click="close">✕</linshe-button></slot>
           </div>
           <!-- 白色内衬：浮于暖纸外壳之上，标题栏留在外壳上（与 LoRA 设置窗一致） -->
           <div class="linshe-modal-lining" :class="{ 'has-footer': !!$slots.footer }">
@@ -31,10 +33,9 @@
 // 视觉走全局 modal 家族类 + 本组件的白色内衬（--modal-lining-*）。
 // 暖色沿用 v3.2 人物详情卡口径（暖纸外壳 + 白色内衬），暗夜保持 Cel Glow 深色玻璃。
 // 内容用 #default 插槽；需要自定义底部操作区时用 #footer；头部右侧附加内容用 #header-extra。
-import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 
-import LinsheCloseButton from './LinsheCloseButton.vue'
-import { registerModal, nextModalLayer } from './modalStack.js'
+import LinsheButton from './LinsheButton.vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -48,15 +49,6 @@ const props = defineProps({
   floating: { type: Boolean, default: false }, // 右下角无阻挡工具窗，复用统一面板皮肤
   panelClass: { type: [String, Array, Object], default: '' },
   bodyClass: { type: [String, Array, Object], default: '' },
-  showClose: { type: Boolean, default: true },
-  closeDisabled: { type: Boolean, default: false },
-  closeOnBackdrop: { type: Boolean, default: true },
-  closeOnEscape: { type: Boolean, default: true },
-  /** 返回 false 可拒绝关闭；允许异步确认。业务清理仍在 @close 处理。 */
-  beforeClose: { type: Function, default: null },
-  /** 被独立灯箱等特殊浮层覆盖时，暂停键盘处理。 */
-  suspended: { type: Boolean, default: false },
-  zIndex: { type: Number, default: undefined },
   /**
    * 宿主选择器（如 '.page-modal-host'）：遮罩 Teleport 进该元素并铺满它，面板相对宿主居中，
    * 而不是相对整个视口居中（页面两侧有导航 / 侧栏时，视口居中的面板看着是偏的）。
@@ -66,82 +58,27 @@ const props = defineProps({
   anchor: { type: String, default: '' },
 })
 
-const emit = defineEmits(['update:modelValue', 'close', 'after-leave', 'close-error'])
+const emit = defineEmits(['update:modelValue', 'close'])
 const isOpen = computed(() => props.modelValue || props.visible)
 const isAnchored = computed(() => !!props.anchor)
-const overlay = ref(null), panel = ref(null), checkingClose = ref(false)
-const activeLayer = ref(undefined)
-const overlayStyle = computed(() => ({
-  ...(props.transitionMs !== undefined ? { '--linshe-modal-duration': `${props.transitionMs}ms` } : {}),
-  ...(activeLayer.value !== undefined ? { zIndex: activeLayer.value } : {}),
-}))
-let unregister = null, previousFocus = null, opening = 0, backdropStarted = false, disposed = false
 
-async function close(reason = 'button') {
-  if (!isOpen.value || props.closeDisabled || checkingClose.value || props.suspended) return
-  const version = opening
-  checkingClose.value = true
-  try {
-    if (props.beforeClose && await props.beforeClose(reason) === false) return
-    if (disposed || version !== opening || !isOpen.value || props.closeDisabled) return
-    emit('update:modelValue', false)
-    emit('close', reason)
-  } catch (error) {
-    emit('close-error', error)
-  } finally {
-    checkingClose.value = false
-  }
+function close() {
+  emit('update:modelValue', false)
+  emit('close')
 }
 
-function onBackdropPointerDown(event) { backdropStarted = event.target === event.currentTarget }
-function onBackdropClick(event) {
-  if ((backdropStarted || event.detail === 0) && props.closeOnBackdrop && !props.floating) void close('backdrop')
-  backdropStarted = false
+// Esc 关闭
+function onKeydown(e) {
+  if (e.key === 'Escape' && isOpen.value) close()
 }
-function afterLeave() {
-  if (isOpen.value) return
-  unregister?.(); unregister = null
-  const doc = previousFocus?.ownerDocument
-  if (previousFocus?.isConnected && (doc.activeElement === doc.body || !doc.activeElement?.isConnected)) previousFocus.focus({ preventScroll: true })
-  previousFocus = null
-  emit('after-leave')
-}
-watch(isOpen, async value => {
-  const version = ++opening
-  if (!value) return // 退出动画完成前保留栈位，不让 Esc 穿透到底层。
-  activeLayer.value = undefined
-  previousFocus = panel.value?.ownerDocument?.activeElement || globalThis.document?.activeElement
-  await nextTick()
-  if (disposed || version !== opening || !panel.value?.ownerDocument) return
-  unregister?.()
-  activeLayer.value = nextModalLayer(panel.value.ownerDocument, props.zIndex ?? (Number.parseInt(getComputedStyle(overlay.value).zIndex) || 10000))
-  unregister = registerModal({
-    panel: panel.value,
-    floating: props.floating,
-    layer: () => activeLayer.value || 0,
-    suspended: () => props.suspended,
-    escape: () => { if (props.closeOnEscape) void close('escape') },
-  })
-  if (!props.floating) panel.value.focus({ preventScroll: true })
-}, { immediate: true, flush: 'post' })
-onBeforeUnmount(() => {
-  disposed = true
-  unregister?.()
-})
+watch(isOpen, (v) => {
+  if (v) window.addEventListener('keydown', onKeydown)
+  else window.removeEventListener('keydown', onKeydown)
+}, { immediate: true })
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <style scoped>
-.modal-fade-enter-active { transition-duration:var(--linshe-modal-duration,300ms); }
-.modal-fade-leave-active { transition-duration:var(--linshe-modal-duration,300ms); }
-.modal-fade-enter-active .modal-panel { animation-duration:var(--linshe-modal-duration,300ms); }
-.modal-header { gap: 12px; }
-:slotted(.modal-heading-content) { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1; min-width: 0; flex-wrap: wrap; }
-.modal-title { min-width: 0; overflow-wrap: anywhere; }
-.modal-header-extra { flex-wrap: wrap; }
-.linshe-modal:focus { outline: none; }
-.linshe-modal .modal-body.modal-workspace-body { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
-.linshe-modal .modal-body.modal-form-body { display: flex; flex-direction: column; gap: 12px; }
-.modal-form-body > :deep(*) { flex-shrink: 0; }
 .modal-header-extra {
   display: inline-flex;
   align-items: center;
@@ -187,17 +124,6 @@ onBeforeUnmount(() => {
 /* 面板宽度上限改按宿主宽度算：基座的 94vw/96vw 是视口口径，宿主被侧栏占去一块后会顶出边界 */
 .linshe-modal-overlay.is-host-anchored .modal-panel { max-width: 100%; }
 
-/* 社交帖子与数字报刊共用阅读窗尺寸，移动端继续使用下方统一适配。 */
-@media (min-width: 768px) {
-  .linshe-modal-overlay:has(> .media-reader-panel) {
-    padding-block: 10px;
-  }
-  .media-reader-panel {
-    height: 100dvh;
-    max-height: 100%;
-  }
-}
-
 /* 移动端：保留 PC 的「圆角浮层」观感 —— 面板圆角、描边、白色内衬一律不动，
    只把遮罩留白从 20px 收紧到 8px，并把刘海 / 挖孔 / 手势条的安全区让给遮罩
    （面板靠遮罩内边距避开异形屏，因此头部不再需要单独加 safe-area 上内边距）。
@@ -232,26 +158,4 @@ onBeforeUnmount(() => {
     overflow: hidden;
   }
 }
-
-/* 操作区自带底部留白；有 footer 时不再叠加内衬的底部间距。 */
-.linshe-modal-lining.has-footer { margin-bottom: 0; }
-/* 传媒的漫画阅读变体；默认弹窗不受影响。 */
-.modal-comic {
-  --modal-bg: var(--media-paper);
-  --modal-border: 3px solid var(--media-ink);
-  --modal-radius: 4px;
-  --modal-shadow: 8px 8px 0 var(--media-ink);
-  --modal-backdrop: none;
-  --modal-lining-bg: var(--media-paper);
-  --modal-lining-border: none;
-  --modal-lining-radius: 0;
-  --modal-lining-margin: 0;
-  --modal-lining-margin-mobile: 0;
-  --modal-lining-pad: 0;
-}
-.modal-comic .modal-header { background: var(--media-ink); color: var(--media-light); padding: 10px 18px; }
-.modal-comic .modal-title { color: var(--media-light); font-size: 14px; letter-spacing: .16em; }
-.modal-comic .modal-title::before { content: '✦'; color: var(--accent); font-size: 24px; }
-.modal-comic .modal-footer { border-top: 3px solid var(--media-ink); padding: 14px 20px; }
-@media (max-width: 600px) { .modal-comic .modal-footer { padding: 12px; } }
 </style>

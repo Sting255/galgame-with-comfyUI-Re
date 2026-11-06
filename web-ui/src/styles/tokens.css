@@ -32,37 +32,31 @@
   --town-paper-muted: #76665a;
   --town-paper-line: #cbb599;
   --town-paper-accent: #ae6451;
-  /* Galgame: screenshot-inspired cut-corner paper over the character portrait. */
-  --dialogue-paper: rgba(255, 253, 250, .96);
-  --dialogue-ink: #554b45;
-  --dialogue-speech-ink: #a34838;
-  --dialogue-speech-muted: #a56b59;
-  --dialogue-menu-hover: #a34838;
-  --dialogue-muted: #84766d;
-  --dialogue-outline: #91857c;
-  --dialogue-inner: #e8dfd7;
-  --dialogue-rule: #e3d5cd;
-  --dialogue-shadow: #8b7d7133;
-  /* Galgame：暖白纸面、灰褐墨线；操作悬停与舞台台词使用珊瑚橙。 */
-  --dialogue-menu-bg: rgba(255, 253, 250, .98);
-  --dialogue-menu-text: #554b45;
-  --dialogue-menu-outline: #766c65;
-  --dialogue-control-outline: var(--dialogue-menu-outline);
-  --dialogue-menu-accent: #bc8c7d;
-  --dialogue-menu-edge: #d9d0c8;
-  --dialogue-menu-shadow: #493c301a;
-  /* 照片纸在暖色 / 暗夜中均保留白边。 */
-  --dialogue-photo-paper: #fff;
-  --dialogue-photo-shutter: #24212a;
-  --dialogue-photo-caption: #777078;
-  --dialogue-photo-shadow: 0 3px 10px #18101f29, 0 1px 3px #18101f1a;
-  --text-secondary: #8c8074;
+  /* 2026-10-30：原 #8c8074 在暖纸底（#f0ece8）上只有 3.28:1，正文级文字糊成一片
+     （全站对比度扫描 + 用户实报传媒卡片看不清）。加深到 4.8:1，仍是「次要」但不是「看不清」。 */
+  --text-secondary: #6f665c;
   --text-bright: #111111;
+  /* ── 传媒（报纸质感）：卡片纸面 / 墨色硬阴影 / 分隔线 ──
+     ⚠ 这四个变量此前**只被引用、从未定义** ⇒ 背景与描边全失效，文字色跟着主题走，
+     暗夜主题下就成了「浅字 + 浅底」。2026-10-30 补上，两套主题各一份。 */
+  --media-paper: #fbf6ec;
+  --media-light: #fffdf8;
+  --media-rule: #ddcfbb;
+  --media-ink: #2c231b;
   --on-accent: #ffffff;
 
   /* ── 主色系（珊瑚暖色 · 橙粉点睛）── */
   --accent: #e07b6c;
   --accent-hover: #cc6a5c;
+  /* 强调色**当文字用**时的可读版本：--accent 在白底上对比只有 2.6:1，
+     正文级文字会糊成一片（2026-10-30 全站对比度扫描抓到 100+ 处）。
+     图标/描边继续用 --accent（3:1 足够），文字改用这个。 */
+  --accent-text: #b04a35;
+  /* 主按钮（实心）的底与字：--accent 太浅，白字压上去只有 2.9:1；
+     实心按钮改用更深的糖色 + 白字（4.9:1）。--accent 继续用于图标/描边/点缀。 */
+  --btn-primary-bg: #b85242;
+  --btn-primary-bg-hover: #a4452f;
+  --btn-primary-fg: #ffffff;
   --accent-light: #f0a89a;
   --slider-track-start: #f0d5cd;
   --slider-thumb-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
@@ -145,7 +139,7 @@
   --modal-lining-bg: var(--glass-bg);
   --modal-lining-border: 1px solid var(--glass-border);
   --modal-lining-radius: 14px;
-  --modal-lining-margin: 4px 22px 22px;
+  --modal-lining-margin: 4px 22px;
   --modal-lining-margin-mobile: 0px 12px 12px;   /* 手机端：缩窄留白（顶部交给头部自身内边距） */
   --modal-lining-pad: 18px;
   --modal-footer-pad: 10px 22px 18px;
@@ -160,9 +154,6 @@
   --side-panel-bg: #f4f1eeed;
   --side-panel-border: 1px solid rgba(0, 0, 0, 0.05);
   --side-panel-shadow: 0 6px 28px rgba(0, 0, 0, 0.08);
-  /* 侧板内部的行/卡片表面与缩略图/滑轨凹面（小镇管理面板等） */
-  --side-panel-surface: #fbf8f3;
-  --side-panel-surface-sunken: #f1ebe1;
 
   /* ── 尺度：圆角 ── */
   --radius-sm: 8px;
@@ -203,12 +194,12 @@
   --z-drawer: 1000;
   --z-modal: 10000;
   --z-popover: 11000;
-  --z-toast: 13000;
+  --z-toast: 12000;
   --z-float: 15000;
 
   /* ── 角色通知（右下角轻通知）：暖纸质感岛，沿用原 Toast 的既有例外 ──
-       两种主题共用同一组暖纸色值，保证纸面墨色对比；尺寸与 300ms 动效走
-       --dur-interaction / --ease-standard，不再把硬编码色值复制进组件。 */
+        两种主题共用同一组暖纸色值，保证纸面墨色对比；尺寸与 300ms 动效走
+        --dur-interaction / --ease-standard，不再把硬编码色值复制进组件。 */
   --ct-bg: #F7F4EF;
   --ct-border: rgba(var(--accent-rgb), 0.24);
   --ct-shadow: 0 10px 30px rgba(50, 40, 35, 0.18), 0 2px 8px rgba(50, 40, 35, 0.10);
@@ -217,6 +208,7 @@
   --ct-muted: #8B8179;
   --ct-close: #B4AA9E;
   --ct-media-bg: rgba(85, 72, 59, 0.08);
+  --ct-accent: var(--accent);
   --ct-radius: 18px;
   --ct-gap: 12px;
   --ct-pad: 12px 10px 14px 12px;
@@ -229,27 +221,6 @@
 
 /* ══ 暗夜：深色玻璃 · 珊瑚夜灯 ══ */
 [data-theme="dark"] {
-  /* Galgame 暗夜：暖炭灰纸面、浅灰墨色，珊瑚高亮提高明度以保证可读。 */
-  --dialogue-paper: rgba(38, 35, 34, .97);
-  --dialogue-ink: #e8ded4;
-  --dialogue-speech-ink: #e6a086;
-  --dialogue-speech-muted: #c9a18e;
-  --dialogue-menu-hover: #f0ad8f;
-  --dialogue-muted: #b7a99e;
-  --dialogue-outline: #887a70;
-  --dialogue-inner: #49413c;
-  --dialogue-rule: #59483f;
-  --dialogue-shadow: #100d0b99;
-  --dialogue-menu-bg: rgba(51, 46, 43, .98);
-  --dialogue-menu-text: #e1d6cb;
-  --dialogue-menu-outline: #97867b;
-  --dialogue-control-outline: var(--dialogue-menu-outline);
-  --dialogue-menu-accent: #c0917b;
-  --dialogue-menu-edge: #1c1816;
-  --dialogue-menu-shadow: #08060566;
-  --dialogue-photo-paper: #eee7de;
-  --dialogue-photo-caption: #71675e;
-  --dialogue-photo-shadow: 0 3px 12px #08060566, 0 1px 3px #08060540;
   color-scheme: dark;
 
   --bg-primary: #16131a;
@@ -266,10 +237,20 @@
   --text-primary: #e7e2de;
   --text-secondary: #a39ba9;
   --text-bright: #fbf8f5;
+  /* 传媒纸面（暗夜）：纸变深、字变浅，与 --text-bright 保持同一侧 */
+  --media-paper: #221e28;
+  --media-light: #2c2734;
+  --media-rule: #3b3544;
+  --media-ink: #0b0910;
   --on-accent: #ffffff;
 
   --accent: #ff7a64;
   --accent-hover: #f0644e;
+  --accent-text: #ffa08c;   /* 暗夜里的强调文字：比 --accent 更亮，压在深底上可读 */
+  /* 暗夜主按钮：亮橙底 + 深字（白字压不住亮橙） */
+  --btn-primary-bg: #ff8a72;
+  --btn-primary-bg-hover: #ffa08c;
+  --btn-primary-fg: #2a120c;
   --accent-light: #ffa58f;
   --slider-track-start: var(--bg-sunken);
   --slider-thumb-shadow: 0 1px 4px rgba(0, 0, 0, 0.32);
@@ -343,8 +324,6 @@
   --side-panel-bg: var(--glass-bg-strong);
   --side-panel-border: 1px solid var(--glass-border);
   --side-panel-shadow: var(--shadow-md);
-  --side-panel-surface: rgba(255, 255, 255, 0.05);
-  --side-panel-surface-sunken: rgba(0, 0, 0, 0.25);
 
   --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.32);
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.34);
@@ -353,12 +332,3 @@
   --shadow-glow: 0 4px 18px rgba(var(--accent-rgb), 0.30);
   --focus-ring: 0 0 0 3px rgba(var(--accent-rgb), 0.22);
 }
-
-/* 传媒漫画界面：墨线与纸白保持品牌色，正文表面跟随主题。 */
-:root {
-  --media-ink: #272329;
-  --media-light: #fff8ed;
-  --media-paper: var(--bg-secondary);
-  --media-rule: var(--media-ink);
-}
-[data-theme="dark"] { --media-rule: #a49aa9; }

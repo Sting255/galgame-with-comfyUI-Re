@@ -22,6 +22,7 @@
         <textarea
           ref="textareaRef"
           v-model="content"
+          :disabled="sending"
           class="paper-textarea"
           placeholder="... . . / -.-- --- ..- / - --- -- --- .-. .-. --- .--"
           rows="6"
@@ -35,14 +36,15 @@
       <linshe-switch
         v-if="ttsEnabled"
         v-model="autoRead"
+        :disabled="sending"
         size="sm"
         on-text="自动阅读"
         class="auto-read-switch"
       />
       <div class="write-actions-btns">
-        <linshe-button variant="secondary" @click="$emit('cancel')">取消</linshe-button>
+        <linshe-button variant="secondary" :disabled="sending" @click="!sending && $emit('cancel')">取消</linshe-button>
         <linshe-button variant="primary" :disabled="!content.trim()" :loading="sending" @click="send">
-          <svg v-if="!sending" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22,2 15,22 11,13 2,9"/></svg>
+          <svg v-if="!sending" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22,2 15,22 11,13 2,9" /></svg>
           {{ sending ? '寄送中...' : '寄出' }}
         </linshe-button>
       </div>
@@ -51,7 +53,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, inject } from 'vue'
 import { useMailboxStore } from '../stores/mailbox.js'
 import { getWriteFontFamily } from '../composables/useHandwritingFont.js'
 import { ttsApi } from '../api/tts.js'
@@ -63,9 +65,10 @@ const WRITE_FONT = getWriteFontFamily()
 const props = defineProps({
   char: { type: Object, required: true },
 })
-const emit = defineEmits(['sent', 'cancel'])
+const emit = defineEmits(['sent', 'cancel', 'sending'])
 
 const store = useMailboxStore()
+const toast = inject('toast', null)
 const content = ref('')
 const sending = ref(false)
 const textareaRef = ref(null)
@@ -86,15 +89,17 @@ async function send() {
   const text = content.value.trim()
   if (!text || sending.value) return
   sending.value = true
+  emit('sending', true)
   try {
     const result = await store.sendLetter(props.char.id, '', text, {
       auto_read: ttsEnabled.value && autoRead.value,
     })
     emit('sent', result)
   } catch (err) {
-    console.error('[LetterWrite] send error:', err)
+    toast?.(err?.message || '寄送失败，信件内容已保留', 'error')
   } finally {
     sending.value = false
+    emit('sending', false)
   }
 }
 </script>
@@ -102,7 +107,7 @@ async function send() {
 <style scoped>
 .letter-write {
   display: flex; flex-direction: column;
-  padding: 20px 24px; gap: 16px; height: 100%;
+  padding: 20px 24px; gap: 16px; height: 100%; box-sizing: border-box;
 }
 
 /* ── Context ── */
@@ -165,4 +170,9 @@ async function send() {
 .write-actions-btns { display: flex; gap: 10px; }
 .auto-read-switch { flex-shrink: 0; }
 .auto-read-switch :deep(.ls-switch__text) { font-size: 13px; }
+@media (max-width: 600px) {
+  .letter-write { padding: 16px; gap: 12px; }
+  .paper-content { padding: 12px; }
+  .paper-textarea { min-width: 0; box-sizing: border-box; }
+}
 </style>

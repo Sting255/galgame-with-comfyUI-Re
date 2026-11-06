@@ -83,6 +83,10 @@ export function migrateTownBuildingFeatureSchema(db) {
       feature_ids_json TEXT,
       resource_bindings_json TEXT,
       opening_budget_json TEXT,
+      -- ⚠️ 死列 ×2（2026-10-15 标注，只标注不删）：world_version / operator_actor_id
+      -- 全仓只有这两行定义、服务层与测试零引用。原意是记"这份特性档案是按哪个世界版本、由哪个操作者
+      -- 生成的"，但生成链只用 world_id + world_epoch 定位（见上面 UNIQUE 与生成入口）⇒ 这两列从没写过。
+      -- 保留原因同其它死列：改 schema 要迁移；真要清就**同批处理**全部死列，别只删这两列。
       world_version TEXT,
       operator_actor_id TEXT,
       llm_calls INTEGER NOT NULL DEFAULT 0,

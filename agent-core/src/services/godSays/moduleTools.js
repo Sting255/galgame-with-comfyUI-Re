@@ -72,7 +72,7 @@ export const GOD_MODULE_TOOLS = [
   }), href: '/gallery' }),
   tool('read_image_task', '相册', '查看图片生成结果', '按真实生图任务编号查询状态与输出文件。', { task_id: ident('task_id') }, ['task_id'], 'GET', '/api/images/tasks/:task_id/status', { href: '/gallery' }),
   tool('list_outfits', '角色', '查看角色外观', '读取专属外观列表及启用状态。', char, ['character_id'], 'GET', '/api/characters/:character_id/outfits', { href: '/tavern' }),
-  tool('read_scene_outfits', '角色', '查看场景服装', '读取默认、私服、居家、睡衣槽位中的现有服装，不查询日程。', char, ['character_id'], 'GET', '/api/characters/:character_id/outfits/scene', { href: '/tavern' }),
+  tool('read_scene_outfits', '角色', '查看场景服装', '读取默认、私服、居家、睡衣槽位中的现有服装，不查询日程。', char, ['character_id'], 'GET', '/api/characters/:character_id/outfit-scenes', { href: '/tavern' }),
   tool('generate_scene_outfits', '角色', '生成场景服装草稿', '生成或修改私服、居家服、睡衣必须用此工具。调用邻舍已有服装生成接口及其生图描述规则，先生成完整草稿，用户在卡片确认后仅写入指定场景槽位；不修改基础外观，不创建独立专属形态，不自动生图。可用 batch_characters 逐角色生成。', {
     ...char,
     scenes: { type: 'array', description: '指定目标槽位：casual 私服、home 居家、sleep 睡衣；只选用户要求的槽位', items: { type: 'string', enum: ['casual', 'home', 'sleep'] }, minItems: 1, maxItems: 3, uniqueItems: true },

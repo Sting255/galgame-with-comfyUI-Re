@@ -47,10 +47,7 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   imgs: { type: [String, Array, Object], default: '' },
   index: { type: Number, default: 0 },
-
   showRegenerate: { type: Boolean, default: true },
-  regenerateHandler: { type: Function, default: null },
-  regenerateBusy: { type: Boolean, default: false },
   showUpscale: { type: Boolean, default: true },
   showDelete: { type: Boolean, default: true },
   showDownload: { type: Boolean, default: true },
@@ -137,14 +134,10 @@ function injectActionBar() {
   const mkBtn = (key, cls, attrs, label, onClick) => {
     const btn = document.createElement('div')
     btn.setAttribute('role', 'button')
-    btn.setAttribute('tabindex', '0')
     for (const [k, v] of Object.entries(attrs)) btn.setAttribute(k, v)
     if (cls) btn.className = cls
     btn.innerHTML = BTN_SVGS[key] + (label != null ? `<span>${label}</span>` : '')
     btn.addEventListener('click', (e) => { e.stopPropagation(); onClick() })
-    btn.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onClick() }
-    })
     return btn
   }
 
@@ -187,7 +180,7 @@ function syncActionBar() {
     if (label && !mobile) label.textContent = busy ? busyLabel : idleLabel
   }
   set('[data-vel-delete], .vel-rail-btn.danger', deleting.value, '删除中...', '删除图片', '删除中…', '删除')
-  set('[data-vel-regenerate], .vel-rail-btn.regen', regenerating.value || props.regenerateBusy, '正在生成，请稍候', '重新生成', '生成中…', '重新生成')
+  set('[data-vel-regenerate], .vel-rail-btn.regen', regenerating.value, '重新生成中...', '重新生成', '重新生成中…', '重新生成')
   set('[data-vel-upscale], .vel-rail-btn.accent', upscaling.value, '放大细化中（高清重绘，可能需要几分钟）...', '放大细化（高清放大重绘）', '细化中…', '放大细化')
   const dlBtn = _actionBar.querySelector('[data-vel-download], .vel-rail-btn.dl')
   if (dlBtn) {
@@ -215,7 +208,6 @@ watch(() => settingsStore.imageProvider, async () => {
 })
 
 watch([regenerating, upscaling, deleting, downloading], syncActionBar)
-watch(() => props.regenerateBusy, syncActionBar)
 
 onUnmounted(() => {
   removeActionBar()
@@ -252,7 +244,6 @@ function getCurrentUrl() {
   if (v && typeof v === 'object' && v.src) return v.src
   return ''
 }
-
 
 // ── 下载 ──
 // 浏览器：fetch → blob → <a download>；Android 壳内 WebView 不处理下载，
@@ -299,14 +290,9 @@ async function onDownload() {
     const bridge = window.AndroidBridge
     if (bridge && typeof bridge.saveImage === 'function') {
       const res = bridge.saveImage(filename, await blobToDataURL(blob))
-      if (res === 'ok') {
-        toastFn?.('已保存到相册「邻舍」', 'success')
-      } else if (res === 'permission_pending') {
-        // 权限待授权不算完成，也不发 saved
-        toastFn?.('已请求相册权限，授权后将自动保存到「邻舍」', 'info')
-      } else {
-        toastFn?.('保存失败: ' + (res || '未知错误'), 'error')
-      }
+      if (res === 'ok') toastFn?.('已保存到相册', 'success')
+      else if (res === 'permission_pending') toastFn?.('已请求存储权限，授权后将自动保存', 'info')
+      else toastFn?.('保存失败: ' + (res || '未知错误'), 'error')
     } else {
       const objUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -320,8 +306,7 @@ async function onDownload() {
     }
   } catch (err) {
     console.error('[ImageLightbox] download failed:', err.message)
-    // 拉取失败（多为跨域图片）：退化为直链，支持则直接下载，否则新标签打开手动保存。
-    // 这条路径不产生角色反馈——请求失败不发（§2.2 / §2.6）
+    // 拉取失败（多为跨域图片）：退化为直链，支持则直接下载，否则新标签打开手动保存
     const a = document.createElement('a')
     a.href = url
     a.download = deriveFilename(url, null)
@@ -393,15 +378,11 @@ function onHide() {
 }
 
 async function onRegenerate() {
-  if (regenerating.value || props.regenerateBusy) return
+  if (regenerating.value) return
   const url = getCurrentUrl()
   if (!url) return
   regenerating.value = true
   try {
-    if (props.regenerateHandler) {
-      await props.regenerateHandler(url)
-      return
-    }
     await imageEditTasks.start('regenerate', url)
     toastFn?.('已转入后台执行，完成后在右下角确认', 'info')
     emit('hide')

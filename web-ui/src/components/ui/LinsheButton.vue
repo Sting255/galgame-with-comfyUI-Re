@@ -6,16 +6,16 @@
       `ls-btn--${size}`,
       {
         'ls-btn--block': block,
-        'ls-btn--touch': touchTarget,
         'ls-btn--active': active,
         'ls-btn--tone-danger': tone === 'danger',
         'ls-btn--tone-paper': tone === 'paper',
         'ls-btn--tone-muted': tone === 'muted',
         'ls-btn--tone-ink': tone === 'ink',
-        'ls-btn--tone-candy': tone === 'candy',
+        'ls-btn--tone-accent': tone === 'accent',
         'ls-btn--jelly-enter': jellyPhase === 'enter',
         'ls-btn--jelly-leave': jellyPhase === 'leave',
         'ls-btn--loading': loading,
+        'ls-btn--touch-target': touchTarget,
       },
     ]"
     :type="type"
@@ -49,9 +49,9 @@ const props = defineProps({
   running: { type: Boolean, default: false },
   /** 宽度撑满父容器 */
   block: { type: Boolean, default: false },
-  /** chip 变体的选中态 */
+  /** chip / icon 变体的选中态 */
   active: { type: Boolean, default: false },
-  /** 色调覆盖：danger 转红色；paper 为白底图标按钮；muted 为弱操作的中性墨色；ink 为高对比图标操作；candy 为立体糖果图标钮 */
+  /** 色调覆盖：danger 转红色；paper 白底；muted 中性墨色；ink 高对比；accent 主题色描边图标 */
   tone: { type: String, default: 'default' },
 })
 
@@ -139,24 +139,26 @@ const endJelly = (event) => {
 
 /* ── 主操作：珊瑚糖 ── */
 .ls-btn--primary {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 var(--depth) 0 var(--accent-hover), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  /* 实心主按钮的底/字走 --btn-primary-*：直接用 --accent + 白字在全站只有 2.9:1，
+     12~14px 的字读起来发糊（2026-10-30 对比度审计，涉及发布/发送/保存等主要操作） */
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  box-shadow: 0 var(--depth) 0 var(--btn-primary-bg-hover), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 .ls-btn--primary:hover:not(:disabled) { filter: brightness(1.05) saturate(1.05); }
 
-/* ── 次要操作：白面珊瑚糖（深珊瑚文字 + 清晰描边与厚底） ── */
+/* ── 次要操作：白糖糖（主题色描边 + 浅主题色厚底） ── */
 .ls-btn--secondary {
   background: var(--bg-secondary);
-  color: color-mix(in srgb, var(--accent-hover) 70%, var(--text-primary));
-  border: 1.5px solid color-mix(in srgb, var(--accent-hover) 70%, var(--border));
-  box-shadow:
-    0 var(--depth) 0 color-mix(in srgb, var(--accent-hover) 70%, var(--border-strong)),
-    inset 0 1px 0 var(--glass-border);
+  /* 文字用深一档：--accent 在白底上 2.9:1，12px 按钮字读不清 */
+  color: var(--accent-text);
+  border: 1.5px solid rgba(var(--accent-rgb), 0.4);
+  box-shadow: 0 var(--depth) 0 rgba(var(--accent-rgb), 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 .ls-btn--secondary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bg-secondary) 95%, var(--accent));
-  border-color: var(--accent-hover);
+  background: var(--accent-light);
+  border-color: rgba(var(--accent-rgb), 0.7);
+  color: var(--accent-text);
 }
 
 /* ── 危险操作：红辣椒糖 ── */
@@ -167,17 +169,17 @@ const endJelly = (event) => {
 }
 .ls-btn--danger:hover:not(:disabled) { filter: brightness(1.05); }
 
-/* ── 幽灵：白面糖纸（中性墨色，悬停只强调文字与描边） ── */
+/* ── 幽灵：亮面糖纸（无主题色，弱存在感） ── */
 .ls-btn--ghost {
   background: var(--bg-secondary);
-  color: color-mix(in srgb, var(--text-primary) 70%, var(--text-secondary));
-  border: 1.5px solid color-mix(in srgb, var(--border-strong) 85%, var(--text-secondary));
-  box-shadow: 0 var(--depth) 0 var(--border-strong), inset 0 1px 0 var(--glass-border);
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border);
+  box-shadow: 0 var(--depth) 0 var(--border), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 .ls-btn--ghost:hover:not(:disabled) {
   background: var(--bg-secondary);
-  border-color: color-mix(in srgb, var(--border-strong) 65%, var(--accent-hover));
-  color: color-mix(in srgb, var(--accent-hover) 65%, var(--text-primary));
+  border-color: var(--border-strong);
+  color: var(--text-bright);
 }
 .ls-btn--ghost:active:not(:disabled) { transform: translateY(1px); }
 
@@ -191,6 +193,22 @@ const endJelly = (event) => {
 .ls-btn--icon:hover:not(:disabled) {
   background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
+}
+.ls-btn--icon.ls-btn--tone-accent {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--accent-text);
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.ls-btn--icon.ls-btn--tone-accent:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: 0 4px 16px rgba(var(--accent-rgb), 0.2);
+}
+.ls-btn--icon.ls-btn--tone-accent.ls-btn--active {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.25);
 }
 .ls-btn--icon.ls-btn--tone-paper,
 .ls-btn--icon.ls-btn--tone-paper:hover:not(:disabled) {
@@ -211,29 +229,6 @@ const endJelly = (event) => {
 .ls-btn--icon.ls-btn--md { width: 30px; height: 30px; min-height: 0; }
 .ls-btn--icon.ls-btn--lg { width: 38px; height: 38px; min-height: 0; }
 
-/* 弹窗关闭按需启用，与主操作按钮共用实心糖面和同色厚底。 */
-.ls-btn--icon.ls-btn--tone-candy,
-.ls-btn--icon.ls-btn--tone-candy:hover:not(:disabled) {
-  flex-shrink: 0;
-  color: var(--on-accent);
-  border: none;
-  border-radius: 12px;
-  background: var(--accent);
-  box-shadow: 0 var(--depth) 0 var(--accent-hover),
-    inset 0 1px 0 color-mix(in srgb, var(--on-accent) 35%, transparent);
-  transition: transform var(--dur-interaction) var(--ease-spring),
-    box-shadow var(--dur-interaction) var(--ease-standard),
-    filter var(--dur-interaction) var(--ease-standard);
-}
-.ls-btn--icon.ls-btn--tone-candy:hover:not(:disabled) {
-  filter: brightness(1.05) saturate(1.05);
-}
-.ls-btn--icon.ls-btn--tone-candy:active:not(:disabled) {
-  transform: translateY(var(--depth)) scale(var(--ls-jelly-x), var(--ls-jelly-y));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-accent) 25%, transparent);
-}
-.ls-btn--icon.ls-btn--tone-candy:disabled { box-shadow: none; }
-
 /* ── chips：胶囊糖 ── */
 .ls-btn--chip {
   background: transparent;
@@ -250,7 +245,7 @@ const endJelly = (event) => {
 .ls-btn--chip.ls-btn--active {
   background: rgba(var(--accent-rgb), 0.1);
   border-color: var(--accent-light);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-weight: 600;
   box-shadow: 0 2px 0 rgba(var(--accent-rgb), 0.28);
 }
@@ -258,7 +253,7 @@ const endJelly = (event) => {
 /* ── 链接 ── */
 .ls-btn--link {
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-text);
   border: none;
   box-shadow: none;
   min-height: 0;
@@ -266,7 +261,7 @@ const endJelly = (event) => {
   border-radius: 6px;
   font-weight: 500;
 }
-.ls-btn--link:hover:not(:disabled) { color: var(--accent-hover); text-decoration: underline; }
+.ls-btn--link:hover:not(:disabled) { color: var(--accent-text); text-decoration: underline; }
 .ls-btn--link:active:not(:disabled) { transform: translateY(1px); }
 
 /* 色调覆盖：危险色 */
@@ -291,6 +286,10 @@ const endJelly = (event) => {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 .ls-btn--chip:active:not(:disabled) { transform: translateY(1px); }
+
+@media (max-width: 767px), (pointer: coarse) {
+  .ls-btn.ls-btn--touch-target { min-height: 44px; min-width: 44px; }
+}
 
 /* ── 禁用：厚底压平、降透明 ── */
 .ls-btn:disabled {
@@ -320,13 +319,9 @@ const endJelly = (event) => {
 .ls-btn:focus-visible { outline: 3px solid rgba(var(--accent-rgb), 0.3); outline-offset: 2px; }
 .ls-btn:focus:not(:focus-visible) { outline: none; }
 
-.ls-btn.ls-btn--touch { min-width:44px; min-height:44px; }
-
 /* ── 减弱动效 ── */
 @media (prefers-reduced-motion: reduce) {
-  .ls-btn,
-  .ls-btn--icon.ls-btn--tone-candy,
-  .ls-btn--icon.ls-btn--tone-candy:hover:not(:disabled) { transition: none; }
+  .ls-btn { transition: none; }
   .ls-btn--jelly-enter,
   .ls-btn--jelly-leave { animation: none; }
   .ls-btn__spinner { animation-duration: 1.5s; }

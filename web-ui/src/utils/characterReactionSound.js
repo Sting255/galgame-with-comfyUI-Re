@@ -33,7 +33,7 @@ export function playReactionSound({ enabled = true, volume = 0.045 } = {}) {
       gain.gain.exponentialRampToValueAtTime(volume, start + 0.012)
       gain.gain.exponentialRampToValueAtTime(0.0001, start + dur)
       osc.connect(gain)
-      gain.connect(audioCtx.destination)
+      osc.connect(audioCtx.destination)
       osc.start(start)
       osc.stop(start + dur + 0.02)
     }

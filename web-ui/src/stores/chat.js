@@ -1,12 +1,18 @@
 import { defineStore } from 'pinia'
-import { ref, computed, onScopeDispose } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import * as api from '../api/index.js'
 import { useMessageWindow } from '../composables/useMessageWindow.js'
 import { useProactiveStore } from './notifications.js'
+import { applyAssistantReplace } from '../utils/assistantReplace.js'
+// 上游 v4.0.0 合并：语音自动播放与头像变更广播
 import { emitCharacterAvatarChanged } from '../utils/characterReactionProducers.js'
 import { chatSpeechAutoPlay } from '../utils/speechAutoPlay.js'
+import { createImageTaskRecovery } from '../utils/imageTaskRecovery.js'
 import { onEvent } from './unifiedStream.js'
 import { readChatRecovery, writeChatRecovery } from '../utils/chatRecovery.js'
+
+/** D2 重写兜底：最近一次已应用的 replace_last_assistant.turn（§12.4 用它校验「替换的是本轮」，防乱序/重复投递） */
+let lastReplaceTurn = 0
 
 let _seq = Date.now()
 function uid() { return ++_seq }
@@ -80,10 +86,16 @@ export const useChatStore = defineStore('chat', () => {
   const showTypingDots = ref(false)   // 打字动画：仅在发送后、首个 token 到达前显示一次
   const memoryRecalling = ref(false)  // Memory v3 阶段二：@memory 主动回想进行中（回想状态条）
   const guesses = ref(null)  // { a: string, b: string } | null — 回复候选词
-  const guessSourceRawId = ref(null)
-  const dialogueRevision = ref(0)
-  const responseComplete = ref(false)
-  const lastSendError = ref('')
+  // ── galgame 转录状态层（上游 v3.9.0 合并，useGalgameTranscript/GalgameDialogue 消费）──
+  const guessSourceRawId = ref(null)   // 候选词来源消息 raw_id（点击续写时带回，防止张冠李戴）
+  const dialogueRevision = ref(0)      // 转录刷新信号：dialogue_saved / generate_done 递增，舞台按它增量拉取
+  const responseComplete = ref(false)  // 本轮回应是否已完整落库（response_end / dialogue_saved 置真）
+  const lastSendError = ref('')        // 后端 error 事件的人话文本（舞台显示，重试成功清空）
+  // 重写兜底（reroll）的过渡态：后端发 reroll_start → true，reroll_end → false。
+  // 开启 antiRepetitionReroll 后，重写要多花一次模型调用（几秒），期间把已上屏的气泡标成
+  // 「重新组织语言中…」，否则用户会以为刚才那段就是最终答案（2026-10-15 补）。
+  const rerolling = ref(false)
+  // 上游 v4.2.0：断线/超时恢复（保留已收到的内容，可原消息重试）
   const failedTurn = ref(null)
 
   async function retryFailedMessage() {
@@ -94,6 +106,23 @@ export const useChatStore = defineStore('chat', () => {
   const realtimeAffinity = ref(null)  // { affinity, affinityDelta, lastReason } — SSE affinity_update 推送
   const affinityKey = ref(0)          // 仅 SSE 推送时递增，驱动 roll 动画；初始加载/切角色时不递增
   const sidebarScrollSignal = ref(0)  // 主动消息到达时递增，驱动 Sidebar 滚动到顶部
+  const imageRecovery = createImageTaskRecovery({
+    fetchTask: api.getImageTaskStatus,
+    isCurrent: (id, context) => activeCharId.value === context.charId
+      && findGenMsg(id) === context.message
+      && !['done', 'error'].includes(context.message.genStatus),
+    onDone: (id, images, { message }) => {
+      message.images = images
+      message.genStatus = 'done'
+      dialogueRevision.value++
+    },
+    onError: (id, error, { message }) => {
+      message.genStatus = 'error'
+      message.genError = error
+    },
+  })
+  watch(activeCharId, () => imageRecovery.stopAll(), { flush: 'sync' })
+  onScopeDispose(() => imageRecovery.stopAll())
   const activeChar = computed(() => characters.value.find(c => c.id === activeCharId.value))
 
   function applyImageEvent(d) {
@@ -150,6 +179,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function loadMessages(charId) {
+    clearTouchPlaceholder()
     const request = ++historySeq
     const revision = imageRevision
     try {
@@ -260,6 +290,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function selectChar(charId) {
+    imageRecovery.stopAll()
+    clearTouchPlaceholder()
     const selection = ++selectionSeq
     clearImageTurns()
     if (activeStream) {
@@ -277,6 +309,7 @@ export const useChatStore = defineStore('chat', () => {
     lastSendError.value = ''
     failedTurn.value = null
     realtimeAffinity.value = null  // 切角色时清除实时好感度
+    rerolling.value = false        // 切角色时清掉重写过渡态（上一个角色的重写与本角色无关）
     // 标记主动消息已读（DB 持久化），Sidebar 的 onCharClick 也会调，这里兜底
     try {
       useProactiveStore().markRead(charId)
@@ -297,6 +330,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function clearActiveMessages() {
+    imageRecovery.stopAll()
+    clearTouchPlaceholder()
     const id = activeCharId.value
     if (!id) return
     cancelActiveStream()
@@ -374,12 +409,8 @@ export const useChatStore = defineStore('chat', () => {
   async function uploadAvatar(base64) {
     const id = activeCharId.value
     if (!id) return
-    const before = characters.value.find(c => c.id === id)?.avatar_path || ''
     const r = await api.uploadAvatar(id, base64 || '')
     await loadCharacters()
-    const after = characters.value.find(c => c.id === id)?.avatar_path || ''
-    // P1：只有版本确实变化且保存成功才反馈；移除头像（after 为空）静默
-    emitCharacterAvatarChanged({ characterId: id, previousVersion: before, nextVersion: after, ok: true })
     return r
   }
 
@@ -390,6 +421,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function deleteActiveCharacter() {
+    imageRecovery.stopAll()
     const id = activeCharId.value
     const char = characters.value.find(c => c.id === id)
     if (!id || char?.name === 'default') return
@@ -424,6 +456,7 @@ export const useChatStore = defineStore('chat', () => {
     guessSourceRawId.value = null
     responseComplete.value = false
     lastSendError.value = ''
+    rerolling.value = false  // 新一轮开始：清掉上一轮残留的重写过渡态
     const now = new Date().toISOString()
     // 幂等键：防止重试导致服务端写入重复用户消息
     const clientMsgId = retryClientMsgId || Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
@@ -600,6 +633,7 @@ export const useChatStore = defineStore('chat', () => {
           if (value?.type === 'event') lastEvent = value.event
           if (value?.type === 'data') {
             const d = value.data
+            // galgame 转录状态（上游 v3.9.0 合并）：先记录完成/错误状态，再进普通事件分支
             if (lastEvent === 'response_end') { responseComplete.value = true; finishTurnImages(imageTurn) }
             if (lastEvent === 'dialogue_saved' || lastEvent === 'done') {
               dialogueSaved = true
@@ -612,6 +646,8 @@ export const useChatStore = defineStore('chat', () => {
               lastSendError.value = ''
               dialogueRevision.value++
             }
+        // 本轮彻底结束：重写过渡态兜底清掉（正常流程 reroll_end 已清；这里防后端异常/断流残留）
+        if (lastEvent === 'dialogue_saved' || lastEvent === 'response_end') rerolling.value = false
             if (lastEvent === 'error') lastSendError.value = d.message || '回应失败，请稍后重试'
              //  token（只有 token 事件才写入回复气泡，避免 msg_saved 等带 content 的事件串入）
              if (lastEvent === 'token' && (d.content || (Array.isArray(d.images) && d.images.length))) {
@@ -661,6 +697,34 @@ export const useChatStore = defineStore('chat', () => {
               const newId = uid()
               bubbleIds.push(newId)
             }
+            // ── reroll_start / reroll_end（D2 重写兜底的过渡态，2026-10-15 补）──
+            // 后端在真正开始重写前发 reroll_start，重写结束（成功或失败）发 reroll_end。
+            // 重写失败时后端**保留原输出且不发替换事件** ⇒ 这里只需要把标记撤掉。
+            if (lastEvent === 'reroll_start') {
+              rerolling.value = true
+            }
+            if (lastEvent === 'reroll_end') {
+              rerolling.value = false
+            }
+
+            // ── replace_last_assistant（D2 重写兜底 · docs/chat/anti-repetition.md §12.4，形状已冻结）──
+            // 后端**只在重写成功后**发（失败/空流不发，所以这里不用处理空内容）。
+            // 形状：{ content, segments:[{content, emojiKeys, images}], reason:'reroll', turn }
+            //   · segments 是**超集**：逐气泡对齐，替换后**不能丢表情包与图片**（见 utils/assistantReplace.js）
+            //   · content 只是简单路径（所有文本气泡用 \n\n 拼），这里用它同步 fullResponse
+            //   · turn 是服务端时间戳，用来校验「替换的是本轮」—— 比已应用的更旧就丢弃（防乱序 / 重复投递）
+            if (lastEvent === 'replace_last_assistant' && Array.isArray(d.segments) && d.segments.length > 0) {
+              const turn = Number(d.turn)
+              const stale = Number.isFinite(turn) && turn > 0 && turn < lastReplaceTurn
+              if (!stale) {
+                if (Number.isFinite(turn) && turn > 0) lastReplaceTurn = turn
+                if (_bufTimer) { clearTimeout(_bufTimer); _bufTimer = null }
+                clearPendingEmojiTimers()
+                applyAssistantReplace({ messages: messages.value, bubbleIds, segments: d.segments, uid, now: new Date().toISOString() })
+                if (d.content !== undefined && d.content !== null) fullResponse = d.content
+              }
+            }
+
             // ── context_update ──
             if (lastEvent === 'context_update' && d.content !== undefined && d.content !== null) {
               fullResponse = d.content
@@ -726,7 +790,7 @@ export const useChatStore = defineStore('chat', () => {
             if (lastEvent === 'generate_done') {
               const gm = findGenMsg(d.taskId)
               if (gm && d.images) { gm.images = d.images; gm.genStatus = 'done' }
-              dialogueRevision.value++
+              dialogueRevision.value++   // galgame 舞台：迟到配图也要刷进转录（按 refreshIds 补挂）
             }
             if (lastEvent === 'generate_retrying') {
               const gm = findGenMsg(d.taskId)
@@ -821,7 +885,6 @@ export const useChatStore = defineStore('chat', () => {
           continue
         }
         // 重试耗尽
-        if (!sawImageGen) lastSendError.value ||= '没有收到完整回应，请稍后重试'
         for (const bid of bubbleIds) {
           let m = messages.value.find(x => x.id === bid)
           if (!m) continue  // 延迟创建未触发，无需填充
@@ -844,7 +907,6 @@ export const useChatStore = defineStore('chat', () => {
 
         // 有完整气泡或服务端已保存 → 不重试，接受已有内容
         if (thisAttemptHadBubble || thisAttemptHadMsgSaved) {
-          lastSendError.value = '连接中断，已保留收到的内容'
           console.warn('[chat] stream interrupted but content already committed, keeping partial content')
           break
         }
@@ -862,7 +924,6 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         // 重试已耗尽，显示错误
-        lastSendError.value = err.message || '连接断开，请重试'
         for (const bid of bubbleIds) {
           let m = messages.value.find(x => x.id === bid)
           if (!m) {
@@ -925,6 +986,12 @@ export const useChatStore = defineStore('chat', () => {
 
     clearSafetyTimer()
     if (isCurrentStream(sessionId)) {
+      // 流因等待预算或连接中断结束后，仍按任务 id 接回迟到结果。
+      for (const message of messages.value) {
+        if (message.type === 'image_gen' && message.genId != null && !['done', 'error'].includes(message.genStatus)) {
+          imageRecovery.start(message.genId, { charId, message })
+        }
+      }
       if (!dialogueSaved && !admissionError) {
         recovery.error = lastSendError.value || '回应中断，可以重试'
         if (!fullResponse.trim() && recovery.partial) messages.value.push({ id: uid(), role: 'assistant', type: 'text', content: recovery.partial, interrupted: true, recoveryKey: clientMsgId })
@@ -946,7 +1013,37 @@ export const useChatStore = defineStore('chat', () => {
    * - 更新角色列表中该角色的 last_message
    * - 如果是当前活跃角色，直接追加到消息列表
    */
+  // ── 等待期占位气泡（专题 §八 8.2 可选加强）──
+  // 点动作 到 她的文字反应上屏之间还有 3~5 秒静默。这里插一条**本地**占位气泡（typing 态），真消息一到就撤。
+  // 关键：用 **本地 id + `placeholder` 标记**精确定位 —— 绝不按内容或位置删，免得误删她的真消息。
+  // 15 秒超时兜底：异常 / 广播没来也不会残留。
+  const TOUCH_PLACEHOLDER_TEXT = '她正感受着你的动作……'
+  const TOUCH_PLACEHOLDER_TIMEOUT_MS = 15000
+  let touchPlaceholderTimer = null
+
+  function clearTouchPlaceholder() {
+    if (touchPlaceholderTimer) { clearTimeout(touchPlaceholderTimer); touchPlaceholderTimer = null }
+    const at = messages.value.findIndex(m => m && m.placeholder === 'touch')
+    if (at >= 0) messages.value.splice(at, 1)
+  }
+
+  function showTouchPlaceholder() {
+    clearTouchPlaceholder()  // 先清再加：连点也不会堆出第二条
+    messages.value.push({
+      id: 'touch-placeholder-' + Date.now(),
+      role: 'assistant',
+      type: 'text',
+      content: TOUCH_PLACEHOLDER_TEXT,
+      placeholder: 'touch',
+      typing: true,
+      created_at: new Date().toISOString(),
+    })
+    touchPlaceholderTimer = setTimeout(clearTouchPlaceholder, TOUCH_PLACEHOLDER_TIMEOUT_MS)
+  }
+
   function handleProactiveMessage(data) {
+    // 她的真消息到了 —— 撤掉等待期占位（这是最主要的移除路径）
+    clearTouchPlaceholder()
     const charId = data.character_id
 
     // 更新角色列表中的预览 + 冒泡到最上面
@@ -1050,6 +1147,35 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  return { characters, activeCharId, messages, queuedReplies, visibleMessages, streaming, streamingContent, showTypingDots, memoryRecalling, hasMoreOlder, guesses, guessSourceRawId, dialogueRevision, responseComplete, lastSendError, failedTurn, retryFailedMessage, realtimeAffinity, affinityKey, activeChar, sidebarScrollSignal,
-    loadCharacters, loadMessages, expandWindow, selectChar, updateActiveCharacter, clearActiveMessages, undoLastRound, generateCharacter, uploadAvatar, getRecentChatImages, deleteActiveCharacter, sendMessage, handleProactiveMessage, handleDelayedReply, bumpImageUrls }
+  /**
+   * 私聊两段式反应的**后半段**（专题 §八 8.2）：文字先广播上屏，图好了再来一条 update。
+   * payload（后端定，**未落地前按此写**）：{ msg_id, raw_id, images }
+   * 语义：按 **msg_id** 找到**已有**那条文字气泡，**在它后面插入** image_gen 气泡；
+   *      去重复用 handleProactiveMessage 的 alreadyHas 口径（重复投递不重复挂）；
+   *      找不到 msg_id 一律**安全忽略**（不新建气泡、不报错 —— 可能是别的会话或已切走）。
+   */
+  function handleProactiveMessageUpdate(data) {
+    clearTouchPlaceholder()  // 兜底：只有图、没有文字广播的异常路径也别让占位留着
+    if (!data || !data.msg_id) return
+    if (!Array.isArray(data.images) || data.images.length === 0) return
+    const idx = messages.value.findIndex(m => m.id === data.msg_id)
+    if (idx < 0) return
+    // 去重：紧跟在锚点后面的那条 image_gen 若已是同一批图，就不再挂（与 handleProactiveMessage 同口径）
+    const next = messages.value[idx + 1]
+    const alreadyHas = next?.type === 'image_gen' && next.images?.length === data.images.length
+      && next.images.every((img, i) => img.url === data.images[i])
+    if (alreadyHas) return
+    messages.value.splice(idx + 1, 0, {
+      id: uid(),
+      role: 'assistant',
+      type: 'image_gen',
+      genId: 'proactive_' + (data.raw_id || data.msg_id) + '_' + Date.now(),
+      genStatus: 'done',
+      images: data.images.map(url => ({ url, base64: null })),
+      created_at: new Date().toISOString(),
+    })
+  }
+
+  return { characters, activeCharId, messages, queuedReplies, visibleMessages, streaming, streamingContent, showTypingDots, memoryRecalling, hasMoreOlder, guesses, guessSourceRawId, dialogueRevision, responseComplete, lastSendError, failedTurn, retryFailedMessage, rerolling, realtimeAffinity, affinityKey, activeChar, sidebarScrollSignal,
+    loadCharacters, loadMessages, expandWindow, selectChar, updateActiveCharacter, clearActiveMessages, undoLastRound, generateCharacter, uploadAvatar, getRecentChatImages, deleteActiveCharacter, sendMessage, handleProactiveMessage, handleProactiveMessageUpdate, handleDelayedReply, bumpImageUrls, showTouchPlaceholder, clearTouchPlaceholder }
 })

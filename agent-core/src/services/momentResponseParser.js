@@ -4,6 +4,8 @@
 // The parser is intentionally strict about not leaking raw JSON syntax into
 // the stored post content when the model response is truncated or malformed.
 
+import { isRefusal } from './refusalDetector.js';
+
 export const DEFAULT_MOMENT_IMAGE_PROMPT = 'scenic view, beautiful lighting, detailed';
 
 function emptyMoment(text = '') {
@@ -17,30 +19,10 @@ function stripCodeFence(raw) {
     .trim();
 }
 
-function repairInvalidEscapes(text) {
-  return text.replace(/\\([^"\\\/bfnrtu])/g, '$1');
-}
-
-function extractFirstJson(text) {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\') { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
+// 2026-10-15 收口：扫描器与转义修复都走 `jsonExtract.js`（全仓唯一正源）。
+// 本文件旧版是「扫出 JSON **字符串**」+ 一份本地非法转义修复，语义与收口版一致。
+// `repairInvalidEscapes` 这个名字在本文件里用了多年（多处引用），保留别名以免大面积改名。
+import { extractFirstJson, repairJson as repairInvalidEscapes } from './jsonExtract.js';
 
 function endsInsideString(text) {
   let inString = false;
@@ -124,6 +106,9 @@ export function parseMomentResponse(raw) {
   }
 
   if (jsonish.startsWith('{')) return emptyMoment();
+  // 拒答不是朋友圈正文（2026-10-22）：返回空 text，交给上层兜底「今天天气真好～」，
+  // 而不是把「我无法提供相关内容」直接发上墙。
+  if (isRefusal(cleaned)) return emptyMoment();
   return emptyMoment(cleaned.slice(0, 200));
 }
 

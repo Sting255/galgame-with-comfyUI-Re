@@ -2,30 +2,45 @@ import { godCommitGuard } from './src/services/godSays/commitGuard.js';
 import './src/envCheck.js'; // 必须最先执行：Node ABI 预检，防 better-sqlite3 加载崩溃
 import './src/logCapture.js'; // 尽早安装 console 捕获到内存环形缓冲（幂等）
 import express from 'express';
-import cors from 'cors';
+import { startBackgroundServices, stopBackgroundServices } from './src/server/backgroundServices.js';
+import { createHttpLifecycle } from './src/server/httpLifecycle.js';
+import { createAccessControl, loadAccessToken } from './src/server/accessControl.js';
+import { maintenanceStatus } from './src/db/maintenance.js';
 import path from 'path';
 import { readFileSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
-import net from 'node:net';
-import { config, autoDetectWorkflowMode, activateLlmProfile, getActiveProfileId } from './src/config.js';
+import { config, autoDetectWorkflowMode } from './src/config.js';
 import { getDb, closeDb } from './src/db/index.js';
 import { errorHandler } from './src/middleware/errorHandler.js';
 import { asyncHandler, wrapRouterAsync } from './src/middleware/asyncHandler.js';
 import { imageAvifFallback } from './src/middleware/imageAvifFallback.js';
 import { healthCheck as vectorHealth } from './src/services/vectorClient.js';
 import chatRoutes from './src/routes/chat.js';
-import godSaysRoutes from './src/routes/godSays.js';
-import logRoutes from './src/routes/logs.js';
-import { startGodSays, stopGodSays } from './src/services/godSays/runtime.js';
 import ttsRoutes from './src/routes/tts.js';
 import memoryRoutes from './src/routes/memory.js';
 import imagesRoutes from './src/routes/images.js';
 import charactersRoutes from './src/routes/characters.js';
 import emojiRoutes from './src/routes/emoji.js';
+import intimateRoutes from './src/routes/intimate.js';
+import hypnosisRoutes from './src/routes/hypnosis.js';
+import hypnosisPhoneRoutes from './src/routes/hypnosisPhone.js';
+import intimateAiEditRoutes from './src/routes/intimateAiEdit.js';
+import touchRoutes from './src/routes/touch.js';
+import toysRoutes from './src/routes/toys.js';
+// 性爱交互姿势（2026-10-01，task-1）：可点击推进（继续抽插/加速/换姿势/停下）+ 角色实时反馈
+import intimateActionRoutes from './src/routes/intimateActions.js';
 import configRoutes from './src/routes/config.js';
+// SillyTavern 世界书 / 预设（上游 v3.10.0 合并，2026-10-19）：
+// 这两个路由文件早就随合并进来了，但 **app.js 一直没挂载** ⇒ 前端调用直接 404
+// （浏览器 E2E 实测：`GET /api/presets` 与 `GET /api/config/world-settings/1/lorebook` 都是 404）。
+// 挂载点与上游一致：世界书挂 /api/config（路径 /world-settings/:id/lorebook），预设挂 /api/presets。
 import lorebookRoutes from './src/routes/lorebooks.js';
 import presetRoutes from './src/routes/presets.js';
 import momentsRoutes from './src/routes/moments.js';
+import worldMapRoutes from './src/routes/worldMap.js';
+import godSaysRoutes from './src/routes/godSays.js';   // 上游 4.1.0：神说（godSays）
+import logRoutes from './src/routes/logs.js';          // 上游 4.1.0：内存日志面板
+import { startGodSays, stopGodSays } from './src/services/godSays/runtime.js';
 import relationshipsRoutes from './src/routes/relationships.js';
 import userRelationshipsRoutes from './src/routes/userRelationships.js';
 import portraitsRoutes from './src/routes/portraits.js';
@@ -33,41 +48,52 @@ import notificationsRoutes from './src/routes/notifications.js';
 import eventsRoutes from './src/routes/events.js';
 import streamRoutes from './src/routes/stream.js';
 import expressionStandingRoutes from './src/routes/expressionStandings.js';
+import assetGenerationRoutes from './src/routes/assetGeneration.js';
+import { recoverInterruptedAssetJobs } from './src/services/assetGenerationQueue.js';
 import scheduleRoutes from './src/routes/schedule.js';
-import cohabitationRoutes from './src/routes/cohabitation.js';
+import diaryRoutes from './src/routes/diary.js';   // 上游 v3.9.0 合并：角色日记 /api/diaries/*
+import mediaRoutes from './src/routes/media.js';   // 上游 v3.9.0 合并：媒体内容页 /api/media/*
+import timeRoutes from './src/routes/time.js';   // 程序时间（世界钟）：/api/time*
+import cohabitationRoutes from './src/routes/cohabitation.js';   // 上游 v4.2.0：宿舍（同居）/api/cohabitation/*
 import workflowsRoutes from './src/routes/workflows.js';
 import mailboxRoutes from './src/routes/mailbox.js';
 import groupsRoutes from './src/routes/groups.js';
 import libraryRoutes from './src/routes/library.js';
 import itemsRoutes from './src/routes/items.js';
 import newspaperRoutes from './src/routes/newspaper.js';
-// ⚠ 2026-10-08 合并 v3.7.0：上游新增 diary 路由、本地新增 media 路由 —— 都保留。
-import diaryRoutes from './src/routes/diary.js';
-import mediaRoutes from './src/routes/media.js';
-import townRoutes from './src/routes/town.js';
+// 角色操作反馈（右下角轻通知）：即时反应 + 短句包，独立前缀，与 /api/characters 无冲突
 import characterReactionsRoutes from './src/routes/characterReactions.js';
+import contextRoutes from './src/routes/context.js';
+import dataRoutes from './src/routes/data.js';   // 一键导出/导入全部数据
 import maibotBridgeRoutes from './src/maibot-bridge/router.js';
 import { autoRestoreMissing } from './src/services/workflowTemplates.js';
-import { startMomentScheduler } from './src/services/momentScheduler.js';
-import { startSpecialMomentScheduler } from './src/services/scheduleSpecialMoment.js';
-import { startProactiveChatScheduler } from './src/services/proactiveChatScheduler.js';
-import { startEventScheduler } from './src/services/eventScheduler.js';
-import { startDisturbScheduler } from './src/services/disturbModeScheduler.js';
-import { startReplyQueueScheduler } from './src/services/replyQueueScheduler.js';
-import { initialize as initScheduleManager } from './src/services/scheduleManager.js';
-import { startScheduler as startImageCompressor } from './src/services/imageCompressor.js';
-import { startMailboxScheduler } from './src/services/mailboxScheduler.js';
-import { startWeatherScheduler } from './src/services/weatherService.js';
-import { startGroupIdleScheduler } from './src/services/groupIdleScheduler.js';
-import { startKnowledgeSyncScheduler } from './src/services/imagePromptKnowledge.js';
-import { startItemScheduler } from './src/services/itemScheduler.js';
+// 2026-10-01：世界翻篇（程序日切换）——启动补一次，覆盖"关机跨天"
+import { runProgramDayRollover } from './src/services/programDayRollover.js';
+import { ensurePoseControlAssetsOnBoot } from './src/services/poseControlInstall.js';
+// 离线世界编年（2026-11-06）：关机期间的世界由回来时一次性补算
+import { readLastSeen, runOfflineBackfill, touchLastSeen } from './src/services/offlineChronicle.js';
+import { pruneWorldTimeline } from './src/services/worldTimeline.js';
+import { pruneInterCharacterEvents } from './src/services/groupInterCharacterEvents.js';
 import { applyFromConfig } from './src/services/llmConcurrency.js';
-import { startTownScheduler, stopTownScheduler } from './src/services/town/townService.js';
-import { startTownNpcStockScheduler, stopTownNpcStockScheduler } from './src/services/town/townNpcStockScheduler.js';
-import { restoreInitJob } from './src/services/town/townInitService.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
-import { ensureDefaultMemoryIndexes, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
-import { startConsolidationScheduler, stopConsolidationScheduler } from './src/services/memory/consolidationScheduler.js';
+import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
+import { initFileLogging, getFileLogging } from './src/utils/fileLogger.js';
+import { installRuntimeHealthConsoleHook, getRuntimeFailures, getSelfCheck, setSelfCheckResult } from './src/services/runtimeHealth.js';
+import { getImageQueueStatus } from './src/services/imageSkill.js';
+// 体型行注册（副作用 import）：characterPersona 通过 bodyBuildRegistry 取用，避免三角环
+import './src/services/characterBuild.js';
+
+// 日志落盘：把 console 输出**同时**镜像到 <仓库根>/logs/backend-YYYY-MM-DD.log
+// （启动器只用 QProcess 把 stdout 灌进界面日志控件，不落盘；落盘后排查/发给别人都不用截图了）。
+// 放在所有 import 之后、任何 getDb()/迁移之前 —— 启动期的迁移日志也要进文件。
+// 失败只 warn，不影响主流程；可用 LOG_TO_FILE=false 关闭。
+const fileLog = initFileLogging();
+if (fileLog) {
+  console.log(`[log] 日志文件：${fileLog.file}（保留 ${fileLog.keepDays} 天；LOG_TO_FILE=false 可关闭）`);
+}
+// 运行状态采集：包一层 console.error / warn，把「哪个模块最近在反复失败」记在内存里，
+// 供设置页的「运行状态」读取。要在日志初始化之后装，才能连启动期的错误一起统计。
+installRuntimeHealthConsoleHook();
 
 const app = express();
 
@@ -78,8 +104,25 @@ const DATA_DIR = path.join(__dirname, 'data');
 // 仓库根目录：发布包里 agent-core 与 VERSION 同级（VERSION 由 `npm run tag` 写入）
 const ROOT_DIR = path.join(__dirname, '..');
 
+const httpLifecycle = createHttpLifecycle();
+app.use(httpLifecycle.middleware);
+
 // 中间件
-app.use(cors());
+app.use('/api/access/session', express.json({ limit: '1kb' }));
+app.use(createAccessControl({
+  token: loadAccessToken(process.env.LINSHE_ACCESS_TOKEN_PATH || (config.dbPath === ':memory:' ? null : path.join(DATA_DIR, '.access-token'))),
+  development: config.isDev,
+  hosts: (process.env.LINSHE_ALLOWED_HOSTS || '').split(',').map(value => value.trim()).filter(Boolean),
+}));
+app.use('/api', (req, res, next) => {
+  const reason = maintenanceStatus();
+  if (reason && !['/health', '/shutdown', '/access'].includes(req.path)) {
+    return res.status(503).json({ error: reason, code: 'DATABASE_MAINTENANCE' });
+  }
+  // 离线编年的心跳（2026-11-06）：内部 10 分钟节流，任意请求都会顺手记一笔"我还在线"
+  touchLastSeen();
+  next();
+});
 // 刻意不使用 compression 中间件（v3.4.0 加过，已整体移除）。两条理由，改回来之前先读：
 //   1) 正确性：它的默认 filter 认为 text/event-stream 可压缩（compressible 返回 true），
 //      会把 SSE 接进 zlib/brotli 变换流，事件被缓冲在压缩缓冲里下不去。
@@ -107,9 +150,23 @@ app.use(express.json({ limit: '10mb' }));
 // 静态文件（Vue 前端，构建后）
 // 带内容哈希的资源（/assets/*，含字体）可长缓存；index.html 保持可即时更新
 app.use(express.static(PUBLIC_DIR, {
+  // `cacheControl: false`：把 Cache-Control 的**唯一权威**交给下面的 setHeaders。
+  // 不关的话 express/send 会按自己的 maxAge 再写一次头，把这里设的值**覆盖掉** ——
+  // 2026-10-01 验收实测踩到：index.html 拿到的是 `public, max-age=0`（express 默认），
+  // 我设的 `no-cache` 根本没生效（"显式承诺"成了空话）。
+  cacheControl: false,
   setHeaders(res, filePath) {
     if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-      res.setHeader('Cache-Control', 'public, max-age=2592000'); // 30d
+      res.setHeader('Cache-Control', 'public, max-age=2592000'); // 30d（带内容哈希，可长缓存）
+      return;
+    }
+    // 2026-10-01（代码优化规划 §三-3）：给 index.html 一条**显式**承诺。
+    // 它是唯一能把浏览器引向新产物 hash 的入口（每次前端重建都会变）。原来只依赖 express.static
+    // 的默认 ETag —— 那也是 304，但属"默认行为"而非"承诺"：中间层只要自作主张缓存住旧 index，
+    // 页面就会白屏或去引用已被删掉的旧 bundle（第七轮真踩过）。
+    // `no-cache` 的语义是"每次回源验证"（有 ETag 就是 304，不是不缓存），正是我们要的。
+    if (path.basename(filePath) === 'index.html') {
+      res.setHeader('Cache-Control', 'no-cache');
     }
   },
 }));
@@ -118,7 +175,8 @@ app.use(express.static(PUBLIC_DIR, {
 app.use('/images/.pending', express.static(path.join(DATA_DIR, 'images', '.pending'), { dotfiles: 'allow', index: false, maxAge: '5m' }));
 
 // 图片存储目录（AVIF 自适应：请求 .png 时若同名 .avif 存在则返回 AVIF）
-// 图片可在原路径被覆盖：允许缓存内容，但复用前必须校验，避免前端切页/刷新丢失版本参数后显示旧图。
+// 图片可在原路径被覆盖：允许缓存内容，但**复用前必须校验**，避免前端切页/刷新
+// 丢失版本参数后显示旧图（上游 v3.10.0 修的 bug，本地原来给的是 maxAge: '7d'）。
 // 放在 AVIF 回退之前，使 sendFile 和 static 共用策略；保留 ETag / Last-Modified，未变化时返回 304。
 app.use('/images', (_req, res, next) => {
   res.setHeader('Cache-Control', 'no-cache');
@@ -129,23 +187,54 @@ app.use('/images', express.static(path.join(DATA_DIR, 'images')));
 app.use('/avatars', express.static(path.join(DATA_DIR, 'avatars'), { maxAge: '30d' }));
 
 // 小镇像素素材（独立于 data/images，不进图库/压缩扫描；不带强缓存，素材重生成后刷新即生效）
-app.use('/town-assets', express.static('data/town/assets'));
-
+//
+// 2026-10-01 核实（代码优化规划 §三-2 提出"若是哈希命名就该加长缓存"）：
+// 实测文件名是**混合**的 —— `asset_11_xxx_<uuid>.png`（uuid 名，可长缓存）
+// 与 `asset_10_milky_pond_01_source.png`（**固定名**，重新生成会原地覆盖）。
+// 固定名那一类一旦加了长缓存，重生成后浏览器会一直拿旧图 ⇒ 结论：**维持不带强缓存**，
+// 这条注释就是防止后来者只看 uuid 名就顺手加 maxAge。
 // API 路由（wrapRouterAsync：给所有 async 处理器加 rejection 兜底，防请求挂起）
 app.use('/api', godCommitGuard);
 app.use('/api', wrapRouterAsync(expressionStandingRoutes));
 app.use('/api', wrapRouterAsync(chatRoutes));           // /api/characters/:id/chat, /api/characters/:id/messages
-app.use('/api/god-says', wrapRouterAsync(godSaysRoutes));
-app.use('/api/logs', wrapRouterAsync(logRoutes));
 app.use('/api/tts', wrapRouterAsync(ttsRoutes));
 app.use('/api/memory', wrapRouterAsync(memoryRoutes));
 app.use('/api/images', wrapRouterAsync(imagesRoutes));
+// 角色资产「一键后台生成」（2026-10-01）：独立前缀，与 /api/characters 的 /:id 通配无冲突
+app.use('/api/asset-generation', wrapRouterAsync(assetGenerationRoutes));
+// 性爱交互姿势（task-1）：**独立前缀**，不塞进 /api/characters 那串（那边有"相邻挂载"的冻结契约）
+app.use('/api/intimate-actions', wrapRouterAsync(intimateActionRoutes));
 app.use('/api/characters/emoji', wrapRouterAsync(emojiRoutes));  // 表情包管理（必须早于 /api/characters 挂载）
+// SLG 动作系统：/:id/touch* 同样必须早于 /api/characters 挂载（characters 的 /:id 通配会先吃掉这一族子路径）。
+// 整块排在 hypnosis 家族之前，**刻意不夹进** intimate → characters 的紧邻区间
+// （test/intimateApi.test.js / test/intimateAiEdit.test.js 断言两者之间不夹别的挂载）。
+app.use('/api/characters', wrapRouterAsync(touchRoutes));
+// 成人玩具系统：/:id/toys* —— 同样必须早于 /api/characters 挂载（理由同 touch），
+// 插在 touch 与 hypnosis 之间，不破坏 test/intimateApi.test.js 的「intimate → characters 紧邻」断言。
+app.use('/api/characters', wrapRouterAsync(toysRoutes));
+// 催眠手机：/:id/hypnosis* 也必须早于 /api/characters 挂载（理由同上）。
+// 刻意挂在 intimate 家族**之前**，让 intimate → characters 仍然紧邻
+// （test/intimateApi.test.js 断言这两行之间不夹别的挂载）
+app.use('/api/characters', wrapRouterAsync(hypnosisRoutes));
+app.use('/api/hypnosis', wrapRouterAsync(hypnosisPhoneRoutes));  // 背包直接领取催眠手机
+// 亲密档案与统计看板：/:id/intimate* 必须早于 /api/characters 挂载，
+// 否则 characters 路由的 /:id 通配会把这一族子路径先吃掉（同 emoji 的理由）
+// AI 整理档案（/:id/intimate/ai-edit*）是同一族的子路径，同样要在 charactersRoutes 之前；
+// 刻意挂在 intimateRoutes **之前**，让 intimate → characters 仍然紧邻
+// （test/intimateApi.test.js 断言这两行之间不夹别的挂载）
+app.use('/api/characters', wrapRouterAsync(intimateAiEditRoutes));
+app.use('/api/characters', wrapRouterAsync(intimateRoutes));
 app.use('/api/characters', wrapRouterAsync(charactersRoutes));  // /api/characters CRUD
 app.use('/api/config', wrapRouterAsync(configRoutes));
+// 世界书（/api/config/world-settings/:id/lorebook）与预设（/api/presets）
+// —— 上游 v3.10.0 合并时文件到了、mount 漏了（2026-10-19 浏览器 E2E 抓到 404）
 app.use('/api/config', wrapRouterAsync(lorebookRoutes));
 app.use('/api/presets', wrapRouterAsync(presetRoutes));
+app.use('/api/god-says', wrapRouterAsync(godSaysRoutes));
+app.use('/api/logs', wrapRouterAsync(logRoutes));
 app.use('/api/moments', wrapRouterAsync(momentsRoutes));
+// 地图页（世界地图骨架 = 叙事地理）；与小镇的网格图接口刻意分开
+app.use('/api/worldmap', wrapRouterAsync(worldMapRoutes));
 app.use('/api/relationships', wrapRouterAsync(relationshipsRoutes));
 app.use('/api/user-relationships', wrapRouterAsync(userRelationshipsRoutes));
 app.use('/api/portraits', wrapRouterAsync(portraitsRoutes));
@@ -153,19 +242,20 @@ app.use('/api/notifications', wrapRouterAsync(notificationsRoutes));
 app.use('/api/events', wrapRouterAsync(eventsRoutes));
 app.use('/api/stream', wrapRouterAsync(streamRoutes));
 app.use('/api/schedule', wrapRouterAsync(scheduleRoutes));
-app.use('/api/cohabitation', wrapRouterAsync(cohabitationRoutes));
+app.use('/api/diaries', wrapRouterAsync(diaryRoutes));   // 上游 v3.9.0 合并：角色日记（与 intimate→characters 紧邻契约无关）
+app.use('/api/time', wrapRouterAsync(timeRoutes));   // 程序时间：GET /api/time、POST /api/time/{advance,period,set,reset}
+app.use('/api/cohabitation', wrapRouterAsync(cohabitationRoutes));   // 上游 v4.2.0：宿舍（同居）居室与整轮日程
 app.use('/api/workflows', wrapRouterAsync(workflowsRoutes));
 app.use('/api/mailbox', wrapRouterAsync(mailboxRoutes));
 app.use('/api/groups', wrapRouterAsync(groupsRoutes));
 app.use('/api/library', wrapRouterAsync(libraryRoutes));   // /api/library/event-types, /api/library/topics
 app.use('/api/items', wrapRouterAsync(itemsRoutes));
 app.use('/api/newspaper', wrapRouterAsync(newspaperRoutes));   // /api/newspaper/today 《小镇早知道》
-// ⚠ 2026-10-08 合并 v3.7.0：上游挂载 diaries、本地挂载 media —— 都保留。
-app.use('/api/diaries', wrapRouterAsync(diaryRoutes));         // /api/diaries/:id 角色日记（后台生成 + SSE）
-app.use('/api/media', wrapRouterAsync(mediaRoutes));           // 媒体内容页（传媒/板块/帖子/刷新）
-app.use('/api/town', wrapRouterAsync(townRoutes));
-// 角色操作反馈：/api/character-reactions/instant 低概率即时反应（额度 + 幂等在后端）
 app.use('/api/character-reactions', wrapRouterAsync(characterReactionsRoutes));
+// 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体，见 services/mediaService.js）
+app.use('/api/media', wrapRouterAsync(mediaRoutes));
+app.use('/api/context', wrapRouterAsync(contextRoutes));   // /api/context/usage, /api/context/compress
+app.use('/api/data', wrapRouterAsync(dataRoutes));         // /api/data/export, /api/data/export/info, /api/data/import
 
 app.use('/api/maibot', wrapRouterAsync(maibotBridgeRoutes));
 
@@ -188,8 +278,22 @@ app.get('/api/health', asyncHandler(async (req, res) => {
   const vectorOk = await vectorHealth();
   res.json({
     status: 'ok',
+    application: 'linshe',
+    pid: process.pid,
+    port: config.port,
     vector_service: vectorOk ? 'ok' : 'down',
     timestamp: new Date().toISOString(),
+  });
+}));
+
+// 运行状态（2026-11-06）：最近 1 小时的错误/警告汇总 + 生图队列水位 + 启动自检结论。
+// 动机：11-06 的日志里，报纸/日程/朋友圈/群聊连续失败几十次，界面上毫无提示。
+app.get('/api/health/runtime', asyncHandler(async (req, res) => {
+  res.json({
+    ...getRuntimeFailures(),
+    selfCheck: getSelfCheck(),
+    imageQueue: getImageQueueStatus(),
+    comfyui: { url: config.comfyui.url || '', imageProvider: config.comfyui.imageProvider || 'comfyui' },
   });
 }));
 
@@ -204,19 +308,6 @@ console.log('============================================');
 // 初始化数据库
 getDb();
 console.log('[db] SQLite initialized');
-
-// 恢复激活的 LLM profile 到内存 config。
-// 不做这一步的话，config.llm 会一直停在 .env 的值（LLM_API_KEY），而
-// syncActiveLlmProfile() 会在每次保存设置时把 config.llm.apiKey 写回 profile ——
-// 于是「用户为某个 profile 单独设的 key」会被 .env 里的旧值悄悄覆盖掉。
-{
-  const activeId = getActiveProfileId();
-  if (activeId) {
-    const r = activateLlmProfile(activeId);
-    if (r?.ok) console.log(`[config] restored active LLM profile: ${activeId}`);
-    else console.log(`[config] active LLM profile not found: ${activeId}`);
-  }
-}
 
 // 启动自动压缩：清理任务删除大量行后，SQLite 只把页还回内部空闲列表，文件对操作系统的
 // 占用不变。空闲页占比超阈值时在监听端口前做一次 VACUUM（阻塞启动数秒到数分钟，一次性
@@ -233,8 +324,17 @@ trimImageTaskHistory();
 function trimImageTaskHistory() {
   try {
     if (process.env.IMAGE_TASK_TEXT_RETENTION_DAYS === '0') return;
+    // 2026-10-01（本仓裁决，上游 v3.6.2 带来的功能）：**缺省不删**。
+    // 上游缺省 30 天，启动时无条件把 30 天前的 image_tasks 提示词文本清空
+    // （prompt_original=''、prompt_refined/workflow_template=NULL）。这段文本是**不可再生**的：
+    // HiresFix「细化」要在 routes/images.js 反查原提示词才能复用（朋友圈/私聊图有 moment/raw 两级兜底，
+    // 立绘 / 头像 / 小镇素材 / 表情包 / 群相册那批**没有任何兜底**，清了就只能拿到空提示词）。
+    // 现在只有**显式**配了正整数天才瘦身：写 IMAGE_TASK_TEXT_RETENTION_DAYS=30 即恢复上游行为。
+    const raw = process.env.IMAGE_TASK_TEXT_RETENTION_DAYS;
+    if (raw === undefined || raw === null || String(raw).trim() === '') return;
+    const days = Math.max(1, parseInt(raw, 10) || 0);
+    if (!days) return;
     const db = getDb();
-    const days = Math.max(1, parseInt(process.env.IMAGE_TASK_TEXT_RETENTION_DAYS ?? '30', 10) || 30);
     const cutoff = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
     const trimmed = db.prepare(`UPDATE image_tasks SET prompt_original = '', prompt_refined = NULL, workflow_template = NULL
       WHERE created_at < ? AND status IN ('done','failed')
@@ -248,6 +348,8 @@ function trimImageTaskHistory() {
 function compactDatabaseIfFragmented() {
   try {
     if (process.env.DB_AUTO_VACUUM === '0') return;
+    // 内存库没有磁盘文件：statSync(':memory:') 会抛 ENOENT，打出一条"自动压缩跳过"的误导日志
+    if (!config.dbPath || config.dbPath === ':memory:') return;
     const db = getDb();
     const pages = db.pragma('page_count', { simple: true });
     const free = db.pragma('freelist_count', { simple: true });
@@ -264,47 +366,6 @@ function compactDatabaseIfFragmented() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// ★ 单实例守卫 —— 必须放在**任何调度器启动之前**
-//
-// 为什么需要：Node 在 Windows 上默认给监听套接字带 SO_REUSEADDR，**多个进程可以「同时绑定」
-// 同一个端口且不报 EADDRINUSE**（app.listen 因此不会进 error 分支，进程也不会退出）。
-// 后果是：启动器每次重启若没清干净上一个 node 子进程，旧进程就会变成一个
-// 「绑着端口却收不到请求」的哑进程 —— 但它启动时挂上的所有调度器（朋友圈发帖 / 日程特殊
-// 朋友圈 / 主动对话 / 奇遇 / 立绘…）照常在后台跑，反复写库并持续向 ComfyUI 派单。
-//
-// 实测（2026-10-04）：积压到 9 个 app.js 实例，其中 5 个同一时刻启动 → 每 5 分钟在同一秒
-// 插入 5 条朋友圈、每条 1~3 张配图，ComfyUI 被长期占满，用户手动生图（火花立绘）根本排不上队；
-// 而且用户把「朋友圈发帖频率」调成 0（关闭）也无效 —— 那些旧实例的 config 是启动时的内存快照，
-// 设置页改的是 DB + 当前进程内存，旧实例永远学不到新值。
-//
-// 守卫方式：listen 之前先探一次端口，有人应答就说明已有实例在服务，本进程直接退出。
-// 之所以要探两次间隔 1.5s：启动器「先杀旧进程再拉起」时旧进程可能还没释放端口，
-// 单次探测会误判、把新实例也挡掉，导致服务彻底起不来。
-// ═══════════════════════════════════════════════════════════
-async function portIsServing(port) {
-  return new Promise((resolve) => {
-    const sock = net.connect({ port, host: '127.0.0.1' });
-    const done = (v) => { try { sock.destroy(); } catch { /* 忽略 */ } resolve(v); };
-    sock.setTimeout(1200);
-    sock.once('connect', () => done(true));
-    sock.once('timeout', () => done(false));
-    sock.once('error', () => done(false));
-  });
-}
-
-if (await portIsServing(config.port)) {
-  await new Promise(r => setTimeout(r, 1500));
-  if (await portIsServing(config.port)) {
-    console.error('============================================');
-    console.error(`[agent-core] 端口 ${config.port} 已有实例在服务 —— 本进程退出。`);
-    console.error('  目的是避免重复实例各自跑调度器：会重复发朋友圈 / 跑日程 / 向 ComfyUI 重复派单。');
-    console.error('  若你确认想重启服务，请先在启动器里「停止」，等端口释放后再「启动」。');
-    console.error('============================================');
-    process.exit(0);
-  }
-}
-
 // 初始化时根据 ComfyUI/models/diffusion_models 下的模型自动检测工作流模式（仅首次执行一次）
 autoDetectWorkflowMode();
 
@@ -318,61 +379,100 @@ applyFromConfig(config);
 // 启动时自动补全缺失的工作流文件（已有文件不会被覆盖）
 autoRestoreMissing();
 
-// 启动朋友圈定时调度器
-startMomentScheduler();
+// 世界账本的清理（2026-11-06）：时间轴与成员互动只服务"最近发生过什么"，留 90 天。
+// 放在启动时做一次，避免两张表随事件与群聊无限增长。
+try {
+  const removedTimeline = pruneWorldTimeline(90);
+  const removedInteractions = pruneInterCharacterEvents(90);
+  if (removedTimeline || removedInteractions) {
+    console.log(`[world] 清理过期账本：时间轴 ${removedTimeline} 条，成员互动 ${removedInteractions} 条（保留 90 天）`);
+  }
+} catch (error) {
+  console.warn('[world] 账本清理跳过（不影响启动）:', error.message);
+}
 
-// 启动特殊日程朋友圈队列（启动时先检查所有角色的日程：过时的直接跳过，到点的立即发送）
-startSpecialMomentScheduler();
+startBackgroundServices();
 
-// 启动主动对话调度器（由 config.features.proactiveChat 控制开关，scheduler 内部自行判断）
-startProactiveChatScheduler();
+// ── 离线世界编年（2026-11-06）──
+// 心跳必须在写第一笔之前读出来，否则启动后任何一个请求都会把 last_seen 覆盖成"刚刚"。
+const bootLastSeen = readLastSeen();
+if (bootLastSeen) {
+  console.log(`[offline] 上次在线：${bootLastSeen.toISOString()}`);
+}
+// 延迟再补算：避开启动高峰，也让用户先看到界面。失败只 warn，不影响任何主链路。
+// OFFLINE_BACKFILL_DELAY_MS 仅供本地验证（默认 5 分钟）。
+{
+  const delayMs = Math.max(0, Number(process.env.OFFLINE_BACKFILL_DELAY_MS || 5 * 60 * 1000) || 0);
+  const timer = setTimeout(() => {
+    void runOfflineBackfill({ lastSeen: bootLastSeen }).catch(err => console.warn('[offline] backfill error:', err?.message || err));
+  }, delayMs);
+  if (typeof timer.unref === 'function') timer.unref();
+}
 
-// 启动奇遇事件调度器（由 config.features.events 控制开关，scheduler 内部自行判断）
-startEventScheduler();
+// 2026-10-01：角色资产「一键后台生成」——进程重启把在跑的批量任务标成 interrupted（可续跑），
+// 不假成 failed（failed 是"跑过了、错了"，interrupted 是"被打断了、还能接着跑"）。
+try {
+  const recovered = recoverInterruptedAssetJobs();
+  if (recovered > 0) console.log(`[assetGen] 发现 ${recovered} 个被中断的批量任务（可在前端一键继续）`);
+} catch (error) {
+  console.warn('[assetGen] 中断任务恢复失败（不影响启动）:', error.message);
+}
 
-// 启动防打扰模式调度器（由 config.features.disturbMode 控制开关，scheduler 内部自行判断）
-startDisturbScheduler();
-
-// 启动回复队列调度器（日程刷新 + 延迟回复处理）
-startReplyQueueScheduler();
-
-// 初始化日程管理器（恢复睡眠状态）
-initScheduleManager();
-
-// 启动图片压缩调度器（定时 + 立即压缩功能）
-startImageCompressor();
-
-// 启动信箱调度器（每 60 秒扫描待回信的信件）
-startMailboxScheduler();
-
-// 启动天气调度器（每日 08:00 后更新小时级天气缓存）
-startWeatherScheduler();
-
-// 启动群聊后台调度器（预算制闲聊 + 角色自发建群，由 config.features.groupChat 控制）
-startGroupIdleScheduler();
-startGodSays();
-
-// 启动图片知识库同步调度器（用户安静时才执行同步，不阻塞生图）
-startKnowledgeSyncScheduler();
-
-// 启动记忆整理 daemon（记忆的"睡眠期"：空闲触发，内部自带开关与预算判断）
-startConsolidationScheduler();
-
-// 启动道具系统调度器（每 10 分钟清理到期效果、恢复变身、标记卡死的生成中道具）
-startItemScheduler();
-
-// 启动小镇调度器（世界页：瓦片地图 + 轻量居民生态，由 config.features.town 控制）
-restoreInitJob();  // 恢复未完成的初始化向导（断点续跑）
-startTownScheduler();
-startTownNpcStockScheduler(); // 货架：后台 3 天换货 + 预生成图标
-
+// 2026-10-01：世界翻篇检查（程序日切换）——关机跨天 / 上次调时后没跑完的日常任务，启动时补一次。
+// 首次运行只记录基准不补跑（见 programDayRollover 的说明）；fire-and-forget，绝不挡启动。
+runProgramDayRollover({ reason: 'startup' }).catch(error => {
+  console.warn('[rollover] 启动检查失败（不影响启动）:', error?.message || error);
+});
 // 先启动 HTTP 服务，向量检查异步进行
-const server = app.listen(config.port, () => {
+// host 默认 undefined ⇒ 与历史行为一致（监听全部接口，手机端能连）；要只给本机用设 `HOST=127.0.0.1`
+const server = app.listen(config.port, config.host, () => {
   console.log(`[agent-core] http://localhost:${config.port}`);
   console.log('============================================');
 });
+server.on('error', error => {
+  console.error(`[agent-core] 无法监听端口 ${config.port}: ${error.message}`);
+  // 监听失败必须退出，避免全局异常处理吞掉错误后留下后台调度器。
+  closeDb();
+  process.exit(1);
+});
 // 缩短 keep-alive 空闲超时，避免 Vite 代理在进程重启后复用到已死连接
 server.keepAliveTimeout = 5000;
+startGodSays();
+
+/**
+ * 启动自检（2026-11-06）：启动 60 秒后跑一次 LLM 与 ComfyUI 的连通性，结论留在内存里给设置页看。
+ *
+ * 动机：11-06 的日志里 `OPENAI_API_KEY ... missing` 让报纸/日程/朋友圈/事件/群聊在 9 分钟内
+ * 连续失败几十次，而界面上毫无提示 —— 用户不翻日志就不会知道后台已经全废。
+ * 这里只做「探活 + 留结论」，不重试、不改配置、不影响任何调度。
+ */
+async function runRuntimeSelfCheck() {
+  try {
+    const t0 = Date.now();
+    const { chatSync } = await import('./src/llm/llm-client.js');
+    await chatSync([{ role: 'user', content: 'ping' }], { max_tokens: 8, temperature: 0, label: '启动自检' });
+    setSelfCheckResult({ llm: { ok: true, ms: Date.now() - t0, error: '', model: config.llm.model || '' } });
+  } catch (err) {
+    setSelfCheckResult({ llm: { ok: false, ms: 0, error: err?.message || String(err), model: config.llm.model || '' } });
+  }
+  const url = String(config.comfyui.url || '').replace(/\/$/, '');
+  if (!url) {
+    setSelfCheckResult({ comfy: { ok: false, url: '', error: '未配置 ComfyUI 地址' } });
+    return;
+  }
+  try {
+    const res = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(5000) });
+    setSelfCheckResult({ comfy: { ok: res.ok, url, error: res.ok ? '' : `HTTP ${res.status}` } });
+  } catch (err) {
+    setSelfCheckResult({ comfy: { ok: false, url, error: err?.message || String(err) } });
+  }
+}
+setTimeout(() => { runRuntimeSelfCheck().catch(() => {}); }, 60_000).unref?.();
+
+// 体位骨架所需的 ComfyUI 侧资产（自定义节点 / 姿态 LoRA / 检测模型）随包自带，
+// 启动时幂等装进目标 ComfyUI —— 用户换机器不用再单独装一遍（2026-11-03 用户要求）。
+// 找不到 ComfyUI 就什么都不做；失败只 warn，绝不影响出图主链路。
+ensurePoseControlAssetsOnBoot();
 
 // 异步检查向量服务（不阻塞启动）
 (async () => {
@@ -383,6 +483,9 @@ server.keepAliveTimeout = 5000;
     if (ok) {
       console.log('[vector] connected');
       setImmediate(() => ensureDefaultMemoryIndexes().catch(error => console.warn('[memory] default index initialization failed:', error.message)));
+      // 2026-10-01：向量库 ↔ 库的一致性自检（换过库 / 导入过数据之后，chroma 里的记忆会与库里对不上，
+      // 而库里「已索引」的标记让系统以为一切正常 ⇒ 403 条记忆的向量检索静默失效）。串在默认索引之后跑。
+      setImmediate(() => ensureVectorIndexConsistency().catch(error => console.warn('[memory] 向量索引自检失败（不影响启动）:', error.message)));
       break;
     }
     retries++;
@@ -418,32 +521,23 @@ process.on('uncaughtException', (err) => {
 
 // 优雅退出（幂等 — 防止 shutdown 端点 + 信号双重触发）
 let shuttingDown = false;
-const shutdown = () => {
+const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('\n[agent-core] shutting down...');
+  stopBackgroundServices();
   stopMemoryIndexWorker();
-  stopConsolidationScheduler();
-  stopGodSays();
-  stopTownScheduler();
-  stopTownNpcStockScheduler();
-
-  // 1. WAL checkpoint：确保所有未落盘事务写入主 DB
-  try {
-    const db = getDb();
-    const r = db.pragma('wal_checkpoint(TRUNCATE)');
-    console.log(`[db] WAL checkpointed before shutdown: ${r[0]?.checkpointed || 0} pages`);
-  } catch (e) {
-    console.warn('[db] WAL checkpoint failed:', e.message);
-  }
-
-  // 2. 先关 HTTP 服务（拒绝新连接），再清理资源
-  server.close(() => {
+  try { stopGodSays(); } catch { /* 退出继续收尾 */ }
+  // 只给无法完成的资源收尾设置最终兜底；HTTP 超时仍会走下面的关库与刷日志。
+  const hardExit = setTimeout(() => process.exit(1), 10000).unref();
+  let graceful = false;
+  try { graceful = await httpLifecycle.close(server); }
+  finally {
     closeDb();
-    process.exit(0);
-  });
-  // 5 秒硬超时兜底
-  setTimeout(() => process.exit(1), 5000).unref();
+    try { await getFileLogging()?.close(); } catch { /* 日志错误不阻止退出 */ }
+    clearTimeout(hardExit);
+    process.exit(graceful ? 0 : 1);
+  }
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

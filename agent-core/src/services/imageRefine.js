@@ -27,7 +27,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { submitWorkflow, uploadImage, apiToGui } from './comfyClient.js';
 import sharp from 'sharp';
-import { config } from '../config.js';
+import { config, normalizeHiresQuality } from '../config.js';
 import {
   HIRES_WORKFLOW, HIRES_ADVANCED_WORKFLOW, ACTIVE_WORKFLOW, PRO_WORKFLOW, autoRestoreMissing,
   resolveCustomWorkflowPath,
@@ -39,25 +39,39 @@ const WORKFLOW_DIR = path.join(__dirname, '..', '..', '..', 'workflow');
 
 const PROMPT_PLACEHOLDER = '请输入画面描述';
 
-function hiresPath() { return path.join(WORKFLOW_DIR, config.comfyui.hiresWorkflowMode === 'advanced' ? HIRES_ADVANCED_WORKFLOW : HIRES_WORKFLOW); }
+/** HiresFix 细化精度三档 → 步数（D1 实测：high 12 / medium 10 / low 8；CFG 恒 1.0） */
+export const HIRES_QUALITY_STEPS = { high: 12, medium: 10, low: 8 };
+
+/** `config.comfyui.hiresTurboSteps` 的内置默认值（config.js 写死 12）；变成别的值 = 用户显式覆盖 */
+const DEFAULT_TURBO_STEPS = 12;
 
 /**
- * 与 imageSkill.resolveWorkflowPath 一致的模式兜底：无记录时按全局模式 + 场景映射。
- * 返回 'base' | 'turbo' | 自定义工作流文件名。
+ * 决定这次 HiresFix 细化的步数。优先级（高 → 低）：
+ *
+ *   1. **`config.comfyui.hiresTurboSteps` 被显式改成非内置默认（12）的值** ⇒ 完全以它为准（底层逃生门，
+ *      给将来想手调的人留的；这样 `hiresQuality` 与它不会两处打架）；
+ *   2. `config.features.hiresQuality` 三档 ⇒ high 12 / medium 10 / **low 8（默认）**；非法值回落 low。
+ *
+ * CFG 不走这里：turbo 恒 1.0（`hiresTurboCfg`）；turbo 开关关掉时整体回到 `hiresSteps`/`hiresCfg`（旧口径）。
+ * @returns {number} 步数（1~100 之外不合法值已被上游 clamp，这里只保证是正整数）
  */
+export function resolveTurboSteps() {
+  const override = Number(config.comfyui.hiresTurboSteps);
+  if (Number.isFinite(override) && override > 0 && override !== DEFAULT_TURBO_STEPS) return override;
+  const quality = normalizeHiresQuality(config.features?.hiresQuality);
+  return HIRES_QUALITY_STEPS[quality] ?? HIRES_QUALITY_STEPS.low;
+}
+
+function hiresPath() { return path.join(WORKFLOW_DIR, config.comfyui.hiresWorkflowMode === 'advanced' ? HIRES_ADVANCED_WORKFLOW : HIRES_WORKFLOW); }
+
+/** 与 imageSkill.resolveWorkflowPath 一致的模式兜底：无记录时按全局模式 + 场景映射 */
 function fallbackModeForScene(scene) {
   const mode = config.workflow?.mode || 'turbo';
   if (mode === 'turbo' || mode === 'base') return mode;
-  if (mode === 'custom') return config.workflow?.customTemplate || 'turbo';
+  // 自定义工作流：全局选了 custom 就按 custom 继承（模板缺失时 loadSourceWorkflow 会回退内置）
+  if (mode === 'custom') return 'custom';
   const scenePref = config.workflow?.scene?.[scene] || 'turbo';
   return scenePref === 'base' ? 'base' : 'turbo';
-}
-
-/** 把模式值（'turbo' | 'base' | 自定义文件名）解析为工作流绝对路径 */
-function pathForModeValue(value) {
-  if (value === 'base') return path.join(WORKFLOW_DIR, PRO_WORKFLOW);
-  if (value === 'turbo') return path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
-  return resolveCustomWorkflowPath(value) || path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
 }
 
 /** 加载生成原图时使用的源工作流模板（自定义 > 显式模式 > 按场景兜底），用于继承参数 */
@@ -67,12 +81,19 @@ function loadSourceWorkflow({ sourceMode, customWorkflow, scene } = {}) {
   if (customWorkflow && fs.existsSync(path.join(WORKFLOW_DIR, customWorkflow))) {
     p = path.join(WORKFLOW_DIR, customWorkflow);
   } else {
-    // sourceMode 可能是 'turbo' | 'base'，也可能是自定义工作流文件名
-    // （全局 custom 模式下 image_tasks.workflow_template 原样记录了文件名）
-    resolvedMode = (sourceMode === 'base' || sourceMode === 'turbo')
+    // 记录的「模式」也可能是自定义工作流的文件名（image_tasks.workflow_template 原样记录）
+    resolvedMode = (sourceMode === 'base' || sourceMode === 'turbo' || resolveCustomWorkflowPath(sourceMode))
       ? sourceMode
-      : (resolveCustomWorkflowPath(sourceMode) ? sourceMode : fallbackModeForScene(scene));
-    p = pathForModeValue(resolvedMode);
+      : fallbackModeForScene(scene);
+    if (resolvedMode === 'custom') {
+      p = resolveCustomWorkflowPath(config.workflow?.customTemplate) || path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+      resolvedMode = 'custom';
+    } else if (typeof resolvedMode === 'string' && resolvedMode.endsWith('.json')) {
+      p = resolveCustomWorkflowPath(resolvedMode) || path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+      resolvedMode = 'custom';
+    } else {
+      p = resolvedMode === 'base' ? path.join(WORKFLOW_DIR, PRO_WORKFLOW) : path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+    }
   }
   if (!fs.existsSync(p)) return { wf: null, resolvedMode };
   try {
@@ -92,7 +113,7 @@ function loadSourceWorkflow({ sourceMode, customWorkflow, scene } = {}) {
  * @param {string} [overrides.artist]         - 画师串
  * @param {Array}  [overrides.loras]          - 角色 LoRA [{path, weight, triggerWord}]
  * @param {string} [overrides.customWorkflow] - 原图使用的自定义工作流文件名
- * @param {string} [overrides.sourceMode]     - 原图工作流模式 'turbo' | 'base' 或自定义文件名（image_tasks.workflow_template）
+ * @param {string} [overrides.sourceMode]     - 原图工作流模式 'turbo' | 'base'（image_tasks.workflow_template）
  * @param {string} [overrides.scene]          - 全局 LoRA 场景过滤 + 无模式记录时的工作流兜底
  * @param {string|null} [overrides.workflowScene] - hybrid 模式下单独用于选择源工作流；
  *        显式传 null 表示不按场景兜底，与 scene 解耦
@@ -208,11 +229,22 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
       if (node.widgets_values[1] === 'randomize') {
         node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
       }
-      node.widgets_values[2] = config.comfyui.hiresSteps ?? 35;
-      node.widgets_values[3] = config.comfyui.hiresCfg ?? 5.0;
+      // 细化参数（2026-09-29 起带开关；2026-10-01 并入上游进阶版）：
+      // 「放大细化工作流.json」的主模型是 anima_turboV10，旧口径固定注入 CFG 5.0 / 35 步 ——
+      // CFG>1 会让 turbo 每步多跑一条无条件分支（双倍算力），蒸馏模型在 CFG>1 下画面也会退化。
+      const hiresTurbo = config.comfyui.hiresTurbo !== false;
+      node.widgets_values[2] = hiresTurbo ? resolveTurboSteps() : (config.comfyui.hiresSteps ?? 35);
+      node.widgets_values[3] = hiresTurbo ? (config.comfyui.hiresTurboCfg ?? 1.0) : (config.comfyui.hiresCfg ?? 5.0);
       node.widgets_values[6] = config.comfyui.hiresDenoise ?? 0.2;
       if (followSource) {
-        node.widgets_values.splice(2, 4, ...sourceSampling.slice(2, 6));
+        // 进阶版「采样跟随原图」：turbo 开关打开时只跟随采样器/调度器（step 2、3 已由 turbo 决定，
+        // 否则 UI 上「设置里的步数与 CFG 不生效」就成了假话）；关掉开关时整段跟随（上游原语义）。
+        if (hiresTurbo) {
+          node.widgets_values[4] = sourceSampling[4];
+          node.widgets_values[5] = sourceSampling[5];
+        } else {
+          node.widgets_values.splice(2, 4, ...sourceSampling.slice(2, 6));
+        }
       }
       continue;
     }
@@ -266,9 +298,7 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
   if (hasLoras) injectLoraNodes(wf, activeLoras);
 
   const srcLabel = overrides.customWorkflow
-    || (srcResult.resolvedMode === 'base' ? PRO_WORKFLOW
-      : srcResult.resolvedMode && srcResult.resolvedMode !== 'turbo' ? srcResult.resolvedMode
-        : ACTIVE_WORKFLOW);
+    || (srcResult.resolvedMode === 'base' ? PRO_WORKFLOW : ACTIVE_WORKFLOW);
   console.log(`[imageRefine] Hires workflow built: ${path.basename(hiresPath())}${src ? ` (params inherited from ${srcLabel})` : ' (source workflow unavailable, template defaults)'}`);
   return { wf, wfPath: hiresPath() };
 }

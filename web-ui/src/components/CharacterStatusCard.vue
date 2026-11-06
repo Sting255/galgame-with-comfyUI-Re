@@ -1,12 +1,13 @@
 <template>
   <article
     class="status-card"
-    :class="{ 'is-diary-revealed': diaryRevealed, 'card-dim': char.is_sleeping && !char.is_temp_woken }"
+    :class="{ 'is-diary-revealed': diaryRevealed }"
     @click="$emit('select')"
     @mouseleave="onCardLeave"
   >
     <div
       class="card-inner"
+      :class="{ 'card-dim': char.is_sleeping && !char.is_temp_woken }"
       @mouseenter="(e) => onEnter(e, char._description)"
       @mousemove="onMove"
       @mouseleave="onLeave"
@@ -100,7 +101,7 @@
       </div>
     </div>
 
-    <!-- 卡下沿伸出的日记入口：卡片面（.card-inner）之下的兄弟节点，
+    <!-- 卡下沿伸出的日记入口（上游 v3.9.0 合并）：卡片面（.card-inner）之下的兄弟节点，
          z-index:-1 才是真的在卡片后面 —— 见下方样式注释 -->
     <div
       class="card-diary-bar"
@@ -140,6 +141,15 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits(['select', 'peek', 'wake', 'pin', 'diary'])
+
+// 卡底日记入口（上游 v3.9.0 合并）：触摸 / 键盘聚焦时靠这个标记展开（桌面靠 :hover）。
+// 没有 hover 的端也能看到这一栏；卡片移出时复位。
+const diaryRevealed = ref(false)
+function revealDiaryEntry() { diaryRevealed.value = true }
+function onCardLeave() {
+  onLeave()
+  diaryRevealed.value = false
+}
 
 const wakeShaking = ref(false)
 const wakeBusy = ref(false)
@@ -202,15 +212,6 @@ function normalizeTags(raw) {
 
 const tagList = computed(() => normalizeTags(props.char?.tags))
 const displayedTags = computed(() => tagList.value.slice(0, 2).reverse())
-
-// 卡底日记入口的显示：桌面靠 :hover，触摸/键盘聚焦靠这个标记（没有 hover 的端也能展开一栏）
-const diaryRevealed = ref(false)
-function revealDiaryEntry() { diaryRevealed.value = true }
-function onCardLeave() {
-  onLeave()
-  diaryRevealed.value = false
-}
-
 const footnote = computed(() => {
   if (props.char.is_sleeping && !props.char.is_temp_woken) {
     return props.char._description || ''
@@ -226,44 +227,84 @@ const footnote = computed(() => {
 </script>
 
 <style scoped>
-/* 卡片外框：只负责定位与命中，可见的「卡面」在 .card-inner 上。
-   这么分是为了让卡下沿伸出的日记入口（.card-diary-bar，z-index:-1）真的画在卡面之后：
-   同一层叠上下文里，负 z-index 的子节点画在该上下文自己的背景*之上*、
-   但画在 .card-inner（定位元素，z-index:auto → 定位层）之下。 */
 .status-card {
   --diary-height: 32px;
-  isolation: isolate;
   position: relative; display: flex;
-  background: transparent;
-  border: none;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: 18px;
   cursor: pointer;
-  transition: transform 0.2s cubic-bezier(0.4,0,0.2,1);
+  transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
+  box-shadow: var(--glass-shadow);
+  /* 日记入口从卡下沿伸出：需要一层自己的层叠上下文，让 z-index:-1 的子节点
+     画在卡面（.card-inner，定位层）之后、卡片自身背景之上。 */
+  isolation: isolate;
 }
 
-.status-card:hover { transform: translateY(-2px); }
+/* 展开态（桌面 hover / 触摸与键盘的 is-diary-revealed / focus-within）：
+   卡片同时抬到同排 / 后排卡片之上，伸出去的部分才不会被下一张卡盖住 */
+.status-card:hover,
+.status-card.is-diary-revealed,
+.status-card:focus-within {
+  z-index: 3;
+}
+
+/* ── 卡下沿伸出的日记入口（上游 v3.9.0 合并）──
+   顶边插进卡片里面（比卡片底边高一个圆角半径），所以卡片两个底角被圆角让出来的那块
+   由它的身体自然填满，接缝处不留空；层级在卡面之后（z-index:-1），插进去的那截被卡面盖住。
+   出现方式：从卡面后方向下滑出；上方始终重叠 18px，填满底部圆角。 */
+.card-diary-bar {
+  position: absolute;
+  top: calc(100% - 18px);
+  left: 0; right: 0;
+  height: calc(18px + var(--diary-height));
+  box-sizing: border-box;
+  padding-top: 18px;
+  z-index: -1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  border-radius: 0 0 18px 18px;
+  border: 1px solid var(--glass-border);
+  border-top: none;
+  /* 实色（不透明）：半透明会和卡面的毛玻璃在交界处叠出深一层。
+     取「卡面玻璃色 × 60% + 页面底色」= 卡面实际呈色的近似值，交界处没有颜色台阶 */
+  background: color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-primary));
+  color: var(--accent-text);
+  font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em;
+  cursor: pointer; user-select: none;
+  /* 投影只压在露出来那截的下沿，别糊到卡面（卡面半透明，会被看穿） */
+  box-shadow: 0 20px 16px -18px rgba(70, 52, 44, 0.45);
+  transform: translateY(calc(-1 * var(--diary-height)));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.status-card:hover .card-diary-bar,
+.status-card.is-diary-revealed .card-diary-bar,
+.status-card:focus-within .card-diary-bar {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.card-diary-bar:hover { color: var(--accent-text); }
+
+.status-card:hover {
+  transform: translateY(-2px);
+  border-color: #e0dbd4;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.05);
+}
 
 .card-inner {
   flex: 1; padding: 16px;
   display: flex; flex-direction: column; gap: 12px;
   min-width: 0;
   position: relative;
-  /* 卡面：毛玻璃底 + 1px 描边 + 18px 圆角 */
-  /* 实色底托住玻璃色，避免背后的日记条透进卡面。 */
+  /* 卡面底必须是实色：日记条（.card-diary-bar）是本节点的兄弟、且 z-index:-1，
+     所以只有卡面不透明才能真的把它在接缝处遮住。玻璃色本身带透明，直接铺会透出来，
+     于是用「玻璃色叠自己一遍」当实色底（视觉仍是原来的玻璃色，只是不再透光）；
+     第二层 var(--bg-primary) 兜底玻璃色本身带 alpha 的情况。
+     注意这是「卡面底」，不是 Linshe 组件皮肤，不违反皮肤收口纪律。 */
   background: linear-gradient(var(--glass-bg), var(--glass-bg)), var(--bg-primary);
-  border: 1px solid var(--glass-border);
-  border-radius: 18px;
-  box-shadow: var(--glass-shadow);
-  transition: border-color 0.2s cubic-bezier(0.4,0,0.2,1), box-shadow 0.2s cubic-bezier(0.4,0,0.2,1);
 }
-
-.status-card:hover .card-inner,
-.status-card.is-diary-revealed .card-inner,
-.status-card:focus-within .card-inner {
-  border-color: var(--border);
-  box-shadow: none;   /* 展开时卡面不投影：投影会糊到下面这条上，交界处显出一道深带 */
-}
-
 .card-dim { opacity: 0.65; }
 
 /* ── 右上角叫醒按钮 ── */
@@ -313,53 +354,8 @@ const footnote = computed(() => {
   color: var(--accent);
 }
 
-/* ── 卡下沿伸出的日记入口 ──
-   顶边插进卡片里面（比卡片底边高一个圆角半径），所以卡片两个底角被圆角让出来的那块
-   由它的身体自然填满，接缝处不留空；层级在卡面之后（z-index:-1），插进去的那截被卡面盖住。
-   出现方式：从卡面后方向下滑出；上方始终重叠 18px，填满底部圆角。 */
-.card-diary-bar {
-  position: absolute;
-  top: calc(100% - 18px);
-  left: 0; right: 0;
-  height: calc(18px + var(--diary-height));
-  box-sizing: border-box;
-  padding-top: 18px;
-  z-index: -1;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-  border-radius: 0 0 18px 18px;
-  border: 1px solid var(--glass-border);
-  border-top: none;
-  /* 实色（不透明）：半透明会和卡面的毛玻璃在交界处叠出深一层。
-     取「卡面玻璃色 × 60% + 页面底色」= 卡面实际呈色的近似值，交界处没有颜色台阶 */
-  background: color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-primary));
-  color: var(--accent);
-  font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em;
-  cursor: pointer; user-select: none;
-  /* 投影只压在露出来那截的下沿，别糊到卡面（卡面半透明，会被看穿） */
-  box-shadow: 0 20px 16px -18px rgba(70, 52, 44, 0.45);
-  transform: translateY(calc(-1 * var(--diary-height)));
-  opacity: 0;
-  pointer-events: none;
-  transition: transform var(--dur-interaction) var(--ease-standard), opacity var(--dur-interaction) var(--ease-standard);
-}
-
-/* 展开态：hover（桌面）/ is-diary-revealed（触摸）/ focus-within（键盘）。
-   卡片同时抬到同排 / 后排卡片之上，伸出去的部分才不会被下一张卡盖住 */
-.status-card:hover,
-.status-card.is-diary-revealed,
-.status-card:focus-within {
-  z-index: 3;
-}
-.status-card:hover .card-diary-bar,
-.status-card.is-diary-revealed .card-diary-bar,
-.status-card:focus-within .card-diary-bar {
-  transform: translateY(0);
-  opacity: 1;
-  pointer-events: auto;
-}
-.card-diary-bar:hover { color: var(--accent-hover); }
-
-/* ── 左上角置顶按钮（未置顶时悬停卡片才浮现） ── */.card-pin-btn {
+/* ── 左上角置顶按钮（未置顶时悬停卡片才浮现） ── */
+.card-pin-btn {
   position: absolute; top: 6px; left: 6px;
   z-index: 1;
   display: flex; align-items: center; justify-content: center;
@@ -427,8 +423,8 @@ const footnote = computed(() => {
   font-size: 0.65rem; padding: 2px 8px; border-radius: 999px;
   font-weight: 600; white-space: nowrap; flex-shrink: 0;
 }
-.tag-green  { background: rgba(82,196,26,0.1);  color: #389e0d; }
-.tag-orange { background: rgba(250,173,20,0.1); color: #d48806; }
+.tag-green  { background: rgba(82,196,26,0.1);  color: #237a06; }   /* 原 #389e0d 只有 2.9:1 */
+.tag-orange { background: rgba(250,173,20,0.1); color: #8a5600; }   /* 原 #d48806 只有 2.4:1 */
 .tag-overflow { background: rgba(0,0,0,0.04); color: var(--text-secondary); }
 
 /* ── Mid ── */
@@ -446,7 +442,7 @@ const footnote = computed(() => {
 .card-foot {
   padding-top: 8px;
   border-top: 1px solid var(--border);
-  font-size: 0.73rem; color: #c5bfb6; line-height: 1.5;
+  font-size: 0.73rem; color: var(--text-secondary); line-height: 1.5;  /* 原 #c5bfb6 只有 1.6:1，几乎看不见 */
 }
 
 /* ── Tooltip ── */
@@ -457,10 +453,5 @@ const footnote = computed(() => {
   border-radius: 8px; font-size: 0.78rem; line-height: 1.5;
   box-shadow: 0 4px 14px rgba(0,0,0,0.18);
   backdrop-filter: blur(6px);
-}
-
-/* 手机端从详情抽屉进入日记，不显示卡片下沿入口。 */
-@media (max-width: 767px) {
-  .card-diary-bar { display: none; }
 }
 </style>

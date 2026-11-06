@@ -56,7 +56,8 @@ router.post('/send', (req, res) => {
   try {
     const { character_id, title, content, auto_read } = req.body;
     if (!character_id) return res.status(400).json({ error: '缺少 character_id' });
-    if (!content || !content.trim()) return res.status(400).json({ error: '信件内容不能为空' });
+    if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '信件内容不能为空，且必须是文本' });
+    if (title != null && typeof title !== 'string') return res.status(400).json({ error: '信件标题必须是文本' });
 
     const db = getDb();
 
@@ -109,6 +110,7 @@ router.get('/:id', (req, res) => {
     // 标记已读
     if (!letter.is_read) {
       db.prepare('UPDATE mailbox_letters SET is_read = 1 WHERE id = ?').run(req.params.id);
+      letter.is_read = 1;
     }
 
     res.json({
@@ -135,12 +137,60 @@ router.put('/:id/mark-read', (req, res) => {
   }
 });
 
+// POST /api/mailbox/:id/retry — 手动重新投递（2026-10-17 §P2-1 配套）
+//
+// 背景：信件连续失败到 `MAX_RETRY_COUNT` 会落 `failed` 终态（不再自动重试，免得毒信件每 10 分钟
+// 烧一次 LLM + 3 张图）。但"放弃了"不等于"没救了"——用户修好配置（换 Key / 起 ComfyUI）之后
+// 应当能把这封信救回来，所以给一个显式重投入口：`failed`（或用户手动想重来的）→ `pending` + 清零重试。
+//
+// 口径：
+//   · 只接受 `failed` / `pending` 两个来源状态 —— `processing` 说明正有一轮在跑，重投会双跑；
+//     `completed` 是已经回好的信，重投等于覆盖回信内容（要重写就删了重寄，不做静默覆盖）。
+//   · 回信时间给 5 秒后（用户点完马上就能看到开始处理），不用原来那 3~10 分钟随机延时。
+router.post('/:id/retry', (req, res) => {
+  try {
+    const db = getDb();
+    const letter = db.prepare('SELECT * FROM mailbox_letters WHERE id = ?').get(req.params.id);
+    if (!letter) return res.status(404).json({ error: '信件不存在' });
+    if (letter.status === 'processing') {
+      return res.status(409).json({ error: '这封信正在回信中，请等它跑完再重投' });
+    }
+    if (letter.status === 'completed') {
+      return res.status(409).json({ error: '这封信已经回过了；要重写请删掉后重新寄一封' });
+    }
+    if (!['failed', 'pending'].includes(letter.status)) {
+      return res.status(409).json({ error: '当前信件状态不能重新投递' });
+    }
+
+    const replyAt = new Date(Date.now() + 5000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
+    db.prepare(`UPDATE mailbox_letters SET status = 'pending', retry_count = 0, reply_at = ? WHERE id = ?`)
+      .run(replyAt, req.params.id);
+
+    console.log(`[mailbox] letter #${req.params.id} 手动重投（原状态 ${letter.status}，retry_count=${letter.retry_count}）`);
+    const updated = db.prepare('SELECT ml.*, c.display_name, c.avatar_path, c.handwriting_font FROM mailbox_letters ml LEFT JOIN characters c ON ml.character_id = c.id WHERE ml.id = ?').get(req.params.id);
+    res.json({
+      letter: {
+        ...updated,
+        created_at: toISODate(updated.created_at),
+        replied_at: toISODate(updated.replied_at),
+        reply_at: toISODate(updated.reply_at),
+      },
+    });
+  } catch (err) {
+    console.error('[mailbox] retry error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/mailbox/:id — 删除信件
 router.delete('/:id', (req, res) => {
   try {
     const db = getDb();
     const letter = db.prepare('SELECT * FROM mailbox_letters WHERE id = ?').get(req.params.id);
     if (!letter) return res.status(404).json({ error: '信件不存在' });
+    if (letter.status === 'processing') {
+      return res.status(409).json({ error: '这封信正在回信中，请等处理结束后再删除' });
+    }
 
     db.prepare('DELETE FROM mailbox_letters WHERE id = ?').run(req.params.id);
     res.json({ ok: true });

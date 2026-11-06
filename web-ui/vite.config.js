@@ -1,5 +1,18 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { resolveServicePort } from '../agent-core/src/utils/servicePort.js'
+
+const backendTarget = `http://localhost:${resolveServicePort()}`
+
+// 开发服务器也能被手机访问；转发时保留远端来源，避免后端误认为本机。
+function preserveDeviceOrigin(proxy) {
+  proxy.on('proxyReq', (proxyReq, req) => {
+    const address = req.socket.remoteAddress
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)) {
+      proxyReq.setHeader('X-Forwarded-For', address || 'unknown')
+    }
+  })
+}
 
 export default defineConfig({
   plugins: [vue()],
@@ -8,24 +21,28 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
+        configure: preserveDeviceOrigin,
         // SSE 长连接在生图期间可能长时间无数据，禁用代理层超时
         timeout: 0,
         proxyTimeout: 0,
       },
       '/images': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
+        configure: preserveDeviceOrigin,
       },
       '/avatars': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
+        configure: preserveDeviceOrigin,
       },
       // 小镇像素素材（data/town/assets，由 agent-core 静态服务）
       '/town-assets': {
-        target: 'http://localhost:3099',
+        target: backendTarget,
         changeOrigin: true,
+        configure: preserveDeviceOrigin,
       },
     },
   },

@@ -1,3 +1,4 @@
+import { withEventProcessing } from './eventProcessing.js';
 /**
  * 生活片段生成器
  *
@@ -15,22 +16,35 @@
 
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlobalRule } from '../db/index.js';
 import { appendOathRing } from './oathUtils.js';
-import { chatWithPreset } from './presets/narrative.js';
+import { chatSync } from '../llm/llm-client.js';
 import { generateImageRaw } from './imageSkill.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
-import { recordCompletedImageTask } from './imageTaskRecorder.js';
+import { recordCompletedImageTask, recordFailedImageTask } from './imageTaskRecorder.js';
 import { saveBase64Image } from './imagePaths.js';
 import { config } from '../config.js';
 import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
 import { createTownActorRegistry } from './town/townActorRegistry.js';
 import { broadcastNewEvent, broadcastEventUpdate, broadcastEventConclusion } from './eventNotificationBus.js';
-import { applyMemoryActions } from './memory/memoryRepository.js';
+import { applyMemoryActions, softDeleteMemory } from './memory/memoryRepository.js';
+import { getMemorySettings } from './memory/memoryConfig.js';
 import { getCurrentActivity, syncEventSchedule } from './scheduleManager.js';
+// 奇遇时长预留（上游 v3.9.0）：把事件开始时「她正在做什么」钉进日程快照，
+// 事件存续期间日程刷新不会把她挪走（本地从 v3.6.2 起漏了这条接线，2026-10-14 补）
 import { captureEventSchedule } from './eventSchedule.js';
 import { getTimeTag, getLightNoteWithWeather } from './timeLight.js';
 import { matchAll } from './characterSearch.js';
 import { buildCharacterPersona } from './characterPersona.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
+// ⚠️ 这一行**本地 import** 不能删：下面 533 / 1042 / 1346 行都在本文件里直接调用 extractFirstJson，
+// 而文件末尾那句 `export { extractFirstJson } from './jsonExtract.js'` 只是**再导出**、
+// **不会**产生本地绑定 ⇒ 少了这行就是 `extractFirstJson is not defined`，
+// 真机表现：多人事件生成直接失败（日志里 eventGen + eventScheduler 两条 error，
+// 而模型其实已经回了完整 JSON —— 白瞎一次调用）。
+import { extractFirstJson } from './jsonExtract.js';
+// 亲密看板：奇遇场景记账（零 LLM 的确定性归类；幂等锚点用显式 sourceUid，见 recordIntimateForEvent）
+import { classifyPromptTags, recordIntimateActs, tagsFromPromptString } from './intimateService.js';
+// 世界时间轴（2026-11-06）：事件开场与世界事实落成"这个世界最近发生了什么"，供后续承接
+import { recordWorldTimeline, buildWorldTimelineBlock } from './worldTimeline.js';
 
 // ── 生活片段类型库（事件类型存于 event_types 表，见 db/index.js 的 seedEventLibraries）──
 // 每个类型描述的是"角色今天的生活进入了哪一种状态"，不是"发生了什么剧情"。
@@ -339,6 +353,14 @@ export async function generateEvent(character, options = {}) {
   if (recentMoment) {
     contextBlock += `\n关联线索——${character.display_name}一小时前刚发了朋友圈："${recentMoment.content}"。事件素材可以与此呼应，提高关联性。\n`;
   }
+  // 世界时间轴（2026-11-06）：把最近发生的事作为前因带上，事件之间才接得上。
+  // 回溯窗口放到 30 天：三天前的事也该还能被"想起"，否则世界像每几天重置一次。
+  try {
+    const timeline = buildWorldTimelineBlock(5, { hours: 24 * 30 });
+    if (timeline) contextBlock += `\n${timeline}\n`;
+  } catch (err) {
+    console.warn('[eventGen] timeline block skipped:', err?.message || err);
+  }
 
   // 将角色人格中的"你"替换为角色名（保留引号内对话不变，简单正则处理）；统一入口含生效外观注入
   const displayName = character.display_name;
@@ -354,6 +376,8 @@ export async function generateEvent(character, options = {}) {
     : '';
 
   // 日程注入：获取角色当前活动，让事件起点与当前活动自然衔接
+  // captureEventSchedule 先落一条「事件绑定的活动」快照；后续刷新日程时 reapplyActiveEventSchedule
+  // 会把这条活动重新钉回去，避免事件演到一半她被日程挪走。绑定成功时优先用它（而不是实时当前活动）。
   const scheduleBinding = captureEventSchedule(character.id, now, db);
   let scheduleContextLine = '';
   let scheduleSystemBlock = '';
@@ -367,6 +391,12 @@ export async function generateEvent(character, options = {}) {
       }
     }
   } catch { /* schedule not available */ }
+
+  const worldPenetrationLine = worldSetting
+    ? (eventType.key === 'custom'
+        ? '- **严格遵循<world_setting>**：这个事件发生在上述<world_setting>中，不是发生在真空或现实世界中。所有感官细节（街头景象、路人行为、空气气味、社交礼仪）和角色反应（身体本能、社交判断、情感触发点）必须忠实地在<world_setting>规则下展开。用户指定的事件方向是本次事件的核心，必须直接发生；<world_setting>重塑的是它的呈现方式，而不是替换它。\n'
+        : '- **严格遵循<world_setting>**：这个事件发生在上述<world_setting>中，不是发生在真空或现实世界中。所有感官细节（街头景象、路人行为、空气气味、社交礼仪）和角色反应（身体本能、社交判断、情感触发点）必须忠实地在<world_setting>规则下展开。事件方向只是一个叙事钩子——它的具体呈现方式必须被<world_setting>重新塑造。\n')
+    : '';
 
   // [1] 角色人格（"你"已替换为角色名，去角色扮演化）
   let personaMsg = `以下是角色「${displayName}」的人格设定，供你参考角色的外貌、性格和行为模式：
@@ -393,12 +423,19 @@ ${multiPerson.otherPersona}`;
 
   const formatPrompt = `请严格按照以下 JSON 格式输出，不要任何解释或额外文字：
 
+【prompt 字段的写作规范】
+${imagePromptInstruction}${weatherHint}${multiPersonImageNote}
+
+⚠️ 上面这段是**规范**，不是内容：照它的要求**自己写一段画面描述**填进 prompt 字段，
+**绝对不要把它原文抄进 JSON**，也不要出现「Describe the image」「Follow this progression」
+「Scene Setting」「Environment & Props」「Hard Rules」这类规范字样。
+
 {
   "title": "事件标题事件标题（≤8字，口语感叹。从你刚写完的事件场景里抓最戳人的那个瞬间，用角色第一反应的口吻喊出来——不要给事件'取名'，是替角色喊出ta看到/发现/意识到时脑子里蹦出来的那句话。正确：包裹在动……|谁寄来的？！|钥匙怎么还在她这里。错误：神秘包裹降临|意外来客——这些是在概括事件类型。禁止万能感叹'天哪''不是吧''怎么会'——必须带上这个事件的具体信息点）",
   "description": "场景叙述（80-150字。
-以角色当下的动作、感受和对话展开，必要时简短交代背景与原因：
+不要像讲故事，而像镜头正在发生：
 - 行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及",
-  "prompt": "${imagePromptInstruction}${weatherHint}${multiPersonImageNote}",
+  "prompt": "（这里填**你写好的那一整段英文画面描述**：按上面的规范，写清场景环境、谁在做什么、道具与光线氛围；角色名写成 character(series) 并在首次出现时带外观锚点。整段连贯英文，严禁中文，严禁照抄上面的规范原文。示例：A dim dormitory room at night, a girl with long silver-grey hair in a high ponytail lies back on the bed while another girl in a blue blouse kneels beside her holding a camera, warm bedside lamp light mixed with a cool screen glow, conveying an atmosphere of intimate chaos）",
   "choiceA": "选项A（具体行动，8-15字。符合${displayName}的性格和当下处境）",
   "choiceB": "选项B（与A在动机、策略或代价上有实际差异，同样能从${displayName}的性格与当下处境自然推出。8-15字）"
 }
@@ -415,7 +452,7 @@ ${multiPerson.otherPersona}`;
     : '';
 
   const funFromNote = eventType.funFrom?.length
-    ? `\n\n这件事之所以值得成为一个事件，不是因为它"出了大事"——而是因为它天然带有${eventType.funFrom.join('、')}的张力。根据具体情境自然体现这些层面，不必逐项突出或刻意制造戏剧冲突。`
+    ? `\n\n这件事之所以值得成为一个事件，不是因为它"出了大事"——而是因为它天然带有${eventType.funFrom.join('、')}的张力。叙事时往这些层面用力，让读者感受到"就是这个感觉"。`
     : '';
 
   const customDirectionHeader = eventType.key === 'custom'
@@ -467,7 +504,7 @@ ${customKeyUnderstanding}
 
 镜头直接落在一个正在发生的动作上。
 
-背景、关系和原因可以随动作呈现，也可以用简短叙述交代，以读者能理解人物动机和事情经过为准。
+背景、关系、原因，都随着动作自然露出来，而不是提前说明。
 
 【结尾——停在行动门槛】
 结尾停在一个具体动作即将发生之前。
@@ -476,6 +513,7 @@ ${customKeyUnderstanding}
 - 事件从${displayName}当前所在的地点、手头在做的事、视线范围内的东西中触发。第一句出现的地点、动作、物件，直接从当前 schedule 场景中承接
 - 避免为制造戏剧性，直接把角色挪到另一个无关地点再触发事件
 
+${worldPenetrationLine}
 【天气约束】description中行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及` });
 
   // [4] Character persona — stable per character
@@ -492,8 +530,16 @@ ${customKeyUnderstanding}
 - 若方向与<world_setting>有冲突：保留方向的核心行为，只把它的表现方式融入<world_setting>。` });
   }
 
-  // [user] 本次创作任务；世界观约束统一由前面的静态强调层承载。
-  msgs.push({ role: 'user', content: directorPrompt });
+  // [user] Event-specific creation task — changes per event（有<world_setting>时开头注入遵循规则）
+  const customPreamble = eventType.key === 'custom'
+    ? '\n用户手动指定的事件方向必须直接发生——<world_setting>负责塑造它的表现方式，不负责替换它。'
+    : '';
+  const eventUserContent = worldSetting
+    ? `请遵循当前<world_setting>来生成奇遇，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。${customPreamble}
+
+${directorPrompt}`
+    : directorPrompt;
+  msgs.push({ role: 'user', content: eventUserContent });
 
   let eventData;
   let rawResult = '';
@@ -510,7 +556,13 @@ ${customKeyUnderstanding}
     }
   }
   try {
-    rawResult = await (options.llm?.chatSync || chatWithPreset)(msgs, { temperature: 0.7, response_format: { type: 'json_object' }, label: '奇遇生成', lorebook:{personaTexts:[personaMsg],characterName:displayName} });
+    // 依赖注入（与 generateNextBranch 的第 4 个 `deps` 形参同一口径）：
+    // `options.llm?.chatSync` / `options.image?.generateImageRaw` 存在时优先用调用方注入的实现，
+    // 否则回落真实链路。测试用它在不打真实网关的前提下盖住整条「开场生成 + 出图 + 日程预留」流程；
+    // 不传时行为逐字节不变（2026-10-15 补，对齐上游 v3.9.0 的 deps 口径）。
+    const llmChat = options.llm?.chatSync || chatSync;
+    const llmRun = typeof llmChat === 'function' ? llmChat : chatSync;
+    rawResult = await llmRun.call(options.llm || null, msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '奇遇生成' });
     const jsonStr = extractFirstJson(rawResult);
     if (!jsonStr) throw new Error('No JSON found in LLM response');
     eventData = JSON.parse(repairJson(jsonStr));
@@ -538,9 +590,13 @@ ${customKeyUnderstanding}
 
   const originalEventPrompt = eventData.prompt;
   let imageUrl = null;
+  // §3.5：出图失败的原因（成功时保持 null）。它会被写进 character_events.error_message，
+  // 前端据此把「配图生成中…」换成真实原因 + 补图入口。
+  let imageError = null;
   try {
     const charArtist = charArtistOverrideWithFallback(character, otherChars);
-    const genResult = await (options.image?.generateImageRaw || generateImageRaw)(eventData.prompt, {
+    const imageGenerate = options.image?.generateImageRaw || generateImageRaw;
+    const genResult = await imageGenerate.call(options.image || null, eventData.prompt, {
       ragQuery: eventData.description,
       artist: charArtist !== null ? charArtist : config.comfyui.eventArtist,
       width: config.comfyui.eventWidth,
@@ -568,9 +624,31 @@ ${customKeyUnderstanding}
       console.log(`[eventGen] Image generated for ${character.display_name}: ${imageUrl}`);
     } else {
       console.warn(`[eventGen] Image generation returned no images for ${character.display_name}`);
+      imageError = genResult.error || 'ComfyUI 未返回图片';
+      // 2026-10-01：失败也要在库里留痕，否则「没触发 / 失败 / 文件丢了」事后分不出来
+      recordFailedImageTask({
+        conversationId: `char_${character.id}_events`,
+        promptOriginal: originalEventPrompt,
+        promptRefined: eventData.prompt,
+        errorMessage: genResult.error || 'ComfyUI 未返回图片',
+        style: charArtist !== null ? charArtist : config.comfyui.eventArtist,
+        resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
+        workflowTemplate: genResult.wfMode || null,
+        db,
+      });
     }
   } catch (err) {
     console.error(`[eventGen] Image generation failed for ${character.display_name}:`, err.message);
+    imageError = err.message;
+    recordFailedImageTask({
+      conversationId: `char_${character.id}_events`,
+      promptOriginal: originalEventPrompt,
+      promptRefined: eventData.prompt,
+      errorMessage: err.message,
+      style: charArtist !== null ? charArtist : config.comfyui.eventArtist,
+      resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
+      db,
+    });
     // 无图片也继续
   }
 
@@ -583,9 +661,33 @@ ${customKeyUnderstanding}
     image: imageUrl,
     // 存储多人模式信息，供后续分支生成时复用
     multiPerson: multiPerson ? { otherId: multiPerson.otherId, otherName: multiPerson.otherName, otherPersona: multiPerson.otherPersona, relDesc: multiPerson.relDesc } : null,
+    // 开场日程绑定必须**落库**（上游 v3.9.0）：extendEventSchedule 靠它把「开场活动」
+    // 钉回日程；不落库时 reapplyActiveEventSchedule / 后续分支延长都会退回
+    // 「按 created_at 重新捕获」并落到下一个活动上（本地从 v3.6.2 起漏了这一行，2026-10-15 补）。
     scheduleBinding,
   }];
-  const expiresAt = new Date(now.getTime() + eventType.durationMin * 60 * 1000).toISOString();
+  /**
+   * TTL 锚点 = **函数开头取的那口时钟**（上游 v3.9.0 口径：`now.getTime()`），
+   * 不能独立取 `Date.now()`。
+   *
+   * 2026-10-01 真机日志实证（用户玩了一整轮的那份 9MB 日志）：
+   * ```
+   * 05:15:12.614 [log] Generating event for 云璃          ← 任务开始
+   * 05:47:41.193 [log] Event created for 云璃 (expires=2026-10-01T05:45:12.614Z)  ← 32 分钟后才写库
+   * 05:47:42.758 [log] Event expired (engaged=0)          ← 1.5 秒后过期
+   * ```
+   * 那个"生下来就过期"的根因是**函数开头的 `now` 与真实写库时刻差了一整段生成耗时**
+   * （LLM + 出图，图片队列被堵到 52 分钟），不是"取了 `now`"这件事本身。
+   *
+   * ⚠️ 2026-10-15 追加口径：锚点必须与 `scheduleBinding`（开场日程绑定）**同一时间系**。
+   * `extendEventSchedule` 会直接比 `expiresAt > binding.endAt`，本地曾经把这里写成
+   * `Date.now()`：程序时间一旦有偏移（推进过世界钟），两者就跨了时间系 ⇒ 奇遇时长的
+   * 日程预留整体错位（真机表现：事件开始时她被挪进下一个活动）。
+   * `now = new Date()` 与 `captureEventSchedule(character.id, now, db)` 用的是同一个值，
+   * 天然同系；偏移为 0 时与 `Date.now()` 逐毫秒相同。
+   */
+  const createdAtMs = now.getTime();
+  const expiresAt = new Date(createdAtMs + eventType.durationMin * 60 * 1000).toISOString();
 
   // 生成期间可能有另一个入口先完成；写入与镇上邀请的关联在同一事务内提交。
   const eventId = db.transaction(() => {
@@ -594,8 +696,8 @@ ${customKeyUnderstanding}
       throw new Error('ALREADY_ACTIVE_EVENT');
     }
     const insertResult = db.prepare(`
-    INSERT INTO character_events (character_id, event_type_key, status, title, description, image, prompt, style, resolution, choice_a, choice_b, choice_c_label, current_branch, max_branches, choice_history, expires_at)
-    VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+    INSERT INTO character_events (character_id, event_type_key, status, title, description, image, prompt, style, resolution, choice_a, choice_b, choice_c_label, current_branch, max_branches, choice_history, expires_at, error_message)
+    VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
   `).run(
     character.id,
     eventType.key,
@@ -609,7 +711,11 @@ ${customKeyUnderstanding}
     eventData.choiceB,
     eventData.choiceCLabel || '自由行动',
     JSON.stringify(initialChoiceEntry),
-    toSQLite(expiresAt)
+    toSQLite(expiresAt),
+    // §3.5（2026-10-01）：把出图失败的原因**落库**。以前这个列全库没人写，
+    // 于是前端分不出「还在生成」和「生成失败」—— 一律显示「配图生成中…」，
+    // 用户等一张永远不会来的图，也没有任何补图入口。
+    imageError
   );
     const id = Number(insertResult.lastInsertRowid);
     options.afterPersist?.(id);
@@ -618,7 +724,16 @@ ${customKeyUnderstanding}
 
   // 7. 构建返回数据
   const event = db.prepare(`SELECT * FROM character_events WHERE id = ?`).get(eventId);
+  // 奇遇时长预留：把「开场活动」延长到覆盖整个事件存续期（上游 v3.9.0）
   syncEventSchedule(event);
+  // 世界时间轴（2026-11-06）：事件开场记一条，后续事件生成能接手前面发生的事
+  recordWorldTimeline({
+    kind: 'event',
+    title: event.title,
+    summary: event.description,
+    characterIds: [event.character_id],
+    sourceId: `event:${event.id}`,
+  });
 
   // 8. SSE 广播
   broadcastNewEvent({
@@ -643,12 +758,123 @@ ${customKeyUnderstanding}
 }
 
 /**
+ * 给**已有**奇遇补一张配图（§3.5，2026-10-01）
+ *
+ * 为什么需要它：奇遇的配图是在创建时一次性生成的（`generateEvent` 里那段）。一旦那次失败
+ * （ComfyUI 没开、模型没加载完、显存不足……），这条奇遇就永远没有图，而前端只会显示
+ * 「配图生成中…」——用户既不知道失败了，也没有任何补救入口，只能删掉这条奇遇重开。
+ *
+ * 复用同一条链路，不另造实现：行里存着当时的 `prompt` / `style` / `resolution`，
+ * 拿它们再走一次 `generateImageRaw` + `saveBase64Image('events')`，
+ * 成功就更新 `image` 并清掉 `error_message`，失败就把原因写进 `error_message` 供前端显示。
+ *
+ * @param {number} eventId
+ * @param {object} [opts]
+ * @param {object} [opts.db]        库句柄（测试可注入）
+ * @param {Function} [opts.generate] 生图函数（默认 generateImageRaw；测试注入假实现，
+ *                                   否则单测会真去连 ComfyUI，跑得又慢又不稳）
+ * @returns {Promise<{ok: boolean, image?: string, error?: string, code?: string}>}
+ */
+export async function regenerateEventImage(eventId, { db = getDb(), generate = generateImageRaw } = {}) {
+  const row = db.prepare(`
+    SELECT ce.*, c.display_name, c.loras, c.artist_override, c.custom_workflow
+    FROM character_events ce
+    JOIN characters c ON c.id = ce.character_id
+    WHERE ce.id = ?
+  `).get(eventId);
+  if (!row) return { ok: false, code: 'not_found', error: '这条奇遇不存在' };
+  if (!row.prompt || !String(row.prompt).trim()) {
+    return { ok: false, code: 'no_prompt', error: '这条奇遇没有存下提示词，无法补图（只能重新生成一条奇遇）' };
+  }
+
+  // 分辨率：行里存的是 "宽x高"，解析不出来就回落到当前配置
+  let width = config.comfyui.eventWidth;
+  let height = config.comfyui.eventHeight;
+  const m = /^(\d{2,5})\s*[x×]\s*(\d{2,5})$/.exec(String(row.resolution || '').trim());
+  if (m) { width = Number(m[1]); height = Number(m[2]); }
+  const artist = row.style || row.artist_override || config.comfyui.eventArtist;
+
+  const loras = _parseCharLoras(row.loras);
+  const originalPrompt = row.prompt;
+
+  try {
+    const genResult = await generate(row.prompt, {
+      ragQuery: row.description || '',
+      artist,
+      width,
+      height,
+      scene: 'events',
+      priority: 'high',
+      loras,
+      ...(row.custom_workflow ? { customWorkflow: row.custom_workflow } : {}),
+    });
+
+    if (genResult.success && genResult.images?.length > 0) {
+      const img = genResult.images[0];
+      const filename = `event_${Date.now()}_${img.filename || 'comfy.png'}`;
+      const imageUrl = saveBase64Image('events', filename, img.base64);
+      const refined = genResult.promptRefined || originalPrompt;
+      db.prepare(`UPDATE character_events SET image = ?, prompt = ?, error_message = NULL WHERE id = ?`)
+        .run(imageUrl, refined, eventId);
+      recordCompletedImageTask({
+        conversationId: `char_${row.character_id}_events`,
+        promptOriginal: originalPrompt,
+        promptRefined: refined,
+        outputPaths: [imageUrl],
+        style: artist,
+        resolution: `${width}x${height}`,
+        workflowTemplate: genResult.wfMode,
+        db,
+      });
+      console.log(`[eventGen] 补图成功 event#${eventId} -> ${imageUrl}`);
+      return { ok: true, image: imageUrl };
+    }
+
+    const reason = genResult.error || 'ComfyUI 未返回图片';
+    db.prepare(`UPDATE character_events SET error_message = ? WHERE id = ?`).run(reason, eventId);
+    recordFailedImageTask({
+      conversationId: `char_${row.character_id}_events`,
+      promptOriginal: originalPrompt,
+      promptRefined: row.prompt,
+      errorMessage: reason,
+      style: artist,
+      resolution: `${width}x${height}`,
+      workflowTemplate: genResult.wfMode || null,
+      db,
+    });
+    return { ok: false, code: 'no_images', error: reason };
+  } catch (err) {
+    db.prepare(`UPDATE character_events SET error_message = ? WHERE id = ?`).run(err.message, eventId);
+    recordFailedImageTask({
+      conversationId: `char_${row.character_id}_events`,
+      promptOriginal: originalPrompt,
+      promptRefined: row.prompt,
+      errorMessage: err.message,
+      style: artist,
+      resolution: `${width}x${height}`,
+      db,
+    });
+    return { ok: false, code: 'threw', error: err.message };
+  }
+}
+
+/**
  * 生成下一步分支
+ *
+ * @param {object} character
+ * @param {object} event
+ * @param {object} choice
+ * @param {object} [deps] 依赖注入（上游 v3.9.0 口径）：`deps.llm.chatSync` / `deps.image.generateImageRaw`
+ *   存在时优先用调用方注入的实现。本地从 v3.6.2 起漏了这个形参 ⇒ 测试传的桩被丢掉、真发网络请求
+ *   （2026-10-15 补）。不传时行为逐字节不变。
  */
 export async function generateNextBranch(character, event, choice, deps = {}) {
   const db = getDb();
   const now = new Date();
   const branchTimeExtensionMinutes = 5;
+  // 有效选择仅在**剩余 15 分钟以内**才续时；超过窗口再点分支不能继续累加。
+  // 上游 v3.9.0 的奇遇时长预留：本地从 v3.6.2 起漏了这个窗口判定，
+  // 导致原来无条件 +5 分钟（2026-10-14 补，与上游逐字一致）。
   const branchTimeExtensionWindowMs = 15 * 60 * 1000;
 
   // 0. 原子性标记处理中（CAS：仅 processing=0 时置 1），防止并发重复提交
@@ -670,8 +896,8 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
     return null;
   }
 
-  try {
-  // 有效选择仅在剩余 15 分钟以内续时，仍在生成前生效，避免等待时倒计时归零。
+  // 用户已成功提交一个有效分支选择，立即延长倒计时，避免分支生成期间事件到期。
+  // 但只在剩余 ≤15 分钟时续（上游 v3.9.0 的窗口判定），否则反复点分支会无限续命。
   if (expiresAt.getTime() - now.getTime() <= branchTimeExtensionWindowMs) {
     db.prepare(`
       UPDATE character_events
@@ -682,7 +908,7 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
       `SELECT expires_at FROM character_events WHERE id = ?`
     ).get(event.id).expires_at;
   }
-  // 仍延长开场日程，不能在跨过边界后改成延长下一个活动。
+  // 仍延长开场日程，不能在跨过边界后改成延长下一个活动。（上游 v3.9.0 奇遇时长预留）
   syncEventSchedule(event);
 
   // 2. 加载关系网
@@ -719,6 +945,7 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
   const choiceExtra = choice.choice !== 'C' && choice.customText ? '——' + choice.customText : '';
 
   // 4. LLM 生成下一步（try-catch 确保失败时清除 processing 标记）
+  try {
   const worldSetting2 = getWorldSetting();
   const jailbreakPrompt = worldSetting2
     ? getSystemRulesWithWorld({ roleplay: false })
@@ -739,6 +966,10 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
 
   const worldIntegrationBlock2 = worldSetting2
     ? getWorldIntegrationRule('event')
+    : '';
+
+  const worldPenetrationLine2 = worldSetting2
+    ? '- **严格遵循<world_setting>**：这个事件发生在上述<world_setting>中，不是发生在真空或现实世界中。所有感官细节（街头景象、路人行为、空气气味、社交礼仪）和角色反应（身体本能、社交判断、情感触发点）必须忠实地在<world_setting>规则下展开。事件方向只是一个叙事钩子——它的具体呈现方式必须被<world_setting>重新塑造。\n'
     : '';
 
   let personaMsg2 = `以下是角色「${displayName2}」的人格设定，供你参考角色的外貌、性格和行为模式：
@@ -794,15 +1025,22 @@ ${multiPerson2.otherPersona}`;
 
   const formatPrompt2 = `请严格按照以下 JSON 格式输出，不要任何解释或额外文字：
 
+【prompt 字段的写作规范】
+${branchImagePromptInstruction}${weatherHint}${multiPersonImageNote2}
+
+⚠️ 上面这段是**规范**，不是内容：照它的要求**自己写一段画面描述**填进 prompt 字段，
+**绝对不要把它原文抄进 JSON**，也不要出现「Describe the image」「Follow this progression」
+「Scene Setting」「Environment & Props」「Hard Rules」这类规范字样。
+
 {
   "description": "选择后的场景叙述，兑现上一个选择，写清实际结果和角色反应，让事情有所进展，不必每幕制造转折（80-150字）。
 
-采用紧密第三人称（她/他/ta），贴着角色当下的感知与动作展开，可以简短交代必要的背景、原因和感受，让读者看清行动与结果的联系。
+采用紧密第三人称（她/他/ta），始终贴着角色当下的感知与动作，不解释、不总结、不评价。
 
-以角色当下的动作、感受和对话展开，必要时简短交代背景与原因：
-- 写清上一个选择的结果，再停在下一步可采取行动的位置；不要替玩家决定下一步。
+不要像讲故事，而像镜头正在发生：
+- 结尾停在『必须做出选择之前』，留下悬念，不提前进入结果。
 - 行动符合当前天气和时间；天气或时间有助于理解场景时可自然提及。",
-  "prompt": "${branchImagePromptInstruction}",
+  "prompt": "（这里填**你写好的那一整段英文画面描述**：按上面的规范，写清承接这次选择之后的场景、谁在做什么、道具与光线氛围；整段连贯英文，严禁中文，严禁照抄上面的规范原文）",
   "choiceA": "新选项A（具体行动。必须符合${displayName2}的个性——是ta此刻真的会做出来的事。8-15字）",
   "choiceB": "新选项B（与A在动机、策略或代价上有实际差异，同样能从${displayName2}的性格与当下处境自然推出，不为制造反差而违背人设。8-15字）"
 }`;
@@ -818,8 +1056,7 @@ ${multiPerson2.otherPersona}`;
     : '';
 
   const directorPrompt2 = `事件标题：${event.title}
-${historyText}${multiNote2}${funFromNote2}
-${timeTag2}${weatherHint}${multiPersonImageNote2}
+${timeTag2}${historyText}${multiNote2}${funFromNote2}
 
 **核心要求——选择带来实际进展**：先兑现所选行动，写清实际结果和角色反应。顺利完成一件事、态度变化、具体发现或一段有分寸的对话都可以推进事件，不必每幕制造意外。自然出现的转折须有已有情节与人物动机的依据，符合世界规则，不能取消或改写玩家已经选择的行动。
 
@@ -842,12 +1079,13 @@ ${timeTag2}${weatherHint}${multiPersonImageNote2}
     msgs.push({ role: 'system', content: worldIntegrationBlock2 });
   }
 
-  // [2] 输出格式不混入本轮天气和同框信息，避免提前打断稳定前缀。
+  // [2] JSON format — most stable, always cache-hit (template unchanged, only trailing env ref varies)
   msgs.push({ role: 'system', content: formatPrompt2 });
 
   // [3] Branch continuation instructions — stable per character
   msgs.push({ role: 'system', content: `你正在为「${displayName2}」的特殊事件生成下一幕——一段紧密第三人称叙事。上一幕中角色做出了选择，现在展现选择之后发生的事情，选择已经完成，描述的是选择的结果。
 
+${worldPenetrationLine2}
 人设决定角色关注的细节、措辞和关系分寸，不为制造笑点或反差而突然改变性格。允许认真处理、短暂沉默和顺利完成；事情已经有结果时，给人物反应留出空间，不急着追加麻烦。选项体现不同动机、策略或代价，都要有当下的理由。
 
 【避免长线重复】
@@ -860,8 +1098,13 @@ ${timeTag2}${weatherHint}${multiPersonImageNote2}
   // [4] Character persona — stable per character
   msgs.push({ role: 'system', content: personaMsg2 });
 
-  // [user] 本次分支任务与上一幕参考。
-  msgs.push({ role: 'user', content: directorPrompt2 + prevSceneBlock });
+  // [user] Branch task（有<world_setting>时开头注入遵循规则）
+  const branchUserContent = worldSetting2
+    ? `请遵循当前<world_setting>来推进奇遇，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。
+
+${directorPrompt2}${prevSceneBlock}`
+    : directorPrompt2 + prevSceneBlock;
+  msgs.push({ role: 'user', content: branchUserContent });
 
   let branchData;
   let rawBranchResult = '';
@@ -871,7 +1114,9 @@ ${timeTag2}${weatherHint}${multiPersonImageNote2}
   for (let attempt = 1; attempt <= MAX_BRANCH_ATTEMPTS; attempt++) {
     rawBranchResult = '';
     try {
-      rawBranchResult = await (deps.llm?.chatSync || chatWithPreset)(msgs, { temperature: 0.7, response_format: { type: 'json_object' }, label: '事件分支', lorebook:{personaTexts:[personaMsg2],characterName:displayName2} });
+      const branchLlmChat = deps.llm?.chatSync || chatSync;
+      const branchLlmRun = typeof branchLlmChat === 'function' ? branchLlmChat : chatSync;
+      rawBranchResult = await branchLlmRun.call(deps.llm || null, msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '事件分支' });
       const jsonStr = extractFirstJson(rawBranchResult);
       if (!jsonStr) throw new Error('No JSON found in LLM response');
       const parsed = JSON.parse(repairJson(jsonStr));
@@ -938,7 +1183,7 @@ ${timeTag2}${weatherHint}${multiPersonImageNote2}
   let imageUrl = null;
   try {
     const charArtist = charArtistOverrideWithFallback(character, branchOtherChars);
-    const genResult = await (deps.image?.generateImageRaw || generateImageRaw)(branchData.prompt, {
+    const genResult = await (deps.image?.generateImageRaw || generateImageRaw).call(deps.image || null, branchData.prompt, {
       ragQuery: branchData.description || event.description,
       artist: charArtist !== null ? charArtist : config.comfyui.eventArtist,
       width: config.comfyui.eventWidth,
@@ -963,9 +1208,30 @@ ${timeTag2}${weatherHint}${multiPersonImageNote2}
         db,
       });
       console.log(`[eventGen] Branch image generated: ${imageUrl}`);
+    } else {
+      console.warn(`[eventGen] Branch image generation returned no images for ${character.display_name}`);
+      recordFailedImageTask({
+        conversationId: `char_${character.id}_event_${event.id}_branch_${event.current_branch + 1}`,
+        promptOriginal: originalBranchPrompt,
+        promptRefined: branchData.prompt,
+        errorMessage: genResult.error || 'ComfyUI 未返回图片',
+        style: charArtist !== null ? charArtist : config.comfyui.eventArtist,
+        resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
+        workflowTemplate: genResult.wfMode || null,
+        db,
+      });
     }
   } catch (err) {
     console.error(`[eventGen] Branch image generation failed:`, err.message);
+    recordFailedImageTask({
+      conversationId: `char_${character.id}_event_${event.id}_branch_${event.current_branch + 1}`,
+      promptOriginal: originalBranchPrompt,
+      promptRefined: branchData.prompt,
+      errorMessage: err.message,
+      style: charArtist !== null ? charArtist : config.comfyui.eventArtist,
+      resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
+      db,
+    });
   }
 
   // 6. 更新 choice_history 和 summary
@@ -1027,9 +1293,63 @@ ${timeTag2}${weatherHint}${multiPersonImageNote2}
 }
 
 /**
+ * 亲密看板：把一场奇遇记进行为流水（scene='event'），零额外 LLM 调用。
+ *
+ * **幂等锚点为什么不用 raw_id**：奇遇没有 raw_messages 行，而 raw_id 在本项目里语义固定指向
+ * raw_messages.id —— 塞事件 id 进去会污染聊天链路的撤回：撤回一轮按 raw_id 删流水
+ * （chat.js → rollbackIntimateByRawId），事件流水会被误删。
+ * 所以这里走 recordIntimateActs 的显式 sourceUid：`event:<eventId>:<actKey>:<positionKey>`，
+ * 同一事件的同一行为重放多少次都只落一行（幂等），且 raw_id 保持 0、永不被聊天回滚误伤。
+ *
+ * 判定口径与聊天完全一致：只拿事件自身的生图 prompt（character_events.prompt，即最后一幕的
+ * 英文 tag 串，逗号分隔）过确定性词表；拿不到 prompt 或没有任何成人 tag 就什么都不记，不猜测。
+ *
+ * @param {{characterId:number, eventId:number, prompt?:string, partnerKind?:string, occurredAt?:string}} params
+ * @returns {{inserted:number, skipped:number, blocked:boolean}}
+ */
+export function recordIntimateForEvent({
+  characterId,
+  eventId,
+  prompt = '',
+  partnerKind = 'user',
+  occurredAt,
+} = {}) {
+  const empty = { inserted: 0, skipped: 0, blocked: false };
+  // 总开关关闭 / 无有效 id：直接不记账（不回抛，调用方在奇遇收尾链路里）
+  if (config.features.intimate === false) return empty;
+  const charId = Number.parseInt(characterId, 10);
+  const evId = Number.parseInt(eventId, 10);
+  if (!Number.isSafeInteger(charId) || charId <= 0) return empty;
+  if (!Number.isSafeInteger(evId) || evId <= 0) return empty;
+
+  const tags = tagsFromPromptString(prompt);
+  if (tags.length === 0) return empty;
+  const classified = classifyPromptTags(tags);
+  if (classified.length === 0) return empty;
+
+  return recordIntimateActs(charId, {
+    scene: 'event',
+    // 与聊天链路保持一致：奇遇由用户的选择推进，默认记在 user 口径下（面板 viewScope 默认只看 user）
+    partnerKind,
+    rawId: 0,
+    source: 'auto',
+    occurredAt,
+    acts: classified.map(act => ({
+      ...act,
+      sourceUid: `event:${evId}:${act.actKey}:${act.positionKey}`,
+    })),
+  });
+}
+
+/**
  * 生成结局并存入记忆
  */
-export async function concludeEvent(character, event, outcome) {
+export async function concludeEvent(character, event, outcome, deps = {}) {
+  return withEventProcessing('character_events', event.id,
+    current => concludeLockedEvent(character, current, outcome, deps));
+}
+
+async function concludeLockedEvent(character, event, outcome, deps) {
   const db = getDb();
   console.log(`[eventGen] Concluding event "${event.title}" for ${character.display_name} (engaged=${event.engaged}, outcome=${outcome})`);
 
@@ -1047,6 +1367,10 @@ export async function concludeEvent(character, event, outcome) {
     ? choiceHistory.map((h, i) => `第${i + 1}步：${h.choice_label} → ${h.summary}`).join('\n')
     : `角色经历了：${event.description}（未与用户互动）`;
 
+  const worldConsistencyLine = worldSetting3
+    ? '- **<world_setting>一致性**：结局和记忆摘要必须反映<world_setting>的基本规则。角色做出的选择及其后果、环境的反应、事件的收束方式，都必须在<world_setting>框架内自然发生。\n'
+    : '';
+
   // 人格走统一入口把「你」替换为角色名；直接塞原始 base_prompt（第二人称）会把结局叙事带成第一人称
   const displayName3 = character.display_name;
   let personaText3 = buildCharacterPersona(character, { variant: 'full', person: displayName3 });
@@ -1061,41 +1385,47 @@ export async function concludeEvent(character, event, outcome) {
 ${historyText}
 当前场景：${event.description}
 
-为读者自然收束这段经历，交代结果和人物感受。要求：
-- 【叙事视角·最高优先级】全程第三人称叙事：主语用「${displayName3}」或「她/他」，叙事部分严禁出现「我」「我的」「我们」等第一人称称谓（唯一例外是角色说出口的台词引号内），内心活动写成「她心想」而不是「我心想」
-- 写清本次事件如何收束及其对人物的影响，适当承接关键经过，避免逐幕重复
-- 人物的感受、对话和细节按情节需要自然呈现，保持角色口吻，不规定篇幅比例或强加吐槽
-- 根据情节自然结束，可以用叙述、台词或动作交代落点；不必另造悬念或转折
+这是写给读者看的小说结尾，不是事件总结。要求：
+${worldConsistencyLine}- 【叙事视角·最高优先级】全程第三人称叙事：主语用「${displayName3}」或「她/他」，叙事部分严禁出现「我」「我的」「我们」等第一人称称谓（唯一例外是角色说出口的台词引号内），内心活动写成「她心想」而不是「我心想」
+- 只聚焦 1~2 个最有戏的瞬间展开，其余经过一笔带过或不写；严禁从早到晚按时间顺序复述全程的流水账写法
+- 至少三分之一篇幅是"人味"：角色的内心吐槽、和环境的一点小摩擦、或一个出乎意料的小细节
+- 结尾用一句台词或一个小动作收束，留点余韵；禁止"就这样结束了"式的总结句
 - 结局叙述 100~180 字，将直接展示在页面上，作为事件的正式收尾
 - 记忆摘要 100~180 字，只存入角色长期记忆、不会展示给用户，用第三人称视角客观记录整个事件的起因、经过、转折和结果（保持客观简洁即可，无需文学性）
 
 **重要：输出严格 JSON 格式，不要输出任何解释或 JSON 以外的文字**
 {"conclusion":"结局叙述（全程第三人称，主语用${displayName3}或她/他，叙事部分禁止出现「我」，仅台词引号内可例外）","summary":"记忆摘要（第三人称，包含完整的事件经过）"}`
-    : `角色刚刚经历了一场无人参与的特殊事件。请基于事件描述，写出一个符合已知情节与人物动机的自然收尾。
+    : `角色刚刚经历了一场无人参与的特殊事件。请基于事件描述，想象一个最有趣、最自然的收尾画面。
 事件标题：${event.title}
 ${historyText}
 
-为读者自然收束这段经历，交代结果和人物感受。要求：
-- 【叙事视角·最高优先级】全程第三人称叙事：主语用「${displayName3}」或「她/他」，叙事部分严禁出现「我」「我的」「我们」等第一人称称谓（唯一例外是角色说出口的台词引号内），内心活动写成「她心想」而不是「我心想」
-- 写清本次事件如何收束及其对人物的影响，适当承接关键经过，避免逐幕重复
-- 人物的感受、对话和细节按情节需要自然呈现，保持角色口吻，不规定篇幅比例或强加吐槽
-- 根据情节自然结束，可以用叙述、台词或动作交代落点；不必另造悬念或转折
+这是写给读者看的小说结尾，不是事件总结。要求：
+${worldConsistencyLine}- 【叙事视角·最高优先级】全程第三人称叙事：主语用「${displayName3}」或「她/他」，叙事部分严禁出现「我」「我的」「我们」等第一人称称谓（唯一例外是角色说出口的台词引号内），内心活动写成「她心想」而不是「我心想」
+- 只聚焦 1~2 个最有戏的瞬间展开，其余经过一笔带过或不写；严禁按时间顺序复述全程的流水账写法
+- 至少三分之一篇幅是"人味"：角色的内心吐槽、和环境的一点小摩擦、或一个出乎意料的小细节
+- 结尾用一句台词或一个小动作收束，留点余韵；禁止"就这样结束了"式的总结句
 - 结局叙述 100~180 字，将直接展示在页面上，作为事件的正式收尾
 - 记忆摘要 100~180 字，只存入角色长期记忆、不会展示给用户，用第三人称视角客观记录事件
 
 **重要：输出严格 JSON 格式，不要输出任何解释或 JSON 以外的文字**
 {"conclusion":"结局叙述（全程第三人称，主语用${displayName3}或她/他，叙事部分禁止出现「我」，仅台词引号内可例外）","summary":"记忆摘要（第三人称）"}`;
 
+  const conclusionUserContent = worldSetting3
+    ? `请遵循当前<world_setting>来收束奇遇，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级，人设会因为<world_setting>改变。
+
+${taskPrompt}`
+    : taskPrompt;
+
   const msgs = [
     { role: 'system', content: permissionPrompt },
     ...(worldIntegrationNote ? [{ role: 'system', content: worldIntegrationNote }] : []),
     { role: 'system', content: personaMsg3 },
-    { role: 'user', content: taskPrompt },
+    { role: 'user', content: conclusionUserContent },
   ];
 
   let conclusionData;
   try {
-    const result = await chatWithPreset(msgs, { temperature: 0.7, response_format: { type: 'json_object' }, label: '事件结局', lorebook:{personaTexts:[personaMsg3],characterName:displayName3} });
+    const result = await (deps.chatSync || chatSync)(msgs, { temperature: 0.7, max_tokens: 1024, response_format: { type: 'json_object' }, label: '事件结局' });
     const jsonStr = extractFirstJson(result);
     if (!jsonStr) throw new Error('No JSON found');
     conclusionData = JSON.parse(repairJson(jsonStr));
@@ -1110,57 +1440,86 @@ ${historyText}
     };
   }
 
-  // 2. 只有用户实际推进过分支的奇遇才进入 RAG；未参与的仍归档到往期奇遇。
-  const conversationId = `char_${character.id}`;
+  db.transaction(() => {
+    // 2. 存入记忆
+    const conversationId = `char_${character.id}`;
 
-  if (event.engaged) {
     try {
       const parsedHistory = JSON.parse(event.choice_history || '[]');
       const branchReasoning = parsedHistory
         .filter(item => item.branch !== 0)
         .map(item => `选择「${item.choice_label}」后：${item.summary}`)
         .join('；');
-      applyMemoryActions({
-        conversationId,
-        sourceRawStartId: null,
-        sourceRawEndId: null,
-        actions: [{
-          action: 'create',
-          sourceMemoryIds: [],
-          memory: {
-            memoryType: 'event',
-            subject: 'character',
-            judgment: `已完成事件：${event.title}。${conclusionData.summary}`,
-            reasoning: [event.description, branchReasoning].filter(Boolean).join('；'),
-            tags: [character.display_name, event.title, '事件'],
-          },
-        }],
-      });
+      if (!event.engaged) {
+        const oldRows = db.prepare(`
+          SELECT memory_id FROM memory_fragments
+          WHERE conversation_id = ? AND memory_type = 'event' AND subject = 'character'
+            AND status = 'active' AND judgment LIKE '未互动事件：%'
+        `).all(conversationId);
+        for (const row of oldRows) softDeleteMemory(row.memory_id);
+      }
+      const skipUnengaged = !event.engaged && !getMemorySettings().recordUnengagedEvents;
+      if (!skipUnengaged) {
+        applyMemoryActions({
+          conversationId,
+          sourceRawStartId: null,
+          sourceRawEndId: null,
+          actions: [{
+            action: 'create',
+            sourceMemoryIds: [],
+            memory: {
+              memoryType: 'event',
+              subject: 'character',
+              judgment: `${event.engaged ? '已完成事件' : '未互动事件'}：${event.title}。${conclusionData.summary}`,
+              reasoning: [event.description, branchReasoning].filter(Boolean).join('；'),
+              tags: [character.display_name, event.title, '事件'],
+            },
+          }],
+        });
+      }
     } catch (memErr) {
       console.error(`[eventGen] Memory save failed:`, memErr.message);
     }
+
+    // 3. 移到 event_history（保留原始 ID，确保分享卡片等引用不失效）
+    db.prepare(`
+      INSERT INTO event_history (id, character_id, event_type_key, title, description, final_image, summary, conclusion, choice_history, total_branches, engaged, outcome, referenced_character_ids, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.id,
+      character.id, event.event_type_key,
+      event.title, event.description, event.image,
+      conclusionData.summary,
+      conclusionData.conclusion || null,
+      event.choice_history, event.current_branch || 0,
+      event.engaged, outcome,
+      event.referenced_character_ids || '[]', event.created_at
+    );
+
+    // 4. 删除活跃事件
+    db.prepare(`DELETE FROM character_events WHERE id = ?`).run(event.id);
+  })();
+
+  // 5. 亲密看板：奇遇场景记账（零 LLM，只用内存里这份 event.prompt 做确定性词表归类）
+  //    放在事件行删除之后、广播之前：event 对象已经拿全，不再额外查库；
+  //    失败只告警——看板统计绝不能影响奇遇收尾。幂等靠显式 sourceUid（见 recordIntimateForEvent）。
+  try {
+    const intimate = recordIntimateForEvent({
+      characterId: character.id,
+      eventId: event.id,
+      prompt: event.prompt,
+      partnerKind: 'user',
+    });
+    if (intimate.inserted > 0) {
+      console.log(`[eventGen] intimate recorded for event ${event.id}: +${intimate.inserted}`);
+    }
+  } catch (err) {
+    console.warn('[intimate] event record failed:', err.message);
   }
 
-  // 3. 移到 event_history（保留原始 ID，确保分享卡片等引用不失效）
-  db.prepare(`
-    INSERT INTO event_history (id, character_id, event_type_key, title, description, final_image, summary, conclusion, choice_history, total_branches, engaged, outcome, referenced_character_ids)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    event.id,
-    character.id, event.event_type_key,
-    event.title, event.description, event.image,
-    conclusionData.summary,
-    conclusionData.conclusion || null,
-    event.choice_history, event.current_branch || 0,
-    event.engaged, outcome,
-    event.referenced_character_ids || '[]'
-  );
-
-  // 4. 删除活跃事件
-  db.prepare(`DELETE FROM character_events WHERE id = ?`).run(event.id);
-
-  // 5. SSE 广播
+  // 6. SSE 广播
   broadcastEventConclusion({
+    event_id: event.id,
     character_id: character.id,
     character_name: character.display_name,
     event_title: event.title,
@@ -1198,21 +1557,13 @@ function conclusionHasFirstPerson(text) {
 }
 
 // 从 LLM 原始输出中提取第一个完整 JSON 对象（括号计数，防 LLM 输出多段 JSON 拼在一起）
-export function extractFirstJson(text) {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0, inString = false, escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\') { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
-  }
-  return null; // 括号未闭合
-}
+/**
+ * 从任意文本里取出第一个完整 JSON 对象。
+ * 2026-10-01：实现搬到 `jsonExtract.js`（那边有自己的说明：本模块会连带拉起生图栈，
+ * 而情绪评估等只想解析 JSON 的调用方不该被拖上整条生图依赖），这里**原样再导出**，
+ * 13 处既有 `import { extractFirstJson } from './eventGenerator.js'` 不用改。
+ */
+export { extractFirstJson } from './jsonExtract.js';
 
 function toISO(dt) {
   if (!dt) return dt;

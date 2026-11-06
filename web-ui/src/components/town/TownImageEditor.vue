@@ -1023,7 +1023,7 @@ onBeforeUnmount(() => {
 .ie-gaps { padding: 10px 0; border-block: 1px solid var(--border); color: var(--text-primary); font-size: 12px; }
 .ie-gap-heading { display: flex; align-items: center; gap: 8px; }
 .ie-gap-heading label { font-weight: 700; white-space: nowrap; }
-.ie-gap-heading strong { display: inline-block; min-width: 3ch; color: var(--accent-hover); font-variant-numeric: tabular-nums; }
+.ie-gap-heading strong { display: inline-block; min-width: 3ch; color: var(--accent-text); font-variant-numeric: tabular-nums; }
 .ie-gap-heading > span { flex: 1; color: var(--text-secondary); text-align: right; }
 .ie-gap-slider {
   --thumb-size: 24px;

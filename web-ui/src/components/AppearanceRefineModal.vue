@@ -2,10 +2,10 @@
   <!-- ── 修正外观弹窗：上传 / 粘贴 / 拖拽参考图，邻舍分析后重写「## 你的外观」──
        整卡文本由 basePrompt prop 传入（可以是待确认的草稿卡，不要求角色已入库）；
        应用结果通过 @applied 回传重组后的整卡，落库/回填由父级决定。 -->
-  <linshe-modal v-model="visibleModel" :title="sceneLabel ? `修正「${sceneLabel === '工装' ? '默认' : sceneLabel}」外观 — ${displayName || ''}` : `修正外观 — ${displayName || ''}`" wide :transition-ms="300">
+  <linshe-modal v-model="visibleModel" :title="sceneLabel ? `修正「${['工装', '常服'].includes(sceneLabel) ? '默认' : sceneLabel}」外观 — ${displayName || ''}` : `修正外观 — ${displayName || ''}`" wide :transition-ms="300">
     <div class="refine-body" :class="{ 'is-dragging': refineDragging }" @dragover.prevent="refineDragging = true" @dragleave="onRefineDragLeave" @drop.prevent="onRefineDrop">
       <p class="refine-intro">
-        提供一张该角色的参考图，邻舍会观察图片并重写<b v-if="sceneLabel">「{{ sceneLabel === '工装' ? '默认' : sceneLabel }}」</b><template v-else>人格卡里的「## 你的外观」</template>的外观描述，
+        提供一张该角色的参考图，邻舍会观察图片并重写<b v-if="sceneLabel">「{{ ['工装', '常服'].includes(sceneLabel) ? '默认' : sceneLabel }}」</b><template v-else>人格卡里的「## 你的外观」</template>的外观描述，
         生成「名字 + 五官 + 衣着」的生图描述。支持点击上传、Ctrl+V 粘贴、拖拽到窗口<template v-if="characterId">，或从最近图片中挑选并截取</template>。
       </p>
 
@@ -101,7 +101,7 @@ const props = defineProps({
   displayName: { type: String, default: '' },
   /** 当前整卡文本（待重写「## 你的外观」的草稿/编辑中人格卡） */
   basePrompt: { type: String, default: '' },
-  /** 目标场景名（工装/私服/居家/睡衣）；留空＝旧口径（改人格卡的外观段）。仅用于标题与说明文案 */
+  /** 当前编辑的服装场景；同时用于标题与分析请求。 */
   sceneLabel: { type: String, default: '' },
   /** 应用按钮文案 / 底部提示（草稿卡场景父级可改写） */
   applyText: { type: String, default: '应用并保存' },
@@ -215,7 +215,11 @@ function handleRefineFile(file) {
   readFileAsDataURL(file).then(dataUrl => {
     if (!props.modelValue || version !== analysisVersion) return
     refineImage.value = dataUrl
-    clearResult()
+    refineResult.value = ''
+    refinePromptBefore.value = ''
+    refinePromptAfter.value = ''
+    refineLegacyBasePrompt.value = ''
+    refineError.value = ''
     // 图片就位后直接开始分析
     startRefineAnalysis()
   }).catch(err => {
@@ -225,7 +229,11 @@ function handleRefineFile(file) {
 
 function clearRefineImage() {
   refineImage.value = ''
-  clearResult()
+  refineResult.value = ''
+  refinePromptBefore.value = ''
+  refinePromptAfter.value = ''
+  refineLegacyBasePrompt.value = ''
+  refineError.value = ''
 }
 
 // ── 从最近图片挑选并截取 ──
@@ -239,7 +247,11 @@ function openRecentPicker() {
 function onRefineRecentPicked(base64) {
   showRefinePicker.value = false
   refineImage.value = base64
-  clearResult()
+  refineResult.value = ''
+  refinePromptBefore.value = ''
+  refinePromptAfter.value = ''
+  refineLegacyBasePrompt.value = ''
+  refineError.value = ''
   startRefineAnalysis()
 }
 
@@ -270,7 +282,11 @@ async function startRefineAnalysis() {
   const version = ++analysisVersion
   analysisController = new AbortController()
   refineAnalyzing.value = true
-  clearResult()
+  refineError.value = ''
+  refineResult.value = ''
+  refinePromptBefore.value = ''
+  refinePromptAfter.value = ''
+  refineLegacyBasePrompt.value = ''
   try {
     const res = await api.refineAppearanceDraft({
       image: refineImage.value,

@@ -1,30 +1,10 @@
 <template>
-  <!-- 报纸不铺满视口（不再套 LinsheModal 外壳）：四周留一圈衬底，纸面浮起带投影；
+  <!-- 报纸不铺满视口（不套 LinsheModal 外壳）：四周留一圈衬底，纸面浮起带投影；
        关闭钮浮在报头右上角；0.3s 渐入渐出由 Transition 兜住，关闭动画走完才卸载。 -->
   <Teleport to="body">
     <Transition name="np-window">
       <div v-if="visible" class="np-overlay" @click.self="closeWindow">
         <linshe-close-button v-if="!detailArticle" class="np-close" label="关闭日报" @click="closeWindow" />
-
-        <!-- 加载骨架 -->
-        <div v-if="loading" class="np-gate">
-          <div class="np-skeletons">
-            <div class="skeleton np-sk-line"></div>
-            <div class="skeleton np-sk-block"></div>
-            <div class="skeleton np-sk-block"></div>
-          </div>
-        </div>
-
-        <!-- 还没印好 -->
-        <div v-else-if="!paper" class="np-gate">
-          <div class="empty np-empty">
-            <div class="np-empty-icon">📰</div>
-            <p class="np-empty-title">今天的报纸还没印好</p>
-            <p class="np-empty-hint">每天零点由镇口公告站准时印发</p>
-            <linshe-button size="sm" :loading="urging" @click="urgePrint">催一下印刷机</linshe-button>
-          </div>
-        </div>
-
 
         <!-- 加载骨架 -->
         <div v-if="loading" class="np-gate">
@@ -78,12 +58,21 @@
             @click="navEdition(-1)"
           >下一期<span v-if="newerTarget" class="np-ed-switch-target"> · {{ newerTarget.today ? '今天' : editionShortLabel(newerTarget) }}</span> ›</linshe-button>
         </nav>
-
       </header>
 
       <!-- 版面：三栏（左 = 异闻+前半新闻 / 中 = 人物特稿 / 右 = 后半新闻） -->
       <div class="np-sheet" :class="{ 'np-sheet--nolead': !paper.character_event }">
         <div class="np-col">
+          <!-- 昨夜邻里（2026-11-06）：你不在的时候世界没停，这里列最近 24 小时补记的事 -->
+          <section v-if="offlineNotes.length && !viewDate" class="np-offline" aria-label="昨夜邻里">
+            <span class="np-offline-stamp">昨夜邻里</span>
+            <ul class="np-offline-list">
+              <li v-for="note in offlineNotes" :key="note.title + note.at">
+                <strong class="np-offline-title">{{ note.title }}</strong>
+                <span class="np-offline-text">{{ note.summary }}</span>
+              </li>
+            </ul>
+          </section>
           <section
             v-if="paper.world_state"
             class="np-world np-clickable"
@@ -102,6 +91,7 @@
             </figure>
             <p v-if="paper.world_state.description" class="np-text" data-np-clip>{{ paper.world_state.description }}</p>
             <p v-if="paper.world_state.news" class="np-text np-text-secondary" data-np-clip>{{ paper.world_state.news }}</p>
+            <!-- 手动补印：只在缺图时出现（上游 v3.10.0 合并，2026-10-19） -->
             <linshe-button
               v-if="!paper.world_state.image"
               class="np-world-regen"
@@ -215,6 +205,7 @@
       <footer class="np-colophon">
         <div class="np-colophon-start">
           <span>《{{ paper.name }}》 · {{ totalCount }} 条今日预告</span>
+          <!-- 整版重印：只在看今天时可用（历史期重印没有语义） -->
           <linshe-button
             v-if="isToday"
             variant="link"
@@ -288,7 +279,7 @@
         </div>
       </Transition>
 
-      <!-- 图片放大：Teleport 到 body 全局层级（高于日报窗体本体，低于 Toast） -->
+      <!-- 图片放大：Teleport 到 body 全局层级（高于日报弹窗本体，低于 Toast） -->
       <Teleport to="body">
         <div style="--vel-z-index: 11000">
           <ImageLightbox
@@ -311,7 +302,7 @@ import LinsheCloseButton from "./ui/LinsheCloseButton.vue"
 // 纸面视觉属于设计系统的「质感岛」例外家族（同信箱/世界观编辑器）：固定暖纸底 + 墨色文字，
 // 不随暗夜主题切换；不套 LinsheModal 外壳，四周留一圈暖纸衬底，纸面带报边做旧质感。
 // 出现方式：衬底淡入 + 纸面从底部往上浮（0.3s 口径；Esc 关闭自己兜底）。
-// 版面口径：整版铺满视口（桌面三栏，特稿居中当头条），配图优先——侧栏/异闻配图保持
+// 版面口径：整版铺满窗口（桌面三栏，特稿居中当头条），配图优先——侧栏/异闻配图保持
 // 报纸的「文字半包围」拼版（图块浮动，文字绕图排），图框按版面高度取一份、img 以
 // contain 等比收进框内（永不裁切）；装不下先压正文（min-height 保底一行），标题始终保留。
 // 正文行数压裁（省略号）由 useArticleClip 负责。
@@ -328,10 +319,12 @@ const POLL_INTERVAL_MS = 20000
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
+  // 打开时直接定位到某一期（'' = 今天）。与本地日期比较，避免 UTC 在凌晨偏移一天
   initialDate: { type: String, default: '' },
 })
 const emit = defineEmits(['update:modelValue', 'close', 'read', 'deleted'])
 
+// toast 走注入（App.vue 提供）；没有注入时静默降级，测试里不需要 mock
 const toastFn = inject('toast', null)
 const confirmFn = inject('confirm', async () => false)
 
@@ -342,11 +335,14 @@ const visible = computed({
 
 const todayPaper = ref(null)
 const pastPaper = ref(null)
+/** 昨夜邻里：离线编年补记的动态（只在看今天时展示） */
+const offlineNotes = ref([])
 const viewDate = ref('')          // '' = 看今天；否则为历史日期（YYYY-MM-DD）
 const editions = ref([])          // 历史期简目，最新在前
 const navLoading = ref(false)
 const loading = ref(false)
 const urging = ref(false)
+// 整版重印中（「重新生成今日日报」按钮）
 const regenerating = ref(false)
 const deleting = ref(false)
 const dismissing = ref(false)
@@ -382,6 +378,7 @@ function adjacentEdition(dir) {
 
 const olderTarget = computed(() => adjacentEdition(1))
 const newerTarget = computed(() => adjacentEdition(-1))
+const canNavOlder = computed(() => !!olderTarget.value)
 
 function editionShortLabel(e) {
   if (!e) return ''
@@ -394,6 +391,10 @@ const currentLabel = computed(() => {
   if (!p) return ''
   return `第${p.edition}期 · ${isToday.value ? '今天' : formatDate(p.publish_date)}`
 })
+const headerMeta = computed(() => {
+  const p = paper.value
+  return p ? `第${p.edition}期 · ${formatDate(p.publish_date)}` : ''
+})
 
 /** 期号导航：dir=1 更旧，dir=-1 更新（越过最新一期即回到今天） */
 async function navEdition(dir) {
@@ -404,7 +405,6 @@ async function navEdition(dir) {
   if (target.today) {
     viewDate.value = ''
     pastPaper.value = null
-    if (todayPaper.value) emit('read', todayPaper.value)
     closeDetail()
     return
   }
@@ -490,12 +490,14 @@ const detailArticle = computed(() => {
   if (d.kind === 'item') {
     const it = items.value[d.index]
     if (!it) return null
+    // index 一并带上：详情页的「重新生成配图」要按同一个下标补印
     return { kind: 'item', cat: it.category, title: it.title, content: it.content, image: it.image, index: d.index, author: '', avatar: '' }
   }
   return null
 })
 
 // ── 手动补印缺失配图：按钮挂在「配图印刷中/缺失」占位框上，key = 'lead' | 'world' | 'item:<下标>' ──
+// （上游 v3.10.0 合并，2026-10-19）
 const regenLoading = reactive({})
 const detailRegenKey = computed(() => {
   const d = detailArticle.value
@@ -544,7 +546,8 @@ function onWindowKeydown(e) {
   closeWindow()
 }
 
-// 打开指定期次时按本地日期判断今天，避免 UTC 日期在凌晨偏移一天。
+// 打开指定期次时按本地日期判断"今天"，避免 UTC 日期在凌晨偏移一天
+//（曾用 toISOString ⇒ 东八区 00:30 被算成前一天，期次差一天）
 function localDateKey(d = new Date()) {
   const p = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
@@ -568,6 +571,8 @@ function hasMissingImage(p) {
 async function fetchPaper() {
   const data = await api.getTodayNewspaper()
   const paper = data?.newspaper || null
+  // 昨夜邻里（2026-11-06）：离线期间补记的世界动态，只在今天这一版右上角露一段
+  offlineNotes.value = Array.isArray(data?.offlineNotes) ? data.offlineNotes.slice(0, 4) : []
   // 开窗期间报纸才印出来（手动补发 / 生成完成）：首见即算看过，别把红点留在导航栏
   const firstArrival = Boolean(paper) && !todayPaper.value
   todayPaper.value = paper
@@ -653,6 +658,7 @@ watch(visible, async (open) => {
     // 报纸浮现的同一拍翻一页
     playNewspaperFlipSound()
     loading.value = true
+    // 指定期次（且不是今天）才进回看；与本地日期比，避免 UTC 偏移
     viewDate.value = props.initialDate && props.initialDate !== localDateKey() ? props.initialDate : ''
     pastPaper.value = null
     try {
@@ -778,6 +784,7 @@ onBeforeUnmount(() => {
 .np-paper {
   position: relative;
   flex: 1;
+  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -807,7 +814,6 @@ onBeforeUnmount(() => {
   min-width: 148px;
   text-align: center;
 }
-
 /* 报头右侧的「第 N 期」随导航联动时弱化（避免与 header 重复） */
 .np-paper.is-past-view .np-mast-side-right {
   opacity: 0.55;
@@ -844,8 +850,6 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 14px;
-  /* 右侧让出悬浮关闭钮的位置，别让「第 N 期」压在章下面 */
-  padding-right: 52px;
 }
 .np-mast-side {
   flex: 1;
@@ -990,6 +994,26 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 8px;
 }
+/* 昨夜邻里：报纸左栏最上面一小段，说明"你不在时世界也没停" */
+.np-offline {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed rgba(60, 40, 20, 0.28);
+}
+.np-offline-stamp {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  color: #6b4b2a;
+  border: 1px solid rgba(60, 40, 20, 0.35);
+  padding: 2px 7px 2px 10px;
+  margin-bottom: 8px;
+}
+.np-offline-list { margin: 0; padding: 0; list-style: none; }
+.np-offline-list li { margin-bottom: 7px; line-height: 1.65; }
+.np-offline-title { display: block; font-size: 13px; color: #33241a; }
+.np-offline-text { font-size: 12px; color: #5b4632; }
+
 .np-world-stamp {
   flex-shrink: 0;
   font-size: 12px;
@@ -1068,6 +1092,54 @@ onBeforeUnmount(() => {
   margin-top: 10px;
   margin-bottom: 0;
 }
+
+/* 普通新闻：block 流（float 环绕需要），超高由 overflow:hidden 兜底（全文进详情） */
+.np-article {
+  min-height: 0;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(58, 42, 26, 0.18);
+  overflow: hidden;
+}
+.np-article:last-child {
+  border-bottom: none;
+}
+.np-article-title {
+  margin: 6px 0 4px;
+  font-size: 16.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.03em;
+  font-family: 'Kaiti SC', 'STKaiti', 'KaiTi', 'SimSun', serif;
+}
+
+/* 正文 */
+.np-text {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.85;
+  text-align: justify;
+}
+.np-text-sm {
+  /* 正文保底一行；装不下的整行由 useArticleClip 量完补省略号（全文进详情） */
+  min-height: 1.8em;
+  font-size: 13px;
+  line-height: 1.8;
+  margin-top: 6px;
+}
+.np-text-secondary {
+  color: #6b5a48;
+  margin-top: 4px;
+}
+
+/* 标题行数压裁（纯文字块，-webkit-box 不影响 float 环绕）；
+   正文不在这里压：正文要绕着浮动配图排，只能靠 useArticleClip 量完行盒补省略号 */
+.np-clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
 /* 配图统一口径：细墨框 + 白衬，img 以 contain 等比缩放（永不裁切、不裁边）。
    头条通栏；侧栏/异闻图块浮动，文字绕图排成报纸的「半包围」拼版 */
 .np-figure {
@@ -1110,55 +1182,6 @@ onBeforeUnmount(() => {
   aspect-ratio: 4 / 3;
   min-height: 0;
 }
-
-/* 普通新闻：block 流（float 环绕需要），overflow:hidden 收住图块并给正文压裁兜底。
-   配图优先：图块可缩（保持比例），正文先让路、min-height 保底一行，标题始终保留 */
-.np-article {
-  min-height: 0;
-  padding: 8px 4px;
-  border-bottom: 1px solid rgba(58, 42, 26, 0.18);
-  overflow: hidden;
-}
-.np-article:last-child {
-  border-bottom: none;
-}
-.np-article-title {
-  margin: 6px 0 4px;
-  font-size: 16.5px;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: 0.03em;
-  font-family: 'Kaiti SC', 'STKaiti', 'KaiTi', 'SimSun', serif;
-}
-
-/* 正文 */
-.np-text {
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.85;
-  text-align: justify;
-}
-.np-text-sm {
-  /* 正文保底一行；装不下的整行由 useArticleClip 量完补省略号（全文进详情） */
-  min-height: 1.8em;
-  font-size: 13px;
-  line-height: 1.8;
-  margin-top: 6px;
-}
-.np-text-secondary {
-  color: #6b5a48;
-  margin-top: 4px;
-}
-
-/* 标题行数压裁（纯文字块，-webkit-box 不影响浮环绕）；
-   正文不在这里压：正文要绕着浮动配图排，只能靠 useArticleClip 量完行盒补省略号 */
-.np-clamp-2 {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-
 .np-img-placeholder {
   margin: 4px 0 0;
   display: flex;
@@ -1175,7 +1198,9 @@ onBeforeUnmount(() => {
   background: rgba(255, 252, 245, 0.5);
   border-radius: 2px;
 }
-/* 异闻块的补图按钮：没有占位框，直接缀在正文后（皮肤归 LinsheButton，这里只管位置） */
+
+/* 「重新生成配图」：缺图占位框里的补救入口（上游 v3.10.0）
+   占位框本身是 flex 列布局，按钮自动成为第三行，不需要额外定位 */
 .np-world-regen {
   margin-top: 6px;
 }
@@ -1200,6 +1225,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.14em;
   color: #a08c74;
 }
+/* 报尾左侧：期号说明 + 「重新生成今日日报」（上游 v3.10.0） */
 .np-colophon-start {
   display: flex;
   align-items: center;
@@ -1230,7 +1256,6 @@ onBeforeUnmount(() => {
     radial-gradient(1200px 400px at 50% -80px, rgba(255, 253, 246, 0.9), rgba(255, 253, 246, 0) 70%),
     linear-gradient(180deg, #f8f3e9 0%, #f4eddd 100%);
 }
-/* 详情页是一整张摊开的纸，滚动条会破坏纸面；照旧可滚，只是不画滚动条 */
 .np-detail-scroll {
   flex: 1;
   min-height: 0;
@@ -1239,11 +1264,6 @@ onBeforeUnmount(() => {
   max-width: 820px;
   margin: 0 auto;
   padding: 20px clamp(18px, 4vw, 48px) 28px;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.np-detail-scroll::-webkit-scrollbar {
-  display: none;
 }
 .np-detail-bar {
   display: flex;
@@ -1340,10 +1360,10 @@ onBeforeUnmount(() => {
   color: #8c3b22;
 }
 
-/* 详情动画（0.3s 口径，同窗口淡入淡出走 --ease-out；图片放大走统一 ImageLightbox） */
+/* 详情动画（0.3s 口径；图片放大走统一 ImageLightbox） */
 .np-detail-fade-enter-active,
 .np-detail-fade-leave-active {
-  transition: opacity 0.3s var(--ease-out);
+  transition: opacity 0.3s ease;
 }
 .np-detail-fade-enter-from,
 .np-detail-fade-leave-to {
@@ -1444,17 +1464,14 @@ onBeforeUnmount(() => {
     font-size: 23px;
     text-align: left;
   }
-  /* 手机版整版可滚动、无高度压力：配图通栏、取消浮动环绕、按原始比例展示。
-     选择器带上桌面端的高特异度写法（float:right / height:calc），否则压不住 */
+  /* 手机端不做环绕：配图通栏、保持比例 */
   .np-figure,
-  .np-figure-wrap,
   .np-col-list .np-article:nth-of-type(even) .np-figure-wrap,
-  .np-article .np-figure-wrap,
+  .np-figure-wrap,
   .np-lead-figure {
     float: none;
     flex: none;
     width: auto;
-    height: auto;
     margin: 4px 0 0;
   }
   .np-img-placeholder.np-figure-wrap {
@@ -1463,6 +1480,7 @@ onBeforeUnmount(() => {
   }
   .np-figure img {
     height: auto;
+    max-height: 220px;
   }
   .np-img-placeholder {
     flex: none;

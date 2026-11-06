@@ -17,6 +17,7 @@
     <Transition name="picker-fade">
       <div v-if="showPicker" ref="pickerRef" class="picker-dropdown" @click.stop>
         <div class="picker-title">选择触发奇遇的角色：</div>
+        <p v-if="!characters.length" class="picker-title">还没有开启奇遇的角色，可在角色设置中开启。</p>
         <div v-for="c in characters" :key="c.id" class="picker-item" @click="triggerGenerate(c)">
           <div class="picker-avatar" :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }">
             {{ c.avatar_path ? '' : c.display_name?.charAt(0) }}
@@ -31,6 +32,7 @@
       <linshe-input
         type="textarea"
         v-model="customEventText"
+        :disabled="stirring"
         class="custom-modal-input"
         placeholder="输入事件动机，让角色按你的想法展开故事…（留空直接点「随机奇遇」）"
         rows="4"
@@ -53,9 +55,13 @@
     <!-- 可滚动内容区 -->
     <div class="events-scroll" @scroll.passive="onScroll" @wheel.passive="onPageWheel" @touchmove.passive="onPageTouchMove" ref="scrollEl">
 
+    <p v-if="store.loadError && store.activeEvents.length" class="picker-title" role="alert">
+      刷新失败：{{ store.loadError }}
+      <linshe-button variant="link" size="sm" @click="store.loadEvents()">重试</linshe-button>
+    </p>
     <!-- 活跃事件瀑布流 -->
     <div class="events-content">
-      <div v-if="store.loading" class="events-loading">
+      <div v-if="store.loading && !store.activeEvents.length" class="events-loading">
         <div class="loading-spinner-lg"></div>
         <span>加载中…</span>
       </div>
@@ -65,24 +71,30 @@
           <div v-for="(col, ci) in activeColumns" :key="ci" class="waterfall-col stagger">
             <div v-for="evt in col" :key="evt.id">
               <EventCard :event="evt" @updated="onEventUpdated" />
-              <linshe-button v-if="evt.town_origin" variant="link" size="sm" @click="returnToTown()">来自{{ evt.town_origin.sourceName }}的线索 · 回到小镇</linshe-button>
             </div>
           </div>
         </div>
       </template>
 
       <div v-else class="events-empty">
-        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10" />
-          <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
-        </svg>
-        <span>暂无奇遇</span>
-        <span class="empty-hint">等待角色们的故事展开…</span>
+        <!-- 加载失败不能伪装成「暂无奇遇」：以前两者长得一模一样，用户会以为数据丢了 -->
+        <template v-if="store.loadError">
+          <span>加载失败：{{ store.loadError }}</span>
+          <linshe-button variant="secondary" size="sm" @click="store.loadEvents()">重试</linshe-button>
+        </template>
+        <template v-else>
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
+          </svg>
+          <span>暂无奇遇</span>
+          <span class="empty-hint">等待角色们的故事展开…</span>
+        </template>
       </div>
     </div>
 
     <!-- 往期奇遇 -->
-    <div v-if="store.filteredHistory.length > 0" class="history-section">
+    <div v-if="store.history.length > 0" class="history-section">
       <div class="history-header" @click="showHistory = !showHistory">
         <span>📋 往期奇遇 ({{ store.filteredHistory.length }})</span>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
@@ -113,11 +125,11 @@
               </div>
             </div>
           </div>
+          <p v-if="!store.filteredHistory.length" class="picker-title">没有符合筛选条件的奇遇，可切换为「全部」。</p>
           <div class="waterfall-row" :style="{ '--cols': colCount }">
             <div v-for="(col, ci) in historyColumns" :key="'hc_' + ci" class="waterfall-col">
               <div v-for="eh in col" :key="'h_' + eh.id">
                 <EventCard :event="eh" :conclusion="eh.conclusion" compact />
-                <linshe-button v-if="eh.town_origin" variant="link" size="sm" @click="returnToTown()">来自{{ eh.town_origin.sourceName }}的线索 · 回到小镇</linshe-button>
               </div>
             </div>
           </div>
@@ -146,9 +158,6 @@ const store = useEventsStore()
 const router = useRouter(), route = useRoute()
 const linkedEvent = computed(() => [...store.activeEvents, ...store.history].find(event => String(event.id) === route.query.event))
 function closeLinkedEvent() { const query = { ...route.query }; delete query.event; router.replace({ query }) }
-function returnToTown() {
-  router.push({ path: '/town' })
-}
 const chat = useChatStore()
 const showHistory = ref(false)
 const showPicker = ref(false)
@@ -262,14 +271,15 @@ async function confirmGenerate(useCustom) {
   if (!c) return
 
   stirring.value = true
-  showCustomModal.value = false
   try {
     const customPrompt = useCustom ? customEventText.value.trim() : null
     const result = await api.generateEvent(c.id, null, customPrompt)
     if (result.error) { toastFn(result.message || result.error, 'error'); return }
-    store.loadEvents()
+    showCustomModal.value = false
+    customEventText.value = ''
+    await store.loadEvents()
   } catch (err) {
-    console.error('[EventsView] generate error:', err)
+    toastFn(`生成失败：${err?.message || '请稍后重试'}，动机已保留`, 'error')
   } finally {
     stirring.value = false
   }

@@ -7,6 +7,10 @@ import { chatAgentStream } from '../../llm/llm-client.js';
 import { prepareNarrativePrompt } from '../presets/narrative.js';
 import { getLocalDateKey } from '../../utils/localDate.js';
 import { getTodaySchedule, getCurrentActivity } from '../scheduleManager.js';
+// 2026-11-03 修：神说的时间/日程活动必须吃**程序时间**（世界钟），不能用真实时钟 ——
+// 用户把世界钟拨快 33 小时后，天使拿到的时间块与「当前活动」还停在真实时间，
+// 与角色、日程、朋友圈全部对不上（用户报「角色时间感知又有问题了」）。
+import { toProgramTime } from '../programTime.js';
 import { applyScheduleChange, queueScheduleChange } from '../scheduleEditor.js';
 import { generateSchedule } from '../scheduleGenerator.js';
 import { assertScheduleIdle } from '../scheduleGenerationLock.js';
@@ -146,7 +150,11 @@ export function getGodRuntime() {
       hasLanguageStyle,
       worldIntegrationRule: worldSetting ? getWorldIntegrationRule('interaction') : '', agentRules: AGENT_RULES,
       angel, user: config.user, history, schedule,
-      scheduleEnabled: config.features.schedule !== false, now: new Date(run.created_at), timeZone: repo.timeZone,
+      scheduleEnabled: config.features.schedule !== false,
+      // run.created_at 是**真实瞬间**（落库口径）⇒ 换算成程序时间再喂给提示词，
+      // 这样 time_context 与 angelActivity 都用世界钟，和角色/日程同一口钟。
+      // （上游 4.2.1 停用了神说记忆总结 memory → history，recall 字段已随之移除）
+      now: toProgramTime(new Date(run.created_at)), timeZone: repo.timeZone,
       worldContext: worldEventContext(repo.db), work: world.list(null, session.id),
       images: run.imageDataUris || [],
     });
@@ -183,13 +191,22 @@ export function getGodRuntime() {
 let timers = [];
 export function startGodSays() {
   if (timers.length) return;
-  const runtime = getGodRuntime();
-  const deliveries = () => runtime.world.tick().catch(err => console.warn('[神谕投递]', err.message));
+  // ⚠️ 2026-11-03 真机 bug：这里原来把 `getGodRuntime()` 的结果**闭包固定**在 `runtime` 里，
+  // 于是库句柄一旦被关掉（`getDb()` 的自愈会换一个新句柄、`getGodRuntime()` 也会据此重建
+  // singleton），**定时器还拿着旧的 repo.db**，每 3 秒刷一条
+  // `[神谕投递] The database connection is not open`（用户实测刷屏）。
+  // 所以：定时器里**每次都重新取** runtime，让自愈与重建对它也生效。
+  const deliveries = () => getGodRuntime().world.tick().catch(err => console.warn('[神谕投递]', err.message));
   const maintenance = async () => {
-    await runtime.ensureSchedule();
+    const runtime = getGodRuntime();
+    // 上游 4.2.1 停用神说记忆总结（memory → history），原来补齐离线积压会话的
+    // `while (await runtime.memory.archive())` 随之删除
+    const session = runtime.repo.db.prepare('SELECT * FROM god_sessions WHERE day=?').get(runtime.repo.day());
+    if (session) await runtime.ensureSchedule(session);
   };
   // 只刷新天使日程，不归档或切换聊天会话；启动时补处理离线期间的日程更新。
   const scheduleMidnight = () => {
+    const runtime = getGodRuntime();
     const now = runtime.repo.now();
     const next = Date.parse(`${runtime.repo.day()}T00:00:00+08:00`) + 86400000;
     timers[1] = setTimeout(() => {

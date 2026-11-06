@@ -220,6 +220,10 @@ class SseNotificationService : Service() {
             "new_comment" -> CAT_COMMENTS
             "group_message", "group_created" -> CAT_GROUP
             "reply_ready" -> CAT_MAILBOX
+            // 信箱失败终态（2026-10-17 §P2-1）：后端连续失败到上限后不再自动重试、广播 reply_failed。
+            // 归同一个信箱分类（用户可以在设置里一起关掉）。不弹的话，手机端用户永远不知道
+            // 那封信已经停了 —— 而这恰恰是最需要他去处理的一件事（修 LLM / 开 ComfyUI / 手动重投）。
+            "reply_failed" -> CAT_MAILBOX
             "new_event", "event_concluded", "event_expired" -> CAT_EVENTS
             else -> return   // connected / 各类进度事件不弹通知
         }
@@ -281,6 +285,14 @@ class SseNotificationService : Service() {
                 text = str(json, "title").ifEmpty { "点击查看回信" }
                 route = "/mailbox"
                 notifyId = "letter${json.opt("letter_id")}".hashCode()
+            }
+            // 失败终态：文案要说清"停了、要你处理"，而不是让人以为还在回信
+            "reply_failed" -> {
+                val n = str(json, "character_name", "display_name")
+                title = if (n.isEmpty()) "有一封信没能送到" else "$n 的信没能送到"
+                text = "已停止自动重试，点开可以重新投递"
+                route = "/mailbox"
+                notifyId = "letterfail${json.opt("letter_id")}".hashCode()
             }
             "new_event" -> {
                 title = str(json, "title").ifEmpty { "新事件发生" }

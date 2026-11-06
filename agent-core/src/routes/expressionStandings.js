@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { getDb } from '../db/index.js';
 import { listExpressionStandings, listStandingOverview, startAllStandingBatches, startStandingBatch, controlStandingBatch, updateStandingPrompt, editStandingImage, deleteStanding } from '../services/expressionStandingService.js';
 import { getStandingDisplay } from '../services/standingDisplay.js';
+// 上游 v3.9.0 合并：立绘互动 —— 触碰配置（save/saveRegions 本地暂无 UI 入口，但接口与
+// standingInteractionService 一并合进来，供以后接互动设置面板；台词三件套是当前实际使用的链路。
 import { createStandingInteractionService } from '../services/standingInteractionService.js';
 import { imageUrlExists } from '../services/imagePaths.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
@@ -17,7 +19,7 @@ router.post('/expression-standings/generate', (req, res) => res.status(202).json
 router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
 router.post('/expression-standings/touch-lines/speech/fill', (_req, res) => res.status(202).json(standingTouchSpeech().fill()));
 const base = '/characters/:id/expression-standings';
-const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast, readLines: readStandingTouchLines });
+// 台词三件套（立绘管理的「反馈台词管理」用）
 router.get(`${base}/touch-lines`, (req,res)=>{
   if(!getDb().prepare('SELECT id FROM characters WHERE id=?').get(req.params.id))return res.status(404).json({error:'角色不存在'});
   res.json(readStandingTouchLines(getDb(),req.params.id));
@@ -28,6 +30,10 @@ router.put(`${base}/touch-lines`, (req,res)=>{
 });
 router.post(`${base}/touch-lines/speech`, (req, res) => res.status(202).json(standingTouchSpeech().generate(req.params.id, req.body)));
 router.post(`${base}/touch-lines/generate`, (req,res)=>res.status(202).json(regenerateStandingTouchLines(req.params.id,req.body.expectedVersion)));
+// 批量补齐：给所有还没有台词的角色各起一个后台台词任务
+router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
+// 触碰配置（本地暂无前端入口，接口随服务一并合并；readLines 供立绘触摸读取台词）
+const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast, readLines: readStandingTouchLines });
 router.get('/characters/:id/standing-interaction', (req, res) => res.json(interactions().get(req.params.id)));
 router.put('/characters/:id/standing-interaction', (req, res) => res.json(interactions().save(req.params.id, req.body)));
 router.put(`${base}/:slot/interaction-regions`, (req, res) => res.json(interactions().saveRegions(req.params.id, req.params.slot, req.body)));
@@ -47,6 +53,7 @@ for (const action of ['upload', 'image', 'crop', 'hires']) {
 }
 router.delete(`${base}/:slot`, (req, res) => { deleteStanding(req.params.id, req.params.slot); res.json({ ok: true }); });
 router.get('/standing-display/state', (_req, res) => res.json(getStandingDisplay().snapshot()));
+// 上游 v3.9.0 合并：单个角色的立绘展示快照（galgame 舞台 useDialogueStanding 走这个）
 router.get('/characters/:id/standing-display', (req, res) => {
   if (!getDb().prepare('SELECT id FROM characters WHERE id=?').get(req.params.id)) return res.status(404).json({ error: '角色不存在' });
   res.json(getStandingDisplay().characterSnapshot(req.params.id));

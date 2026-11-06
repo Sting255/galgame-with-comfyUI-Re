@@ -12,8 +12,8 @@ import { chatWithPreset } from '../presets/narrative.js';
  *                  永不挤占聊天）由 config.features.townAutoLLM 统一控制，且只在聚焦图消耗：
  *                  关闭或无观看时这些演出跳过，但相遇仍发生并按规则结算；玩家主动发起的
  *                  NPC 交谈与互动奇遇不受影响，仍由 config.features.townLLM 决定。
- *   L3 经历入账：  相遇规则结算入账为 town.encounter.happened 事件 → townExperienceService
- *                  仅沉淀双方小镇经历，不写角色长期记忆；NPC 对话历史由 townNpcService 落库
+ *   L3 记忆回写：  相遇规则结算入账为 town.encounter.happened 事件 → townExperienceService
+ *                  沉淀双方经历与角色记忆；NPC 对话历史由 townNpcService 落库
  *
  * 状态原则：服务端权威 + 内存为准；坐标只在换目标/换活动时落库，
  * 进程重启后由「作息/日程 + 当前时刻」重建（town_agent_state 仅是恢复快照）。
@@ -21,6 +21,7 @@ import { chatWithPreset } from '../presets/narrative.js';
  */
 import { playerRouteStart, applyPlayerRoute } from './playerMovement.js';
 import { advanceAgentPosition } from './agentMovement.js';
+// 拎起居民（上游 v3.9.0 漏合并修复，2026-10-15）：租约 + 投放校验都在 townCarry.js 里
 import { carryTownResident, isTownCarried } from './townCarry.js';
 import { createTownActorRegistry } from './townActorRegistry.js';
 import { reconcileTownResponsibilities } from './townResponsibilityRuntime.js';
@@ -41,6 +42,7 @@ import { createTownGoalService } from './townGoalService.js';
 import { createTownDirectorService } from './townDirectorService.js';
 import { pickIdleLifeAction } from './townDecisionService.js';
 import { listLifeVenues } from './townAffordanceService.js';
+import { generateTownNpcEvent, TOWN_NPC_AMBIENT_EVENT_TYPE_KEY } from './townNpcEventGenerator.js';
 import { getDb } from '../../db/index.js';
 import { config } from '../../config.js';
 import { chatSync } from '../../llm/llm-client.js';
@@ -395,10 +397,21 @@ async function purgeEpochLogs(db, currentEpoch, budgetMs) {
   const t0 = Date.now();
   const over = () => Date.now() - t0 >= budgetMs;
   const st = shared.purgeLogState;
+  /**
+   * 2026-10-01 修（用户真机日志里那条 `[town] action purge failed: near ",": syntax error`）：
+   *
+   * 这两段原来写的是 `SELECT rowid …` 然后读 `r.rowid`。但 `town_domain_events` 的主键是
+   * **`seq INTEGER PRIMARY KEY`** —— 在 SQLite 里 `rowid` 是这一列的**别名**，
+   * `SELECT rowid` 的结果字段名会跟着被别名成 `seq`，因此 `r.rowid` **全是 undefined**，
+   * `join(',')` 拼出 `IN (,,,,,,…)` ⇒ 直接语法错误，整条清理路径**从未成功过**
+   * （在副本库上实测复现：83 行全部 undefined，SQL 变成 `IN (,,,,)`）。
+   * 同文件 `purgeEcosystemHistory` 里的写法是对的（`SELECT rowid AS rid` + 读 `r.rid`），
+   * 这里统一成同一种写法：**显式起别名**，别让结果字段名取决于表的主键叫什么。
+   */
   if (!st.reqDone) {
     for (;;) {
-      const ids = db.prepare('SELECT rowid FROM town_action_requests WHERE rowid > ? AND world_epoch < ? ORDER BY rowid LIMIT 50000')
-        .all(st.reqRowid, currentEpoch).map(r => r.rowid);
+      const ids = db.prepare('SELECT rowid AS rid FROM town_action_requests WHERE rowid > ? AND world_epoch < ? ORDER BY rowid LIMIT 50000')
+        .all(st.reqRowid, currentEpoch).map(r => r.rid);
       if (!ids.length) { st.reqDone = true; break; }
       st.reqRowid = ids[ids.length - 1];
       db.prepare(`DELETE FROM town_action_requests WHERE rowid IN (${ids.join(',')})`).run();
@@ -408,7 +421,6 @@ async function purgeEpochLogs(db, currentEpoch, budgetMs) {
   }
   if (!st.evtDone) {
     for (;;) {
-      // rowid 在有 INTEGER PRIMARY KEY 的表上返回的是主键列名（seq），必须显式别名；
       // 经历账本（town_experiences）引用的事件是角色记忆的来源凭证，永久保留
       const rows = db.prepare(`SELECT rowid AS rid, event_id FROM town_domain_events
         WHERE rowid > ? AND world_epoch < ? AND event_id NOT IN (SELECT event_id FROM town_experiences)
@@ -836,13 +848,14 @@ function actorNpcId(actorId) {
  * M6：规则事件导演——只能从已结算事实建立候选：
  * 餐食见底（经营停摆）、目标达成（值得庆祝）、关系里程碑（熟络起来）。
  * repeat_key 按天分桶幂等；条件消失自动「自行处理」，过期自动关闭，均无惩罚。
- * 这里只维护事实候选，不主动创建 NPC 奇遇；奇遇由玩家手动发起。
+ * 邀请只在聚焦图 + 自动 LLM + 事件系统开启时生成（复用镇民 ambient 奇遇管线）。
  */
 function maintainDirectorPass(now) {
   const world = state.world;
   if (!world || !state.map) return;
   try {
     maintainDirectorDetection(now, world);
+    maintainDirectorInvitation(now, world);
   } catch (err) {
     console.warn('[town] director pass failed:', err?.message || err);
   }
@@ -895,6 +908,54 @@ function maintainDirectorDetection(now, world) {
 
   // ── 到期关闭 + 邀请节奏控制 ──
   director.expireDue({ worldId: world.worldId, nowUtcMs: now });
+}
+
+function maintainDirectorInvitation(now, world) {
+  const director = townDirector();
+  if (!(isMapFocused(state.mapId) && config.features.townLLM && config.features.townAutoLLM
+    && config.features.events)) return;
+  const candidate = director.nextInvite({ worldId: world.worldId, nowUtcMs: now });
+  if (candidate && spawnDirectorInvitation(candidate)) {
+    director.markInvited({ worldId: world.worldId, repeatKey: candidate.repeat_key, nowUtcMs: now });
+  }
+}
+
+/** 把导演候选变成一条镇民 ambient 奇遇（玩家可在奇遇页参与；失败/冲突静默让位）。 */
+function spawnDirectorInvitation(candidate) {
+  try {
+    const payload = JSON.parse(candidate.payload_json || '{}');
+    const npcMetas = [...state.meta.values()].filter(m => m.kind === 'npc');
+    if (npcMetas.length === 0) return false;
+    const ownerMeta = npcMetas.find(m => m.refId === payload.ownerNpcId) || npcMetas[0];
+    const companionMeta = npcMetas.find(m => m !== ownerMeta) || null;
+    const owner = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(ownerMeta.refId);
+    if (!owner) return false;
+    const companion = companionMeta
+      ? getDb().prepare('SELECT display_name, appearance_desc, persona FROM town_npcs WHERE id = ?').get(companionMeta.refId)
+      : null;
+    enqueueLlm(async () => {
+      try {
+        await generateTownNpcEvent(owner, {
+          customPrompt: payload.prompt,
+          ambient: true,
+          companionNpc: companion ? { name: companion.display_name, appearance: companion.appearance_desc,
+            persona: companion.persona } : undefined,
+          locationName: payload.venueName || null,
+          locationKey: payload.locationKey || null,
+          manual: false,
+          worldId: state.world?.worldId ?? null,
+          worldEpoch: state.world?.epoch ?? null,
+          durationMin: config.town.ambientStoryDurationMin,
+        });
+      } catch (err) {
+        if (err?.message !== 'ALREADY_ACTIVE_EVENT') console.warn('[town] director invitation failed:', err?.message || err);
+      }
+    });
+    return true;
+  } catch (err) {
+    console.warn('[town] director invitation spawn failed:', err?.message || err);
+    return false;
+  }
 }
 
 function findAgentByActorId(actorId) {
@@ -1377,6 +1438,12 @@ function stopAgentMovement(agent) {
 
 const CHAT_HOLD_MS = 90_000;
 
+/**
+ * 「被按住」= 对话框驻留租约 **或** 玩家正把这位居民拎在手里。
+ *
+ * 2026-10-15（上游 v3.9.0 漏合并修复）：原来只认 `chatHoldUntil`，
+ * 漏了拎起状态 ⇒ 居民被拎在半空时作息照旧驱动她走开，「拎起」形同虚设。
+ */
 function isChatHeld(agent, now = Date.now()) {
   return (Number.isSafeInteger(agent?.chatHoldUntil) && agent.chatHoldUntil > now) || isTownCarried(agent, now);
 }
@@ -1627,10 +1694,11 @@ function endEncounter(enc, now) {
   broadcastTownEncounterEnd({ id: enc.id });
 
   if (enc.messages.length > 0) {
-    // 相遇摘要润色是「给人看」的表现：只在聚焦图消耗 LLM；
+    // 相遇摘要润色与环境奇遇升级是「给人看」的表现：只在聚焦图消耗 LLM；
     // 非聚焦图/零模型的相遇已经在上面按规则结算完毕。
     if (isMapFocused(state.mapId)) {
       enqueueLlm(() => runEncounterSummary(enc));
+      maybeUpgradeToAmbientStory(enc, now);
     }
   }
 }
@@ -1982,6 +2050,60 @@ function appendEncounterExperience(enc, summary, outcome, occurredAt) {
   return actorIds;
 }
 
+function ambientStoryCountToday(db) {
+  const active = db.prepare(`SELECT count(*) n FROM town_npc_events
+    WHERE event_type_key = ? AND created_at >= datetime('now', '-24 hours')`).get(TOWN_NPC_AMBIENT_EVENT_TYPE_KEY).n;
+  const history = db.prepare(`SELECT count(*) n FROM town_npc_event_history
+    WHERE event_type_key = ? AND created_at >= datetime('now', '-24 hours')`).get(TOWN_NPC_AMBIENT_EVENT_TYPE_KEY).n;
+  return active + history;
+}
+
+/** 环境奇遇钩子：NPC×NPC 相遇后有概率升级为一条镇民奇遇（town.ambient），进玩家奇遇列表。 */
+function maybeUpgradeToAmbientStory(enc) {
+  try {
+    if (!config.features.townLLM || !config.features.townAutoLLM || !config.features.events) return;
+    if (!isMapFocused(state.mapId)) return; // 非聚焦图不消耗 LLM（残留相遇收尾时同样不升级）
+    if (!state.world) return;
+    if (Math.random() >= (config.town.ambientStoryProb ?? 0)) return;
+    const metaA = state.meta.get(enc.a), metaB = state.meta.get(enc.b);
+    if (!metaA || !metaB) return;
+    if (metaA.kind !== 'npc' || metaB.kind !== 'npc') return; // 环境奇遇只锚定镇民；角色相遇走角色管线
+    const db = getDb();
+    if (ambientStoryCountToday(db) >= (config.town.ambientStoryDailyCap ?? 0)) return;
+    const npcRow = db.prepare('SELECT * FROM town_npcs WHERE id = ? AND town_enabled = 1').get(metaA.refId);
+    const companionRow = db.prepare('SELECT display_name, appearance_desc, persona FROM town_npcs WHERE id = ?').get(metaB.refId);
+    if (!npcRow || !companionRow) return;
+
+    const owner = npcRow;
+    const transcript = enc.messages.slice(-4)
+      .map(m => `${(m.speakerAgentKey === enc.a ? metaA : metaB).displayName}：${m.content}`)
+      .join('\n');
+    const customPrompt = `镇民${metaA.displayName}和${metaB.displayName}刚在${enc.location.name}碰面，聊了几句：\n${transcript}\n以${owner.display_name}为主角、${companionRow.display_name}为同伴，从这次碰面出发，展开一段正在发生的小镇日常奇遇。`;
+
+    enqueueLlm(async () => {
+      try {
+        if (ambientStoryCountToday(db) >= (config.town.ambientStoryDailyCap ?? 0)) return;
+        await generateTownNpcEvent(owner, {
+          customPrompt,
+          ambient: true,
+          companionNpc: { name: companionRow.display_name, appearance: companionRow.appearance_desc, persona: companionRow.persona },
+          locationName: enc.location?.name || null,
+          locationKey: enc.location?.key || null,
+          manual: false,
+          worldId: state.world?.worldId ?? null,
+          worldEpoch: state.world?.epoch ?? null,
+          durationMin: config.town.ambientStoryDurationMin,
+        });
+        console.log(`[town] ambient story spawned from encounter #${enc.id} (${owner.display_name} × ${companionRow.display_name})`);
+      } catch (err) {
+        if (err?.message !== 'ALREADY_ACTIVE_EVENT') console.warn('[town] ambient story failed:', err?.message || err);
+      }
+    });
+  } catch (err) {
+    console.warn('[town] ambient story hook failed:', err?.message || err);
+  }
+}
+
 function maybeStatusBubbles(now) {
   const generation = state.generation;
   const intervalMs = config.town.statusBubbleIntervalMin * 60_000;
@@ -2178,8 +2300,8 @@ function tickRuntime(rt, now) {
   advancePlayer(now);
   playerNearbyReactions(now);
   // 相遇扫描是世界逻辑（谁遇见谁、经历如何结算），对所有图运行——后台图与零模型
-  // 同样有相遇并按规则沉淀经历；相遇对话、摘要润色、状态气泡才是
-  // 演出，仍在 runEncounterDialogue/runEncounterSummary/
+  // 同样有相遇并按规则沉淀经历；相遇对话、摘要润色、环境奇遇升级、状态气泡才是
+  // 演出，仍在 runEncounterDialogue/runEncounterSummary/maybeUpgradeToAmbientStory/
   // maybeStatusBubbles 内按「聚焦图 + 自动 LLM」门控。
   scanEncounters(now);
   expireEncounters(now);
@@ -2386,12 +2508,42 @@ function resolveTownActorAgent(actorId) {
 export function holdTownActor(actorId) {
   const agent = resolveTownActorAgent(actorId);
   if (!agent) return { ok: false, error: '这位居民目前不在镇上' };
+  // 拎在手里的居民不能同时被"按住"（会被夹在两条控制流之间）
   if (isTownCarried(agent)) return { ok: false, error: '请先把这位居民放下来' };
   const now = Date.now();
   advanceAgent(agent, now);
   agent.chatHoldUntil = now + CHAT_HOLD_MS;
   stopAgentMovement(agent);
   return { ok: true };
+}
+
+/**
+ * 拎起/续租/放下/取消（上游 v3.9.0 漏合并修复，2026-10-15）。
+ *
+ * 租约是**瞬态**的：断线/重启都不会把居民留在半空 —— `carryTownResident` 只在
+ * `expiresAt > now` 期间生效，过期即自动回到作息驱动。
+ *
+ * `drop` 之前先把所有居民与玩家推进到当前格：光看预约位挡不住"别人正好路过这一格"。
+ */
+export function carryTownActor(actorId, request = {}) {
+  const agent = resolveTownActorAgent(actorId);
+  const now = Date.now();
+  if (request.operation === 'drop') {
+    for (const other of state.agents.values()) advanceAgent(other, now);
+    advancePlayer(now);
+  }
+  const occupied = new Map(state.occupied);
+  for (const other of state.agents.values()) {
+    if (other !== agent && other.presence !== 'off_town') occupied.set(`${other.x},${other.y}`, other.agentKey);
+  }
+  return carryTownResident({
+    agent, map: state.map, occupied, player: state.player,
+    ...request, now,
+    advance: advanceAgent,
+    interrupt: a => state.simulation?.cancelActor(a.actorId, 'PLAYER_CARRY'),
+    stop: stopAgentMovement,
+    persist: persistAgent,
+  });
 }
 
 /** 对话框关闭：解除驻留，作息与日程的下一拍即可恢复正常走动。 */
@@ -2401,26 +2553,6 @@ export function releaseTownActor(actorId) {
   agent.chatHoldUntil = 0;
   agent.dirty = true;
   return { ok: true };
-}
-
-/** Explicit, token-scoped player interaction; never schedules model calls. */
-export function carryTownActor(actorId, request = {}) {
-  const agent = resolveTownActorAgent(actorId);
-  const now = Date.now();
-  if (request.operation === 'drop') {
-    // Reservations alone do not cover another resident passing through the cell.
-    for (const other of state.agents.values()) advanceAgent(other, now);
-    advancePlayer(now);
-  }
-  const occupied = new Map(state.occupied);
-  for (const other of state.agents.values()) {
-    if (other !== agent && other.presence !== 'off_town') occupied.set(`${other.x},${other.y}`, other.agentKey);
-  }
-  const result = carryTownResident({ agent, map: state.map, occupied, player: state.player,
-    ...request, now, advance: advanceAgent,
-    interrupt: a => state.simulation?.cancelActor(a.actorId, 'PLAYER_CARRY'),
-    stop: stopAgentMovement, persist: persistAgent });
-  return result;
 }
 
 export function movePlayerTo(x, y) {

@@ -1,24 +1,61 @@
 import { appendWorldLanguageStyle, hasActiveWorldLanguageStyle } from '../services/worldLanguageStyle.js';
-import { getSystemRulesWithWorld } from '../db/worldRepository.js';
 import { Router } from 'express';
-import { getDb, getGlobalRule, getSystemRules, getWorldSetting, repairFtsIndex } from '../db/index.js';
+import { getDb, getGlobalRule, getSystemRules, getWorldSetting, repairFtsIndex, stmt } from '../db/index.js';
+import { getSystemRulesWithWorld } from '../db/worldRepository.js';
 import { chatStream, chatSync, chatAgentStream } from '../llm/llm-client.js';
+// 上游 v4.2.0：私聊灵性配图走原生工具调用（受理 / 冻结快照 / 任务幂等），见 docs/private-chat-image-tools-plan.md
+import { streamPrivateChatImages, queuePrivateImage, getPrivateChatImageResume, savePrivateChatReply } from '../services/privateChatImageTools.js';
+import { SHARED_IMAGE_PROMPT_RULE } from '../services/privateChatImagePrompt.js';
+// 上游 v3.10.0：生图描述这条链路走世界书包装器（其余链路仍直接用 llm-client）。
+// 保留上面的原始 chatSync/chatStream —— 上游也是两者并存，不是替换。
 import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { prepareNarrativePrompt } from '../services/presets/narrative.js';
-import { createLorebookRepository } from '../db/lorebookRepository.js';
+// 离线世界编年（2026-11-06）：回来第一轮自然提起一次离开期间发生的事
+import { takeOfflineNoticeFor } from '../services/offlineChronicle.js';
+// 关系温度（2026-11-06）：私聊里提到别人，也会影响她们彼此的温度
+import { nudgeBondsFromText } from '../services/groupBonds.js';
 import { buildConversationLorebookContext } from '../services/lorebook/conversationContext.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
+import { buildPositionImageBlock, buildPositionImageTags, buildPositionPoseJson } from '../services/intimateActionService.js';
+import { isMemoryV3Enabled, getActiveSearchConfig } from '../services/memory/memoryConfig.js';
+import { activeMemorySearch, parseRecallInstruction, formatMemoryRecallBlock } from '../services/memory/activeSearch.js';
+import { curateChatMemories } from '../services/memoryExtractor.js';
+// 灵魂引擎（上游 v3.9.0 合并，见 services/soulEngine.js）：四维自我认知状态层。
+// 只在 chat.js 里做「不冲突的追加注入」——长度档、召回量、<soul_state> 块、reflect/resonate 落库点，
+// 全部走 features.soul 开关；关闭时这些入口返回 null/''，本地原有逻辑逐字节不变。
 import {
   isSoulEnabled, renderSoulStateBlock, soulReplyLengthHint, soulRecallTopK,
   resonateSoul, reflectSoul, saveSoulState,
 } from '../services/soulEngine.js';
-import { isMemoryV3Enabled, getActiveSearchConfig } from '../services/memory/memoryConfig.js';
-import { activeMemorySearch, parseRecallInstruction, formatMemoryRecallBlock } from '../services/memory/activeSearch.js';
-import { curateChatMemories } from '../services/memoryExtractor.js';
 import { deleteByConversation } from '../services/vectorClient.js';
 import { clearConversationMemories, rollbackMemoriesFromRawId } from '../services/memory/memoryRepository.js';
-import { extractImagePromptResponse, requestNonEmptyImagePrompt } from '../services/imagePromptResponse.js';
+// 亲密看板（角色数据面板）：自动记账、撤回/清空联动、档案注入。
+// 记账一律走 raw_id 幂等 + 零 LLM 的 tag 归类，详见 services/intimateAutoRecord.js
+import { clearIntimateData, rollbackIntimateByRawId, rollbackIntimateByRawIdRange, getBodyProfile } from '../services/intimateService.js';
+import { buildIntimateProfileBlock } from '../services/intimatePrompt.js';
+// 玩具系统（专题-玩具系统 §2.9-4）：每轮注入 <worn_toys>（零佩戴返回 null ⇒ 零注入零 token）
+import { buildWornToysBlock, maybeSelfPlay } from '../services/toyService.js';
+// 亲密场景块（2026-10-02，性爱交互玩法 task-1）：进行中才注入，未进行返回空串
+import { buildIntimateScenePromptBlock, getIntimateScene } from '../services/intimateActionService.js';
+// 2026-10-02：禁止高潮的「渴望」单独再注入一行（用户原话：「角色在禁止高潮模式下 是知道自己一直
+// 达不到最高点 会一直渴望 这个也没做出来」）—— 场景块里虽有分档文案，但那是**状态说明**；
+// 这一行是**演法指令**：明确要她把"一直到不了"的难受写进语气与动作，别演成没事人。
+import { buildDenialHungerLine } from '../services/intimateStimulus.js';
+// 2026-10-02 敏感度（用户提的新数值系统）：她"有多敏感"要写进 prompt —— 冷漠/普通档零注入，
+// 「敏感」以上（或发情模式）才加一行，让她在聊天里真的表现得不一样。
+import { buildSensitivityPromptLine } from '../services/sensitivityService.js';
+// 2026-10-02 私密时刻「自慰 / 你闯进来了」（用户原话：「再增加一个事件 叫自慰 … 这个可以算到日程里」
+// 「这个时候再去找角色私聊就会触发事件 玩家闯入角色正在自慰的情况」）：
+// 判定挂在她的日程独处时段上（确定性掷骰），只有"此刻正在那个窗口里"才注入一块。
+import { privateMomentState, catchPrivateMoment, buildPrivateMomentBlock } from '../services/privateMomentService.js';
+import { recordFromConversationTail, recordUnspecifiedFromRawId } from '../services/intimateAutoRecord.js';
+import { judgeRoundInBackground } from '../services/intimateAiJudge.js';
+// 催眠手机：状态 / 一次性指令 / 遗忘提示三块注入 + 遗忘期间的历史屏蔽。
+// 全部是确定性读取（零 LLM）；关闭总开关 features.hypnosis 时走原路径。
+import { getHypnosisState, consumePendingDirective, listForgottenWindows, isBodyControlled, directiveToyPayload } from '../services/hypnosisService.js';
+import { buildHypnosisStateBlock, buildDirectiveBlock, buildAmnesiaBlock, isAwakenedFromSleepRow } from '../services/hypnosisPrompt.js';
+import { extractImagePromptResponse, requestNonEmptyImagePrompt, needsExplicitImageRewrite, EXPLICIT_REWRITE_INSTRUCTION } from '../services/imagePromptResponse.js';
 import { maybeSummarize, getRecentSummaries } from '../services/summarizer.js';
 import { maybeExtractPortrait } from '../services/portraitExtractor.js';
 import {
@@ -28,7 +65,7 @@ import {
 } from '../services/emotionEngine.js';
 import { generateImage, getLastWorkflowMode, captureImageGenerationConfig } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
-import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo } from '../services/characterPersona.js';
+import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock } from '../services/characterPersona.js';
 import { getActiveBuffBlock } from '../services/itemService.js';
 import { getWorldStateBlock, getCharacterEventBlockFor } from '../services/newspaperService.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
@@ -39,33 +76,79 @@ import { SentenceSplitter } from '../utils/sentenceSplitter.js';
 import { invalidateGalleryCache } from '../services/galleryCache.js';
 import { saveBase64Image } from '../services/imagePaths.js';
 import { parseEmojiText, buildEmojiNote, getCharacterEmojiMap } from '../services/emojiService.js';
+// galgame 转录（上游 v3.9.0 合并）：读完整源消息 + 分句图片挂载，服务层纯函数。
+import { readDialogueTranscript } from '../services/dialogueTranscript.js';
 import { withGalgameEmojiPreference } from '../services/chatModePrompt.js';
-import { getReplyDelay, formatScheduleContext, getCurrentActivity, isTempWoken, extendTempWake } from '../services/scheduleManager.js';
+import { getReplyDelay, formatScheduleContext, getCurrentActivity, isTempWoken, extendTempWake, isSleeping } from '../services/scheduleManager.js';
 import { getGodWorldContext } from '../services/godSays/worldContext.js';
 import { detectAndApplyAppointment } from '../services/appointmentDetector.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
 import { getStandingDisplay, publishStandingKeys } from '../services/standingDisplay.js';
 import { randomUUID as standingTurnId } from 'crypto';
-import { readDialogueTranscript } from '../services/dialogueTranscript.js';
 import { ensureDreamOnDemand, generateLiveDreamMurmur, decorateDreamImagePrompt } from '../services/dreamService.js';
-import { getTimeTag, getLightHint, getLightNoteWithWeather } from '../services/timeLight.js';
-import { getCoreDialogueRules, getChatRhythmRules, getWorldIntegrationRule } from '../builtinRules.js';
+import { getLightHint, getLightNoteWithWeather } from '../services/timeLight.js';
+// <time_context> 组装（程序时间口径 + prevUserMsg OFFSET 语义）：抽成独立模块以便行为级单测
+import { buildTimeContextBlock } from '../services/chatTimeContext.js';
+// 每日首次互动 +5：判据是"用户真实互动"（messages 表），不是被系统写入污染的 last_interaction_at
+import { saveDailyInteractionBonus } from '../services/chatDailyBonus.js';
+import { getCoreDialogueRules, getChatRhythmRules, JUDGE_PROMPT, detectImageIntent } from '../builtinRules.js';
 import { matchAll } from '../services/characterSearch.js';
 import { getUserName, matchUser } from '../services/userSearch.js';
 import { buildChatContext, getSplitHistory, applyContextBudget } from '../services/contextAssembler.js';
+// 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖；阶段一 L1-1+L2 / 阶段二 输出侧检测+自动升级）：
+// 检测器是纯函数（services/antiRepetition.js），这里只负责取"她最近几轮说过什么"、注入块、
+// 并在生成结束后记一行输出侧量化指标（buildAntiRepetitionMetrics）。
+import {
+  buildAntiRepetitionInjection, buildRecentSelfOutputNote, shouldInjectRecentSelfOutputNote,
+  fetchRecentAssistantTurns, fetchRecentEmotionSnapshots, formatAntiRepetitionLog,
+  buildAntiRepetitionMetrics,
+  // D2 · 重写兜底：判定 + 指令块 + 替换事件（口径见 docs/chat/anti-repetition.md §十二）
+  shouldReroll, buildRerollInstruction, buildReplaceLastAssistantEvent,
+} from '../services/antiRepetition.js';
+// 拒答守卫（2026-10-22）：模型把「我无法给到相关内容」当台词返回时，重写一次；仍拒则走兜底，
+// 绝不让拒答原文进 raw_messages / messages（实测它会作为历史被反复回灌）。
+import { isRefusal, REFUSAL_RETRY_INSTRUCTION, REFUSAL_FALLBACK_TEXT } from '../services/refusalDetector.js';
+import { recordContextUsage, beginContextCapture, buildChatContextSegments, appendContextSegment } from '../services/contextUsage.js';
 import { buildRecentGroupLogBlock } from '../services/groupChatEngine.js';
 import { getContextBudgetConfig } from '../services/memory/memoryConfig.js';
 import { chatStreamStarted, chatStreamEnded } from '../services/chatActivity.js';
 import { createCharacterTownChatGuard, buildCharacterTownSceneBlock } from '../services/characterChatTownContext.js';
 import { buildPrivateMomentContext } from '../services/privateMomentContext.js';
 import { listRecentMailboxLetters } from '../services/privateMailboxContext.js';
+import {
+  listCharacterGroupConversationIds, loadGroupNameMap, isGroupConversationId,
+  selectPrivateChatMemories, formatPrivateChatMemoryLines,
+} from '../services/groupMemoryLink.js';
+import { createCharacterTownLifeContext } from '../services/characterTownLifeContext.js';
+import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
 import { getTownState } from '../services/town/townService.js';
-import { streamPrivateChatImages, queuePrivateImage, savePrivateChatReply, getSavedPrivateChatReply, getPrivateChatImageResume } from '../services/privateChatImageTools.js';
-import { SHARED_IMAGE_PROMPT_RULE, buildSharedImageTask } from '../services/privateChatImagePrompt.js';
+import {
+  buildPlannerTaskBlock, buildPlannerTriggerLine, prependToLastUserMessage, appendToLastUserMessage,
+  runPlanner, sanitizePlan, buildPlanExecuteBlock, detectLastReplyMedia,
+} from '../services/replyPlanner.js';
+// galgame 模式（上游 v3.9.0 合并）：请求级偏好，只拼在本轮 user 头部。
+// galgame_mode 非 true / 无表情包时原样返回消息数组，普通聊天路径零改动。
+// SLG 动作系统（触摸互动）：本轮待反应的动作 → <touch_action> 叙事块（服务层纯函数，零 LLM）。
+// 开关 features.touch 关闭 / 没有待反应动作时一个块都不注入，与加功能前逐字节一致。
+import { buildTouchActionBlock } from '../services/touchActionService.js';
+// 2026-11-03 睡眠锁（催眠手机「无法醒来」）：睡着且锁着时触摸块要换口径
+import { isSleepLocked } from '../services/sleepLock.js';
+// 事件的读取 / 消费 / 过期清扫统一在服务层 `services/touchEventStore.js`（task-24 P2-2 搬家）：
+// 搬进服务层后**不再反向 import 路由**（此前是 `chat.js ← routes/touch.js`，层次颠倒）。
+import { markTouchEventInjected, takePendingTouchEvent } from '../services/touchEventStore.js';
+// 软状态落库（2026-10-15）：候选词冷却与智能配图计数器原来是进程内 Map，重启即丢。
+import { createSoftState } from '../services/softStateStore.js';
 
 const router = Router();
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ── SLG 动作系统（触摸互动）· 待反应动作的读取与消费 ──────────────────────────
+// 实现已搬到服务层 `services/touchEventStore.js`（task-24 P2-2），口径见那里的文件注释：
+//   · status='pending'（隐式）：反应还没演过 → 本轮注入 mode='implicit' 让她写进回复；
+//   · status='done'（即时已单独发过）→ 注入 mode='instant'（"别再演一遍"）；
+//   · 只认私聊（group_id IS NULL）、**ASC（先点先演）**、超过 30 分钟自动作废。
+// 读一次就置 'injected' ⇒ 一次动作只注入一次（markTouchEventInjected）。
 
 // 阶段四：dynamicBlocks 预算降级包装（降级过程有日志，无静默截断）
 function applyBudgetToBlocks(blocks, budgetTokens) {
@@ -106,13 +189,19 @@ const TEMP_STYLE_POOL_HOSTILE = [
 ];
 
 // ── 回复猜想冷却：每个 conversation 生成一次后进入 20s 冷却，用户新消息到达时重置 ──
-const guessCooldowns = new Map();  // conversationId -> timestamp(ms)
+// 2026-10-15 软状态落库：原来 `new Map()` 是纯进程内的，重启即丢 ⇒ 冷却失效（重启后立刻又能生成一次）。
+// `createSoftState` 的 get/set/delete 与 Map **完全兼容**，所以下面所有既有读写点一行都不用改；
+// 只多两件事：懒加载读库 + 写入去抖落库（默认 1s）。接口里没有别的 Map 独有 API（无 .size/forEach）。
+const guessCooldowns = createSoftState('chat_guess_cooldowns');
 
+// ── 智能配图计数器（per-conversation）：每轮用户发言 -1，生图成功后重置为配额，归零时跳过 LLM 判断直接生图 ──
+// 同上：变空会让下一次读取回落到"满额"默认值（判定配额被静默重置），所以一并落库。
 
 // ── character_id → conversation_id 映射 ──
 function convId(charId) { return `char_${charId}`; }
 
 // 灵魂快照列（memory_fragments.soul_snapshot）是 JSON 字符串；解析失败按无快照跳过。
+// （上游 v3.9.0 灵魂引擎合并，供 RAG 召回段的 resonate 轨用。）
 function parseSoulSnapshot(raw) {
   if (!raw) return null;
   try {
@@ -144,21 +233,23 @@ router.delete('/characters/:id/messages', (req, res, next) => {
   const doDelete = () => {
     // 先统一清理聊天长期记忆及其版本、checkpoint、审计和独立向量索引
     clearConversationMemories(conversationId);
-    db.prepare('DELETE FROM emotion_snapshots WHERE conversation_id = ?').run(conversationId);
-    db.prepare('DELETE FROM rolling_summaries WHERE conversation_id = ?').run(conversationId);
+    // 亲密看板：会话清空时一并清掉行为流水（保留身体档案）。
+    // 必须跟着记忆在同一处清理，否则看板会残留"已经被删掉的对话"里的计数
+    clearIntimateData(charId);
+    stmt('DELETE FROM emotion_snapshots WHERE conversation_id = ?').run(conversationId);
+    stmt('DELETE FROM rolling_summaries WHERE conversation_id = ?').run(conversationId);
 
-    db.prepare('DELETE FROM user_portraits WHERE character_id = ?').run(charId);
+    stmt('DELETE FROM user_portraits WHERE character_id = ?').run(charId);
     // 删除奇遇数据
-    db.prepare('DELETE FROM character_events WHERE character_id = ?').run(charId);
-    db.prepare('DELETE FROM event_history WHERE character_id = ?').run(charId);
+    stmt('DELETE FROM character_events WHERE character_id = ?').run(charId);
+    stmt('DELETE FROM event_history WHERE character_id = ?').run(charId);
     // 重置好感度到默认值
-    db.prepare('UPDATE user_relationships SET affinity = 50 WHERE character_id = ?').run(charId);
+    stmt('UPDATE user_relationships SET affinity = 50 WHERE character_id = ?').run(charId);
     // 重置主动聊天连胜计数
-    db.prepare('UPDATE characters SET proactive_streak = 0 WHERE id = ?').run(charId);
+    stmt('UPDATE characters SET proactive_streak = 0 WHERE id = ?').run(charId);
     // 主表
-    db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
-    db.prepare('DELETE FROM raw_messages WHERE conversation_id = ?').run(conversationId);
-    createLorebookRepository(db).rewind(conversationId);
+    stmt('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
+    stmt('DELETE FROM raw_messages WHERE conversation_id = ?').run(conversationId);
     // 清理 ChromaDB 中该 conversation 的向量
     deleteByConversation(conversationId).then(
       n => { if (n > 0) console.log(`[chat] chroma deleted ${n} vectors for ${conversationId}`); },
@@ -196,7 +287,7 @@ router.delete('/characters/:id/messages/last-round', (req, res, next) => {
 
   const doDelete = () => {
     // 1. 找到最后一轮对话的起点（最后一条 user 消息的 raw_id）
-    const lastUserRaw = db.prepare(`
+    const lastUserRaw = stmt(`
       SELECT id FROM raw_messages
       WHERE conversation_id = ? AND role = 'user'
       ORDER BY id DESC LIMIT 1
@@ -204,7 +295,7 @@ router.delete('/characters/:id/messages/last-round', (req, res, next) => {
 
     if (!lastUserRaw) {
       // 没有 user 消息 → 全部是主动聊天等 agent 消息，每次撤回最后一条 agent 消息
-      const lastAssistantRaw = db.prepare(`
+      const lastAssistantRaw = stmt(`
         SELECT id FROM raw_messages
         WHERE conversation_id = ? AND role = 'assistant'
         ORDER BY id DESC LIMIT 1
@@ -213,14 +304,15 @@ router.delete('/characters/:id/messages/last-round', (req, res, next) => {
         return res.json({ ok: true, deleted: 0, message: '没有可撤回的对话' });
       }
       const lastRawId = lastAssistantRaw.id;
-      const msgCount = db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE raw_id = ?`).get(lastRawId).c;
+      const msgCount = stmt(`SELECT COUNT(*) AS c FROM messages WHERE raw_id = ?`).get(lastRawId).c;
       rollbackMemoriesFromRawId(conversationId, lastRawId);
+      // 亲密看板：与记忆同步回滚（同一 raw_id 锚点），撤回后统计要能回落
+      rollbackIntimateByRawId(lastRawId);
       db.pragma('foreign_keys = OFF');
       try {
-        db.prepare(`DELETE FROM messages WHERE raw_id = ?`).run(lastRawId);
-        db.prepare(`DELETE FROM rolling_summaries WHERE conversation_id = ? AND end_msg_id >= ?`).run(conversationId, lastRawId);
-        db.prepare('DELETE FROM private_chat_replies WHERE raw_id=? OR user_raw_id=?').run(lastRawId, lastRawId);
-        db.prepare(`DELETE FROM raw_messages WHERE id = ?`).run(lastRawId);
+        stmt(`DELETE FROM messages WHERE raw_id = ?`).run(lastRawId);
+        stmt(`DELETE FROM rolling_summaries WHERE conversation_id = ? AND end_msg_id >= ?`).run(conversationId, lastRawId);
+        stmt(`DELETE FROM raw_messages WHERE id = ?`).run(lastRawId);
       } finally {
         db.pragma('foreign_keys = ON');
       }
@@ -231,34 +323,44 @@ router.delete('/characters/:id/messages/last-round', (req, res, next) => {
     const lastUserRawId = lastUserRaw.id;
 
     // 2. 统计即将删除的数量
-    const rawCount = db.prepare(`
+    const rawCount = stmt(`
       SELECT COUNT(*) AS c FROM raw_messages
       WHERE conversation_id = ? AND id >= ?
     `).get(conversationId, lastUserRawId).c;
 
-    const msgCount = db.prepare(`
+    const msgCount = stmt(`
       SELECT COUNT(*) AS c FROM messages
       WHERE conversation_id = ? AND raw_id >= ?
     `).get(conversationId, lastUserRawId).c;
 
     // 3. 先回滚来源覆盖该轮的记忆版本，再删除原始消息
     rollbackMemoriesFromRawId(conversationId, lastUserRawId);
+    // 亲密看板：这里必须按**区间**回滚，且带 conversationId 收敛，不能用等值删。
+    //   原因（真实 bug，由 task-6 对抗式验收复现）：自动记账的锚点是**本轮 assistant raw**
+    //   （recordIntimateFromTail 取会话尾部带 prompt 的 assistant raw），它大于 lastUserRawId；
+    //   而下面那段删除是按 id >= lastUserRawId 整段删的。若只按 lastUserRawId 等值回滚，
+    //   会"命中 0 行 + raw 照删"→ 流水变孤儿（raw_id 指向已删 raw）、totalActs 不回落。
+    //   （复现：user raw=55 / assistant raw=56，撤回后残留 raw_id=56 的流水行。）
+    //   区间 + conversationId 是 task-15 的语义：raw id 全库自增、不同会话区间会互相穿插，
+    //   不传 conversationId 的裸 BETWEEN 会误删别的会话流水；raw_id=0 的无锚点行
+    //   （人工补录 / 事件流水）不受影响（min<1 直接 no-op）。
+    const maxRawId = stmt('SELECT MAX(id) AS id FROM raw_messages WHERE conversation_id = ?')
+      .get(conversationId)?.id || lastUserRawId;
+    rollbackIntimateByRawIdRange(lastUserRawId, maxRawId, { conversationId });
     db.pragma('foreign_keys = OFF');
     try {
-      db.prepare(`DELETE FROM rolling_summaries WHERE conversation_id = ? AND end_msg_id >= ?`)
+      stmt(`DELETE FROM rolling_summaries WHERE conversation_id = ? AND end_msg_id >= ?`)
         .run(conversationId, lastUserRawId);
-      db.prepare(`DELETE FROM messages WHERE conversation_id = ? AND raw_id >= ?`)
+      stmt(`DELETE FROM messages WHERE conversation_id = ? AND raw_id >= ?`)
         .run(conversationId, lastUserRawId);
 
-      db.prepare(`DELETE FROM private_chat_replies WHERE user_raw_id IN (SELECT id FROM raw_messages WHERE conversation_id=? AND id>=?) OR raw_id IN (SELECT id FROM raw_messages WHERE conversation_id=? AND id>=?)`).run(conversationId,lastUserRawId,conversationId,lastUserRawId);
-      db.prepare(`DELETE FROM raw_messages WHERE conversation_id = ? AND id >= ?`)
+      stmt(`DELETE FROM raw_messages WHERE conversation_id = ? AND id >= ?`)
         .run(conversationId, lastUserRawId);
     } finally {
       db.pragma('foreign_keys = ON');
     }
 
     console.log(`[chat] undo last round: ${rawCount} raw + ${msgCount} msgs deleted for ${conversationId}`);
-    createLorebookRepository(db).rewind(conversationId, db.prepare('SELECT COUNT(*) AS n FROM raw_messages WHERE conversation_id=?').get(conversationId).n + 1);
     res.json({ ok: true, deleted: rawCount + msgCount });
   };
 
@@ -286,7 +388,8 @@ router.get('/characters/:id/messages', (req, res) => {
   const db = getDb();
   const conversationId = convId(req.params.id);
 
-  const messages = db.prepare(`
+  // 上游 v4.2.0：深度思考链路下线，消息不再带思考原文；改带 client_msg_id 供前端幂等对齐
+  const messages = stmt(`
     SELECT m.id, m.conversation_id, m.raw_id, m.role, m.content, m.images, m.created_at, m.event_id, r.client_msg_id
     FROM messages m
     LEFT JOIN raw_messages r ON r.id = m.raw_id
@@ -298,7 +401,7 @@ router.get('/characters/:id/messages', (req, res) => {
   }));
 
   // 附带最新好感度快照（切角色后恢复用）
-  const lastSnapshot = db.prepare(`
+  const lastSnapshot = stmt(`
     SELECT affinity, affinity_delta, reason FROM emotion_snapshots
     WHERE conversation_id = ? AND affinity IS NOT NULL
     ORDER BY id DESC LIMIT 1
@@ -306,13 +409,6 @@ router.get('/characters/:id/messages', (req, res) => {
 
   res.json({
     messages,
-    completedClientMsgIds: db.prepare(`SELECT u.client_msg_id FROM private_chat_replies p
-      JOIN raw_messages u ON u.id=p.user_raw_id JOIN raw_messages a ON a.id=p.raw_id
-      WHERE u.conversation_id=? AND u.client_msg_id IS NOT NULL`).all(conversationId).map(r => r.client_msg_id),
-    imageTasks: db.prepare(`SELECT t.*, p.message_id, p.user_raw_id FROM private_chat_image_turns p JOIN image_tasks t ON t.id=p.task_id JOIN messages m ON m.id=p.message_id WHERE p.conversation_id=? AND t.status != 'done'`).all(conversationId).map(t => ({
-      ...t,
-      created_at: toISODate(t.created_at),
-    })),
     affinity: lastSnapshot ? {
       value: lastSnapshot.affinity,
       delta: lastSnapshot.affinity_delta ?? 0,
@@ -321,26 +417,17 @@ router.get('/characters/:id/messages', (req, res) => {
   });
 });
 
-// Galgame reads complete source messages, not the split bubble table.
+// Galgame 模式（上游 v3.9.0 合并）读的是完整源消息，不是分句气泡表。
 router.get('/characters/:id/dialogue', (req, res) => {
   const db = getDb();
   if (!db.prepare('SELECT id FROM characters WHERE id=?').get(req.params.id)) return res.status(404).json({ error: '角色不存在' });
   res.json(readDialogueTranscript(db, req.params.id, req.query));
 });
-router.post('/characters/:id/dialogue/guesses', async (req, res, next) => {
-  try {
-    const character = getDb().prepare('SELECT * FROM characters WHERE id=?').get(req.params.id);
-    if (!character) return res.status(404).json({ error: '角色不存在' });
-    if (!config.features.replyGuesses) return res.json({ guesses: null, disabled: true });
-    const guesses = await generateReplyGuesses(convId(req.params.id), character);
-    res.json({ guesses });
-  } catch (error) { next(error); }
-});
 
 // GET /api/messages/:id — 单条消息查询（送礼图片轮询用）
 router.get('/messages/:id', (req, res) => {
   const db = getDb();
-  const msg = db.prepare(
+  const msg = stmt(
     'SELECT id, role, content, images, created_at FROM messages WHERE id = ?'
   ).get(req.params.id);
   if (!msg) return res.status(404).json({ error: 'not found' });
@@ -349,30 +436,52 @@ router.get('/messages/:id', (req, res) => {
 
 // POST /api/characters/:id/chat — 流式对话
 router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTownState }), async (req, res) => {
-  const { message, client_msg_id, force_image_gen, image_mode, galgame_mode } = req.body;
+  // `message` 用 let 接：下方要就地 trim 归一化（见校验段说明），其余字段仍是一次性解构
+  const { client_msg_id, force_image_gen, image_mode, deep_think, galgame_mode } = req.body;
+  let { message } = req.body;
+  const deepThink = deep_think === true || deep_think === 'true';
   const imageMode = ['off', 'smart', 'force'].includes(image_mode) ? image_mode : (force_image_gen ? 'force' : 'smart');
-
-  if (typeof message !== 'string' || !message.trim()) {
+  // 深度思考下的生图策略：off = planner 看不到图片工具；must = 强制生图（本轮必配图，形式由 planner 定）；auto = planner 按需决策
+  const imagePolicy = imageMode === 'off' ? 'off' : (deepThink && imageMode === 'force' ? 'must' : 'auto');
+  // 只接受「trim 之后仍非空」的字符串消息。
+  //
+  // ⚠️ 2026-10-15：这里必须**trim 后再判空**。原来只判 `!message`，于是纯空白消息
+  // （'   '）会一路穿过校验、走到下面的活跃流登记（`res.on('close')`）与角色查询，
+  // 在最小 res mock 下直接炸成 `res.on is not a function`；真实链路上则是把一条空消息
+  // 喂进 LLM 与落库。空白消息本来就不是有效消息 —— 公开契约就是「message is required」400
+  // （上游 v3.9.0 的 `chatFeatureRemoval.test.js` 正是这么钉的：undefined / '' / '   ' / 123 同断言）。
+  // 就地归一化（`message = message.trim()`）而不是另起变量：下方 parseEmojiText / 记忆检索 /
+  // 落库 / 生图意图判定共 10+ 处都读 `message`，另起变量会留下"校验 trim 了、下游没 trim"的分叉。
+  if (typeof message === 'string') message = message.trim();
+  if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message is required' });
   }
 
   // 登记活跃聊天流：整理 daemon 的空闲判定信号。
   // 用 res 'close' 注销——无论哪条 early return / 异常路径都恰好触发一次，计数不泄漏。
+  //
+  // ⚠️ 2026-10-15：登记必须放在**参数校验之后**。上游 v3.9.0 的 `chatFeatureRemoval.test.js`
+  // 用最小 res mock（只有 status/json，没有 event emitter）调这条路由，校验通过前的任何
+  // `res.on` 都会炸成 `res.on is not a function`；而"非法 message 返回 400"本来就是
+  // 这条链路的公开契约（不产出活跃流，也不该碰响应对象的事件面）。
   chatStreamStarted();
   res.on('close', () => chatStreamEnded());
 
   const db = getDb();
   const characterId = req.params.id;
+  // 灵魂引擎（上游 v3.9.0 合并）：本轮是否需要注入灵魂行为参数。只读一次，下方各注入点复用
   const soulEnabled = isSoulEnabled();
-  if (!db.prepare('SELECT id FROM characters WHERE id=?').get(characterId)) return res.status(404).json({ error: '角色不存在' });
+  if (!stmt('SELECT id FROM characters WHERE id=?').get(characterId)) return res.status(404).json({ error: '角色不存在' });
   getStandingDisplay().select(Number(characterId));
   const standingTurn = getStandingDisplay().begin(characterId, client_msg_id || standingTurnId());
   const conversationId = convId(characterId);
   const emojiMap = getCharacterEmojiMap(characterId, db);
   const emojiNote = buildEmojiNote([...emojiMap.keys()]);
   const parsedUserMessage = parseEmojiText(message, emojiMap);
+  // 上游 v4.2.0：同一 client_msg_id 的重试直接回放已存回复，不再请求模型或生成第二轮
   const priorUser = client_msg_id ? db.prepare('SELECT id FROM raw_messages WHERE client_msg_id=? AND conversation_id=?').get(client_msg_id, conversationId) : null;
   const completedReply = priorUser ? getSavedPrivateChatReply(db, priorUser.id) : null;
+
   // ── 日程系统：回复队列拦截 ──
   if (!completedReply && config.features.schedule !== false) {
     const delayInfo = getReplyDelay(characterId);
@@ -390,7 +499,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
       // sleeping 时设置 scheduled_reply_at 为 sleep_until
       let finalScheduledAt = scheduledReplyAt;
       if (delayInfo.delay === -1) {
-        const sleepingStatus = db.prepare('SELECT sleep_until FROM characters WHERE id = ?').get(characterId);
+        const sleepingStatus = stmt('SELECT sleep_until FROM characters WHERE id = ?').get(characterId);
         if (sleepingStatus?.sleep_until) {
           finalScheduledAt = sleepingStatus.sleep_until;
         } else {
@@ -407,10 +516,10 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
           // 重试请求：用户消息已写入，检查 reply_queue 是否已有 waiting 条目
           console.log(`[chat] idempotent (sleeping): skipping duplicate user message (client_msg_id=${client_msg_id})`);
           userRawId = existing.id;
-          const existingMsg = db.prepare('SELECT id FROM messages WHERE raw_id = ? AND role = ?').get(userRawId, 'user');
+          const existingMsg = stmt('SELECT id FROM messages WHERE raw_id = ? AND role = ?').get(userRawId, 'user');
           userMsgId = existingMsg?.id;
           // 检查是否已有 waiting 的队列条目
-          const existingQueue = db.prepare(
+          const existingQueue = stmt(
             'SELECT id FROM reply_queue WHERE client_msg_id = ? AND status = ?'
           ).get(client_msg_id, 'waiting');
           if (existingQueue) {
@@ -428,15 +537,15 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
         }
       }
       if (!userRawId) {
-        const userRaw = db.prepare(`INSERT INTO raw_messages (conversation_id, role, content, client_msg_id) VALUES (?, 'user', ?, ?)`)
+        const userRaw = stmt(`INSERT INTO raw_messages (conversation_id, role, content, client_msg_id) VALUES (?, 'user', ?, ?)`)
           .run(conversationId, message, client_msg_id || null);
         userRawId = userRaw.lastInsertRowid;
-        const userMsg = db.prepare(`INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, 'user', ?, ?, 0)`)
+        const userMsg = stmt(`INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, 'user', ?, ?, 0)`)
             .run(conversationId, userRawId, parsedUserMessage.content, parsedUserMessage.images.length > 0 ? JSON.stringify(parsedUserMessage.images) : null);
         userMsgId = userMsg.lastInsertRowid;
       }
 
-      db.prepare(`
+      stmt(`
         INSERT INTO reply_queue (character_id, conversation_id, user_raw_msg_id, user_msg_id, user_content, client_msg_id, scheduled_reply_at, current_activity, delay_minutes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -450,7 +559,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
 
       // ── 睡眠模式：建立 SSE 流，推送 Zzz 消息 + 瞄一眼生图 ──
       if (delayInfo.delay === -1) {
-        const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId);
+        const character = stmt('SELECT * FROM characters WHERE id = ?').get(characterId);
         if (character) {
           // 梦境系统：睡中被叫 → 当场造梦 + 梦话应答 + 现场生图（用户消息仍照常进回复队列，醒后合并回复）
           await handleDreamTalkReply(res, characterId, conversationId, userMsgId, character, message);
@@ -472,7 +581,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
     // ── 安全兜底：日程未拦截但 DB 中标记为睡眠状态 ──
     // 日程系统可能因模板缺失/缓存过期/功能开关等原因未检测到睡眠，
     // 但 characters.is_sleeping 是 scheduleManager 定时同步的可靠标志
-    const sleepingChar = db.prepare('SELECT is_sleeping, sleep_until, temporary_wake_until FROM characters WHERE id = ?').get(characterId);
+    const sleepingChar = stmt('SELECT is_sleeping, sleep_until, temporary_wake_until FROM characters WHERE id = ?').get(characterId);
     // isTempWoken 检查"未过期"而非"值存在"——过期残留值不应使睡眠兜底失效
     if (sleepingChar && sleepingChar.is_sleeping === 1 && !isTempWoken(characterId)) {
       const sleepUntil = sleepingChar.sleep_until
@@ -485,9 +594,9 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
         if (existing) {
           console.log(`[chat] idempotent (sleeping fallback): skipping duplicate (client_msg_id=${client_msg_id})`);
           userRawId = existing.id;
-          const existingMsg = db.prepare('SELECT id FROM messages WHERE raw_id = ? AND role = ?').get(userRawId, 'user');
+          const existingMsg = stmt('SELECT id FROM messages WHERE raw_id = ? AND role = ?').get(userRawId, 'user');
           userMsgId = existingMsg?.id;
-          const existingQueue = db.prepare(
+          const existingQueue = stmt(
             'SELECT id FROM reply_queue WHERE client_msg_id = ? AND status = ?'
           ).get(client_msg_id, 'waiting');
           if (existingQueue) {
@@ -502,15 +611,15 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
         }
       }
       if (!userRawId) {
-        const userRaw = db.prepare(`INSERT INTO raw_messages (conversation_id, role, content, client_msg_id) VALUES (?, 'user', ?, ?)`)
+        const userRaw = stmt(`INSERT INTO raw_messages (conversation_id, role, content, client_msg_id) VALUES (?, 'user', ?, ?)`)
           .run(conversationId, message, client_msg_id || null);
         userRawId = userRaw.lastInsertRowid;
-        const userMsg = db.prepare(`INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, 'user', ?, ?, 0)`)
+        const userMsg = stmt(`INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, 'user', ?, ?, 0)`)
             .run(conversationId, userRawId, parsedUserMessage.content, parsedUserMessage.images.length > 0 ? JSON.stringify(parsedUserMessage.images) : null);
         userMsgId = userMsg.lastInsertRowid;
       }
 
-      db.prepare(`
+      stmt(`
         INSERT INTO reply_queue (character_id, conversation_id, user_raw_msg_id, user_msg_id, user_content, client_msg_id, scheduled_reply_at, current_activity, delay_minutes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -521,7 +630,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
 
       resetUnansweredStreak(characterId);
 
-      const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId);
+      const character = stmt('SELECT * FROM characters WHERE id = ?').get(characterId);
       if (character) {
         // 梦境系统：睡中被叫 → 当场造梦 + 梦话应答（同上，回复队列不受影响）
         await handleDreamTalkReply(res, characterId, conversationId, userMsgId, character, message);
@@ -547,13 +656,13 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
   // 生图期间 SSE 流可能长时间无数据写入，禁用 socket/response 超时
   req.socket.setTimeout(0);
   res.setTimeout(0);
+  // 情绪评估等异步回调可能在主流程 res.end() 之后才 resolve，
+  // 对已结束的响应 write 会触发 ERR_STREAM_WRITE_AFTER_END（此前靠全局 uncaughtException 兜住）
   const send = (event, data) => {
+    if (res.writableEnded || res.destroyed) return;
+    // 上游 3.6.0：立绘展示窗口要跟着本轮 emoji 关键帧走
     if (event === 'token' && data?.emojiKeys?.length) publishStandingKeys(standingTurn, data.emojiKeys);
-    if (res.writableEnded || res.destroyed) {
-      if (['guesses', 'affinity_update'].includes(event)) broadcast('private_chat_aux', { event, characterId, clientMsgId: client_msg_id, ...data });
-      return;
-    }
-    return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
   try {
@@ -567,22 +676,23 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
         // 重试请求：用户消息已写入，直接复用（避免 DB 重复记录）
         console.log(`[chat] idempotent: skipping duplicate user message (client_msg_id=${client_msg_id})`);
         userRawMsgId = existing.id;
-        userMsgId = db.prepare(`SELECT id FROM messages WHERE raw_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1`).get(existing.id)?.id;
-        send('msg_saved', { id: userMsgId, role: 'user', client_msg_id: client_msg_id || null, created_at: new Date().toISOString() });
+        userMsgId = stmt(`SELECT id FROM messages WHERE raw_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1`).get(existing.id)?.id;
+        send('msg_saved', { id: userMsgId, role: 'user', created_at: new Date().toISOString() });
       }
     }
     if (!userRawMsgId) {
-      const userRaw = db.prepare(`INSERT INTO raw_messages (conversation_id, role, content, client_msg_id) VALUES (?, 'user', ?, ?)`)
+      const userRaw = stmt(`INSERT INTO raw_messages (conversation_id, role, content, client_msg_id) VALUES (?, 'user', ?, ?)`)
         .run(conversationId, message, client_msg_id || null);
       userRawMsgId = userRaw.lastInsertRowid;
-        const userMsg = db.prepare(`INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, 'user', ?, ?, 0)`)
+        const userMsg = stmt(`INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, 'user', ?, ?, 0)`)
           .run(conversationId, userRawMsgId, parsedUserMessage.content, parsedUserMessage.images.length > 0 ? JSON.stringify(parsedUserMessage.images) : null);
         userMsgId = userMsg.lastInsertRowid;
         send('msg_saved', { id: userMsgId, role: 'user', client_msg_id: client_msg_id || null, content: parsedUserMessage.content, images: parsedUserMessage.images.length > 0 ? parsedUserMessage.images : undefined, leadingSticker: parsedUserMessage.leadingSticker, created_at: new Date().toISOString() });
       }
 
 
-    // 完成确认丢失后的重试只回放已存回复，不再请求模型或生成第二轮。
+    // 1.5 用户发送新消息 → 重置回复猜想冷却，本轮的 assistant 回复可以触发一次猜想
+    // 完成确认丢失后的重试：只回放已存回复，不再请求模型或生成第二轮（上游 v4.2.0）
     if (completedReply) {
       for (const { id, p } of completedReply.saved) {
         send('token', { content: p.content, ...(p.images.length ? { images: p.images } : {}) });
@@ -596,18 +706,20 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
       return;
     }
 
-    // 1.5 用户发送新消息 → 重置回复猜想冷却，本轮的 assistant 回复可以触发一次猜想
     guessCooldowns.delete(conversationId);
 
     // 2. 加载角色
-    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId);
+    const character = stmt('SELECT * FROM characters WHERE id = ?').get(characterId);
 
     // 2.1 用户在跟临时唤醒的角色聊天 → 重置睡眠倒计时，保持活跃清醒
     if (isTempWoken(characterId)) extendTempWake(characterId);
 
+    // 3. 生图意图（正则强匹配 → 提前检测，用于 msgs[2] 格式消息）
+    const explicitImageIntent = detectImageIntent(message);
+
     // 4.5b 活跃奇遇检测（提前查询，供情绪引擎 + 人格层锚点 + 上下文注入三处使用）
     // 奇遇创建已超过一天的视为过期话题：私聊中不再提及（情绪联动与上下文注入一并失效）
-    const activeEvent = db.prepare(`
+    const activeEvent = stmt(`
       SELECT id, title, description, current_branch, choice_history, status, engaged, event_type_key, emphasis_delivered, referenced_character_ids
       FROM character_events
       WHERE character_id = ? AND status IN ('open','engaged')
@@ -616,7 +728,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
     `).get(characterId);
 
     // ── 交叉角色检测（扫描最近三轮对话 + 用户实际输入 + 事件引用）──
-    const recentHistory = db.prepare(`
+    const recentHistory = stmt(`
       SELECT role, content FROM raw_messages
       WHERE conversation_id = ? ORDER BY id DESC LIMIT 6
     `).all(conversationId);
@@ -632,7 +744,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
     const eventRefIds = activeEvent?.referenced_character_ids
       ? JSON.parse(activeEvent.referenced_character_ids) : [];
     const allRefIds = [...new Set([...eventRefIds, ...crossMatches.map(m => m.id)])].slice(0, 3);
-    const crossChars = allRefIds.map(id => db.prepare(
+    const crossChars = allRefIds.map(id => stmt(
       'SELECT id, display_name, short_prompt, base_prompt, loras FROM characters WHERE id = ?'
     ).get(id)).filter(Boolean);
 
@@ -647,22 +759,16 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
       const emotionState = loadEmotionState(conversationId, emotionBaseline);
       affinity = loadAffinity(characterId);
 
-      // 4.5a 每日首次互动奖励：距上次互动跨天 → +5（在注入 LLM 之前就加成）
-      const relRow = db.prepare(
-        'SELECT last_interaction_at FROM user_relationships WHERE character_id = ?'
-      ).get(characterId);
-      const lastAt = relRow?.last_interaction_at;
-      if (lastAt) {
-        const lastDate = lastAt.slice(0, 10); // "YYYY-MM-DD"
-        const today = new Date().toISOString().slice(0, 10);
-        if (lastDate !== today) {
-          affinity = saveAffinity(characterId, affinity + 5);
-          console.log(`[chat] daily first interaction bonus: +5 → affinity=${affinity.toFixed(0)}`);
-        }
-      } else {
-        // 从未互动过 → 首次互动也给奖励
-        affinity = saveAffinity(characterId, affinity + 5);
-        console.log(`[chat] first ever interaction bonus: +5 → affinity=${affinity.toFixed(0)}`);
+      // 4.5a 每日首次互动奖励：+5（在注入 LLM 之前就加成）
+      //
+      // ⚠️ 判据是**用户真实互动**（messages 表里上一条 user 的时间），不是
+      // user_relationships.last_interaction_at —— 后者会被系统写入污染（情绪评估落库、触摸、送礼
+      // 都走 saveAffinity(..., true) 把它写成系统时刻），于是用户当天真正来聊天时 +5 拿不到。
+      // 口径与实现见 services/chatDailyBonus.js（含"奖励按真实日界、不吃程序时间"的有意裁决）。
+      const dailyBonus = saveDailyInteractionBonus(db, characterId, { conversationId });
+      if (dailyBonus > 0) {
+        affinity = loadAffinity(characterId);   // 上面已 +5 落库，这里读回最新值继续参与后续注入
+        console.log(`[chat] daily first interaction bonus: +${dailyBonus} → affinity=${affinity.toFixed(0)}`);
       }
 
       // 4.6 奇遇情绪联动：根据事件类型叠加 VAD 偏移（纯规则映射，零 LLM 开销）
@@ -707,12 +813,12 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
     const hasUserInfo = config.user.nickname || config.user.gender || config.user.appearance || config.user.persona;
 
     // 用户→角色关系
-    const userRel = db.prepare(
+    const userRel = stmt(
       'SELECT relationship_text, is_oath FROM user_relationships WHERE character_id = ?'
     ).get(characterId);
 
     // 角色间关系
-    const charRels = db.prepare(`
+    const charRels = stmt(`
       SELECT 'from' AS direction, cr.relationship_text, c.display_name
       FROM character_relationships cr
       JOIN characters c ON c.id = cr.to_character_id
@@ -732,11 +838,10 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
       userInfoParts.push(`<oath_bond>你们之间有一个比普通关系更深一层的约定——${chatUserName}曾经郑重地送过你一枚戒指。这代表了独一无二的羁绊和承诺。在对话中，你的行为和情感会自然地带有"你是我最重要的人"的底色——不是因为规则要求，而是因为这层羁绊已经是你内心的一部分。</oath_bond>`);
     }
     if (hasUserInfo) {
-      const infoParts = [`消息中标记为"user"的人是"${chatUserName}"`];
-      if (config.user.gender) infoParts.push(`性别：${config.user.gender}`);
-      if (config.user.appearance) infoParts.push(`外观特征：${config.user.appearance}`);
-      if (config.user.persona) infoParts.push(`其他说明：${config.user.persona}`);
-      userInfoParts.push(`<user_info>${infoParts.join('。')}</user_info>`);
+      // 2026-10-02 用户反馈「角色对话还是有一些不遵从设定，和玩家的性别与自我描述」：
+      // 原先这里只是事实陈述，模型把性别/自述当参考而不是设定 ⇒ 内容改由唯一入口产出（含"必须遵从"的约束）。
+      // 标签 `<user_info>` 与它在 userInfoParts 里的位置保持不变（下游与测试依赖这个标签）。
+      userInfoParts.push(`<user_info>${buildUserInfoBlock(config.user || {}, { style: 'chat', displayName: chatUserName })}</user_info>`);
     }
     if (charRels.length > 0) {
       const relLines = charRels.map(r => {
@@ -762,9 +867,11 @@ ${coreRules}
 
     const formatContextBlock = userInfoParts.length > 0 ? userInfoParts.join('\n\n') : '';
 
-    // 世界事件只在生效期内复用，置于跨角色变化之前；不认证为永久静态世界书边界。
+    // ── 稳定块集合 ──
+    // 神说改过的世界事实属于「低频变动」的稳定内容，必须排在人格之前（上游 v4.2.0 口径）
     const godWorldContext = getGodWorldContext([Number(characterId)]);
     const stableBlocks = [stageContent, godWorldContext, charBaseContent, formatContextBlock].filter(Boolean);
+    // 世界事件只在生效期内复用，置于跨角色变化之前；不认证为永久静态世界书边界。
     const chatCacheBoundary = godWorldContext
       ? { index: stableBlocks.indexOf(godWorldContext), offset: 0 }
       : { index: stableBlocks.indexOf(charBaseContent), offset: (character?.base_prompt || getDefaultPrompt()).length };
@@ -792,17 +899,90 @@ ${coreRules}
       : null;
 
     // ── checkpoint 历史 + 活跃聊天历史（滑动窗口） ──
-    const { checkpoint, checkpointHistory, activeText: activeChatText, activeRounds, activeSegments } = getSplitHistory(db, conversationId, 10, 10, { userName: chatUserName, characterName: character.display_name, throughId: userRawMsgId });
-    // [DEBUG] 上下文拆分
-    console.log('[DEBUG] afterId:', checkpoint?.end_msg_id || 0, '| checkpoint助手数: 10(固定) | active助手数:', activeRounds);
-    if (checkpointHistory.length > 0) {
-      const cpAsst = [...checkpointHistory].reverse().find(m => m.role === 'assistant');
-      console.log('[DEBUG] checkpoint末条assistant:', cpAsst ? cpAsst.content.slice(0, 60) : '(无)');
+    // 催眠遗忘窗口：屏蔽只作用于"喂给模型的这段历史"——原聊天记录仍在库里（可审计、可撤销），
+    // 前端展示的历史也不受影响。组装器只认区间，窗口语义由 hypnosisService 负责。
+    // 开关关闭时不传 → getSplitHistory 走原路径，零行为变化。
+    let hypnoExcludeWindows = [];
+    if (config.features.hypnosis !== false) {
+      try {
+        // 一次查库拿窗口，再交给组装器做内存判断（不逐条查库）
+        hypnoExcludeWindows = listForgottenWindows(characterId)
+          .map(w => ({ fromRawId: w.fromRawId, toRawId: w.toRawId }));
+      } catch (err) {
+        console.warn('[hypnosis] forgotten windows lookup failed:', err.message);
+      }
     }
-    if (activeChatText) {
-      const firstLine = activeChatText.split('\n').find(l => l.trim()) || '';
-      console.log('[DEBUG] active首行:', firstLine.slice(0, 80));
+    const { checkpoint, checkpointHistory, activeText: activeChatText, activeRounds, activeSegments } = getSplitHistory(db, conversationId, 10, 10, {
+      userName: chatUserName,
+      characterName: character.display_name,
+      excludeWindows: hypnoExcludeWindows,
+    });
+    // 注：这里原有 3 行 [DEBUG] 上下文拆分日志（afterId / checkpoint末条assistant / active首行），
+    // 每轮必打且把对话原文前 60~80 字写进日志（刷屏 + 隐私面）。2026-09-30 按代码审查改进 §1.1 删除。
+    // 需要复核上下文拆分时：contextUsage 面板给的是同一批数字（分段规模 + 指纹），不再靠日志。
+
+    // ── 反重复检测（阶段一 L1-1 + L2）──
+    // 取「她最近几轮说过什么」+「最近几轮情绪快照」喂给纯函数检测器：
+    //   · sinceRawId = 最新摘要分界线（已摘要的不在活跃上下文里，不参与比较）
+    //   · excludeWindows = 催眠遗忘窗口（被屏蔽的回复不算"她说过"）
+    // 两个开关默认开：关闭 / 检测器无输出 / 查库失败时**一个块都不注入**，与加功能前逐字节一致。
+    const antiRepEnabled = config.features.antiRepetition !== false;
+    const antiRepLockEnabled = config.features.antiRepetitionLock !== false;
+    // 阶段二自动升级开关：关闭 → 检测器完全按阶段一的 base 阈值判定（行为与阶段一一致）。
+    // 用户裁决「阶段一保持温和、阶段二才升级」，因此升级单独一个开关，默认开、可随时关。
+    const antiRepEscalationEnabled = config.features.antiRepetitionEscalation !== false;
+    let recentAssistantTurns = [];
+    let recentEmotionSnapshots = [];
+    let antiRepetitionResult = null;
+    // ⚠️ 催眠「完全控制」轮本就该重复执行指令，反重复块会跟催眠块打架 ⇒ 要显式跳过。
+    // 但**不能**引用下面的 `hypnosisNeedsFullPerformance`：它是在催眠块里才声明的（L963 附近），
+    // 在这里读会抛 TDZ `Cannot access ... before initialization` —— 真机 E2E 抓到过：
+    // `[anti-repetition] detection failed: ...`，结果是**每轮都抛异常、反重复块一个都没注入**（被 catch 吞掉）。
+    // 那里自己读一次状态，口径与催眠块保持一致（active && bodyControlled && !mindAwake）。
+    let antiRepHypnosisActive = false;
+    try {
+      const stForAntiRep = getHypnosisState(characterId);
+      antiRepHypnosisActive = !!(stForAntiRep?.active && stForAntiRep.bodyControlled && !stForAntiRep.mindAwake);
+    } catch { /* 读不到状态就当非催眠轮，反重复照常参与 */ }
+    if (antiRepEnabled) {
+      try {
+        recentAssistantTurns = fetchRecentAssistantTurns(db, conversationId, {
+          limit: 8,
+          sinceRawId: checkpoint?.end_msg_id || 0,
+          excludeWindows: hypnoExcludeWindows,
+        });
+        recentEmotionSnapshots = config.features.emotion
+          ? fetchRecentEmotionSnapshots(db, conversationId, { limit: 8 })
+          : [];
+        antiRepetitionResult = buildAntiRepetitionInjection({
+          recentAssistantTurns,
+          emotionSnapshots: antiRepLockEnabled ? recentEmotionSnapshots : [],
+          // 催眠"完全控制"轮就是要重复执行指令，反重复块会跟催眠块打架 → 显式跳过
+          hypnosisActive: antiRepHypnosisActive,
+          // 阶段二：连续高复述 → 本轮（即"下一轮回复"）把约束升到 mode="escalated"；关闭则退回阶段一判定
+          escalationEnabled: antiRepEscalationEnabled,
+        });
+      } catch (err) {
+        // 反重复是增强项：任何异常都退回"不注入"，绝不影响聊天主流程
+        console.warn('[anti-repetition] detection failed:', err.message);
+        antiRepetitionResult = null;
+      }
     }
+
+    // ── D2 · 重写兜底（reroll）：本轮生成结束后是否要重写一次 ──
+    // 用户裁决：**默认关**（features.antiRepetitionReroll）；关着时这里只是把既定流程走完，零额外调用。
+    // 触发条件（复用既有检测档位 strong/escalated，不新造检测器）与"只重写一次"的口径都在
+    // services/antiRepetition.js 的 shouldReroll 里，这里只提供本轮上下文。
+    // 注意 clientGone 要等流跑起来才有值，所以这里先用 false 出一个"计划"，真正 fire 前再复核一次。
+    const antiRepRerollEnabled = config.features.antiRepetitionReroll === true;
+    let antiRepRerollFired = 0;
+    const antiRepRerollPlan = shouldReroll({
+      enabled: antiRepRerollEnabled,
+      result: antiRepetitionResult,
+      firedCount: antiRepRerollFired,
+      hypnosisActive: antiRepHypnosisActive,
+      clientGone: false,
+    });
 
     // ── 动态尾部块（将附加到最新 user 消息） ──
     const dynamicBlocks = [];
@@ -821,7 +1001,7 @@ ${coreRules}
     }
 
     // 2. 最近奇遇总结（仅提及一天内结束的奇遇，更早的视为过期话题不再主动提）
-    const engagedEvent = db.prepare(`
+    const engagedEvent = stmt(`
       SELECT title, summary, ended_at
       FROM event_history WHERE character_id = ? AND engaged = 1
         AND ended_at > datetime('now', '-1 day')
@@ -840,9 +1020,41 @@ ${coreRules}
     if (recentMomentsBlock) dynamicBlocks.push(recentMomentsBlock);
 
     // 4. 日程上下文（当前在做什么 / 睡醒等）
-    const scheduleCtx = (config.features.schedule !== false) ? formatScheduleContext(characterId) : null;
+    let scheduleCtx = (config.features.schedule !== false) ? formatScheduleContext(characterId) : null;
+    // 2026-11-04 修「动作死板、对不上」：日程块和亲密块会**互相矛盾** ——
+    // 日程说「你正在学院食堂早餐与晨检」，后面的 intimate_scene 说「你和 Sting 正在做爱」。
+    // 模型拿到两段冲突的事实只能折中，表现就是动作写得含糊、和当前体位对不上。
+    // 这里在有进行中亲密场景时，明确告诉它「日常日程只是今天的计划，此刻不在那里」。
+    try {
+      const sceneNow = Number.isInteger(Number(characterId)) ? getIntimateScene(Number(characterId)) : null;
+      if (scheduleCtx && sceneNow && sceneNow.active) {
+        scheduleCtx = `【与亲密场景冲突时以此为准】你此刻并不在上面这个日常活动里：`
+          + `你和${chatUserName}正在进行中的亲密场景才是当下的真实处境（地点、姿势、身体状态以下面的亲密场景为准）。`
+          + `日常日程只是今天原本的计划，不要拿它当现在发生的事，也不要因为它而拒绝或迟疑。
+
+`
+          + scheduleCtx;
+      }
+    } catch (err) {
+      console.warn('[chat] 亲密场景覆盖日程失败（不影响本轮）:', err?.message || err);
+    }
     if (scheduleCtx) {
       dynamicBlocks.push(`<schedule_context>\n${scheduleCtx}\n</schedule_context>`);
+    }
+
+    // 上游 v4.2.0：最近图片任务的**真实状态**要进上下文。
+    // 工具链路下图片是后台生成的，模型上一轮"已经发图"的自我认知可能是错的 ——
+    // 不给真实状态，它会说"刚给你发了"而图其实还在队列里（真机表现就是"图呢？"）。
+    try {
+      const imageStates = db.prepare(`SELECT p.scene,t.status,t.error_message FROM private_chat_image_turns p
+        JOIN image_tasks t ON t.id=p.task_id WHERE p.conversation_id=? ORDER BY p.user_raw_id DESC LIMIT 3`).all(conversationId);
+      if (imageStates.length) {
+        dynamicBlocks.push('【最近图片任务真实状态】\n' + imageStates.map(t =>
+          `${t.scene || '最后一轮对话配图'}：${t.status === 'done' ? '图片已完成' : t.status === 'failed' ? '生成失败' : '已受理，图片尚未完成'}`
+        ).join('\n'));
+      }
+    } catch (err) {
+      console.warn('[chat] 图片任务状态注入失败（不影响本轮）:', err?.message || err);
     }
 
     // 5. 好感度关系深度（档位全文）：换档只在跨越 20/40/60/80/100 边界时发生，变动频率极低，
@@ -852,8 +1064,211 @@ ${coreRules}
       if (affinityMsg) dynamicBlocks.push(`<affinity_attitude>\n${affinityMsg.trim()}\n</affinity_attitude>`);
     }
 
+    // 5.5 亲密档案与相处记忆（面板「知晓」开关控制）
+    //     位置：紧跟好感度档位 —— 两者都是"她对这个人的认知"，同属关系层，放在一起便于模型串联；
+    //     就是普通 dynamicBlock，因而同样受下方 applyBudgetToBlocks 的预算降级保护。
+    //     开关关闭 / 档案为空时 buildIntimateProfileBlock 返回空串，即零注入零 token。
+    if (config.features.intimate !== false) {
+      const intimateBlock = buildIntimateProfileBlock(characterId, { chatUserName });
+      if (intimateBlock) dynamicBlocks.push(intimateBlock);
+    }
+
+    // 5.54 玩具状态块（专题-玩具系统 §2.5/§2.9-4）：位置=动作块**紧前面**（同属"她此刻的身体处境"层）。
+    //     开关关闭 / 零佩戴 ⇒ buildWornToysBlock 返回 null ⇒ 零注入零 token（与加功能前逐字节一致）。
+    if (config.features.toys === true) {
+      // 5.54a **她自己主动玩**（2026-10-02 接线；玩法扩充 task-2 交付的判断路径）：
+      //   原来只有"打开玩具面板"或"逗她一下"才会判 —— 聊天时她永远不动手，用户要的"她自己玩"落不了地。
+      //   判定输入在这里采集（催眠/睡眠/好感），toyService 刻意不 import 这两个模块以避免成环。
+      //   骰子是**确定性**的（角色 + 10 分钟窗口）⇒ 同一窗口内连聊多轮只可能判一次、且可复算。
+      //   判定在**建块之前**：她这一轮动手了，<worn_toys> 下面的 <self_toy_play> 块会自动跟上（auto 口径）。
+      try {
+        const hypnoForSelfPlay = getHypnosisState(characterId);
+        const sleepForSelfPlay = stmt('SELECT is_sleeping FROM characters WHERE id = ?').get(characterId);
+        const selfPlay = maybeSelfPlay(characterId, {
+          scene: 'chat',
+          signals: {
+            hypnosisActive: hypnoForSelfPlay?.active === true,
+            bodyControlled: hypnoForSelfPlay?.bodyControlled === true,
+            sleeping: Number(sleepForSelfPlay?.is_sleeping) === 1,
+          },
+          emotion: { affinity: Number(loadAffinity(characterId)) || 0 },
+        });
+        if (selfPlay?.play && selfPlay.applied) {
+          console.log(`[toys] 她自己主动玩了：${selfPlay.label || selfPlay.toyKey}（${selfPlay.code}${selfPlay.changed ? '，状态有变化' : ''}）`);
+        }
+      } catch (err) {
+        console.warn('[toys] 自我玩判定失败（不影响本轮）:', err.message);
+      }
+      try {
+        const wornToysBlock = buildWornToysBlock(characterId, { scene: 'chat' });
+        if (wornToysBlock) dynamicBlocks.push(wornToysBlock);
+      } catch (err) {
+        console.warn('[toys] chat inject failed:', err.message);
+      }
+    }
+
+    // 5.54b 亲密场景块（2026-10-02，性爱交互玩法 task-1 交付的注入入口）：
+    //   没有这一轮注入，她打字时会**不知道自己正被插着** —— 面板点得再顺，聊天里也会前后矛盾
+    //   （"我们开始吧"这类禁句就是靠这个块压住的）。未进行中/空闲超时 ⇒ 返回空串 ⇒ 零注入零 token。
+    if (config.features.intimateActions !== false) {
+      try {
+        const intimateSceneBlock = buildIntimateScenePromptBlock(characterId, { chatUserName });
+        if (intimateSceneBlock) dynamicBlocks.push(intimateSceneBlock);
+        // 「不许她到」时再加一行演法指令：她能感觉到自己一直差那么一点 ⇒ 会渴望、会索要、会逞强。
+        // 没有这一行时，模型只把"禁止高潮"当成一个数值，聊起来像没事人（用户报的就是这个）。
+        const denialHunger = buildDenialHungerLine(characterId, { chatUserName });
+        if (denialHunger) dynamicBlocks.push(denialHunger);
+        // 她自己的敏感度（2026-10-02 新数值系统）：敏感/很敏感/极度敏感（或发情模式）才注入一行，
+        // 告诉她"身体现在是这个状态"，冷淡与普通档零注入零 token。
+        const sensitivityLine = buildSensitivityPromptLine(characterId);
+        if (sensitivityLine) dynamicBlocks.push(sensitivityLine);
+      } catch (err) {
+        console.warn('[intimate] chat inject failed:', err.message);
+      }
+    }
+
+    // 5.54c 私密时刻「你闯进来了」（2026-10-02 用户原话：「再增加一个事件 叫自慰 和角色敏感度也相关
+    //   越高发生概率也就越高 这个可以算到日程里」「这个时候再去找角色私聊就会触发事件
+    //   玩家闯入角色正在自慰的情况」）：
+    //   判定挂在**她今天的日程**上（独处时段 + 敏感度掷骰，确定性）；只有"此刻正在那个窗口里"才注入。
+    //   第一次撞见会落一次记账（caught_at + 敏感度 +self_play），之后同一窗口内换成"她还没缓过来"的口径
+    //   —— 不然玩家连发三条消息，每一条都会重演一次"刚被撞见"。
+    //   开关关闭 / 不在窗口里 / 没有独处时段 ⇒ 返回空串 ⇒ 零注入零 token。
+    if (config.features.intimateActions !== false) {
+      try {
+        const pending = privateMomentState(characterId, { affinity: Number(loadAffinity(characterId)) || 0 });
+        // 她睡着时不演"被撞见"（睡着的人不会在做这件事；床头那条线走「被弄醒」那套）。
+        // 用角色行上的 is_sleeping：与他处（玩具自我玩判定）同一口径。
+        const sleepingNow = Number(stmt('SELECT is_sleeping FROM characters WHERE id = ?').get(characterId)?.is_sleeping) === 1;
+        // ⚠️ 2026-10-03 复查抓到的矛盾：正在进行的性爱（<intimate_scene>：他此刻就插在里面）与
+        //   "她一个人在屋里自慰、你刚闯进来"**不可能同时成立** —— 两个块一起喂给模型，她的台词必然自相矛盾。
+        //   性爱进行中时直接跳过私密时刻这一块（场景结束/退出后再按正常口径演）。
+        const sceneNow = getIntimateScene(characterId);
+        const sceneLive = sceneNow?.active === true;
+        if (pending.active && !sleepingNow && !sceneLive) {
+          // 每次注入都记账：原来只在 firstCatch 时调 ⇒ caught_times 永远是 0/1、
+          // "又被撞见一次"那条分支（半权重敏感度、code:'again'）是死代码（2026-10-03 复查）。
+          const caught = catchPrivateMoment(characterId);
+          if (caught?.code === 'first') {
+            console.log(`[privateMoment] 撞见：${characterId} 正在自慰（剩 ${pending.minutesLeft} 分钟，之后转"还没缓过来"口径）`);
+          }
+          const block = buildPrivateMomentBlock(
+            { ...pending, slotActivity: pending.row?.slot_activity, slotLocation: pending.row?.slot_location },
+            {
+              userName: chatUserName,
+              characterName: character?.display_name || character?.name || '她',
+              sensitivityLine: buildSensitivityPromptLine(characterId),
+            },
+          );
+          if (block) dynamicBlocks.push(block);
+        }
+      } catch (err) {
+        console.warn('[privateMoment] chat inject failed:', err.message);
+      }
+    }
+
+    // 5.55 SLG 动作块（触摸互动）——位置口径（Lead 裁决，2026-09-30）：
+    //     紧挨亲密档案之后、催眠块之前。动作块是**叙事提示**（"她刚被摸了一下"），
+    //     不是本轮最硬约束，所以不进 task-42 后置的 hypnosisBlocks；但也别排太靠后，
+    //     免得被自己上面的 <reply_length> 与后面的历史原文淹没。
+    //     一次动作只注入一次（markTouchEventInjected）；开关关闭 / 无待反应动作 ⇒ 零注入零 token。
+    //     不传 hypnosisBlock：催眠状态块由下面的 5.6 段独立注入（并整块后置），在这里再拼一份就重复了。
+    if (config.features.touch !== false) {
+      try {
+        const pendingTouch = takePendingTouchEvent(characterId);
+        if (pendingTouch) {
+          const touchBlock = buildTouchActionBlock({
+            actionKey: pendingTouch.actionKey,
+            userName: chatUserName,
+            mode: pendingTouch.mode,
+            annoyance: pendingTouch.annoyance,
+            likeRatio: pendingTouch.likeRatio,
+            hypnotized: isBodyControlled(characterId),
+            sleeping: Boolean(isSleeping(characterId).sleeping),
+            // 2026-11-03 睡眠锁：锁着时这一下弄不醒她（反应只能写身体与梦呓）
+            sleepLocked: isSleepLocked(characterId),
+            hypnosisBlock: '',
+          });
+          if (touchBlock) {
+            dynamicBlocks.push(touchBlock);
+            markTouchEventInjected(pendingTouch.id);
+          }
+        }
+      } catch (err) {
+        // 动作块是增强项：任何异常都退回"不注入"，绝不影响聊天主流程
+        console.warn('[touch] action block inject failed:', err.message);
+      }
+    }
+
+    // 5.6 催眠状态 / 一次性指令 / 遗忘提示（催眠手机）
+    //     位置：紧跟亲密档案 —— 都是"她此刻对这个人的处境认知"，同属关系层，放一起便于模型串联；
+    //     也都是普通 dynamicBlock，因而同样受下方 applyBudgetToBlocks 的预算降级保护。
+    //     一次性指令在这里**消费即清空**（consumePendingDirective 读一次就清），
+    //     所以 body_control / forced_climax 只影响紧随的这一轮；memory_restore 是"她想起来了"的提示。
+    //     开关关闭 / 未处于催眠 / 无可注内容时各 builder 返回空串 → 零注入零 token。
+    //     三段**各自 try/catch**（task-30）：以前一整块 try 时，任一片抛异常会把状态块与指令块
+    //     一起丢掉，现象就是"点了强制高潮、她毫无反应，日志只有一行 context inject failed"。
+    let hypnosisDirective = '';
+    // task-42：催眠块**先攒着不推**，等所有其它动态块排完再整块后置（见下方「5.6 续」）。
+    // 真机反馈「催眠之后也没有完全听命」：「只唤醒意志」/「完全控制」两种状态块原先排在
+    // 亲密档案之后，后面还压着 user_portrait / reply_length / 情绪 / 聊天历史 / 风格 / 奇遇 / RAG，
+    // 尤其 <reply_length>10~60字 会把「演完整」直接切短。催眠是本轮最硬的约束，必须读到最后。
+    const hypnosisBlocks = [];
+    let hypnosisNeedsFullPerformance = false;
+    if (config.features.hypnosis !== false) {
+      try {
+        // 先取状态：forced_climax 的文案要按"意志是否清醒"分流（只唤醒意志 ≠ 又睡着了）
+        const hypnoState = getHypnosisState(characterId);
+        try {
+          const stateBlock = buildHypnosisStateBlock(hypnoState, { chatUserName });
+          if (stateBlock) hypnosisBlocks.push(stateBlock);
+          // 完全控制（深度催眠、意志被压制）这一轮必须演到底，不能被长度条切短
+          if (hypnoState?.active && hypnoState.bodyControlled && !hypnoState.mindAwake) hypnosisNeedsFullPerformance = true;
+        } catch (err) {
+          console.warn('[hypnosis] state block inject failed:', err.message);
+        }
+        try {
+          const directive = consumePendingDirective(characterId);
+          // 睡眠中触发强制高潮 → 走"被从深度睡眠里硬拉上高潮"的独特表现（不是清醒版也不是沉睡版）。
+          // 触发条件：在下发指令这一刻只读查一次 characters 的睡眠标记（不 import 睡眠服务，
+          // 免得被日程/睡眠那一侧的改动牵连）；查不到/查库失败一律按清醒处理。
+          // 注意 `temporary_wake_until` 这一列是必须的：POST /hypnosis/command 的 forced_climax
+          // 会先 wakeForForcedTrigger() 临时唤醒她（否则日程上下文那句"你正在睡觉"会跟指令打架），
+          // 此刻 is_sleeping 已经是 0 —— 只看它的话睡梦唤醒版永远不会触发。
+          let awakenedFromSleep = false;
+          if (directive === 'forced_climax') {
+            const sleepRow = stmt('SELECT is_sleeping, temporary_wake_until FROM characters WHERE id = ?').get(characterId);
+            awakenedFromSleep = isAwakenedFromSleepRow(sleepRow);
+          }
+          // task-42：「强制高潮不需要催眠」——非催眠态下发这条指令时，getHypnosisState() 的
+          // mindAwake 会被视图层归一成 true（语义是「未催眠＝意志清醒」），但拿去分流会让文案
+          // 变成「你可以抗拒、可以羞耻」，与「手机强制」自相矛盾 ⇒ 不在催眠中时一律按纯执行分流。
+          const inHypnosis = !!(hypnoState?.active && hypnoState.bodyControlled);
+          // force_toy（2026-10-01）：编码值是 `force_toy|toyKey|intensity`，注入块需要玩具名与位置
+          // （本模块不 import toyService，展示载荷由 hypnosisService.directiveToyPayload 统一给出）
+          const directiveBlock = buildDirectiveBlock(directive, { mindAwake: inHypnosis ? hypnoState.mindAwake : false, awakenedFromSleep, toy: directiveToyPayload(directive) });
+          if (directiveBlock) hypnosisBlocks.push(directiveBlock);
+          // 强制高潮这一轮同样必须演完整
+          if (directive === 'forced_climax') hypnosisNeedsFullPerformance = true;
+          // 记下来供生图判断使用：强制高潮这一轮必须出图（见下方"生图判断"路径 D'）
+          if (directive === 'forced_climax') hypnosisDirective = directive;
+        } catch (err) {
+          console.warn('[hypnosis] directive inject failed:', err.message);
+        }
+        try {
+          const amnesiaBlock = buildAmnesiaBlock(listForgottenWindows(characterId));
+          if (amnesiaBlock) hypnosisBlocks.push(amnesiaBlock);
+        } catch (err) {
+          console.warn('[hypnosis] amnesia block inject failed:', err.message);
+        }
+      } catch (err) {
+        // 连状态都取不到（表缺失等）：注入失败绝不能影响聊天主流程
+        console.warn('[hypnosis] context inject failed:', err.message);
+      }
+    }
+
     // 6. 角色视角的用户画像
-    const portraitRows = db.prepare(`
+    const portraitRows = stmt(`
       SELECT trait_type, content FROM user_portraits
       WHERE character_id = ?
       ORDER BY trait_type, confidence DESC
@@ -873,11 +1288,13 @@ ${coreRules}
     //    前面的大段（世界观、人格、格式规则、活人感规则、表情包）不再跟着重算。
     //    灵魂系统开启时长度档位由 ExpressionDesire 主导（灵魂优先），affinity 三档不再参与长度判定；
     //    显式生图意图的「15 字以内」硬规则始终优先。灵魂取值失败时静默回退到 affinity 三档。
+    //    （上游 v3.9.0 合并：这一节只在原 IIFE 里加了 soulLengthHint 一项，其余分支原样。）
     let soulLengthHint = null;
     if (soulEnabled) {
       try { soulLengthHint = soulReplyLengthHint(characterId); } catch { soulLengthHint = null; }
     }
     const sentenceHint = (() => {
+      if (explicitImageIntent) return '15个汉字以内';
       if (soulLengthHint) return soulLengthHint;
       if (affinity == null || affinity < 60) return '10~30个汉字';
       if (affinity < 80) return '10~40个汉字';
@@ -895,6 +1312,25 @@ ${coreRules}
 - **回复控制在${sentenceHint}，保持口语化轻快节奏**
 </reply_length>`);
 
+    // 7.5 反重复 / 反钻牛角尖（阶段一 L2）——位置：紧跟 <reply_length> 之后。
+    //     专题 §三 的位置约束是「<reply_length> 之后、催眠块之前」：这条要先解除"短回复原地打转"
+    //     的倾向，再谈推进话题；催眠块在整段末尾（task-42 后置），优先级仍然更高。
+    //     实现顺序与「长度条 → 情绪 → 历史」相反（历史在上面），是有意的：本轮最硬的指令
+    //     要靠近提示词末尾；历史原文只作对照，靠 L1-1 的 <recent_self_output_note> 标注。
+    //     检测结果与注入与否都记日志（搜 [anti-repetition]），为阶段二调参积累数据。
+    if (antiRepetitionResult) {
+      if (antiRepetitionResult.topicProgressBlock) {
+        dynamicBlocks.push(antiRepetitionResult.topicProgressBlock);
+      } else if (antiRepetitionResult.block) {
+        dynamicBlocks.push(antiRepetitionResult.block);
+      }
+      console.log(formatAntiRepetitionLog({
+        result: antiRepetitionResult,
+        turns: recentAssistantTurns,
+        emotionSnapshots: recentEmotionSnapshots,
+      }));
+    }
+
     // 8. VAD 三维情绪描述
     if (config.features.emotion && emotionPrompt) {
       dynamicBlocks.push(emotionPrompt);
@@ -903,6 +1339,12 @@ ${coreRules}
     // 9. 活跃聊天历史（滑动窗口 0~10 轮）
     if (activeChatText) {
       dynamicBlocks.push(activeChatText);
+    }
+
+    // 9.2 L1-1 近端自身输出标注：紧跟历史之后，提醒"上面是你自己说过的话"。
+    //     零额外 LLM 调用、约 60 token；没有她自己说过的话（首轮）时不注入。
+    if (antiRepEnabled && shouldInjectRecentSelfOutputNote(recentAssistantTurns)) {
+      dynamicBlocks.push(buildRecentSelfOutputNote());
     }
 
     // 9.5 临时表达风格：小概率注入，紧跟历史聊天之后，只影响本轮回复
@@ -931,12 +1373,10 @@ ${coreRules}
     if (config.features.memory) {
       try {
         // 本角色所在的群聊会话一并纳入记忆检索范围（与阶段二 @memory 回想共享同一 scope）
-        const groupConversationIds = db.prepare(`
-          SELECT 'group_' || group_id AS conversation_id
-          FROM group_members WHERE character_id = ? ORDER BY group_id
-        `).pluck().all(characterId);
+        const groupConversationIds = listCharacterGroupConversationIds(characterId, db);
         const memoryScope = [conversationId, ...groupConversationIds];
-        // 灵魂 RecallDepth 驱动召回量（内部开关关闭时用 memory_settings.topK）
+        // 灵魂 RecallDepth 驱动召回量（上游 v3.9.0 合并；内部开关关闭时用 memory_settings.topK）。
+        // 取值失败只 warn，不影响下方召回。
         let soulTopK = null;
         if (soulEnabled) {
           try { soulTopK = soulRecallTopK(characterId); } catch (soulErr) { console.warn('[chat] soul topK skipped:', soulErr.message); }
@@ -955,15 +1395,15 @@ ${coreRules}
             && !judgment.includes('【奇遇')
             && !judgment.includes('未互动事件');
         });
-        // 灵魂共鸣轨（resonate）：把召回记忆携带的四维快照平均后反向推动当前灵魂状态。
-        // 必须放在 2.5 秒熔断返回之后（此处已在 recallChatMemories 之外）；灵魂关闭或无快照则跳过。
-        // 独立 try：灵魂侧任何异常都不得影响下方 <rag_memories> 注入。
+        // 灵魂共鸣轨（resonate，上游 v3.9.0 合并）：把召回记忆携带的四维快照平均后反向推动
+        // 当前灵魂状态。放在熔断返回之后、<rag_memories> 注入之前；独立 try，
+        // 灵魂侧任何异常都不得影响下方注入。情绪评估关闭时这里补一次落库
+        // （情绪开启时由 emotion .then 统一落库，见下方 reflect 段）。
         if (soulEnabled) {
           try {
             const soulSnapshots = chatMemoryResults.map(m => parseSoulSnapshot(m.soul_snapshot)).filter(Boolean);
             if (soulSnapshots.length > 0) {
               resonateSoul(characterId, soulSnapshots);
-              // 情绪评估关闭时没有 reflect 收尾的落库点，这里补一次（情绪开启时由 emotion .then 统一落库）
               if (!config.features.emotion) saveSoulState(characterId);
             }
           } catch (soulErr) {
@@ -971,23 +1411,29 @@ ${coreRules}
           }
         }
         if (chatMemoryResults.length > 0) {
-          // v3 注入单元（MMS）：语义转述（semantic_note）优先、judgment 兜底；首个视角标签进 [类型|视角] 前缀。
-          // v3 关闭时完全回退旧行为（纯 judgment）。
-          const useV3Injection = isMemoryV3Enabled();
-          const memoryLines = chatMemoryResults.map((m, i) => {
-            const perspectives = Array.isArray(m.perspectives) ? m.perspectives.filter(Boolean) : [];
-            const label = perspectives.length ? `${m.memory_type}|${perspectives[0]}` : m.memory_type;
-            const text = (useV3Injection && m.semantic_note) || m.judgment;
-            return `${i + 1}. [${label}] ${text}`;
-          }).join('\n');
-          memorySnapshot.push(...chatMemoryResults.map(m => ({
-            id: m.memory_id,
-            memoryType: m.memory_type,
-            judgment: m.judgment,
-            tags: m.tags ?? [],
-            sources: m.sources ?? [],
-          })));
-          dynamicBlocks.push(`<rag_memories>\n${memoryLines}\n</rag_memories>`);
+          // 群来源条目最多 PRIVATE_GROUP_MEMORY_MAX_ITEMS 条（她自己会话的记忆一条不动），
+          // 并在注入文本里标出【群聊·<群名>】出处——她私聊时才能自然地说"你上次在群里…"。
+          const { results: injectedMemories } = selectPrivateChatMemories(chatMemoryResults);
+          if (injectedMemories.length > 0) {
+            // v3 注入单元（MMS）：语义转述（semantic_note）优先、judgment 兜底；首个视角标签进 [类型|视角] 前缀。
+            // v3 关闭时完全回退旧行为（纯 judgment）。
+            const useV3Injection = isMemoryV3Enabled();
+            const memoryLines = formatPrivateChatMemoryLines(injectedMemories, {
+              // 没有群来源命中时不查群名表：无群角色的行为与加功能前逐字节一致（也不多一次查询）
+              groupNames: injectedMemories.some(m => isGroupConversationId(m.conversation_id))
+                ? loadGroupNameMap(groupConversationIds, db)
+                : new Map(),
+              useV3Injection,
+            });
+            memorySnapshot.push(...injectedMemories.map(m => ({
+              id: m.memory_id,
+              memoryType: m.memory_type,
+              judgment: m.judgment,
+              tags: m.tags ?? [],
+              sources: m.sources ?? [],
+            })));
+            dynamicBlocks.push(`<rag_memories>\n${memoryLines}\n</rag_memories>`);
+          }
         }
       } catch (err) { console.error('[chat] memory search failed:', err.message); }
     }
@@ -1013,27 +1459,22 @@ ${coreRules}
       dynamicBlocks.push(`<cross_reference>\n当前对话中涉及以下其他角色，你应当了解他们的基本信息，在对话中自然互动时保持其人格的一致性：\n\n${crossLines}\n</cross_reference>`);
     }
 
-    // 14. 时间上下文（当前时间 + 距上次聊天间隔）
-    const now = new Date();
-    const timeTag = getTimeTag(now);
-    const timeBlocks = [timeTag];
-    // 上次对话时间：取倒数第二条 user 消息的 created_at
-    const prevUserMsg = db.prepare(`
-      SELECT created_at FROM raw_messages
-      WHERE conversation_id = ? AND role = 'user'
-      ORDER BY id DESC LIMIT 1 OFFSET 1
-    `).get(conversationId);
-    if (prevUserMsg?.created_at) {
-      const prevDate = new Date(prevUserMsg.created_at + 'Z');
-      const gapMinutes = (now - prevDate) / 60000;
-      if (gapMinutes > 10) {
-        const prevWeekDay = ['周日','周一','周二','周三','周四','周五','周六'][prevDate.getDay()];
-        const prevDateStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}-${String(prevDate.getDate()).padStart(2, '0')}`;
-        timeBlocks.push(`[上次对话 ${prevDateStr} ${prevWeekDay} ${String(prevDate.getHours()).padStart(2, '0')}:${String(prevDate.getMinutes()).padStart(2, '0')}]`);
+    // 14. 时间上下文（当前时间 + 距上次聊天间隔）——组装已抽到 services/chatTimeContext.js
+    // 口径（代码审查改进 §2.2，用户裁决 2026-09-30）：**吃程序时间**（services/programTime.js）。
+    // <time_context> 是给模型看的叙事时间，与日程/睡眠/光线/催眠同一口钟；用户把程序时间拨到夜里，
+    // 角色嘴里的"现在"必须也是夜里（改动前用 new Date()，靠 timeLight 内部隐式加偏移，且 gap 用真实钟）。
+    // 真实定时器（心跳、临时唤醒、next_proactive_at…）仍走真实时间——本块只产出 prompt 文本。
+    // 组装细节（含 prevUserMsg 的 OFFSET 语义）见 services/chatTimeContext.js，那里可单测。
+    dynamicBlocks.push(buildTimeContextBlock(db, conversationId));
+    dynamicBlocks.push(buildCharacterTownSceneBlock(req.townAdmission));
+    if (config.features.town) {
+      try {
+        dynamicBlocks.push(createCharacterTownLifeContext({ db, clock: { now: Date.now() }, timeZone: config.town.timeZone,
+          registry: createTownActorRegistry(db) })(character.id));
+      } catch (error) {
+        console.warn('[chat] town life records unavailable:', error.message);
       }
     }
-    dynamicBlocks.push(`<time_context>\n${timeBlocks.join('\n')}\n</time_context>`);
-    dynamicBlocks.push(buildCharacterTownSceneBlock(req.townAdmission));
 
     // 当日《邻舍日报》人物特稿：仅当天主角的私聊注入，预告ta今天将要经历的事
     const newspaperEventBlock = getCharacterEventBlockFor(characterId);
@@ -1041,8 +1482,8 @@ ${coreRules}
       dynamicBlocks.push(newspaperEventBlock);
     }
 
-    // ── 灵魂联想方式（<soul_state>）：动态块高频端靠后——每轮 reflect/resonate 都可能变，
-    //    必须排在关系深度重申之前、不得进稳定前缀区（邻舍对前缀缓存敏感）。
+    // ── 灵魂联想方式（<soul_state>，上游 v3.9.0 合并）：动态块高频端靠后——每轮 reflect/resonate
+    //    都可能变，必须排在关系深度重申之前、不得进稳定前缀区（邻舍对前缀缓存敏感）。
     //    只补充发散度对应的行为提示；长度、记忆数量与 VAD 情绪由各自入口控制。
     if (soulEnabled) {
       try {
@@ -1064,9 +1505,27 @@ ${coreRules}
       if (reminder) dynamicBlocks.push(`<attitude_reminder>你对 ${chatUserName} 的态度以 <affinity_attitude> 为准（当前：${reminder}），优先级高于上方情绪状态、临时风格与重逢氛围。</attitude_reminder>`);
     }
 
+    // ── 5.6 续：催眠块的**最终位置**（task-42）──
+    //     放在所有动态块之后：本轮最硬的约束要读到最后（与群聊「位置越靠后越硬」同口径）。
+    //     没有催眠内容时 hypnosisBlocks 为空 ⇒ 与改动前逐字节一致。
+    //     注意：token 预算降级（默认关）作用在整段末尾，若将来开启预算，需保证这几块不被优先丢弃。
+    if (hypnosisBlocks.length > 0) {
+      dynamicBlocks.push(...hypnosisBlocks);
+      if (hypnosisNeedsFullPerformance) {
+        dynamicBlocks.push('<reply_length_override>\n- 本轮**不适用**上面的 <reply_length> 字数限制：把这一轮该演的过程完整写出来（可以明显长于平时的口语短句），不要一句话草草收场。\n</reply_length_override>');
+      }
+    }
+
+    // 离线编年（2026-11-06）：用户离开过一段时间的话，第一轮自然提起一次（每个角色各提一次）
+    try {
+      const offlineNotice = takeOfflineNoticeFor(`char_${characterId}`);
+      if (offlineNotice) dynamicBlocks.push(offlineNotice);
+    } catch (err) {
+      console.warn('[chat] offline notice skipped:', err?.message || err);
+    }
+
+    // 生图仍由原有路径 A/B/C/D/E 决策；固定格式规则已在稳定前缀中，不额外改变主回复行为。
     // ── 阶段四：dynamicBlocks token 预算（默认关；降级顺序有日志，无静默截断）──
-    const imageStates = db.prepare(`SELECT p.scene,t.status,t.error_message FROM private_chat_image_turns p JOIN image_tasks t ON t.id=p.task_id WHERE p.conversation_id=? ORDER BY p.user_raw_id DESC LIMIT 3`).all(conversationId);
-    if (imageStates.length) dynamicBlocks.push('【最近图片任务真实状态】\n' + imageStates.map(t => `${t.scene || '最后一轮对话配图'}：${t.status === 'done' ? '图片已完成' : t.status === 'failed' ? '生成失败' : '已受理，图片尚未完成'}`).join('\n'));
     const budgetConfig = config.features.memory ? getContextBudgetConfig() : { enabled: false, dynamicTokens: 8000 };
     const budgetedBlocks = budgetConfig.enabled
       ? applyBudgetToBlocks(dynamicBlocks, budgetConfig.dynamicTokens)
@@ -1083,6 +1542,8 @@ ${coreRules}
       }
     }
     // ── 通过 buildChatContext 组装基础请求 ──
+    // 深度思考时 planner 与主回复共用这一完全相同的消息结构（稳定块+摘要+历史+含全部动态块的用户消息），
+    // 任务块合并到 user 消息头部（末尾另附触发提醒），盘算结果追加到 user 消息末尾，不新增独立 user 消息
     // 摘要之上另有一条独立 system：静态活人感规则 + <emoji_stickers> 清单（跨轮不变；长度条已降为动态块）
     const { messages: originalBaseMsgs, metadata } = buildChatContext({
       stableBlocks,
@@ -1092,21 +1553,114 @@ ${coreRules}
       history: checkpointHistory,
       dynamicBlocks: budgetedBlocks,
     });
+
+    // 上游 v4.2.0：世界书按「人物段 / 动态段」重新分层投递（静态前缀不动，动态进尾部）
     const lorebookTurn = await prepareNarrativePrompt(originalBaseMsgs, {
-      ...buildConversationLorebookContext(db, {conversationId, character, kind:'chat', userName:chatUserName, throughId:userRawMsgId, turnKey:String(userRawMsgId)}),
-      protectedPrefix:stableBlocks.length, maxOutputTokens:4096,
-      personaTexts:[character?.base_prompt || getDefaultPrompt()],
-      cacheBoundary:chatCacheBoundary,
-      activeSegments, historyStart:originalBaseMsgs.length-checkpointHistory.length, historyEnd:originalBaseMsgs.length,
+      ...buildConversationLorebookContext(db, { conversationId, character, kind: 'chat', userName: chatUserName, throughId: userRawMsgId, turnKey: String(userRawMsgId) }),
+      protectedPrefix: stableBlocks.length, maxOutputTokens: 4096,
+      personaTexts: [character?.base_prompt || getDefaultPrompt()],
+      cacheBoundary: chatCacheBoundary,
+      activeSegments,
+      historyStart: originalBaseMsgs.length - checkpointHistory.length,
+      historyEnd: originalBaseMsgs.length,
     });
     const baseMsgs = lorebookTurn.messages;
-    if (lorebookTurn.report) send('lorebook',lorebookTurn.report);
+    if (lorebookTurn.report) send('lorebook', lorebookTurn.report);
 
-    let msgs = baseMsgs;
+    // 上下文面板：记下本次组装各段的规模（真实 usage 由 llm-client 事后回填）
+    // 代码审查改进 §2.3：把 buildChatContext 返回的**稳定前缀指纹**一并落进快照
+    // ——面板能回答"这轮缓存命中掉了，是稳定前缀变了还是只有动态尾部变了"。
+    // 字段名（GET /api/context/usage 契约）：stablePrefixHash / fullPrefixHash / requestHash
+    recordContextUsage({
+      conversationId,
+      model: config.llm.model,
+      prefixHashes: {
+        stablePrefixHash: metadata?.stablePrefixHash || null,
+        fullPrefixHash: metadata?.fullPrefixHash || null,
+        requestHash: metadata?.requestHash || null,
+      },
+      segments: buildChatContextSegments({
+        stableBlocks,
+        preSummarySystem,
+        summaryBlock,
+        preHistoryMessages,
+        history: checkpointHistory,
+        dynamicBlocks: budgetedBlocks,
+      }),
+    });
+
+    // ── 深度思考 Planner：先以角色视角盘算回复的媒介组合（text/sticker/image），再据此自然回复 ──
+    // 任何失败（超时/解析失败/清洗后无有效块）都静默回退到原有五路生图决策流程
+    let replyPlan = null;    // 清洗后的计划 { blocks, summary, plannedImage }
+    let planThinkText = '';  // 思考原文（持久化到 raw_messages.thinking，历史回看用）
+    let msgs = originalBaseMsgs;
+    let plannedImagePromptPromise = null;  // planner 图片需求的画面描述预生成（与回复流并行）
+    if (deepThink) {
+      try {
+        send('plan_start', {});
+        const planStartAt = Date.now();
+        // 任务块合并进 user 消息头部；触发提醒贴在消息末尾（生成点前最后一次强化输出契约）
+        const plannerTaskBlock = buildPlannerTaskBlock({
+          characterName: character.display_name,
+          userName: chatUserName,
+          stickerKeys: [...emojiMap.keys()],
+          imagePolicy,
+          lastReplyMedia: detectLastReplyMedia(conversationId, emojiMap),
+        });
+        const plannerTriggerLine = buildPlannerTriggerLine(imagePolicy);
+        // 面板分项：planner 的任务块/触发提醒是在组装之后追加的，用 appendContextSegment 补记到本轮指令段
+        appendContextSegment(conversationId, 'directive', plannerTaskBlock);
+        appendContextSegment(conversationId, 'directive', plannerTriggerLine);
+        const plannerResult = await runPlanner({
+          messages: appendToLastUserMessage(
+            prependToLastUserMessage(originalBaseMsgs, plannerTaskBlock),
+            plannerTriggerLine
+          ),
+          onDelta: (t) => { if (t) send('plan_delta', { text: t }); },
+        });
+        if (plannerResult) {
+          planThinkText = plannerResult.thinkText || '';
+          replyPlan = sanitizePlan(plannerResult.plan, {
+            emojiKeys: [...emojiMap.keys()],
+            allowImage: imagePolicy !== 'off',
+          });
+        }
+        send('plan_end', {
+          summary: replyPlan?.summary || '',
+          elapsedMs: Date.now() - planStartAt,
+          applied: !!replyPlan,
+        });
+        if (replyPlan) {
+          // 盘算结果追加到 user 消息末尾：只带刚刚的内心活动（有图时附一句"发出了什么照片"）；
+          // 无可写内容时不追加
+          const execBlock = buildPlanExecuteBlock(replyPlan, { thinkText: planThinkText });
+          if (execBlock) {
+            msgs = appendToLastUserMessage(originalBaseMsgs, execBlock);
+            appendContextSegment(conversationId, 'directive', execBlock);
+          }
+          console.log(`[chat] 🧠 planner applied: ${replyPlan.blocks.map(b =>
+            b.type + (b.type === 'sticker' ? `(${b.key})` : b.type === 'image' ? `(${b.scene.slice(0, 20)})` : '')
+          ).join(' → ')}`);
+          // planner 规划了图片 → 立即并行预生成画面描述（与回复流重叠，省去回复完成后的串行等待）
+          if (replyPlan.plannedImage) {
+            const sceneHint = replyPlan.blocks.find(b => b.type === 'image')?.scene || '';
+            plannedImagePromptPromise = requestImagePromptContent(conversationId, character, sceneHint)
+              .catch(err => {
+                console.error('[chat] planned image prompt error:', err.message);
+                return '';
+              });
+          }
+        } else {
+          console.log('[chat] 🧠 planner produced no valid plan, falling back to default pipeline');
+        }
+      } catch (err) {
+        console.error('[chat] planner error:', err.message);
+      }
+    }
 
     // ── 副作用：首轮强调标记（event 已在 dynamicBlocks 中注入） ──
     if (activeEvent && !activeEvent.emphasis_delivered) {
-      db.prepare(`UPDATE character_events SET emphasis_delivered = 1 WHERE id = ?`).run(activeEvent.id);
+      stmt(`UPDATE character_events SET emphasis_delivered = 1 WHERE id = ?`).run(activeEvent.id);
     }
 
     // 6. 流式生成（温度 0.72）
@@ -1122,7 +1676,7 @@ ${coreRules}
     let clientGone = false;
     const upstreamAbort = new AbortController();
     res.on('close', () => {
-      if (res.writableEnded) return; // 正常结束（我们自己 res.end()）不算断开
+      if (res.writableEnded || res.destroyed) return; // 正常结束（我们自己 res.end()）不算断开
       clientGone = true;
       upstreamAbort.abort();
     });
@@ -1149,6 +1703,7 @@ ${coreRules}
       }
     };
 
+    // 上游 v4.2.0：配图受理（工具调用与导演模式共用）——先冻结画面任务，再排队执行
     const imageResume = getPrivateChatImageResume(db, userRawMsgId);
     let hadToolCalls = !!imageResume;
     const notifyImage = (event, data) => {
@@ -1245,6 +1800,8 @@ ${coreRules}
     }
 
     send('response_start', {});
+    // 上下文面板：把本会话绑到这次流式请求的异步上下文，主聊天流的 usage 回来后即可回填真实用量
+    beginContextCapture({ conversationId, model: config.llm.model, expectLabel: '主聊天流' });
     try {
       await consumeStream(msgs, upstreamAbort.signal);
     } catch (err) {
@@ -1252,29 +1809,8 @@ ${coreRules}
       // 会污染后续轮次的上下文，而这一轮用户已经放弃了。
       if (clientGone) throw err;
       // @memory 闸门主动 abort 属预期；其余错误维持原行为向上抛
-      if (!recallQuery && !streamState.fullContent.trim()) throw err;
-      if (!recallQuery) send('image_unavailable', { message: '回复流中断，未完成的图片调用未执行' });
-      if (recallQuery) console.log('[chat] first stream aborted for @memory recall');
-    }
-
-    // 空正文重试：端点在思考模式下偶发只产出推理、正文为空（finish=stop），
-    // 表现为用户看到一个空气泡（最终由下方兜底写成 "..."）。此处最多补发一次请求；
-    // 仍为空则维持原行为交给兜底，不改变任何既有分支。
-    if (!clientGone && !recallQuery && !hadToolCalls
-      && !streamState.fullContent.trim()
-      && streamState.collectedSegments.length === 0) {
-      console.warn('[chat] 主聊天流返回空正文，重试一次');
-      streamState.fullContent = '';
-      streamState.splitter = new SentenceSplitter();
-      streamState.wasStopped = false;
-      try {
-        await consumeStream(msgs, upstreamAbort.signal);
-      } catch (err) {
-        if (clientGone) throw err;
-        if (!recallQuery && !streamState.fullContent.trim()) throw err;
-        if (!recallQuery) send('image_unavailable', { message: '回复流中断，未完成的图片调用未执行' });
-        if (recallQuery) console.log('[chat] empty-reply retry aborted for @memory recall');
-      }
+      if (!recallQuery) throw err;
+      console.log('[chat] first stream aborted for @memory recall');
     }
 
     // 流在单行 @memory 指令处结束（无换行）时补检一次
@@ -1289,12 +1825,9 @@ ${coreRules}
       send('memory_recall_start', { query: recallQuery });
       let recallResults = [];
       let recallFailed = false;
+      // 检索范围与被动召回一致：本会话 + 所在群聊（群来源条目同样标出处、同样最多 3 条）
+      const recallGroupIds = listCharacterGroupConversationIds(characterId, db);
       try {
-        // 检索范围与被动召回一致：本会话 + 所在群聊
-        const recallGroupIds = db.prepare(`
-          SELECT 'group_' || group_id AS conversation_id
-          FROM group_members WHERE character_id = ? ORDER BY group_id
-        `).pluck().all(characterId);
         const recall = await activeMemorySearch(recallQuery, {
           conversationIds: [conversationId, ...recallGroupIds],
           timeoutMs: activeSearchConfig.timeoutMs,
@@ -1311,17 +1844,36 @@ ${coreRules}
       send('memory_recall_end', { hits: recallResults.length, failed: recallFailed });
 
       // 二次组装：dynamicBlocks 追加 <memory_recall_result>（含现行/历史徽标与防呆收尾语）
-      dynamicBlocks.push(formatMemoryRecallBlock(recallQuery, recallResults, { failed: recallFailed }));
-      const { messages: originalRecallMsgs } = buildChatContext({
+      dynamicBlocks.push(formatMemoryRecallBlock(recallQuery, recallResults, {
+        failed: recallFailed,
+        // 群来源条目标【群聊·<群名>】：回想群里的内容时她也说得清"那是在群里"
+        groupNames: recallResults.some(item => isGroupConversationId(item.conversation_id))
+          ? loadGroupNameMap(recallGroupIds, db)
+          : null,
+      }));
+      const recallDynamicBlocks = budgetConfig.enabled ? applyBudgetToBlocks(dynamicBlocks, budgetConfig.dynamicTokens) : dynamicBlocks;
+      const { messages: recallMsgs } = buildChatContext({
         stableBlocks,
         preSummarySystem,
         summaryBlock,
         preHistoryMessages,
         history: checkpointHistory,
-        dynamicBlocks: budgetConfig.enabled ? applyBudgetToBlocks(dynamicBlocks, budgetConfig.dynamicTokens) : dynamicBlocks,
+        dynamicBlocks: recallDynamicBlocks,
       });
-      const recallMsgs = lorebookTurn.reapply ? await lorebookTurn.reapply(originalRecallMsgs) : originalRecallMsgs;
-      recallQuery = null;
+      // 面板分项：第二次组装（含 <memory_recall_result>）整体覆盖上一次快照——
+      // 它才是这一轮真正发出去的 prompt
+      recordContextUsage({
+        conversationId,
+        model: config.llm.model,
+        segments: buildChatContextSegments({
+          stableBlocks,
+          preSummarySystem,
+          summaryBlock,
+          preHistoryMessages,
+          history: checkpointHistory,
+          dynamicBlocks: recallDynamicBlocks,
+        }),
+      });
 
       // 重置流状态：指令行不进气泡不落库；闸门前已发出的零散片段用 context_update 清空
       if (streamState.collectedSegments.length > 0) {
@@ -1337,6 +1889,7 @@ ${coreRules}
       res.on('close', () => {
         if (!res.writableEnded) recallAbort.abort();
       });
+      beginContextCapture({ conversationId, model: config.llm.model, expectLabel: '主聊天流' });
       try {
         await consumeStream(recallMsgs, recallAbort.signal);
       } catch (err) {
@@ -1355,6 +1908,93 @@ ${coreRules}
       }
     }
 
+    // ── D2 · 重写兜底（reroll）真正执行：只重写一次、失败保留原输出 ──
+    // 位置：@memory 续写（若有）之后、正文后处理之前 —— 此时 streamState 里是"本轮最终那一版"。
+    // 三条硬约束：① 开关打开才可能走这里；② shouldReroll 保证一轮只 fire 一次；
+    //            ③ 重写失败/超时只 warn，**保留原输出**（绝不让整轮失败，也不发替换事件）。
+    let rerollSucceeded = false;
+    if (antiRepRerollPlan.fire && !clientGone && streamState.collectedSegments.length > 0) {
+      // 真正下手前再复核一次（clientGone 可能在流的过程中变成 true）
+      const recheck = shouldReroll({
+        enabled: antiRepRerollEnabled,
+        result: antiRepetitionResult,
+        firedCount: antiRepRerollFired,
+        hypnosisActive: antiRepHypnosisActive,
+        clientGone,
+      });
+      if (recheck.fire) {
+        antiRepRerollFired += 1;
+        // 记下原输出，重写失败时原样保留
+        const originalFullContent = streamState.fullContent;
+        const originalSegments = [...streamState.collectedSegments];
+        console.log('[anti-repetition] reroll fired reason=' + recheck.reason + ' mode=' + (antiRepetitionResult?.mode || 'none')
+          + ' turns=' + recentAssistantTurns.length + ' chars=' + originalFullContent.length);
+        // 过渡提示（2026-10-15 补）：重写要多花一次模型调用（几秒），期间前端若什么都不显示，
+        // 用户会以为刚才那段就是最终答案。发一个 reroll_start，前端据此把已上屏的气泡标成「重新组织语言中…」；
+        // 重写失败时会发 reroll_end（ok:false）让前端把标记撤掉（原输出保留，见下面的 catch）。
+        send('reroll_start', { reason: recheck.reason || '' });
+        try {
+          // 指令块贴在**原 user 消息之后**：说清上一版作废、从头换一种说法
+          const rerollMsgs = [...msgs, { role: 'user', content: buildRerollInstruction(antiRepetitionResult?.topicKeywords || []) }];
+          streamState.fullContent = '';
+          streamState.splitter = new SentenceSplitter();
+          streamState.collectedSegments.length = 0;
+          streamState.wasStopped = false;
+          beginContextCapture({ conversationId, model: config.llm.model, expectLabel: '主聊天流' });
+          await consumeStream(rerollMsgs, upstreamAbort.signal);
+          if (streamState.collectedSegments.length === 0) throw new Error('reroll produced no content');
+          rerollSucceeded = true;
+          // ⚠️ 这里**不发** reroll_end：替换事件（replace_last_assistant）在下面才发，
+          //    先发 reroll_end 会让前端提前撤掉「重新组织语言中…」，出现"提示没了、但文字还是旧的"空窗。
+          //    reroll_end 统一放在替换事件之后（见下面 rerollSucceeded 分支）。
+          console.log('[anti-repetition] reroll done chars=' + streamState.fullContent.length);
+        } catch (err) {
+          // 失败：原样恢复，绝不让用户看到空白（也不发替换事件）
+          streamState.fullContent = originalFullContent;
+          streamState.collectedSegments.length = 0;
+          streamState.collectedSegments.push(...originalSegments);
+          // 标记要撤掉：她这段就是最终答案（前端据此把「重新组织语言中…」去掉）
+          send('reroll_end', { ok: false });
+          console.warn('[anti-repetition] reroll failed, keeping original output:', err.message);
+        }
+      }
+    }
+    // ── 拒答守卫（2026-10-22）──
+    // 位置：reroll 之后、正文后处理之前 —— 此时 streamState 里是"本轮最终那一版"。
+    // 为什么必须在这里：流式输出已经推给前端了，但**落库还没发生**。拒答一旦入库，
+    // 之后每轮都会作为历史回灌（实测同一条在 7 个请求里反复出现），所以这里是最低成本的自救点。
+    // 三条约束：① 只重写一次；② 重写失败/仍拒答 → 用兜底省略号，绝不保留拒答原文；
+    //          ③ 客户端已断开时不重试（没人看，白烧一次调用）。
+    let refusalReplaced = false;
+    if (!clientGone && streamState.collectedSegments.length > 0
+        && isRefusal(streamState.collectedSegments.join('\n'))) {
+      console.warn('[refusal] ▸ 主聊天流命中拒答，追加纠正指令重写一次');
+      try {
+        const refusalMsgs = [...msgs, REFUSAL_RETRY_INSTRUCTION];
+        streamState.fullContent = '';
+        streamState.splitter = new SentenceSplitter();
+        streamState.collectedSegments.length = 0;
+        streamState.wasStopped = false;
+        beginContextCapture({ conversationId, model: config.llm.model, expectLabel: '主聊天流' });
+        await consumeStream(refusalMsgs, upstreamAbort.signal);
+        const retriedText = streamState.collectedSegments.join('\n');
+        if (!retriedText.trim() || isRefusal(retriedText)) {
+          throw new Error('refusal retry produced empty or refusal content');
+        }
+        refusalReplaced = true;
+        console.log('[refusal] 重写成功 chars=' + streamState.fullContent.length);
+      } catch (err) {
+        if (clientGone) throw err;
+        // 二次仍拒（或重写请求失败）：换成兜底正文。与既有"AI 没有返回有效文本"的兜底一致，
+        // 宁可让用户看到一个省略号，也不能把拒答写进历史。
+        console.warn('[refusal] 重写失败，改用兜底正文:', err.message);
+        streamState.fullContent = REFUSAL_FALLBACK_TEXT;
+        streamState.splitter = new SentenceSplitter();
+        streamState.collectedSegments.length = 0;
+        streamState.collectedSegments.push(REFUSAL_FALLBACK_TEXT);
+        refusalReplaced = true;
+      }
+    }
     // 补救：LLM 偶尔把 {"prompt":"..."} 放在正文前面（而非末尾），
     // 闸门在流开头就检测到 {" → stopped=true，导致后续正文全部丢失。
     // 此时从 fullContent 中剥离 prompt JSON，把剩余正文重新过分句器。
@@ -1384,6 +2024,30 @@ ${coreRules}
     let fullContent = stripBracketActions(streamState.fullContent);
     send('response_end', {});
 
+    // ── 阶段二 · 输出侧检测（L4，零额外调用；无论升级开关开没开都记）──
+    // 量化"她这一轮到底重复到了什么程度"：与本轮**生成前**测得的档位一起写成一行可统计日志。
+    // 本轮生成后的原文会自动成为下一轮检测脚本里的"最近一轮"，于是**连续高复述跨轮累积**、
+    // 达到阈值后下一轮自然升档（见 antiRepetition.detectRepetitionWithEscalation）。
+    // 注意：这里只做检测 + 记录。超阈值**再请求一次 LLM 替换已流式输出**（专题 L4 的重写兜底）
+    // 默认关且尚未实现接线：本项目流式协议没有"替换已输出内容"的语义，
+    // 要启用必须同时解决前端替换与额外调用授权两件事 —— 见 docs/chat/anti-repetition.md §十。
+    // 也正因如此，"她刚说的这句"是在下一轮检测时才进入比较（本轮无法自查）。
+    if (antiRepetitionResult) {
+      try {
+        const metrics = buildAntiRepetitionMetrics({ turns: recentAssistantTurns, result: antiRepetitionResult });
+        if (metrics) {
+          console.log(
+            `[anti-repetition] output-check mode=${metrics.mode} trend=${metrics.trend} overlap=${metrics.overlap}`
+            + ` esc_run=${metrics.escalatedRunLength} run=${metrics.runLength} turns=${metrics.turns}`
+            + ` escalated=${metrics.escalated ? 1 : 0} chars=${fullContent.length}`
+          );
+        }
+      } catch (err) {
+        // 检测记录失败不影响主流程
+        console.warn('[anti-repetition] output metrics failed:', err.message);
+      }
+    }
+
     // 7. 后处理：gate 尝试阻止 {"prompt"... JSON 内容进入 collectedSegments，
     //    stripTags 兜底清洗；如有 prompt 标签则在 fullContent 上提取
     const tags = extractImageTags(fullContent);
@@ -1396,21 +2060,86 @@ ${coreRules}
       .filter(p => p.content || p.images.length > 0);
     const displayContent = parsedSegments.map(p => p.content).filter(Boolean).join('\n\n');
 
+    // ── D2 · 重写成功 → 通知前端"换掉刚显示的那条" ──
+    // 事件 replace_last_assistant（字段与语义见 docs/chat/anti-repetition.md §十二；前端由 hires-ui 接）：
+    // 必须**在重写成功后**才发 —— 失败时保留原输出，用户不该看到空白（见上面的 catch 分支）。
+    // 用 segments 而不是纯 content：替换后表情包/图片气泡不能丢。
+    if (rerollSucceeded || refusalReplaced) {
+      try {
+        // stickerUrls 必须显式给：`parsedSegments` 里的 images 是 parseEmojiText 的产物，
+        // 而前端没有 key→url 映射（它只认 url）。这里按同一份 emojiMap 重新解析原始段，
+        // 拿到的就是「真正渲染用的表情 url」，与 emojiKeys 一一对应（见 docs §12.4）。
+        const replaceSegments = parsedSegments.map(p => ({
+          content: p.content,
+          emojiKeys: p.keys || [],
+          stickerUrls: parseEmojiText(p.raw || '', emojiMap).images,
+          images: p.images || [],
+        }));
+        const replacement = buildReplaceLastAssistantEvent({
+          parsedSegments: replaceSegments,
+          reason: rerollSucceeded ? 'reroll' : 'refusal',
+        });
+        send(replacement.event, replacement.data);
+        console.log('[replace_last_assistant] sent reason=' + replacement.data.reason
+          + ' segments=' + replacement.data.segments.length
+          + ' chars=' + replacement.data.content.length);
+      } catch (err) {
+        // 替换事件发失败不影响落库与主流程：前端最坏情况是暂时看到两版，刷新后以落库版本为准
+        console.warn('[anti-repetition] replace event failed:', err.message);
+      }
+      // 撤过渡提示要放**替换事件之后** —— 顺序反了就会出现"提示没了、文字还是旧的"空窗。
+      // 放在 try 外：替换事件发失败也要撤（否则提示会一直挂着）。
+      // 只有 reroll 发过 reroll_start，拒答重写没有过渡提示，不能发对应的结束事件。
+      if (rerollSucceeded) send('reroll_end', { ok: true });
+    }
+
     // gate 命中或模型有生图标签时，前端气泡可能不完整，用清洗结果覆盖
     if (streamState.wasStopped || tags.prompt || hasNeedImageTag) {
       send('context_update', { content: displayContent });
     }
-    // 8.5 图片载体与正文共用一条 raw，避免空图片占用额外历史轮数。
-    const rawContent = stripTags(fullContent).trim();
-    const reply = savePrivateChatReply(db, { conversationId, userRawId: userRawMsgId, content: rawContent, segments: parsedSegments });
-    const rawMsgId = reply.rawId;
-    lorebookTurn.commit();
+    // 8.5 保存 raw_messages（完整原文，保留 {"prompt"} JSON 标签以便 LLM 理解上下文）
+    //     上游 v4.2.0：深度思考（thinking 列）随预规划链路一起下线，不再写入
+    const rawContent = fullContent
+      .replace(/<needImage>/gi, '')
+      .trim();
+    // 关系温度：她在这轮里提到别人时的语气，也记进两人之间的分数（失败只 warn，不影响回复）
+    try { nudgeBondsFromText(characterId, displayContent || rawContent); } catch { /* 忽略 */ }
+    // prepare 提到循环外 + 事务包裹：语句只编译一次，段落数增长时仍常数开销
+    const insertRawStmt = stmt('INSERT INTO raw_messages (conversation_id, role, content, prompt) VALUES (?, ?, ?, ?)');
+    const insertMsgStmt = stmt('INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, ?, ?, ?, ?)');
+    const saveSegments = db.transaction((segs, rawId) => {
+      const ids = [];
+      for (let i = 0; i < segs.length; i++) {
+        const p = segs[i];
+        const r = insertMsgStmt.run(conversationId, rawId, 'assistant', p.content, p.images.length > 0 ? JSON.stringify(p.images) : null, i);
+        ids.push({ id: r.lastInsertRowid, p });
+      }
+      return ids;
+    });
+
+    const rawResult = insertRawStmt.run(conversationId, 'assistant', rawContent, tags.prompt || null);
+    const rawMsgId = rawResult.lastInsertRowid;
+    // galgame 转录（上游 v3.9.0 合并）：完整回复已落库，通知前端刷新对话记录
     send('dialogue_saved', { raw_id: rawMsgId });
 
-    for (const { id, p } of reply.saved) {
-      send('msg_saved', { id, raw_id: rawMsgId, role: 'assistant', content: p.content, images: p.images.length > 0 ? p.images : undefined, leadingSticker: p.leadingSticker, created_at: new Date().toISOString() });
+    // 亲密看板：本轮带生图 prompt 时自动记账（按 rawMsgId 幂等；只认 tag 归类，不额外调 LLM）；
+    // 没有 prompt 的纯文字轮次走正文兜底，命中成人内容就记一笔「未归类」，不再整段丢出看板
+    if (tags.prompt) recordIntimateFromTail(characterId, conversationId);
+    else recordIntimateTextFallback(characterId, Number(rawMsgId));
+
+    const savedIds = [];
+    for (const { id, p } of saveSegments(parsedSegments, rawMsgId)) {
+      savedIds.push(id);
+      send('msg_saved', { id, role: 'assistant', content: p.content, images: p.images.length > 0 ? p.images : undefined, leadingSticker: p.leadingSticker, created_at: new Date().toISOString() });
     }
-    const lastInsertRowid = reply.lastMessageId;
+    if (parsedSegments.length === 0) {
+      // 兜底：AI 没有返回有效文本
+      const rawEmpty = insertRawStmt.run(conversationId, 'assistant', '...', null);
+      const r = insertMsgStmt.run(conversationId, rawEmpty.lastInsertRowid, 'assistant', '...', null, 0);
+      savedIds.push(r.lastInsertRowid);
+      send('msg_saved', { id: r.lastInsertRowid, role: 'assistant', created_at: new Date().toISOString() });
+    }
+    const lastInsertRowid = savedIds[savedIds.length - 1];
     getStandingDisplay().complete(standingTurn);
 
     // 8.8 回复猜想 ← 启动（不 await，与情绪评估并行发起 LLM 调用）
@@ -1438,7 +2167,7 @@ ${coreRules}
       const emotionState = loadEmotionState(conversationId, emotionBaseline);
       const currentAffinity = loadAffinity(characterId);
       // 上一轮对话（供 LLM 参考上下文，只取最近一组 user+assistant）
-      const prevRound = db.prepare(`
+      const prevRound = stmt(`
         SELECT role, content FROM raw_messages
         WHERE conversation_id = ? AND id < (SELECT MAX(id) FROM raw_messages WHERE conversation_id = ?)
         ORDER BY id DESC LIMIT 2
@@ -1447,7 +2176,7 @@ ${coreRules}
       const prevAssistant = prevRound.find(r => r.role === 'assistant')?.content || '';
 
       // 对话历史摘要
-      const summaryRow = db.prepare(`
+      const summaryRow = stmt(`
         SELECT summary FROM rolling_summaries
         WHERE conversation_id = ?
         ORDER BY id DESC LIMIT 1
@@ -1461,12 +2190,10 @@ ${coreRules}
         emotionBaseline,
         currentVad: getCompositeEmotion(emotionState),
         currentAffinity,
-        relationship: db.prepare(
-          'SELECT relationship_text, is_oath FROM user_relationships WHERE character_id = ?'
-        ).get(characterId)?.relationship_text || '',
-        relationshipOath: db.prepare(
-          'SELECT is_oath FROM user_relationships WHERE character_id = ?'
-        ).pluck().get(characterId) || 0,
+        // 关系与誓约复用组装上下文时已查过的 userRel（L716 同一行、同一字段），
+        // 不再在这里各查一次 —— 同轮 user_relationships 从 3 次查询降到 1 次（代码审查改进 §1.2）
+        relationship: userRel?.relationship_text || '',
+        relationshipOath: userRel?.is_oath || 0,
         prevUser,
         prevAssistant,
         summary: summaryRow?.summary || '',
@@ -1484,7 +2211,7 @@ ${coreRules}
         const newAffinity = evolveAffinity(emotionCleanup.currentAffinity, affinityDelta ?? 0);
         saveEmotionSnapshot(conversationId, lastInsertRowid, evolved, dominantEmotion, newAffinity, affinityDelta, reason);
         saveAffinity(characterId, newAffinity);
-        // 灵魂 reflect 轨：复用同一次 LLM 调用多要的 4 位 soul_state_code；
+        // 灵魂 reflect 轨（上游 v3.9.0 合并）：复用同一次 LLM 调用多要的 4 位 soul_state_code；
         // 本轮结束时统一落库一次（resonate 已在召回段作用于内存态，此处一并写盘）。
         // 独立 try：灵魂侧异常不得吃掉下方的情绪显示更新。
         if (soulEnabled) {
@@ -1505,17 +2232,37 @@ ${coreRules}
       });
     }
 
-    // Director mode always uses the frozen final dialogue, never legacy model tags.
-    if (imageMode === 'force') acceptImage('', null, { rawId: rawMsgId, messageId: lastInsertRowid });
+    // 导演模式（原「强制配图」）与催眠「强制高潮」指令轮都走同一条强制出图管线（上游 v4.2.0）
+    // 灵性配图的「要不要发、发什么」由模型通过 request_chat_image 工具自主决定，见 consumeStream；
+    // 这两条是**程序强制**出图：用户点了导演模式 / 催眠下了高潮指令，不能靠模型自己想起要图。
+    if (imageMode === 'force' || hypnosisDirective === 'forced_climax') {
+      if (hypnosisDirective === 'forced_climax') console.log('[chat] hypnosis forced_climax: forcing image pipeline');
+      acceptImage('', null, { rawId: rawMsgId, messageId: lastInsertRowid });
+    }
 
-    // Auxiliary work completes independently; only text controls the HTTP stream lifetime.
+    // 结算回复猜想（失败静默，不阻塞后续）
     if (guessPromise) {
-      guessPromise.then(guesses => {
+      try {
+        const guesses = await guessPromise;
         if (guesses) {
           send('guesses', guesses);
           guessCooldowns.set(conversationId, guessCooldownStart + 20_000);
         }
-      }).catch(err => console.error('[chat] guess generation error:', err.message));
+      } catch (err) {
+        console.error('[chat] guess generation error:', err.message);
+      }
+    }
+
+    // 兜底等待情绪评估（三路中最后一条保底，3s 超时）
+    if (emotionPromise) {
+      try {
+        await Promise.race([
+          emotionPromise,
+          new Promise(resolve => setTimeout(() => resolve(null), 3000)),
+        ]);
+      } catch (err) {
+        console.error('[chat] emotion evaluation error:', err.message);
+      }
     }
 
     // 12. 后处理（异步，不依赖 SSE 连接）
@@ -1563,6 +2310,25 @@ ${coreRules}
         }
         // 用户画像提取（每 10 条用户消息触发，无 feature flag 始终开启）
         await maybeExtractPortrait(conversationId, characterId, { userName: chatUserName });
+
+        // 亲密看板「AI 判断行为」（task-32）：开关开启时**异步**补判这一轮（不阻塞、失败只 warn）。
+        // 只补"一条流水都没有 / 只有未归类"的轮次，判定出具体行为时会撤掉该轮的未归类，不会重复计数。
+        try {
+          if (config.features.intimate !== false
+            && typeof fullContent === 'string'
+            && getBodyProfile(characterId).aiJudgeEnabled) {
+            judgeRoundInBackground({
+              characterId,
+              rawId: rawMsgId,
+              scene: 'chat',
+              lines: [message, fullContent],
+              characterName: character?.display_name,
+              userName: chatUserName,
+            });
+          }
+        } catch (err) {
+          console.warn('[intimateAiJudge] hook failed:', err.message);
+        }
       } catch (err) {
         console.error('[chat] post-processing error:', err.message);
       }
@@ -1597,6 +2363,42 @@ function extractImageTags(content) {
 
 function hasNeedImage(content) {
   return /<needImage>/i.test(content);
+}
+
+/**
+ * 亲密看板：按会话尾部（最近一条带生图 prompt 的 assistant 原始消息）自动记账。
+ *
+ * 为什么不逐个落库分支挂钩：assistant 原始消息在本文件有多个保存分支
+ * （主流式落库 / needImage 新建 / needImage 合并回上一条），逐个挂钩容易漏；
+ * read-after-write 地取尾部只需一个入口，且天然覆盖"合并回上一条"的情况。
+ * 重复调用由 recordIntimateActs 的 source_uid（含 raw_id）幂等兜住。
+ * 总开关 features.intimate 关闭时零写入。
+ */
+function recordIntimateFromTail(characterId, conversationId) {
+  if (config.features.intimate === false) return;
+  try {
+    recordFromConversationTail({ characterId, conversationId, scene: 'chat', partnerKind: 'user' });
+  } catch (err) {
+    // 记账失败不能影响聊天主流程
+    console.warn('[intimate] auto record failed:', err.message);
+  }
+}
+
+/**
+ * 看板正文兜底：本轮**没有**任何生图 prompt（纯文字对话）时，正文命中成人内容判定就记一笔「未归类」。
+ *
+ * 为什么需要它：私聊原本只在 `tags.prompt` 存在时记账 ⇒ 纯文字轮次整段不进看板，
+ * 用户看到的"内容与记录没进看板"就是这个缺口（群聊同理，见 groupChatEngine）。
+ * 判定用项目现成的 containsExplicitAdultContent（自带中文词表），零 LLM、零新增词表，不猜具体行为。
+ * 与 recordIntimateFromTail 互斥调用（有 prompt 走归类路径），幂等锚点同为 raw_id。
+ */
+function recordIntimateTextFallback(characterId, rawId) {
+  if (config.features.intimate === false) return;
+  try {
+    recordUnspecifiedFromRawId({ characterId, rawId, scene: 'chat', partnerKind: 'user' });
+  } catch (err) {
+    console.warn('[intimate] text fallback failed:', err.message);
+  }
 }
 
 
@@ -1642,16 +2444,80 @@ function getDefaultPrompt() {
 请用中文回复，语气友好而专业。`;
 }
 
+/**
+ * 创建 pending 状态的 image_tasks 行，用于提前发送 generate_start
+ * 让前端在 judge / needImage 二次 LLM 调用期间就显示遮罩层
+ */
+function createPreparingTask(conversationId) {
+  const db = getDb();
+  const result = stmt(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status) VALUES (?, '', '', 'pending')`)
+    .run(conversationId);
+  return result.lastInsertRowid;
+}
+
+function failPreparingTask(taskId, errorMessage) {
+  if (taskId == null) return;
+  getDb().prepare(`
+    UPDATE image_tasks
+    SET status = 'failed', error_message = ?, finished_at = datetime('now')
+    WHERE id = ? AND status IN ('pending', 'running')
+  `).run(errorMessage, taskId);
+}
+
+/**
+ * 静默判断：给定最近对话，是否需要配一张图片增强表达
+ * 极轻量 DeepSeek 调用（只需"是/否"），延迟通常 < 300ms
+ */
+async function judgeImageNeed(conversationId) {
+  const db = getDb();
+  // 直接从 raw_messages 取最后一条用户/Agent 完整消息，无需合并
+  const lastUser = stmt(`
+    SELECT content FROM raw_messages
+    WHERE conversation_id = ? AND role = 'user'
+    ORDER BY id DESC LIMIT 1
+  `).get(conversationId);
+
+  const lastAssistant = stmt(`
+    SELECT content FROM raw_messages
+    WHERE conversation_id = ? AND role = 'assistant'
+    ORDER BY id DESC LIMIT 1
+  `).get(conversationId);
+
+  if (!lastUser && !lastAssistant) return false;
+
+  const parts = [];
+  if (lastUser) parts.push(`用户: ${lastUser.content.slice(0, 400)}`);
+  if (lastAssistant) parts.push(`Agent: ${lastAssistant.content.slice(0, 600)}`);
+  const ctx = parts.join('\n');
+
+  try {
+    const result = await chatSync([
+      { role: 'system', content: JUDGE_PROMPT },
+      { role: 'user', content: ctx },
+    ], { temperature: 0, max_tokens: 5, label: '判断需要图片' });
+
+    const verdict = result.trim().startsWith('是');
+    console.log(`[chat] judgeImageNeed: ${verdict ? 'YES' : 'no'} (response: "${result.trim().slice(0, 20)}")`);
+    return verdict;
+  } catch (err) {
+    console.error('[chat] judgeImageNeed error:', err.message);
+    return false; // 失败时默认不生图（安全侧）
+  }
+}
+
 async function triggerImageGeneration(conversationId, prompt, assistantMsgId, taskId, send, crossRefCharIds = [], ragQuery = '', frozenCharacter = null, frozenCrossCharacters = null, frozenImageConfig = {}, { includeCharacter = true } = {}) {
   const db = getDb();
 
   // 查找角色 lora 设置
   let loraOpts = {};
+  // 角色级负面词（2026-11-06）：只在「这张图里有该角色本人」时注入，规则跟随 includeCharacter
+  let characterNegative = '';
   try {
     const charId = parseInt(String(conversationId).replace(/^char_/, ''), 10);
     if (!Number.isNaN(charId)) {
-      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override FROM characters WHERE id = ?').get(charId);
+      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override, negative_prompt FROM characters WHERE id = ?').get(charId);
       if (char) {
+        if (includeCharacter && typeof char.negative_prompt === 'string') characterNegative = char.negative_prompt;
         const loras = includeCharacter ? _parseLoras(char) : [];
         if (loras.length > 0 || (includeCharacter && char.custom_workflow) || charArtistOverride(char) !== null) {
           const opts = {};
@@ -1703,6 +2569,7 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
       },
       ...frozenImageConfig,
       ...loraOpts,
+      characterNegative,
     });
     if (result.success && result.images.length > 0) {
       const urls = [];
@@ -1968,22 +2835,261 @@ ${contextBlock.content}`;
  * 独立轻量 LLM 调用（~200 tokens），不影响主回复质量
  */
 const dialogueGuessCache = new Map();
-async function generateReplyGuesses(conversationId, character) {
-  const latest = getDb().prepare('SELECT id,role FROM raw_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1').get(conversationId);
-  if (latest?.role !== 'assistant') return null;
-  const key = `${conversationId}:${latest.id}`;
-  if (!dialogueGuessCache.has(key)) {
-    const pending = generateReplyGuessesUncached(conversationId, character).then(result => result ? { ...result, source_raw_id: latest.id } : null);
-    dialogueGuessCache.set(key, pending);
-    if (dialogueGuessCache.size > 100) dialogueGuessCache.delete(dialogueGuessCache.keys().next().value);
+async function requestImagePromptText(msgs, { character, lastTurnDialogue, emptyLabel = 'image prompt' } = {}) {
+  const call = (extra = []) => chatWithLorebook(extra.length ? [...msgs, ...extra] : msgs, {
+    temperature: 0.7,
+    label: '生图',
+    // 上游 v3.10.0：生图描述走世界书（角色人格作为 personaTexts 匹配锚点）。
+    // 本地没有上游那个 personalityPrompt 变量——人格已在 buildImagePromptMessages
+    // 里进 msgs，这里只传 characterName 让世界书的角色过滤/宏能定位到当前角色。
+    lorebook: { characterName: character?.display_name },
+  });
+
+  const first = await requestNonEmptyImagePrompt(
+    () => call(),
+    { emptyRetries: 1, onEmpty: () => console.warn(`[chat] ${emptyLabel} returned empty content, retrying once...`) }
+  );
+  if (!needsExplicitImageRewrite(lastTurnDialogue, extractImagePromptResponse(first) || '')) return first;
+
+  console.warn(`[chat] ${emptyLabel}: prompt looks softened (explicit dialogue → tame prompt) → rewriting once`);
+  try {
+    const rewritten = await call([EXPLICIT_REWRITE_INSTRUCTION]);
+    if (String(rewritten || '').trim()) return rewritten;
+  } catch (err) {
+    console.warn(`[chat] ${emptyLabel}: explicit rewrite failed (${err.message}), keeping first result`);
   }
-  return dialogueGuessCache.get(key);
+  return first;
 }
-async function generateReplyGuessesUncached(conversationId, character) {
+
+/** 请求生图描述 LLM，返回原始输出（planner 并行预生成也走这里） */
+async function requestImagePromptContent(conversationId, character, planSceneHint = '') {
+  const { msgs, lastTurnDialogue } = buildImagePromptMessages(conversationId, character, planSceneHint);
+  return requestImagePromptText(msgs, { character, lastTurnDialogue, emptyLabel: 'image prompt' });
+}
+
+async function handleNeedImageFlow(conversationId, character, send, preExistingTaskId = null, planSceneHint = '', presetContentPromise = null) {
   const db = getDb();
+  console.log('[chat] needImage detected, requesting prompt from model (compact)...');
+  const emojiMap = getCharacterEmojiMap(character.id, db);
+
+  const { msgs, crossRefCharIdsForImage, lastTurnDialogue } = buildImagePromptMessages(conversationId, character, planSceneHint);
+
+  // 3. 静默请求模型生成 prompt（不流式，避免前端气泡混乱）
+  //    presetContentPromise：planner 阶段已与回复流并行预生成的结果，直接取用，省去回复完成后的串行等待
+  let fullContent = '';
+  try {
+    if (presetContentPromise) {
+      fullContent = (await presetContentPromise) || '';
+      console.log(`[chat] planned image prompt (pre-generated): ${fullContent.slice(0, 80)}...`);
+    } else {
+      fullContent = await requestImagePromptText(msgs, {
+        character,
+        lastTurnDialogue,
+        emptyLabel: 'needImage follow-up',
+      });
+      console.log(`[chat] needImage follow-up response: ${fullContent.slice(0, 80)}...`);
+    }
+  } catch (err) {
+    console.error('[chat] needImage follow-up error:', err.message);
+    failPreparingTask(preExistingTaskId, `生图请求失败: ${err.message}`);
+    send('generate_error', { taskId: preExistingTaskId, error: '生图请求失败' });
+    return;
+  }
+
+  // 4. 先验证 prompt，再写入 raw_messages/messages，避免空 assistant 消息。
+  let prompt = extractImagePromptResponse(fullContent);
+  // 体位兜底：无论 prompt 由谁生成（含 planner 预生成那条路），当前体位的英文标签都要进画面。
+  // 没有进行中的亲密场景时这里是空串，普通配图完全不受影响。
+  // 体位标签兜底（既有逻辑）：骨架在 triggerImageGeneration 里统一取，这里只管 prompt 文本。
+  try {
+    const poseTags = buildPositionImageTags(character.id);
+    if (poseTags) {
+      prompt = prompt ? `${prompt}, ${poseTags}` : poseTags;
+      console.log('[chat] position tags appended to image prompt:', poseTags.slice(0, 80));
+    }
+  } catch (err) {
+    console.warn('[chat] position tags skipped:', err.message);
+  }
+  if (!prompt) {
+    console.warn('[chat] needImage: failed to extract prompt, raw:', fullContent.slice(0, 120));
+    failPreparingTask(preExistingTaskId, '模型未返回图像描述');
+    send('generate_error', { taskId: preExistingTaskId, error: '模型未返回图像描述' });
+    return;
+  }
+  const tags = { prompt };
+
+  let displayContent = stripTags(fullContent);
+  // 独立生图调用的输出全是 prompt 文本，不展示为对话气泡
+  if (tags.prompt) displayContent = '';
+
+  let assistantRawId;
+  let assistantMsgId;
+  let merged = false;  // 是否拼回上一条（不新建 message）
+
+  if (!displayContent && tags.prompt) {
+    // 模型只输出纯 JSON，无正文 → 优先拼回上一条 raw_messages
+    const prevRaw = stmt(`SELECT id, prompt FROM raw_messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1`)
+      .get(conversationId);
+    const prevMsg = stmt(`SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1`)
+      .get(conversationId);
+
+    if (prevRaw && !prevRaw.prompt) {
+      // 上一条无 prompt → UPDATE raw.prompt + content 拼入 JSON，图片挂到上一条 message
+      const promptJson = JSON.stringify({ prompt: tags.prompt });
+      stmt(`UPDATE raw_messages SET prompt = ?, content = content || ? WHERE id = ?`).run(tags.prompt, promptJson, prevRaw.id);
+      assistantRawId = prevRaw.id;
+      assistantMsgId = prevMsg?.id;
+      merged = true;
+      console.log(`[chat] needImage: merged prompt into raw=${prevRaw.id}, msg=${assistantMsgId}`);
+    } else {
+      // 上一条已有 prompt → 兜底：新写 raw，后端组装 {"prompt":"..."} 格式
+      const promptJson = JSON.stringify({ prompt: tags.prompt });
+      const rawContent = `(图片) ${promptJson}`;
+      const rawResult = stmt(`INSERT INTO raw_messages (conversation_id, role, content, prompt) VALUES (?, 'assistant', ?, ?)`)
+        .run(conversationId, rawContent, tags.prompt);
+      assistantRawId = rawResult.lastInsertRowid;
+      console.log(`[chat] needImage: prev raw already has prompt, saved as new raw id=${assistantRawId}`);
+    }
+  } else {
+    // 正常：有正文（无论有无 prompt）→ 经 SentenceSplitter 分句
+    if (displayContent) {
+      const splitter = new SentenceSplitter();
+      const { segments: feedSegs } = splitter.feed(displayContent);
+      const { segments: flushSegs } = splitter.flushAll();
+      const allSegments = [...feedSegs, ...flushSegs]
+        .map(s => stripBracketActions(s).trim())
+        .filter(Boolean);
+
+      for (const segText of allSegments) {
+        const parsedSeg = parseEmojiText(segText, emojiMap);
+        send('token', {
+          content: parsedSeg.content,
+            emojiKeys: parsedSeg.keys,
+          ...(parsedSeg.images.length > 0 ? { images: parsedSeg.images } : {}),
+          ...(parsedSeg.leadingSticker ? { leadingSticker: true } : {}),
+        });
+        send('bubble_break', {});
+        await sleep(typingDelay(segText));
+      }
+      // 更新 displayContent 为清洗后的分段文本，供下方 messages 表写入
+      displayContent = allSegments.join('\n\n');
+    }
+    const promptJson = tags.prompt ? JSON.stringify({ prompt: tags.prompt }) : '';
+    const rawContent = tags.prompt
+      ? `(图片) ${promptJson}`
+      : fullContent.replace(/<needImage>/gi, '').trim();
+    const rawResult = stmt(`INSERT INTO raw_messages (conversation_id, role, content, prompt) VALUES (?, 'assistant', ?, ?)`)
+      .run(conversationId, rawContent, tags.prompt || null);
+    assistantRawId = rawResult.lastInsertRowid;
+  }
+
+  // 保存 messages（展示用）—— merge 路径不新建 message
+  if (!merged) {
+    // 按句子分段保存（与主流程一致）
+    const segments = (displayContent || '').split('\n\n').filter(Boolean);
+    if (segments.length > 0) {
+      for (let i = 0; i < segments.length; i++) {
+        // 循环里的插入：提到循环外会更好，但那要改 saveSegments 的批量事务语义；
+        // 这里先用语句缓存拿到同一份收益（同一 SQL 只编译一次，跨轮也复用）。
+        const msgResult = stmt(`INSERT INTO messages (conversation_id, raw_id, role, content, seq) VALUES (?, ?, 'assistant', ?, ?)`)
+          .run(conversationId, assistantRawId, segments[i], i);
+        if (i === segments.length - 1) {
+          assistantMsgId = msgResult.lastInsertRowid;
+        }
+        send('msg_saved', { id: msgResult.lastInsertRowid, role: 'assistant', created_at: new Date().toISOString() });
+      }
+    } else {
+      const msgResult = stmt(`INSERT INTO messages (conversation_id, raw_id, role, content, seq) VALUES (?, ?, 'assistant', ?, 0)`)
+        .run(conversationId, assistantRawId, displayContent || '');
+      assistantMsgId = msgResult.lastInsertRowid;
+      send('msg_saved', { id: assistantMsgId, role: 'assistant', created_at: new Date().toISOString() });
+    }
+  }
+  console.log(`[chat] needImage: msgId=${assistantMsgId}, rawId=${assistantRawId}, merged=${merged}, hasPrompt=${!!tags.prompt}`);
+
+  // 亲密看板：needImage 路径同样记账。这里放在"所有落库分支之后、触发生图之前"，
+  // 三个分支（合并回上一条 / 新建 raw / 有正文分支）共用这一个入口；合并情况下
+  // 尾部读到的是被合并的那条 raw，rawId 与它一致，重算幂等。
+  // 没有 prompt 的轮次走正文兜底（拿 assistantRawId 读回正文，命中成人内容记一笔「未归类」）。
+  if (tags.prompt && character) recordIntimateFromTail(character.id, conversationId);
+  else if (character && assistantRawId) recordIntimateTextFallback(character.id, Number(assistantRawId));
+
+  // 5. 触发生图
+  if (tags.prompt) {
+    let genTaskId;
+    if (preExistingTaskId) {
+      // 使用预先创建的 task，更新 prompt 和状态
+      stmt(`UPDATE image_tasks SET prompt_original=?, prompt_refined=?, status='running' WHERE id=?`)
+        .run(tags.prompt, tags.prompt, preExistingTaskId);
+      genTaskId = preExistingTaskId;
+      // generate_start 已经在 judge/needImage 判定时发送，不再重复
+    } else {
+      const taskResult = stmt(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status) VALUES (?, ?, ?, 'running')`)
+        .run(conversationId, tags.prompt, tags.prompt);
+      genTaskId = taskResult.lastInsertRowid;
+      send('generate_start', { taskId: genTaskId, prompt: tags.prompt });
+    }
+    // 上游 v3.10.0：把「请求生图助手时捕获的最后一轮对话」透传给图片 RAG，
+    // 而不是让下游去读已经拼入英文 prompt 的历史。
+    await triggerImageGeneration(conversationId, tags.prompt, assistantMsgId, genTaskId, send, crossRefCharIdsForImage, lastTurnDialogue);
+  } else {
+    console.log('[chat] needImage follow-up: no prompt tags found, falling back');
+    send('generate_error', { taskId: preExistingTaskId, error: '模型未返回图像描述' });
+  }
+}
+
+/**
+ * 预测结果的**口吻护栏**（2026-10-02 用户：「对话预测时不时会变成猜测角色的想法而不是玩家的想法」）。
+ *
+ * 提示词里已经写了"绝对不要预测 assistant"，但模型偶尔还是会写成角色的话 / 她的心理活动。
+ * 这里做**输出侧兜底**：像"角色在说话"的一律判定不通过；两条里只要有一条不通过就整体放弃
+ * （宁可这次不显示建议，也不要给玩家两条"她自己说的话"）。
+ *
+ * 判据（都是真机上出现过的形态）：
+ *   · **演讲式冒号**：`名字：……` —— 那才是"角色自己在说话"
+ *     ⚠️ 这里**曾经**写成"出现角色名就丢"，结果玩家喊一句「刻晴你别这样」（最正常的说话方式之一）
+ *     两条建议全被丢掉 ⇒ 2026-10-02 收窄：**玩家喊名字属于玩家口吻，必须放行** ✗→✓
+ *   · 括号里的心理或神态：「（她想：…）」「（脸红）」
+ *   · 旁白/第三人称词：心想、暗自、默默地、旁白、她低声…
+ *   · **动作描写**：**轻轻叹气** 这种
+ */
+export function sanitizeReplyGuesses(guesses, character) {
+  if (!guesses) return null;
+  const name = String(character?.display_name || '').trim();
+  // 名字要进正则 ⇒ 先转义（角色名里可能有 . * + ? ( ) [ ] 这类字符）
+  const nameColon = name ? new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[：:]`) : null;
+  const looksLikeCharacter = (text) => {
+    // ⚠️ 缺失/非字符串也算"不合格"：否则 String(undefined) === 'undefined' 会被当成合法建议放行
+    //    （单测 ⑥ 抓到的：只给了 a、没给 b 时，返回里会冒出字符串 "undefined"）
+    if (typeof text !== 'string' || !text.trim()) return true;
+    const s = text.trim();
+    if (nameColon && nameColon.test(s)) return true;
+    if (/^(她|他|她们|他们|角色|assistant)\b/i.test(s)) return true;
+    if (/[（(][^）)]{0,14}(想|心|暗自|默默|脸红|微笑|叹气|低头|咬|点头|摇头|皱眉)/.test(s)) return true;
+    if (/(心想|心里想|暗自|默默地|旁白|她的声音|她低声|她轻轻|她缓缓)/.test(s)) return true;
+    if (/\*\*[^*\n]{1,24}\*\*/.test(s)) return true;
+    if (/^[\u4e00-\u9fff]{2,6}[：:]/.test(s)) return true;   // 「纳西妲：…」
+    return false;
+  };
+  const badA = looksLikeCharacter(guesses.a);
+  const badB = looksLikeCharacter(guesses.b);
+  if (badA || badB) {
+    console.warn('[chat] 预测结果像角色在说话，已丢弃本次建议:', JSON.stringify({
+      a: String(guesses.a || '').slice(0, 40), badA, b: String(guesses.b || '').slice(0, 40), badB,
+    }));
+    return null;
+  }
+  return { a: String(guesses.a).trim(), b: String(guesses.b).trim() };
+}
+
+/**
+ * 回复猜想：根据最近对话预测用户接下来最可能回复的两句话
+ * 独立轻量 LLM 调用（~200 tokens），不影响主回复质量
+ */
+async function generateReplyGuesses(conversationId, character) {  const db = getDb();
 
   // 取最近 1 轮（2 条 raw_messages）作为上下文
-  const history = db.prepare(`
+  const history = stmt(`
     SELECT role, content FROM raw_messages
     WHERE conversation_id = ?
     ORDER BY id DESC LIMIT 2
@@ -1996,26 +3102,40 @@ async function generateReplyGuessesUncached(conversationId, character) {
 
   // msgs[0] — 舞台：破限词 + 世界观（不含 roleplay，避免预测助手站错角色）
   const jailbreak = getSystemRules({ roleplay: false });
-  const worldSetting = getWorldSetting();
+  let worldSetting = getWorldSetting();
+  if (worldSetting && worldSetting.length > 500) {
+    worldSetting = worldSetting.slice(0, 500);
+  }
   const stageContent = [jailbreak, worldSetting].filter(Boolean).join('\n\n');
 
   // msgs[1] — 任务：预测指令（先定义任务） + 角色背景（后补充上下文）
   const taskParts = [];
   taskParts.push(`你是一个对话预测助手。你的任务是预测**用户（user）**接下来最可能回复的两句话。
 
-⚠️ 重要：你要预测的是 user 的回复，**绝对不要**预测 assistant 会说什么。对话最后一条是 assistant 说的，你预测的必须是 user 对这句话的回应——不要把 assistant 的话接下去。
+⚠️ 最重要的一条：你写的是**玩家本人会打进输入框的字**，不是角色的台词、不是角色的想法、不是旁白。
+对话最后一条是角色（assistant）说的，你要写的是"玩家看到这句之后会怎么回"。
+
+禁止（出现任意一条就算答错）：
+- 出现角色的名字，或写成「角色名：……」
+- 写角色的心理活动 / 神态 / 动作描写：例如「（她想：他怎么这样）」「她脸红了」「*轻轻叹气*」
+- 用第三人称叙述（「她觉得……」「他笑了……」）
+- 接着角色的话往下说（那是 assistant 的活，不是玩家的回复）
 
 规则：
 1. A 和 B 必须是不同方向的回复——不能是同一个意思的两种说法。例如：A 延续当前话题深入，B 切换视角或融入世界观表达不同态度
 2. 每条 5~25 个汉字，像网友聊天一样自然口语化，思维跳脱但又合理，不要过于书面化或公式化
-3. 直接输出 JSON，不要任何解释
+3. 第一人称/直接对她说的话，不要加任何括号里的动作或神态
+4. 直接输出 JSON，不要任何解释
 
 输出格式：
 {"a":"<猜想A>","b":"<猜想B>"}
 
 示例：
 对话中assistant说"走吧，我们出门吃晚饭？"
-输出：{"a":"好耶，我想吃火锅！","b":"不了吧，我们点外卖吃吃就好"}`);
+输出：{"a":"好耶，我想吃火锅！","b":"不了吧，我们点外卖吃吃就好"}
+
+反例（**绝对不要**这样输出）：
+{"a":"（她低头笑了笑）好啊。","b":"纳西妲：那我们快走吧"}`);
 
   if (personalityBrief) {
     taskParts.push(`【仅供了解对话背景，你要预测的是用户（user）会怎么回应这个角色，不要模仿这个角色的语气说话】\n对话中assistant的角色设定：${personalityBrief}`);
@@ -2040,28 +3160,24 @@ async function generateReplyGuessesUncached(conversationId, character) {
   msgs.push({ role: 'user', content: '请根据以上对话，预测user接下来最可能回复的两句话。只输出 JSON：' });
 
   try {
-    const result = await chatSync(msgs, { temperature: 0.7, response_format: { type: 'json_object' }, label: '预测' });
+    const result = await chatSync(msgs, { temperature: 0.7, max_tokens: 128, response_format: { type: 'json_object' }, label: '预测' });
     console.log(`[chat] generateReplyGuesses raw response: ${result.slice(0, 120)}`);
 
     // 尝试提取 JSON 对象
     const jsonMatch = result.match(/\{\s*"a"\s*:\s*"([^"]*)"\s*,\s*"b"\s*:\s*"([^"]*)"\s*\}/);
     if (jsonMatch) {
-      return { a: jsonMatch[1], b: jsonMatch[2] };
+      return sanitizeReplyGuesses({ a: jsonMatch[1], b: jsonMatch[2] }, character);
     }
     // 回退：尝试直接 parse
     try {
       const parsed = JSON.parse(result.trim());
-      if (parsed.a && parsed.b) return { a: parsed.a, b: parsed.b };
+      if (parsed.a && parsed.b) return sanitizeReplyGuesses({ a: parsed.a, b: parsed.b }, character);
     } catch {}
     return null;
   } catch (err) {
     console.error('[chat] generateReplyGuesses error:', err.message);
     return null;
   }
-}
-
-// ── 供 characters.js 调用的清理函数 ──
-export function clearImageJudgeCounter(charId) {
 }
 
 /**
@@ -2143,6 +3259,9 @@ async function handleDreamTalkReply(res, characterId, conversationId, userMsgId,
 
       const result = await generateImage(finalPrompt, {
         scene: 'chat',
+        characterNegative: character.negative_prompt || '',
+        // 上游 v3.10.0：梦话配图的 RAG query 用「本轮用户消息 + 梦话正文」，
+        // 而不是英文 prompt —— 这样知识库召回贴住梦境语境。
         ragQuery: `${config.user.nickname || '用户'}: ${userMessage}\n${character.display_name || '角色'}: ${talk}`,
         ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
         onProgress: (p) => {
@@ -2153,7 +3272,7 @@ async function handleDreamTalkReply(res, characterId, conversationId, userMsgId,
             send('generate_progress', { taskId: genTaskId, progress: p.progress, totalSteps: p.totalSteps });
           }
         },
-      ...loraOpts,
+        ...loraOpts,
       });
 
       if (!result.success || !result.images?.length) {

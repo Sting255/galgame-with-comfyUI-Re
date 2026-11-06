@@ -10,6 +10,11 @@ rem  (same discovery order as the launcher).
 rem  This file = small batch shell + embedded JS payload after
 rem  the ___JS___ marker. Readable/auditable. Only removes
 rem  runtime garbage; characters/chats/memories never touched.
+rem  NOTE (2026-10-18): the server ALREADY auto-purges this class
+rem  of garbage (townService.purgeTownActionHistory, first run
+rem  ~90s after boot then every 5 min). What the server does NOT
+rem  do is VACUUM -- deletes only free pages, the file keeps its
+rem  size. That is the reason this tool still exists.
 rem ============================================================
 
 set "LINSHE_CORE=%~dp0agent-core"
@@ -78,14 +83,14 @@ ___JS___
 // 只删运行垃圾：已结束的动作流水（保留 24 小时，动态流水页按条数读最新记录且
 // 排除 cancelled）、命令幂等缓存、旧世界纪元/停产类型/30 天前的事件日志。
 // 角色/聊天/记忆/经历等用户数据一律不碰。
-// 实现方式：对百万级大表用「复制幸存行 → 换名」的整表重建，而不是逐行 DELETE——
-// 机械盘上逐行删除要为每行随机更新主键索引页（数十小时），重建只需顺序扫描（几分钟）。
 const path = require('path');
 const fs = require('fs');
 const { execSync, spawn } = require('child_process');
 
 const RETENTION_DAYS = 7;   // 导演候选等保留天数（与服务器内置任务一致）
 const ACTIONS_RETENTION_HOURS = 24; // 已结束动作流水保留窗口：动态流水页按条数读最新记录，旧版本 churn 数据无需长留
+const CHUNK_ACTIONS = 5000;
+const CHUNK_LOGS = 100000;
 
 const appDir = (process.argv[2] || process.cwd()).replace(/[\\/"]+$/, '');
 const dbPath = path.join(appDir, 'data', 'agent.db');
@@ -184,9 +189,6 @@ const count = t => db.prepare('SELECT count(*) n FROM ' + t).get().n;
 const sizeOf = p => { try { return fs.statSync(p).size; } catch { return 0; } };
 
 const sizeBefore = sizeOf(dbPath);
-const T0 = Date.now();
-const ts = () => '[' + Math.round((Date.now() - T0) / 1000) + 's] ';
-const sayT = m => say(ts() + m);
 say('==============================================');
 say(' 邻舍数据库一键清理');
 say('==============================================');
@@ -202,38 +204,8 @@ say('动作流水 ' + stats.town_actions + ' 行 | 审计 ' + stats.town_activit
   + ' 行 | 幂等记录 ' + stats.town_action_requests + ' 行 | 事件日志 ' + stats.town_domain_events + ' 行');
 say('');
 
+const t0 = Date.now();
 const done = [];
-
-/**
- * 整表重建：建一张同构新表 → 复制保留谓词命中的幸存行 → 换名顶替原表。
- * 机械盘上逐行 DELETE 百万级数据要为每行随机更新主键索引页（几十小时），
- * 重建只需一次顺序扫描 + 幸存行的顺序写入（几分钟）。
- * 返回 { total, kept }；表不存在返回 null。
- */
-function rebuildTable(name, keepWhere) {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(name);
-  if (!row || !row.sql) return null;
-  const idxSqls = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL")
-    .all(name).map(r => r.sql);
-  const total = count(name);
-  const hb = spawn(process.execPath, ['-e',
-    `const t0=Date.now();setInterval(()=>console.log("      ${name} 重建中，已耗时 "+Math.round((Date.now()-t0)/1000)+"s ..."),10000)`],
-    { stdio: 'inherit' });
-  try {
-    const createNew = row.sql.replace(new RegExp('CREATE TABLE\\s+("?' + name + '"?)', 'i'), m => m + '__rebuild');
-    db.exec(`DROP TABLE IF EXISTS ${name}__rebuild`);
-    db.exec(createNew);
-    const cols = db.prepare(`PRAGMA table_info(${name})`).all().map(c => c.name).join(',');
-    let kept = 0;
-    if (keepWhere) {
-      kept = db.prepare(`INSERT INTO ${name}__rebuild(${cols}) SELECT ${cols} FROM ${name} WHERE ${keepWhere}`).run().changes;
-    }
-    db.exec(`DROP TABLE ${name}`);
-    db.exec(`ALTER TABLE ${name}__rebuild RENAME TO ${name}`);
-    for (const s of idxSqls) db.exec(s);
-    return { total, kept };
-  } finally { hb.kill(); }
-}
 
 (async () => {
   // ── 1. 备份（失败即取消，不动任何数据）──
@@ -252,100 +224,140 @@ function rebuildTable(name, keepWhere) {
   say('      备份完成 ' + fmtGB(sizeOf(backupPath)));
   say('');
 
-  // 换名期间关闭 FK 校验（幸存行引用的行全部随表保留；孤儿引用随后统一清理）
-  db.pragma('foreign_keys = OFF');
+  // ── 索引：删 actions 时 FK 逐行检查 activity_log，没有 action_id 索引会全表扫描 ──
+  if (has('town_activity_log')) {
+    db.exec('CREATE INDEX IF NOT EXISTS town_activity_log_action ON town_activity_log(action_id)');
+  }
 
-  // ── 2. 动作流水：重建，只保留在途 + 最近 24 小时 ──
+  // ── 2. 已结束的动作流水（保留最近 24 小时）+ 审计子行 ──
   if (has('town_actions')) {
-    sayT('[2/6] 重建动作流水（只保留在途 + 最近 24 小时，其余删除）...');
+    say('[2/6] 清理 24 小时前已结束的动作流水及审计行...');
+    const hasActivity = has('town_activity_log');
     const cutoff = Date.now() - ACTIONS_RETENTION_HOURS * 3600_000;
-    const r = rebuildTable('town_actions',
-      `status IN ('validated','reserved','running') OR updated_at >= ${cutoff}`);
-    // 清理指向已删动作的孤儿引用（claims/proofs 生命周期内的合法引用不受影响）
-    if (has('town_resource_claims')) {
-      db.exec('DELETE FROM town_resource_claims WHERE action_id NOT IN (SELECT id FROM town_actions)');
+    const page = db.prepare('SELECT id, status, updated_at FROM town_actions WHERE id > ? ORDER BY id LIMIT ' + CHUNK_ACTIONS);
+    const delChildren = ids => db.prepare(`DELETE FROM town_activity_log WHERE action_id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+    const delParents = ids => db.prepare(`DELETE FROM town_actions WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+    let cursor = '', delA = 0, delAl = 0, nextMark = 20000;
+    for (;;) {
+      const rows = page.all(cursor);
+      if (!rows.length) break;
+      cursor = rows[rows.length - 1].id;
+      const stale = rows.filter(r => r.updated_at < cutoff
+        && (r.status === 'completed' || r.status === 'cancelled' || r.status === 'failed')).map(r => r.id);
+      if (stale.length) {
+        db.transaction(() => {
+          if (hasActivity) delAl += delChildren(stale).changes;
+          delA += delParents(stale).changes;
+        })();
+      }
+      if (delA >= nextMark) { say('      已删动作 ' + delA + ' 行 / 审计 ' + delAl + ' 行'); nextMark += 20000; }
     }
-    if (has('town_production_proofs')) {
-      db.exec('DELETE FROM town_production_proofs WHERE action_id NOT IN (SELECT id FROM town_actions)');
-    }
-    done.push(`动作流水 ${r.total} → ${r.kept} 行`);
-    sayT('      完成：' + r.total + ' → ' + r.kept + ' 行');
+    done.push('动作流水 -' + delA + ' 行，审计 -' + delAl + ' 行');
+    say('      完成：动作 -' + delA + ' 行，审计 -' + delAl + ' 行');
   }
 
   // ── 3. 命令幂等记录：运行时去重缓存，整表清空（服务停止时绝对安全）──
   if (has('town_action_requests')) {
-    sayT('[3/6] 清空命令幂等记录（重建空表）...');
-    const r = rebuildTable('town_action_requests', null);
-    done.push('幂等记录 ' + r.total + ' → 0 行');
-    sayT('      完成：' + r.total + ' → 0 行');
+    say('[3/6] 清空命令幂等记录...');
+    let delR = 0, nextMark = 50000;
+    for (;;) {
+      const r = db.prepare('DELETE FROM town_action_requests WHERE rowid IN (SELECT rowid FROM town_action_requests LIMIT ' + CHUNK_LOGS + ')').run();
+      delR += r.changes;
+      if (!r.changes) break;
+      if (delR >= nextMark) { say('      已删 ' + delR + ' 行'); nextMark += 50000; }
+    }
+    done.push('幂等记录 -' + delR + ' 行');
+    say('      完成：-' + delR + ' 行');
   }
 
-  // ── 4. 事件日志：重建，保留当前纪元 / 记忆凭证 / 未投递事件 ──
+  // ── 4. 事件日志：旧纪元整段清 + 停产类型一次扫净 + 30 天前按 occurredAt 清 ──
+  // （经历账本引用的事件是记忆凭证，三类清扫都永久保留；未投递完的事件也不删）
   if (has('town_domain_events')) {
-    sayT('[4/6] 重建事件日志（保留当前纪元 / 记忆凭证 / 未投递事件，其余删除）...');
-    const epochRow = has('town_world_state') ? db.prepare('SELECT epoch FROM town_world_state').get() : null;
-    const cur = epochRow && Number.isSafeInteger(epochRow.epoch) ? epochRow.epoch : 0;
-    const keepWhere = `(
-        world_epoch >= ${cur} AND type <> 'town.action.changed'
-        AND COALESCE(CAST(json_extract(envelope, '$.occurredAt') AS INTEGER), 9223372036854775807) >= ${Date.now() - 30 * DAY}
-      )
-      OR EXISTS (SELECT 1 FROM town_experiences x WHERE x.event_id = town_domain_events.event_id)
-      OR EXISTS (SELECT 1 FROM town_event_deliveries d WHERE d.event_id = town_domain_events.event_id
-        AND d.status IN ('pending','processing'))`;
-    const r = rebuildTable('town_domain_events', keepWhere);
-    done.push(`事件日志 ${r.total} → ${r.kept} 行`);
-    sayT('      完成：' + r.total + ' → ' + r.kept + ' 行');
+    say('[4/6] 清理事件日志（旧纪元 / 停产类型 / 30 天前）...');
+    const hasDeliveries = has('town_event_deliveries');
+    const hasActivity = has('town_activity_log');
+    const hasExp = has('town_experiences');
+    const expFilter = hasExp ? ' AND event_id NOT IN (SELECT event_id FROM town_experiences)' : '';
+    const dlvGuard = hasDeliveries
+      ? ` AND NOT EXISTS (SELECT 1 FROM town_event_deliveries d WHERE d.event_id = town_domain_events.event_id AND d.status IN ('pending','processing'))` : '';
+    const wheres = [];
+    if (has('town_world_state')) {
+      const epochRow = db.prepare('SELECT epoch FROM town_world_state').get();
+      if (epochRow && Number.isSafeInteger(epochRow.epoch)) wheres.push(`world_epoch < ${epochRow.epoch}`);
+    }
+    wheres.push(`type = 'town.action.changed'`);
+    wheres.push(`CAST(json_extract(envelope, '$.occurredAt') AS INTEGER) < ${Date.now() - 30 * DAY}`);
+    let delE = 0, delD = 0, delAl = 0;
+    for (const extra of wheres) {
+      const where = `WHERE ${extra}${expFilter}${dlvGuard}`;
+      for (;;) {
+        // rowid 在有 INTEGER PRIMARY KEY 的表上返回的是主键列名，必须显式别名
+        const rows = db.prepare(`SELECT rowid AS rid FROM town_domain_events ${where} ORDER BY rowid LIMIT 50000`).all();
+        if (!rows.length) break;
+        const rids = rows.map(r => r.rid).join(',');
+        db.transaction(() => {
+          if (hasDeliveries) delD += db.prepare(`DELETE FROM town_event_deliveries WHERE event_id IN
+            (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run().changes;
+          if (hasActivity) delAl += db.prepare(`DELETE FROM town_activity_log WHERE event_id IN
+            (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run().changes;
+          delE += db.prepare(`DELETE FROM town_domain_events WHERE rowid IN (${rids})`).run().changes;
+        })();
+        say('      已删事件 ' + delE + ' 行 / 投递 ' + delD + ' 行 / 审计 ' + delAl + ' 行');
+      }
+    }
+    done.push(`事件日志 -${delE} 行，投递 -${delD} 行，审计 -${delAl} 行`);
+    say('      完成：事件 -' + delE + ' 行，投递 -' + delD + ' 行，审计 -' + delAl + ' 行');
   }
 
-  // ── 5. 其他运行残留 + 废弃表 ──
-  sayT('[5/6] 清理候选/相遇/投递状态等运行残留...');
+  // ── 5. 其他运行垃圾（保留期与服务器内置清理任务一致）──
+  say('[5/6] 清理候选/相遇/投递状态等运行残留...');
   const eco = [];
-  if (has('town_activity_log')) {
-    // 新版已废弃该表（理由上移 town_actions.last_reason）：纯写入审计无读者，整表删除
-    db.exec('DROP TABLE town_activity_log');
-    eco.push('废弃审计表 town_activity_log 已移除');
-  }
-  if (has('town_event_deliveries')) {
-    const r = rebuildTable('town_event_deliveries', "status IN ('pending','processing')");
-    if (r.total !== r.kept) eco.push('投递状态 ' + r.total + ' → ' + r.kept + ' 行');
-  }
   if (has('town_director_candidates')
     && db.prepare('PRAGMA table_info(town_director_candidates)').all().some(c => c.name === 'created_utc_ms')) {
-    const r = rebuildTable('town_director_candidates', 'created_utc_ms >= ' + (Date.now() - RETENTION_DAYS * DAY));
-    if (r.total !== r.kept) eco.push('导演候选 ' + r.total + ' → ' + r.kept + ' 行');
+    const r = db.prepare('DELETE FROM town_director_candidates WHERE created_utc_ms < ?')
+      .run(Date.now() - RETENTION_DAYS * DAY);
+    if (r.changes) eco.push('导演候选 -' + r.changes + ' 行');
   }
   if (has('town_encounters')) {
-    const r = rebuildTable('town_encounters',
-      "COALESCE(ended_at, created_at) >= '" + new Date(Date.now() - 30 * DAY).toISOString().slice(0, 19).replace('T', ' ') + "'");
-    if (r.total !== r.kept) eco.push('相遇 ' + r.total + ' → ' + r.kept + ' 行');
+    const r = db.prepare('DELETE FROM town_encounters WHERE COALESCE(ended_at, created_at) < ?')
+      .run(new Date(Date.now() - 30 * DAY).toISOString().slice(0, 19).replace('T', ' '));
+    if (r.changes) eco.push('相遇 -' + r.changes + ' 行');
+  }
+  if (has('town_event_deliveries')) {
+    const r = db.prepare("DELETE FROM town_event_deliveries WHERE status IN ('done','dead')").run();
+    if (r.changes) eco.push('投递状态 -' + r.changes + ' 行');
   }
   say('      ' + (eco.length ? eco.join('，') : '无残留'));
   if (eco.length) done.push(eco.join('，'));
 
-  db.pragma('foreign_keys = ON');
-  const fkIssues = db.pragma('foreign_key_check').length;
-  if (fkIssues) say(`    注意：发现 ${fkIssues} 条跨表孤儿引用（不影响使用，已保留）`);
-
   // ── 6. 压缩 + 校验 ──
-  sayT('[6/6] VACUUM 压缩（大库需要几分钟到十几分钟，期间窗口无响应、每 10 秒心跳，请勿关闭）...');
+  say('[6/6] VACUUM 压缩（大库需要几分钟，期间窗口无响应、进度按 10 秒心跳显示，请勿关闭）...');
+  // VACUUM 会阻塞本进程事件循环，心跳由独立子进程向同一控制台打印
   const hb = spawn(process.execPath, ['-e',
     'const t0=Date.now();setInterval(()=>console.log("      压缩进行中，已耗时 "+Math.round((Date.now()-t0)/1000)+"s ..."),10000)'],
     { stdio: 'inherit' });
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   db.exec('VACUUM');
   hb.kill();
-  sayT('      完整性校验：' + db.pragma('integrity_check', { simple: true }));
+  say('      完整性校验：' + db.pragma('integrity_check', { simple: true }));
 
   const sizeAfter = sizeOf(dbPath);
   say('');
   say('==============================================');
-  say(' 清理完成（用时 ' + Math.round((Date.now() - T0) / 1000) + ' 秒）');
+  say(' 清理完成（用时 ' + Math.round((Date.now() - t0) / 1000) + ' 秒）');
   for (const line of done) say('  · ' + line);
   say('  体积：' + fmtGB(sizeBefore) + ' → ' + fmtGB(sizeAfter));
   say(' 备份：' + path.basename(backupPath) + '（确认正常后可手动删除）');
   say('==============================================');
-  say(' 治本提醒：请把程序更新到最新版本——新版已内置自动');
-  say(' 清理与自动压缩，更新后不再需要手动运行本脚本。');
+  say(' 说明（2026-10-18 更正）：');
+  say('   · 服务器**有**内置自动清理 —— services/town/townService.js 的 purgeTownActionHistory');
+  say('     在启动后 90 秒跑首轮，此后每 5 分钟一轮，按保留期清动作流水 / 幂等记录 / 事件日志 /');
+  say('     投递状态 / 相遇 / 导演候选（保留期：动作 7 天、事件与相遇 30 天、候选 7 天）。');
+  say('     ⚠️ 本行以前写的是「当前版本没有内置自动清理」—— 那是**错的**，已核实并更正。');
+  say('   · 但服务器**不做 VACUUM**：删除只把页标成空闲，磁盘体积不缩。本脚本的价值就在这里 ——');
+  say('     它多做了 [1] 备份、[6] VACUUM + integrity_check。所以玩久了（页碎片多、体积虚高）');
+  say('     隔几个月跑一次本脚本仍然值得，但**不必**为「垃圾堆积」担心。');
+  say('   · 它只清小镇的运行期垃圾；人物、聊天记录、记忆、关系一律不碰，而且**动手前会先备份**。');
   db.close();
   process.exit(0);
 })().catch(e => {

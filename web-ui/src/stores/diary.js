@@ -77,7 +77,15 @@ export const useDiaryStore = defineStore('diary', () => {  // ── 书本开�
         if (_matchesEvent(d)) loadDiary(date.value, { silent: true })
         else if (Number(d?.character_id) === Number(characterId.value) && d.date === todayKey() && !historyOpen.value) loadHistory({ silent: true })
       }),
-      onEvent('diary_progress', () => { /* 进度由右下角生成提示承担 */ }),
+      // 生成进度（上游 v3.9.0 契约）：diaryGenerator 在分段生成过程中广播，
+      // 前端据此确认「还在写」并把日记本切到生成态（进度条外观由右下角生成提示浮窗承担）。
+      // 本仓后端目前只广播 text_ready / done / error，这个事件接受即可（收到不做事，
+      // 后端补上分片广播时立刻生效）——保留它是为了不再出现「契约里有、前端静默丢弃」。
+      onEvent('diary_progress', (d) => {
+        if (!_matchesEvent(d)) return
+        generating.value = true
+        error.value = ''
+      }),
       onEvent('diary_text_ready', (d) => {
         if (_matchesEvent(d)) _applyPayload(d)
       }),

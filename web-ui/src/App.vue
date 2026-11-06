@@ -44,18 +44,20 @@
           <component v-if="Component" :is="Component" :key="route.path" />
         </Transition>
       </router-view>
-      <!-- 页面弹窗独立挂载，避免 Teleport 锚点成为路由页面切换时的插入参照。 -->
+      <!-- 常驻页面弹窗层（上游 v3.9.0 合并）：声明在 router-view 之外，
+           切页不重建；小镇的动态弹窗等 anchored modal 的 anchor 指到这里，
+           面板因此相对内容区居中，而不是相对整个视口。 -->
       <div class="page-modal-host"></div>
     </div>
   </div>
   <ConfirmDialog ref="confirmDialog" />
   <Toast ref="toastEl" />
-  <!-- 角色操作反馈宿主：右下角轻通知，不依赖立绘小窗是否打开 -->
+  <!-- 角色操作反馈宿主：右下角轻通知，不依赖立绘小窗是否打开（内部自带 Toast 角色变体） -->
   <CharacterReactionHost />
   <InstallGuideDialog ref="guideDialog" />
   <ChangelogDialog ref="changelogDialog" @close="onChangelogClose" />
   <ImageEditTaskFloater />
-  <!-- 角色日记本：全局宿主，日程页入口 / 右下角生成提示的「查看」都打开它 -->
+  <!-- 角色日记本（上游 v3.9.0 合并）：全局宿主，日程页卡片 / 详情抽屉 / 右下角生成提示的「翻开看看」都打开它 -->
   <DiaryBookOverlay />
 
   <!-- 手机端访问提示 Toast -->
@@ -80,15 +82,17 @@ import { playNotificationSound } from './utils/sound.js'
 import { useMailboxStore } from './stores/mailbox.js'
 import { useUpdateStore } from './stores/updateInfo.js'
 import { onEvent as onStreamEvent } from './stores/unifiedStream.js'
+import { getProgramTime } from './api/timeControl.js'
+import { programTimeViewModel } from './components/timeControlLogic.js'
 import NavBar from './components/NavBar.vue'
 import Sidebar from './components/Sidebar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Toast from './components/Toast.vue'
-import CharacterReactionHost from './components/CharacterReactionHost.vue'
 import InstallGuideDialog from './components/InstallGuideDialog.vue'
 import ChangelogDialog from './components/ChangelogDialog.vue'
 import ImageEditTaskFloater from './components/ImageEditTaskFloater.vue'
 import DiaryBookOverlay from './components/DiaryBookOverlay.vue'
+import CharacterReactionHost from './components/CharacterReactionHost.vue'
 import { MAIBOT_AFTER_START_STEPS, MAIBOT_INSTALL_STEPS, MAIBOT_INTRO_TEXT } from './data/maibotTutorial.js'
 import { CHANGELOG_FLAG } from './data/changelog.js'
 
@@ -150,12 +154,31 @@ function toast(message, type = 'info', duration) {
   toastEl.value?.show(message, type, duration)
 }
 
-/** 目标日期的口语化描述：明天 / 后天 / 大后天，再往后显示 M月D日 */
-function describeTargetDate(dateKey) {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+/**
+ * 程序世界的「今天」（日期键 YYYY-MM-DD）。
+ *
+ * 2026-10-02 修：日程的 `target_date` 与 `daily_schedules.schedule_date` 都是**程序日期键**，
+ * 原来这里拿 `new Date()`（真实今天）去比，世界钟被拨过之后「明天 / 后天」会指错天。
+ * 前端**不自己算偏移**：只读后端 `GET /api/time` 的 `date`；读不到给空串（那时不做相对日期判断）。
+ */
+async function programDateKeyNow() {
+  try {
+    const view = programTimeViewModel(await getProgramTime())
+    return view.date || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 目标日期的口语化描述：明天 / 后天 / 大后天，再往后（或判断不了）显示 M月D日。
+ * 基准 `todayKey` 是**程序世界的今天**；拿不到时不做"明天/后天"的相对判断，宁可少说也不说错。
+ */
+function describeTargetDate(dateKey, todayKey = '') {
   const target = new Date(`${dateKey}T00:00:00`)
-  const diffDays = Math.round((target - today) / 86400000)
+  if (Number.isNaN(target.getTime())) return dateKey
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(String(todayKey)) ? new Date(`${todayKey}T00:00:00`) : null
+  const diffDays = base ? Math.round((target - base) / 86400000) : null
   if (diffDays === 1) return '明天'
   if (diffDays === 2) return '后天'
   if (diffDays === 3) return '大后天'
@@ -217,7 +240,7 @@ provide('showChangelog', showChangelog)
 // ══════════════════════════════════════════════════
 const MOBILE_MAX = 767
 const isMobile = ref(false)
-// 桌面端侧边栏收纳（移动端走抽屉，这套不参与）
+// 桌面端侧边栏收纳（上游 v3.10.0；移动端走抽屉，这套不参与）
 const SIDEBAR_COLLAPSED_KEY = 'linshe.sidebar.collapsed'
 const sidebarCollapsed = ref((() => {
   try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1' } catch { return false }
@@ -276,6 +299,12 @@ onMounted(async () => {
     }
   })
 
+  // 私聊两段式反应的**后半段**（专题 §八 8.2）：她的文字反应先上屏，图好了再补到那条气泡上。
+  // payload（后端定，未落地前按此写）：{ msg_id, raw_id, images }；找不到 msg_id 会安全忽略。
+  onStreamEvent('proactive_message_update', (data) => {
+    chat.handleProactiveMessageUpdate(data)
+  })
+
   // 订阅日程延迟回复 SSE 事件
   onStreamEvent('delayed_reply', (data) => {
     chat.handleDelayedReply(data)
@@ -287,12 +316,12 @@ onMounted(async () => {
   })
 
   // 日程更改成功（手动编辑 / 聊天约定 / 跨天约定应用）→ 右上角提示
-  onStreamEvent('schedule_changed', (data) => {
-    if (data.source === 'event') return // 奇遇占用日程静默同步，不弹更新提示
+  onStreamEvent('schedule_changed', async (data) => {
     const name = data.display_name || '角色'
-    const todayKey = new Date().toLocaleDateString('sv-SE') // 本地时区 YYYY-MM-DD
+    // 基准是**程序世界的今天**（日程日期键属于世界钟；不拿现实日期冒充，也不在前端算偏移）
+    const todayKey = await programDateKeyNow()
     if (data.target_date && data.target_date !== todayKey) {
-      toast(`「${name}」的约定已排入${describeTargetDate(data.target_date)}的日程`, 'success')
+      toast(`「${name}」的约定已排入${describeTargetDate(data.target_date, todayKey)}的日程`, 'success')
     } else {
       toast(`「${name}」日程已更新`, 'success')
     }
@@ -316,7 +345,9 @@ onMounted(async () => {
   const mobileIp = params.get('mobile_ip')
   if (mobileIp && !sessionStorage.getItem(TOAST_KEY)) {
     sessionStorage.setItem(TOAST_KEY, '1')
-    mobileToast.value = { visible: true, url: `http://${mobileIp}:3099` }
+    const mobileUrl = new URL(window.location.origin)
+    mobileUrl.hostname = mobileIp
+    mobileToast.value = { visible: true, url: mobileUrl.origin }
     setTimeout(() => { mobileToast.value.visible = false }, 5000)
   }
   // 清理 URL 中的 mobile_ip 参数（无论是否弹 toast）
@@ -353,10 +384,14 @@ onUnmounted(() => {
 <style>
 .app-layout {
   display: flex; flex: 1; min-height: 0; position: relative; z-index: 1;
-  /* 侧栏始终保持固定宽度，收纳仅改变位移，避免内部内容被挤压。 */
+  /* 侧栏始终保持固定宽度，收纳仅改变位移，避免内部内容被挤压。（上游 v3.10.0） */
   --sidebar-width: 300px;
   --nav-width: 75px;
 }
+/* ── 桌面端侧栏收纳（上游 v3.10.0）──────────────────────────────
+   侧栏改成绝对定位的视口 + 可位移轨道：收纳只改 transform，不改宽度，
+   内部内容不会被挤压。page-host 用 margin-left 让出侧栏宽度。
+*/
 .sidebar-viewport, .sidebar-track { display: contents; }
 @media (min-width: 768px) {
   .sidebar-viewport {
@@ -411,13 +446,26 @@ onUnmounted(() => {
 .sidebar-handle svg { transition: transform var(--dur-interaction) var(--ease-spring); }
 /* 折叠后箭头翻向另一边，提示可以再点开 */
 .app-layout.sidebar-collapsed .sidebar-handle svg { transform: rotate(180deg); }
-.page-host { position: relative; flex: 1; min-width: 0; }
+
+/* ── galgame 沉浸模式：隐藏导航/侧栏/遮罩，内容区铺满（上游 v3.10.0） ── */
 .app-layout.immersive-chat > .nav-bar,
 .app-layout.immersive-chat > .sidebar-viewport,
 .app-layout.immersive-chat > .mobile-scrim { display: none; }
 .app-layout.immersive-chat > .page-host { margin-left: 0; padding-bottom: 0; }
-.page-modal-host { position: absolute; inset: 0; pointer-events: none; }
-.page-modal-host .modal-overlay { pointer-events: auto; }
+
+.page-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+/* 常驻页面弹窗层：铺满内容区、不参与排版，只给 anchored modal 当插入宿主与定位基准 */
+.page-modal-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.page-modal-host > * { pointer-events: auto; }
+
 #app { position: relative; z-index: 1; }
 
 /* ── 移动端 Sidebar 遮罩 ── */

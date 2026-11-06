@@ -79,7 +79,7 @@ function lifeScope(context, input) {
   return { ...context.scope, idempotencyKey: input.idempotencyKey };
 }
 
-/** 小镇生活维护：相遇仅存小镇经历；赠礼按角色关联与记忆开关决定是否写长期记忆。 */
+/** 小镇生活维护：把赠礼等已入账事件沉淀为角色共同经历与记忆。 */
 export function maintainTownLife() {
   const context = getTownEconomyContext();
   createTownExperienceService({ db: context.db, clock: { now: Date.now }, registry: context.registry,

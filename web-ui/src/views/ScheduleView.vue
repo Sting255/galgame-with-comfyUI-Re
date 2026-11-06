@@ -13,7 +13,6 @@
                   v-model="searchQuery"
                   class="search-input"
                   placeholder="搜索..."
-                  aria-label="搜索角色日程"
                   @keydown.esc="searchQuery = ''"
                 />
                 <div
@@ -55,7 +54,6 @@
               @wake="onCardWake(c.id)"
               @pin="toggleCharPin(c)"
             />
-
           </div>
         </template>
 
@@ -111,6 +109,7 @@
       :open="drawerOpen"
       :char="detailChar"
       :activities="detailActs"
+      :private-moment="detailPrivateMoment"
       :loading="detailLoading"
       :peek-busy="peekBusy"
       :regenerating="detailRegenerating"
@@ -288,7 +287,7 @@
                 type="textarea"
                 v-model="regenerateDirection"
                 class="regenerate-textarea"
-                placeholder="例如：今天做一场深夜直播、去鸽川区摆摊接客、宅在宿舍打一天游戏、去幻月游戏押注..."
+                placeholder="例如：今天去游乐园、安排出差的一天、宅在家里打游戏..."
                 rows="3"
                 ref="regenerateTextareaRef"
                 @keydown.enter.exact="confirmRegenerateWithDirection"
@@ -399,8 +398,6 @@
 import { ref, computed, onMounted, onUnmounted, inject, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useScheduleStore } from '../stores/schedule.js'
-import { useDiaryStore } from '../stores/diary.js'
-import { useChatStore } from '../stores/chat.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { onEvent } from '../stores/unifiedStream.js'
 import * as api from '../api/index.js'
@@ -409,15 +406,15 @@ import CharacterDetailDrawer from '../components/CharacterDetailDrawer.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import GearIcon from '../components/GearIcon.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
-import { emitCharacterPinEnabled } from '../utils/characterReactionProducers.js'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
 import LinsheSlider from '../components/ui/LinsheSlider.vue'
-import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
+// 角色日记本（上游 v3.9.0 合并）：宿主在 App.vue，这里只负责打开
+import { useDiaryStore } from '../stores/diary.js'
 
 const store = useScheduleStore()
-const diaryStore = useDiaryStore()
 const settingsStore = useSettingsStore()
+const diaryStore = useDiaryStore()
 const router = useRouter()
 
 const isMobile = inject('isMobile')
@@ -440,33 +437,6 @@ const settingsOpen = ref(false)
 const refreshDays = ref(1)
 const scheduleDisableThinking = ref(false)
 const savingRefreshDays = ref(false)
-
-// ── 批量停止日程生成（全量省 token） ──
-const chatStore = useChatStore()
-const scheduleAllToggling = ref(false)
-// 所有角色都关着才算「已停止」；部分关时开关显示为关（点一下 = 全部停掉）
-const allSchedulesDisabled = computed(() =>
-  chatStore.characters.length > 0 && chatStore.characters.every(c => c.schedule_enabled === 0)
-)
-
-async function toggleAllSchedules(next) {
-  if (scheduleAllToggling.value) return
-  scheduleAllToggling.value = true
-  try {
-    const r = await api.setAllCharactersScheduleEnabled(next)
-    await chatStore.loadCharacters()
-    toastFn(
-      next
-        ? `已停止 ${r?.changed ?? 0} 个角色的日程生成，之后不再消耗日程额度`
-        : `已恢复 ${r?.changed ?? 0} 个角色的日程生成`,
-      'success'
-    )
-  } catch (err) {
-    toastFn('设置失败: ' + (err?.message || '未知错误'), 'error')
-  } finally {
-    scheduleAllToggling.value = false
-  }
-}
 
 async function openSettings() {
   try {
@@ -557,6 +527,8 @@ const detailChar = computed(() => {
   return enrichedChars.value.find(x => x.id === selectedCharId.value) || null
 })
 const detailActs = ref<any[]>([])
+/** 她今天的私密时刻（2026-10-02 自慰玩法）：随日程响应一起回来，抽屉里给一条提示 */
+const detailPrivateMoment = ref<any>(null)
 const detailLoading = ref(false)
 const detailRegenerating = ref(false)
 
@@ -566,6 +538,34 @@ const peekBusy = ref(false)
 const peekLoading = ref(false)
 const peekImage = ref<string | null>(null)
 const peekError = ref<string | null>(null)
+
+// ── 瞄一眼请求收尾（2026-10-22）──
+// 之前这里四个入口都是 fire-and-forget：HTTP 失败时 store 只把错误写进它自己的 peekError，
+// 而视图的 peekLoading 只认 SSE 的 schedule_peek_ready 事件 —— 于是进度条爬到 95% 后
+// **永久卡住**、不显示任何错因，用户只能关弹窗（真机日志里的 ScheduleView 就是这条路）。
+// 现在两条失败路径都收尾：① 请求抛错 → 立刻显示；② 请求成功但图迟迟不来 → 超时兜底。
+const PEEK_TIMEOUT_MS = 90_000
+let _peekTimeout: ReturnType<typeof setTimeout> | null = null
+
+function clearPeekTimeout() {
+  if (_peekTimeout) { clearTimeout(_peekTimeout); _peekTimeout = null }
+}
+
+function failPeek(message: string) {
+  peekError.value = message
+  peekLoading.value = false
+  peekBusy.value = false
+  clearPeekTimeout()
+  stopFakeProgress()
+}
+
+function startPeekRequest(request: () => Promise<unknown>) {
+  clearPeekTimeout()
+  _peekTimeout = setTimeout(() => {
+    if (peekLoading.value && !peekImage.value) failPeek('生成超时：图像迟迟没有回来，请重试')
+  }, PEEK_TIMEOUT_MS)
+  request().catch((err: any) => failPeek(err?.message || '生成失败'))
+}
 const peekPrompt = ref<string | null>(null)
 const peekParticipantIds = ref<number[]>([])
 const peekChar = ref<any>(null)
@@ -707,6 +707,7 @@ watch(peekLoading, (loading) => {
 // ── 相机快门动画：图片到达时触发 ──
 watch(peekImage, (newVal) => {
   if (newVal) {
+    clearPeekTimeout() // 图到了就撤掉超时兜底，避免它在下一次拍之前误报
     // 先复位再触发，确保每次图片到达都播放动画
     shutterFire.value = false
     nextTick(() => {
@@ -854,6 +855,10 @@ onUnmounted(() => {
   if (_phraseTimer) { clearInterval(_phraseTimer); _phraseTimer = null }
   stopSidebarTips()
   if (_pulseTimer) { clearInterval(_pulseTimer); _pulseTimer = null }
+  // 假进度是自递归的 setTimeout 链，以前只靠"拿到图/有错误"停，卸载后还会一直跑
+  // （组件实例被定时器持有）。超时兜底同样要撤。
+  clearPeekTimeout()
+  stopFakeProgress()
 })
 
 // ── 方法 ──
@@ -869,7 +874,11 @@ async function onSelectChar(id: number) {
   detailActs.value = []
   try {
     const d = await store.fetchCharacterSchedule(id)
-    if (current()) detailActs.value = d.activities || []
+    if (current()) {
+      detailActs.value = d.activities || []
+      // 私密时刻（2026-10-02）：同一份日程响应里就带着，不用多发一次请求
+      detailPrivateMoment.value = d.private_moment || null
+    }
   } catch { if (current()) detailActs.value = [] }
   finally { if (current()) detailLoading.value = false }
 }
@@ -882,7 +891,7 @@ function onPeek() {
   peekImage.value = null; peekError.value = null; peekPrompt.value = null
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
-  store.peekSnapshot(detailChar.value.id)
+  startPeekRequest(() => store.peekSnapshot(detailChar.value.id))
 }
 
 function onPeekAt(act: any) {
@@ -892,7 +901,7 @@ function onPeekAt(act: any) {
   peekImage.value = null; peekError.value = null; peekPrompt.value = null
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
-  store.peekSnapshot(detailChar.value.id, {
+  startPeekRequest(() => store.peekSnapshot(detailChar.value.id, {
     activity: act.activity,
     location: act.location,
     replyDelay: act.replyDelay,
@@ -903,7 +912,7 @@ function onPeekAt(act: any) {
     tags: act.tags,
     participantIds: act.participantIds,
     sharedEventId: act.sharedEventId,
-  })
+  }))
 }
 
 async function onRegenerate() {
@@ -949,12 +958,13 @@ async function onCardPeek(id: number) {
     detailActs.value = d.activities || []
   } catch { /* */ }
   const act = detailActs.value.find((a: any) => a.isCurrent) || detailActs.value[0]
-  peekChar.value = detailChar.value
+  // 这里原来写的是 detailChar.value（可能还是上一个角色），卡片的角色才是要拍的对象
+  peekChar.value = c
   peekAct.value = act || null
   peekImage.value = null; peekError.value = null; peekPrompt.value = null
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
-  store.peekSnapshot(id)
+  startPeekRequest(() => store.peekSnapshot(id))
 }
 
 function onChat() {
@@ -963,7 +973,7 @@ function onChat() {
   router.push(`/chat/${detailChar.value.id}`)
 }
 
-// ── 日记：翻开 ta 的日记本（封面 / 正文 / 三张配图 / 历史翻阅都在日记本里） ──
+// ── 日记（上游 v3.9.0 合并）：翻开 ta 的日记本（封面 / 正文 / 三张配图 / 历史翻阅都在日记本里） ──
 function onOpenDiary(char: any) {
   if (!char?.id) return
   diaryStore.openBook({
@@ -1037,26 +1047,12 @@ async function onCardWake(id: number) {
 
 // ── 卡片置顶 ──
 async function toggleCharPin(c: any) {
-  const wasPinned = !!c.pinned
   const pinned = c.pinned ? 0 : 1
   c.pinned = pinned
   // enrichedChars 是 .map() 出来的副本，必须回写 store 源对象，否则切页签后状态回退
   const src = store.characters.find((ch: any) => ch.id === c.id)
   if (src) src.pinned = pinned
-  try {
-    const res = await api.togglePin(c.id, pinned)
-    // 只有接口确认成功、且确实从未置顶变成置顶才产生角色通知（§2.2）
-    emitCharacterPinEnabled({
-      characterId: c.id,
-      characterName: c.display_name || c.name || '',
-      wasPinned,
-      pinned: !!pinned,
-      ok: res?.ok === true && res?.pinned === pinned,
-    })
-  } catch {
-    c.pinned = wasPinned ? 1 : 0
-    if (src) src.pinned = wasPinned ? 1 : 0
-  }
+  try { await api.togglePin(c.id, pinned) } catch {}
 }
 
 // ── 叫醒系统（抽屉内） ──
@@ -1132,7 +1128,7 @@ function retryPeek() {
   if (!peekChar.value) return
   peekError.value = null; peekPrompt.value = null; peekLoading.value = true; peekBusy.value = true
   startFakeProgress()
-  store.peekSnapshot(peekChar.value.id)
+  startPeekRequest(() => store.peekSnapshot(peekChar.value.id))
 }
 
 async function retakePeek() {
@@ -1296,7 +1292,7 @@ function finishReset() {
 .topbar-row {
   display: flex; align-items: center; justify-content: space-between;
 }
-.topbar-row h2 { margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--text-bright); flex-shrink: 0; white-space: nowrap; }
+.topbar-row h2 { margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--text-bright); }
 .topbar-row h2.is-clickable { cursor: pointer; }
 
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
@@ -1309,7 +1305,7 @@ function finishReset() {
   width: 34px; height: 34px; border-radius: 50%;
   border: 2px solid transparent;
   background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 18px; line-height: 1;
   cursor: pointer;
   transition: all 0.3s ease;
@@ -1330,7 +1326,7 @@ function finishReset() {
   border: 2px solid transparent;
   background: var(--grad-soft);
   background-size: 200% 200%;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -1352,7 +1348,7 @@ function finishReset() {
 .btn-reset.is-disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-reset.is-resetting {
   border-color: rgba(var(--accent-rgb), 0.35);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .btn-reset .spinning { animation: spin 1.2s linear infinite; }
 
@@ -1365,24 +1361,8 @@ function finishReset() {
   display: flex; align-items: baseline; justify-content: space-between;
 }
 .sched-settings-slider-heading label { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
-.sched-settings-value { font-size: 0.85rem; font-weight: 600; color: var(--accent); }
+.sched-settings-value { font-size: 0.85rem; font-weight: 600; color: var(--accent-text); }
 .sched-settings-hint { margin: 6px 0 0; font-size: 0.8rem; line-height: 1.5; color: var(--text-secondary); }
-/* 批量开关（停止所有角色生成日程） */
-.sched-settings-toggle-row {
-  display: flex; align-items: flex-start; gap: 12px;
-}
-.sched-settings-toggle-text {
-  flex: 1; min-width: 0;
-  display: flex; flex-direction: column;
-}
-.sched-settings-toggle-label {
-  font-size: 0.9rem; font-weight: 600; color: var(--text-primary);
-}
-.sched-settings-toggle-text .sched-settings-hint { margin-top: 4px; }
-.sched-settings-divider {
-  height: 1px; margin: 14px 0;
-  background: var(--glass-border);
-}
 
 
 /* ── Card Grid ── */
@@ -1390,11 +1370,9 @@ function finishReset() {
   flex: 1; overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  /* 底部多留 24px：卡片下沿伸出的日记入口是绝对定位、不计入行高，不留白最后一行会被裁 */
-  gap: 12px; padding: 16px 20px 40px;
+  gap: 12px; padding: 16px 20px;
   align-content: start;
 }
-
 
 /* ── Placeholder ── */
 .sched-placeholder {
@@ -1405,7 +1383,7 @@ function finishReset() {
 .sched-placeholder p { margin: 0; font-size: 0.95rem; }
 .ph-hint { font-size: 0.8rem; color: var(--text-secondary); }
 
-.loader { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+.loader { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent-text); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .btn-glass {
@@ -1516,13 +1494,13 @@ function finishReset() {
   position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);
   font-size: 17px; font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ── 状态标签 ── */
 .sidebar-scan-label {
   font-size: 13px; font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-text);
   letter-spacing: 0.08em;
   animation: sidebar-label-pulse 1.4s ease-in-out infinite;
 }
@@ -1692,14 +1670,14 @@ function finishReset() {
   opacity: 0;
 }
 .pk-wait span { font-size: 0.73rem; color: var(--pk-hint); }
-.loader-ring { width: 36px; height: 36px; margin: 0 auto; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.loader-ring { width: 36px; height: 36px; margin: 0 auto; border: 3px solid var(--border); border-top-color: var(--accent-text); border-radius: 50%; animation: spin 0.8s linear infinite; }
 /* 环形进度条（参照 ImageGenBubble） */
 .pk-ring-container { position: relative; width: 80px; height: 80px; margin: 0 auto 8px; }
 .pk-ring { width: 80px; height: 80px; transform: rotate(-90deg); }
 .pk-ring-progress { transition: stroke-dashoffset 0.4s ease; }
 .pk-ring-pct {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 16px; font-weight: 600; color: var(--accent);
+  font-size: 16px; font-weight: 600; color: var(--accent-text);
 }
 .pk-err { text-align: center; padding: 36px; }
 .pk-err p { color: var(--danger); margin: 0 0 4px; font-size: 0.9rem; }
@@ -1799,7 +1777,7 @@ function finishReset() {
 .reset-current-task.cancelled { color: var(--warning); }
 .loader-ring-sm {
   width: 18px; height: 18px;
-  border: 2px solid var(--border); border-top-color: var(--accent);
+  border: 2px solid var(--border); border-top-color: var(--accent-text);
   border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0;
 }
 
@@ -1824,17 +1802,6 @@ function finishReset() {
     position: absolute; top: 0; left: 0; right: 0; z-index: 20;
   }
   .topbar-row h2 { font-size: 1rem; }
-  .topbar-row { gap: 8px; }
-  .topbar-actions { flex: 1; min-width: 0; justify-content: flex-end; gap: 6px; }
-  .search-input {
-    width: 64px;
-    min-width: 0;
-    flex: 0 1 64px;
-    transition: width 0.3s var(--ease-standard), flex-basis 0.3s var(--ease-standard);
-  }
-  .search-input:focus { width: 180px; flex-basis: 180px; }
-  .topbar-actions .lib-gear { flex-shrink: 0; }
-  .topbar-actions .btn-reset { flex-shrink: 0; padding: 8px 10px; }
   .card-grid {
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: 8px; padding: 80px 10px 8px;

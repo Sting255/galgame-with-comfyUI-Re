@@ -554,7 +554,7 @@ async function removeBoard(b) {
 .ms-draft-preview p { margin: 0; }
 .ms-draft-preview ul { margin: 0; padding-left: 20px; }
 .ms-draft-preview details { width: 100%; }
-.ms-draft-preview summary { cursor: pointer; color: var(--accent-hover); }
+.ms-draft-preview summary { cursor: pointer; color: var(--accent-text); }
 .ms-draft-prompt { white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
 .ms-intro {
   display: flex;
@@ -579,7 +579,7 @@ async function removeBoard(b) {
 .ms-total {
   white-space: nowrap;
   font-size: var(--fs-xs);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   padding-top: 4px;
 }
 .ms-layout {

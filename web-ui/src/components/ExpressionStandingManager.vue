@@ -46,7 +46,8 @@ v-if="editing.image_url" :key="editing.image_url" :src="editing.image_url" :asse
           <linshe-button variant="primary" :disabled="(paused ? submitting || !!working : locked) || controlling || !targets.length" :loading="submitting || (paused && controlling)" @click="paused ? controlTask('restart') : generate()">{{ paused ? '重新生成' : busy ? '正在生成…' : imageCount > 0 ? '重新生成立绘' : '一键生成立绘' }}</linshe-button>
           <linshe-button v-if="busy || job?.resumable" size="sm" :loading="controlling" :disabled="job?.status === 'stopping' || controlling || submitting" @click="controlTask()">{{ paused || job?.resumable ? '继续任务' : job?.status === 'stopping' ? '正在停止…' : '停止任务' }}</linshe-button>
           <p v-if="job" class="es-progress" role="status">{{ jobText }} <span v-if="job.error"> · {{ job.error }}</span></p>
-          <linshe-button class="es-touch-manage" size="sm" @click="showTouchLines=true">触摸台词管理</linshe-button>
+          <!-- 立绘互动（上游 v3.9.0 合并）：反馈台词管理入口，按部位查看/编辑/重生成 -->
+          <linshe-button size="sm" @click="showTouchLines = true">反馈台词管理</linshe-button>
         </div>
         <div class="es-touch-row"><p class="es-touch-status" role="status">{{ touchLineText }}</p></div>
         <div class="es-strip">
@@ -85,6 +86,7 @@ v-if="editing.image_url" :key="editing.image_url" :src="editing.image_url" :asse
 
 <script setup>
 import { ref, computed, watch, onBeforeUnmount, inject } from 'vue'
+// 立绘互动（上游 v3.9.0 合并）：反馈台词管理弹窗
 import StandingTouchLinesManager from './standing/StandingTouchLinesManager.vue'
 import StandingGenerationDirection from './standing/StandingGenerationDirection.vue'
 import StandingOutfitConfirmation from './standing/StandingOutfitConfirmation.vue'
@@ -101,12 +103,13 @@ defineEmits(['close'])
 const { outfitConfirmation, confirmStandingOutfits, chooseOutfitPolicy } = useStandingOutfitConfirmation()
 const confirm = inject('confirm', async () => false)
 const slots = ref([]), jobs = ref([]), busy = ref(false)
-const showTouchLines=ref(false)
-const touchLines = ref({status:"empty"})
-const touchLineText = computed(() => ({empty:"全身触摸默认开启；没有台词时，生成整套立绘会同步生成专属反应。",generating:"正在后台生成全身触摸台词，不影响立绘出图…",ready:"全身触摸台词已就绪 · 10 个部位，每处 3 句",failed:"触摸台词生成失败；保留已有台词，下次生成整套立绘时重试。"})[touchLines.value.status])
 const requirement = ref(''), error = ref(''), submitting = ref(false), working = ref('')
 const outfitScene = ref(props.initialOutfitScene)
 const editingId = ref(null), prompt = ref(''), generation = ref({}), showPrompt = ref(false), fileInput = ref(null)
+// 立绘互动（上游 v3.9.0 合并）：触摸台词状态（随立绘列表一起由后端下发）
+const showTouchLines = ref(false)
+const touchLines = ref({ status: 'empty' })
+const touchLineText = computed(() => ({ empty: '全身触摸默认开启；没有台词时，生成整套立绘会同步生成专属反应。', generating: '正在后台生成全身触摸台词，不影响立绘出图…', ready: '全身触摸台词已就绪 · 10 个部位，每处 3 句', failed: '触摸台词生成失败；保留已有台词，下次生成整套立绘时重试。' })[touchLines.value.status])
 const editing = computed({ get: () => slots.value.find(s => s.id === editingId.value), set: value => { editingId.value = value?.id || null } })
 const locked = computed(() => busy.value || submitting.value || !!working.value)
 const job = computed(() => jobs.value[0])
@@ -154,7 +157,7 @@ async function refresh() {
   try {
     const data = await api.listExpressionStandings(props.character.id)
     if (seq !== requestSeq) return
-    touchLines.value = data.touchLines || {status:"empty"}
+    touchLines.value = data.touchLines || { status: 'empty' }
     slots.value = data.slots; jobs.value = data.jobs; busy.value = data.busy
   } catch (e) { if (seq === requestSeq) error.value = e.message }
 }
@@ -232,7 +235,6 @@ async function removeImage() {
 .linshe-modal .modal-body.es-manager-body { position:relative; display:flex; flex-direction:column; overflow:hidden; }
 </style>
 <style scoped>
-.es-touch-manage { margin-left:auto;flex-shrink:0 }
 .es-scan-overlay { position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center; overflow:hidden; background:var(--glass-bg); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); border-radius:var(--radius-lg); }
 .es-scan-line { position:absolute; inset:8% 12%; pointer-events:none; animation:es-scan 2.2s ease-in-out infinite; }
 .es-scan-line::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,var(--accent),transparent); box-shadow:0 0 26px rgba(var(--accent-rgb),.55),0 0 8px rgba(var(--accent-rgb),.25); }
@@ -246,11 +248,12 @@ async function removeImage() {
 .es-spinner { width:28px; height:28px; border:3px solid rgba(var(--accent-rgb),.22); border-top-color:var(--accent); border-radius:50%; animation:cel-spin .8s linear infinite; }
 @keyframes es-scan { 0%,100% { transform:translateY(0); opacity:.2; } 25%,50% { transform:translateY(100%); opacity:1; } 75% { transform:translateY(0); opacity:1; } }
 .es-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:12px 0; }
+/* 立绘互动（上游 v3.9.0 合并）：台词状态行按内容高度排列，不参与剩余空间分配 */
+.es-touch-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 12px; flex:none; }
+.es-touch-status { margin:0; font-size:var(--fs-sm); color:var(--text-secondary); }
 .es-label { display:block; margin:8px 0; font-size:var(--fs-sm); font-weight:600; color:var(--text-primary); }
 .es-help,.es-progress { color:var(--text-secondary); font-size:var(--fs-sm); }
 .es-count { color:var(--text-secondary); font-size:var(--fs-sm); font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.es-touch-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px;flex:none}
-.es-touch-status{margin:0;font-size:var(--fs-sm);color:var(--text-secondary)}
 .es-overview { display:flex; flex-direction:column; flex:1; min-height:0; }
 .es-overview > :not(.es-strip) { flex-shrink:0; }
 .es-strip { flex:1; min-height:0; container-type:size; }

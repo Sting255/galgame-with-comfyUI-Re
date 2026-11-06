@@ -25,6 +25,7 @@
 
 import { execSync } from 'child_process';
 import os from 'os';
+import { PROJECT_ROOT, resolveServicePort } from '../../agent-core/src/utils/servicePort.js';
 
 export const isWindows = os.platform() === 'win32';
 
@@ -42,7 +43,7 @@ export const ALL_KEYWORDS = [
  */
 export const AGENT_CORE_KEYWORDS = ['agent-core', 'app.js', 'nodemon'];
 
-export const DEV_PORTS = [3099, 5173, 8765];
+export const DEV_PORTS = [resolveServicePort(), 5173, 8765];
 
 function exec(cmd) {
   return execSync(cmd, {
@@ -162,7 +163,7 @@ export function listeningPids(port, { strict = false } = {}) {
     for (const line of out.split('\n')) {
       if (!line.includes('LISTENING')) continue;
       const parts = line.trim().split(/\s+/);
-      if (!parts[1]?.endsWith(`:${port}`)) continue;
+      if (Number(parts[1]?.split(':').at(-1)) !== Number(port)) continue;
       const pid = parts[parts.length - 1];
       if (/^\d+$/.test(pid) && pid !== '0') pids.add(pid);
     }
@@ -174,8 +175,16 @@ export function listeningPids(port, { strict = false } = {}) {
 }
 
 /** 项目进程判定：进程名必须是 node / python，且命令行命中任一关键字 */
+export function belongsToProject(proc, root = PROJECT_ROOT) {
+  const normalizedRoot = toLc(root).replace(/\\/g, '/').replace(/\/$/, '') + '/';
+  // 关键字只判断服务种类；还必须有当前项目目录证据，无法证明归属时保留进程。
+  return [proc?.CommandLine, proc?.ExecutablePath].some(value =>
+    toLc(value).replace(/\\/g, '/').includes(normalizedRoot));
+}
+
 function matches(proc, keywords, excludePatterns) {
   if (!isNodeOrPython(proc && proc.Name)) return false;
+  if (!belongsToProject(proc)) return false;
   const cmd = toLc(proc && proc.CommandLine);
   if (!cmd) return false;
   if (isSelfOrAncestor(proc.ProcessId)) return false; // 自己 + 整条祖先链，绝不自杀
@@ -204,7 +213,7 @@ export function listProjectProcesses({ keywords = ALL_KEYWORDS, excludePatterns 
   const ps = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; "
     + '@(Get-CimInstance Win32_Process '
     + "| Where-Object { $_.Name -eq 'node.exe' -or $_.Name -eq 'python.exe' } "
-    + '| Select-Object ProcessId,ParentProcessId,Name,CommandLine '
+    + '| Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath '
     + '| ConvertTo-Json -Compress -Depth 3)';
 
   let parsed;
@@ -289,9 +298,9 @@ export function cleanupProjectProcesses(opts = {}) {
         log(`${prefix}端口 ${port} — PID ${pid} 是本进程或其祖先，跳过`);
         continue;
       }
-      const name = isWindows ? getProcessName(pid) : '';
-      if (isWindows && !isNodeOrPython(name)) {
-        log(`${prefix}端口 ${port} — PID ${pid} (${name || '未知进程'}) 非本项目进程，跳过`);
+      const owned = listProjectProcesses({ keywords, excludePatterns });
+      if (!owned?.some(p => Number(p.ProcessId) === Number(pid))) {
+        log(`${prefix}端口 ${port} — PID ${pid} 无本项目归属证据，跳过`);
         continue;
       }
       if (dryRun) {

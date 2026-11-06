@@ -3,17 +3,15 @@ import { ref, computed } from 'vue'
 import * as api from '../api/index.js'
 // unifiedStream 不依赖 moments store，无循环依赖；统一静态导入（消除构建警告）
 import { onEvent as onStreamEvent } from './unifiedStream.js'
-import { emitMomentComment } from '../utils/characterReactionProducers.js'
 
 const PAGE_SIZE = 20
-const SERVER_BATCH = 1000   // 服务端分页每批条数：进页拉最新一批，到底再续拉
 
 export const useMomentsStore = defineStore('moments', () => {
-  const posts = ref([])           // 已加载的帖子（最新在后，按 id 倒序分批追加）
+  const posts = ref([])           // 全量帖子数据
   const loading = ref(false)
+  // 加载失败通道：让界面能区分「请求失败」和「真的没有内容」
+  const loadError = ref(null)
   const page = ref(0)             // 当前渲染到第几批（0-based）
-  const serverHasMore = ref(false)  // 服务端是否还有更旧的帖子未拉
-  let _loadingMore = false          // loadMore 服务端续拉进行中（并发守卫）
   const filterCharacterId = ref(null)  // null = 全部
   const filterLiked = ref(false)        // 是否只显示赞过的
   const filterUser = ref(false)         // 是否只显示「我」发的（与角色筛选互斥）
@@ -47,13 +45,13 @@ export const useMomentsStore = defineStore('moments', () => {
     if (filterLiked.value) {
       result = result.filter(p => p.liked)
     }
-    return [...result].sort((a, b) => new Date(b.created_at) - new Date(a.created_at) || b.id - a.id)
+    return result
   })
 
   // 当前可见的帖子（前 page * PAGE_SIZE 条）
   const visiblePosts = computed(() => filteredPosts.value.slice(0, page.value * PAGE_SIZE))
 
-  const hasMore = computed(() => filteredPosts.value.length > page.value * PAGE_SIZE || serverHasMore.value)
+  const hasMore = computed(() => filteredPosts.value.length > page.value * PAGE_SIZE)
 
   // 有帖子的作者列表（角色 + 镇民，按最新帖子时间降序）
   const charactersWithPosts = computed(() => {
@@ -78,15 +76,37 @@ export const useMomentsStore = defineStore('moments', () => {
       .map(({ _latestPostAt, ...rest }) => rest)
   })
 
-  // 加载最新一批帖子（每次进入朋友圈页面调用，分页游标重置回最新）
+  // 加载全部帖子（页面首次挂载时调用）
+  //
+  // 2026-10-15 修：后端 `GET /api/moments` 是 **keyset 分页**（默认最新 1000 条 + `?before_id=` 续拉，
+  // 返回 `hasMore`），而这里原来只调一次、把第一页当成全量 —— 动态超过 1000 条时**静默丢掉更旧的历史**
+  // （页面看不出任何异常，只是"翻不到头"）。
+  //
+  // 现在按 hasMore 续拉到没有更多为止。为什么不用「滚动到底再拉下一页」那种增量分页：
+  //   本 store 的 `charactersWithPosts`（作者筛选列表）与 `filteredPosts`（按作者/我发的/赞过筛选）
+  //   都建立在「posts 是全量」这个前提上，改增量分页会让作者列表只剩已加载部分 —— 那是更大的行为倒退。
+  //   续拉全量保住原语义，只多几次请求（每次 1000 条，实际库几十条就是一次）。
+  // 安全上限：最多 50 页（5 万条），防后端 hasMore 恒真时死循环。
+  // 放在函数**内部**（不是模块级常量）：这样 loadPosts 自包含，单测能整段摘出去跑。
   async function loadPosts() {
+    const MAX_PAGES = 50
     if (loading.value) return
     loading.value = true
+    loadError.value = null
     try {
-      const data = await api.listMoments({ limit: SERVER_BATCH })
+      const all = []
+      let beforeId = null
+      for (let i = 0; i < MAX_PAGES; i++) {
+        const data = await api.listMoments(beforeId ? { before_id: beforeId } : undefined)
+        const batch = data.posts || []
+        all.push(...batch)
+        if (!data.hasMore || batch.length === 0) break
+        beforeId = batch[batch.length - 1].id
+        if (!beforeId) break   // 兜底：没有 id 就没法继续 keyset
+      }
       // 保留已有帖子的运行时状态：页面切换回来时，_comments / liked 不会因对象替换而丢失
       const prevMap = new Map(posts.value.map(p => [p.id, p]))
-      posts.value = (data.posts || []).map(p => {
+      posts.value = all.map(p => {
         const prev = prevMap.get(p.id)
         if (prev) {
           if (prev._comments) p._comments = prev._comments
@@ -94,11 +114,13 @@ export const useMomentsStore = defineStore('moments', () => {
         }
         return p
       })
-      serverHasMore.value = !!data.hasMore
       page.value = 1
       await markSeen()
     } catch (err) {
       console.error('[moments] loadPosts error:', err)
+      // 以前只在控制台留一行：请求失败时 posts 为空，界面就渲染成"这里什么都没有"，
+      // 用户会以为自己的数据丢了。留一个 error 通道，模板据此显示「加载失败 + 重试」。
+      loadError.value = err?.message || '加载失败'
     } finally {
       loading.value = false
     }
@@ -132,29 +154,10 @@ export const useMomentsStore = defineStore('moments', () => {
     page.value = 1
   }
 
-  // 加载更多（滚动到底部触发）：客户端窗口还有存货就只前移窗口；存货耗尽且服务端还有 → 续拉下一批
-  async function loadMore() {
-    if (filteredPosts.value.length > page.value * PAGE_SIZE) {
-      page.value++
-      return
-    }
-    if (!serverHasMore.value || _loadingMore) return
-    _loadingMore = true
-    try {
-      // 按发布时间和 id 的复合顺序取游标，补发帖的 id 与时间不再同序。
-      const oldest = posts.value.reduce((min, p) => !min || new Date(p.created_at) < new Date(min.created_at) || (p.created_at === min.created_at && p.id < min.id) ? p : min, null)
-      const beforeId = oldest?.id
-      const data = await api.listMoments({ limit: SERVER_BATCH, beforeId: Number.isFinite(beforeId) ? beforeId : undefined })
-      const seen = new Set(posts.value.map(p => p.id))
-      const fresh = (data.posts || []).filter(p => !seen.has(p.id))
-      posts.value.push(...fresh)
-      if (!data.hasMore || fresh.length === 0) serverHasMore.value = false
-      page.value++
-    } catch (err) {
-      console.error('[moments] loadMore error:', err)
-    } finally {
-      _loadingMore = false
-    }
+  // 加载更多（滚动到底部 → 前端 slice 多展示一批，无网络请求）
+  function loadMore() {
+    if (!hasMore.value) return
+    page.value++
   }
 
   // 发评论 → 返回 { comment, replies }
@@ -166,8 +169,6 @@ export const useMomentsStore = defineStore('moments', () => {
       const added = (result.comment ? 1 : 0) + (result.replies?.length || (result.reply ? 1 : 0))
       post.comment_count = (post.comment_count || 0) + added
     }
-    // §2.3：只记录评论事实，原评论回复优先，不做右下角复述
-    emitMomentComment({ post, commentId: result?.comment?.id })
     return result
   }
 
@@ -217,9 +218,9 @@ export const useMomentsStore = defineStore('moments', () => {
     return images || []
   }
 
-  // 手动触发某角色发帖
-  async function generatePost(characterId) {
-    const result = await api.generateMoment(characterId)
+  // 手动触发某角色发帖（topicId 可选：话题库「立即发送」点题）
+  async function generatePost(characterId, topicId) {
+    const result = await api.generateMoment(characterId, topicId)
     if (result.id) {
       posts.value.unshift({
         ...result,
@@ -300,7 +301,7 @@ export const useMomentsStore = defineStore('moments', () => {
     newPostCount.value = 0
   }
 
-  return { posts, visiblePosts, loading, hasMore, serverHasMore, page, filterCharacterId, filterLiked, filterUser, filteredPosts, charactersWithPosts,
+  return { posts, visiblePosts, loading, loadError, hasMore, page, filterCharacterId, filterLiked, filterUser, filteredPosts, charactersWithPosts,
     newPostCount, isViewingMoments, scrollToTopSignal, requestScrollToTop,
     loadPosts, setFilter, toggleFilterLiked, toggleFilterUser, resetFilters, loadMore, addComment, loadComments, toggleLike, regeneratePostImage, generatePost, createUserPost, updatePost, deletePost,
     connectSSE, disconnectSSE, markSeen, refreshUnreadCount }

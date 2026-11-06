@@ -8,6 +8,17 @@
       </div>
     </div>
 
+    <!-- 运行状态（2026-11-06）：把「后台在静默失败」变成看得见的一行 -->
+    <div class="settings-standalone">
+      <RuntimeHealthPanel />
+    </div>
+
+    <!-- 设备连接（2026-11-06 真机反馈）：它和下面那张很长的「画师串」卡同处一个 grid 行时，
+         行高由后者决定，卡片底下会空出一大截。移出 grid 单独占一行。 -->
+    <div class="settings-standalone">
+      <DeviceAccessPanel />
+    </div>
+
     <div class="settings-grid">
       <!-- ComfyUI params: 对话配图 / 朋友圈配图 / 奇遇配图（Tab 切换） -->
       <div class="card comfy-params-card">
@@ -69,6 +80,68 @@
           </Transition>
         </div>
 
+        <!-- ── 姿势参考（Anima Control Pose）：上传一张图，出图时骨架跟着它走 ── -->
+        <div v-if="imageProvider !== 'novelai'" class="pose-ref-section">
+          <div class="pose-ref-header">
+            <span class="pose-ref-title">姿势参考</span>
+            <linshe-switch
+              v-model="poseEnabled" size="sm" on-text="已启用" off-text="已关闭"
+              aria-label="姿势参考" :disabled="poseSaving || !poseImage"
+              @change="onPoseToggle"
+            />
+          </div>
+          <div class="pose-ref-row">
+            <div class="pose-ref-copy">
+              <div class="pose-ref-desc">上传一张姿势参考图，出图时人物骨架跟着它走，外观和画风仍由角色设定决定。</div>
+              <div class="pose-ref-hint">实验性功能（官方预览版，偶尔漏姿势或手部崩）；每张约多 6 秒。当前：{{ poseImage || '未选择参考图' }}</div>
+            </div>
+            <linshe-button variant="secondary" size="sm" :loading="poseUploading" @click="pickPoseReference">
+              {{ poseImage ? '换一张' : '选择参考图' }}
+            </linshe-button>
+          </div>
+          <!-- 体位骨架（2026-11-03）：亲密场景出图按推进面板当前体位摆姿势。
+               它不是参考图，是现算骨架 ⇒ 有进行中场景时优先于上面的参考图。 -->
+          <div class="pose-ref-row pose-ref-row--body">
+            <div class="pose-ref-copy">
+              <div class="pose-ref-desc">体位骨架：亲密场景出图时，按推进面板当前的体位摆姿势（骑乘就跨坐、后入就趴跪）。</div>
+              <div class="pose-ref-hint">不依赖参考图，按体位现算骨架；有进行中的亲密场景时优先于上面的参考图。普通聊天、立绘、朋友圈配图不受影响。</div>
+            </div>
+            <linshe-switch
+              v-model="poseFromPosition"
+              size="sm"
+              on-text="已启用"
+              off-text="已关闭"
+              aria-label="体位骨架"
+              :disabled="poseSaving"
+              @change="onPoseFromPositionToggle"
+            />
+          </div>
+          <!-- 竖构图（2026-11-04）：体位骨架是铺满整张画布的，横图会被画成近景特写、竖图才有完整双人构图 -->
+          <div class="pose-ref-row pose-ref-row--body">
+            <div class="pose-ref-copy">
+              <div class="pose-ref-desc">体位场景用竖构图出图</div>
+              <div class="pose-ref-hint">骨架铺满整块画布：横图容易被画成贴脸特写，竖图（768×1024）才是完整双人构图。只影响带体位骨架的那张图，其它场景尺寸不变。</div>
+            </div>
+            <linshe-switch
+              v-model="poseFromPositionPortrait"
+              size="sm"
+              on-text="竖构图"
+              off-text="跟随设置"
+              aria-label="体位场景用竖构图"
+              :disabled="poseSaving"
+              @change="onPosePortraitToggle"
+            />
+          </div>
+          <div v-if="!poseInputDirReady" class="pose-ref-dir">
+            <div class="pose-ref-hint">还要告诉程序 ComfyUI 的 input 目录在哪（参考图必须落在这里才能被读到）：</div>
+            <div class="pose-ref-dir-row">
+              <linshe-input v-model="poseInputDir" size="sm" placeholder="例如 D:\ComfyUI-aki-v3\ComfyUI\input" aria-label="ComfyUI input 目录" />
+              <linshe-button variant="secondary" size="sm" :loading="poseDirSaving" @click="savePoseInputDir">保存</linshe-button>
+            </div>
+          </div>
+          <input ref="poseFileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="onPoseFileChosen" />
+        </div>
+
         <div v-if="imageProvider !== 'novelai'" class="hiresfix-section">
           <div class="hiresfix-header">
             <span class="hiresfix-title">HiresFix 细化</span>
@@ -77,8 +150,36 @@
             <div class="hiresfix-copy">
               <div class="hiresfix-desc">图片进一步高清细化设置</div>
             </div>
-            <span class="hiresfix-summary">{{ hiresWorkflowMode === 'advanced' ? '进阶版' : '基础版' }} · 最长边 {{ hiresMaxSize }} · {{ hiresWorkflowMode === 'advanced' && hiresSamplingMode === 'source' ? '采样跟随原图' : `${hiresSteps} 步 · CFG ${hiresCfg}` }} · 重绘 {{ hiresDenoise }}{{ hiresLoraCount > 0 ? ` · LoRA ${hiresLoraCount}` : '' }}</span>
+            <span class="hiresfix-summary">{{ hiresSummary }}</span>
             <linshe-button class="hiresfix-link" variant="link" @click="openHiresFixSettings">设置 →</linshe-button>
+          </div>
+          <div class="hiresfix-row hiresfix-turbo-row">
+            <div class="hiresfix-copy">
+              <div class="hiresfix-turbo-title">细化用 turbo 参数（更快）</div>
+              <div class="hiresfix-desc">打开：CFG {{ HIRES_TURBO_CFG.toFixed(1) }} / {{ HIRES_TURBO_STEPS }} 步，速度约快一倍、更贴合 turbo 模型；关闭：沿用「设置 →」里的步数与 CFG</div>
+              <div class="hiresfix-desc">{{ hiresTurbo ? '当前「设置 →」里的步数与 CFG 不生效（仍可照常修改，关掉本开关后即按它们细化）' : '当前按「设置 →」里的步数与 CFG 细化' }}</div>
+            </div>
+            <linshe-switch
+              v-model="hiresTurbo"
+              on-text="已启用"
+              off-text="已关闭"
+              aria-label="细化用 turbo 参数"
+              title="细化用 turbo 参数（CFG 1.0 / 12 步）"
+              @change="onHiresTurboToggle"
+            />
+          </div>
+          <div class="hiresfix-row">
+            <div class="hiresfix-copy">
+              <div class="hiresfix-turbo-title">细化精度</div>
+              <div class="hiresfix-desc">她出图后那道细化重绘的步数。越低越快、细节略软；越高越保真、更慢。（高 12 步 / 中 10 步 / 低 8 步，默认低）</div>
+            </div>
+            <linshe-tabs
+              :model-value="normalizeHiresQuality(features.hiresQuality)"
+              :options="HIRES_QUALITY_MODES"
+              size="sm"
+              class="hiresfix-quality-tabs"
+              @update:model-value="saveHiresQuality"
+            />
           </div>
         </div>
         <div class="quality-section">
@@ -100,7 +201,7 @@
           </div>
         </div>
         <div class="sa">
-          <linshe-button variant="primary" :disabled="!dirty" @click="saveComfy">保存</linshe-button>
+          <linshe-button variant="primary" :disabled="!dirty || comfySaving" :loading="comfySaving" @click="saveComfy">保存</linshe-button>
           <span v-if="saved" class="smsg">已保存</span>
           <div class="sa-spacer"></div>
           <linshe-button class="wf-action-btn wf-lora-btn" variant="secondary" @click="openGlobalLora">
@@ -113,7 +214,7 @@
       </div>
 
       <GlobalLoraModal v-model="globalLoraModalVisible" :initial-loras="globalLoras" @saved="onGlobalLoraSaved" />
-      <HiresFixModal v-if="imageProvider !== 'novelai'" v-model="hiresFixModalVisible" :initial-sampling-mode="hiresSamplingMode" :initial-global-lora-scale="hiresGlobalLoraScale" :initial-source-blend="hiresSourceBlend" :initial-upscale-model="hiresUpscaleModel" :initial-workflow-mode="hiresWorkflowMode" :initial-loras="hiresLoras" :initial-steps="hiresSteps" :initial-cfg="hiresCfg" :initial-denoise="hiresDenoise" :initial-max-size="hiresMaxSize" :initial-artist-mode="hiresArtistMode" :initial-artist="hiresArtist" @saved="onHiresFixSaved" />
+      <HiresFixModal v-if="imageProvider !== 'novelai'" v-model="hiresFixModalVisible" :initial-sampling-mode="hiresSamplingMode" :initial-global-lora-scale="hiresGlobalLoraScale" :initial-source-blend="hiresSourceBlend" :initial-upscale-model="hiresUpscaleModel" :initial-workflow-mode="hiresWorkflowMode" :initial-loras="hiresLoras" :initial-steps="hiresSteps" :initial-cfg="hiresCfg" :initial-denoise="hiresDenoise" :initial-max-size="hiresMaxSize" :initial-artist-mode="hiresArtistMode" :initial-artist="hiresArtist" :initial-turbo="hiresTurbo" @saved="onHiresFixSaved" />
 
 
       <!-- 测试画风：自由画面描述（LLM 完善提示词）或固定提示词测试 -->
@@ -150,37 +251,29 @@
           </Transition>
         </div>
 
-        <Transition name="prompt-reveal">
-          <div v-if="promptRevealed || generatedPrompt">
-            <div
-              v-if="generatedPrompt && !promptEditing"
-              class="generated-prompt-box editable"
-              :title="styleTesting ? '正在生成，提示词可选中复制' : '点击编辑提示词'"
-              @click="startPromptEdit"
-            >
+        <div
+          v-if="generatedPrompt && !promptEditing"
+          class="generated-prompt-box editable"
+          title="点击编辑提示词"
+          @click="startPromptEdit"
+        >
 {{ generatedPrompt }}
-            </div>
-            <linshe-auto-textarea
-              v-else
-              ref="promptEditRef"
-              v-model="generatedPrompt"
-              :disabled="styleTesting"
-              class="generated-prompt-box generated-prompt-editor"
-              placeholder="直接输入或粘贴生图提示词，留空使用默认提示词"
-              @focus="promptEditing = true"
-              @blur="promptEditing = false"
-              @enter="submitOnEnter($event, runGeneratedPromptTest)"
-              @escape="promptEditing = false"
-            />
-          </div>
-        </Transition>
+</div>
+        <linshe-auto-textarea
+          v-else-if="generatedPrompt"
+          ref="promptEditRef"
+          v-model="generatedPrompt"
+          class="generated-prompt-box generated-prompt-editor"
+          placeholder=""
+          @blur="promptEditing = false"
+          @enter="submitOnEnter($event, runGeneratedPromptTest)"
+          @escape="promptEditing = false"
+        />
         <div v-if="styleError" class="style-error">{{ styleError }}</div>
 
         <div v-if="styleTesting" class="style-loading">
           <span class="style-spinner"></span>
-          <Transition name="prompt-reveal" mode="out-in">
-            <span :key="styleStage" aria-live="polite">{{ styleStage === 'prompt' ? '正在生成提示词，请稍候...' : styleStage === 'preparing' ? '正在完善提示词，准备生成图片...' : imageProvider === 'novelai' ? 'NovelAI 正在生成图片，请耐心等待...' : 'ComfyUI 正在生成图片，请耐心等待...' }}</span>
-          </Transition>
+          <span>{{ imageProvider === 'novelai' ? 'NovelAI 正在生成图片，请耐心等待...' : 'ComfyUI 正在生成图片，请耐心等待...' }}</span>
         </div>
 
         <div v-if="styleImages.length > 0" class="style-result">
@@ -287,9 +380,9 @@
             ref="freeEggBtn"
             role="button"
             tabindex="0"
-            :class="['free-egg-btn', { active: freeEgg, 'is-disabled': freeEggBusy }]"
-            :aria-disabled="freeEggBusy"
-            :title="freeEgg ? '点击关闭，恢复自有 LLM 配置' : '点击开启：免 Key 使用 opencode 免费模型，每5小时每IP限200次'"
+            :class="['free-egg-btn', { active: freeEgg, 'is-disabled': llmBusy }]"
+            :aria-disabled="llmBusy"
+            :title="freeEgg ? '点击关闭，恢复自有 LLM 配置' : '点击开启：免 Key 使用 opencode 免费模型（按 IP 限流，上游限速会调整）'"
             @click="onFreeEggClick"
             @keydown.enter.prevent="onFreeEggClick"
             @keydown.space.prevent="onFreeEggClick"
@@ -302,9 +395,10 @@
           </div>
         </div>
 
-        <Transition name="llm-connection" mode="out-in">
-        <p v-if="llmSetupMode === 'loading'" key="llm-loading" class="llm-help-copy" role="status">正在读取接口设置…</p>
-        <p v-else-if="llmSetupMode === 'error'" key="llm-error" class="llm-help-copy" role="alert">暂时无法读取接口设置，请刷新页面重试。</p>
+        <Transition name="egg-page" mode="out-in">
+        <!-- 首次/未配置：DeepSeek 简易设置（上游 v3.10.0 D 组） -->
+        <p v-if="llmSetupMode === 'loading'" key="llm-loading" class="fd" role="status">正在读取接口设置…</p>
+        <p v-else-if="llmSetupMode === 'error'" key="llm-error" class="gen-error" role="alert">暂时无法读取接口设置，请刷新页面重试。</p>
         <DeepseekSetup
           v-else-if="!freeEgg && llmSetupMode === 'guided'"
           key="llm-guided"
@@ -314,105 +408,94 @@
           @configure="openFullLlmSetup"
           @start-chat="router.push('/chat')"
         />
-        <div v-else-if="!freeEgg" key="llm-custom" class="llm-api-switch-body">
-        <div class="llm-full-intro">
-          <p class="llm-intro">配置 AI 对话和角色生成使用的模型接口</p>
-          <linshe-button v-if="canReturnToGuidedSetup" variant="link" size="sm" @click="returnToGuidedSetup">返回 DeepSeek 简易设置</linshe-button>
-        </div>
-
-        <div class="llm-profile-toolbar" role="group" aria-label="已保存的 LLM 配置">
-          <div v-for="profile in llmProfiles" :key="profile.id" class="llm-profile-item">
-            <linshe-button
-              variant="chip"
-              size="sm"
-              :active="profile.id === activeLlmProfileId"
-              :aria-pressed="profile.id === activeLlmProfileId"
-              :title="`${profile.name} · ${profile.model || '未选择模型'}`"
-              @click="switchProfile(profile.id)"
-            >
-              <span class="llm-profile-label">{{ profile.name }}</span>
-              <span v-if="profile.id === activeLlmProfileId" aria-hidden="true">●</span>
-            </linshe-button>
-            <linshe-button v-if="llmProfiles.length > 1 && profile.id !== activeLlmProfileId" variant="link" tone="danger" size="sm" :aria-label="`删除配置 ${profile.name}`" :title="`删除配置 ${profile.name}`" @click="removeProfile(profile.id)">×</linshe-button>
-          </div>
-          <linshe-button size="sm" variant="chip" @click="showAddProfile = true">+ 新增配置</linshe-button>
-        </div>
-
-        <linshe-modal v-model="showAddProfile" title="新增配置">
-          <p class="llm-help-copy">将当前已保存的 LLM 配置保存为一个新的配置快照（不含 API Key 或服务账号 JSON）。</p>
-          <linshe-input
-            v-model="newProfileName"
-            placeholder="输入配置名称，如：我的 OpenAI、本地 LLM"
-            aria-label="配置名称"
-            @keyup.enter="addProfile"
-            ref="newProfileInput"
-          />
-          <template #footer>
-            <linshe-button variant="secondary" @click="showAddProfile = false">取消</linshe-button>
-            <linshe-button variant="primary" :disabled="!newProfileName.trim()" @click="addProfile">确定</linshe-button>
-          </template>
-        </linshe-modal>
-
-        <section class="llm-section" aria-labelledby="llm-connection-heading">
-          <div class="llm-section-heading">
-            <h4 id="llm-connection-heading">连接信息</h4>
+        <div v-else-if="!freeEgg" key="llm-custom" class="llm-api-switch-body" :inert="llmBusy" :aria-busy="llmBusy">
+        <div class="llm-setup-intro-row">
+          <p class="fd" style="margin:0">配置 AI 对话和角色生成所使用的 LLM 接口</p>
+          <div class="llm-setup-intro-actions">
             <linshe-button variant="link" size="sm" @click="showLlmHelp = true">接入说明</linshe-button>
+            <linshe-button v-if="canReturnToGuidedSetup" variant="link" size="sm" @click="returnToGuidedSetup">返回 DeepSeek 简易设置</linshe-button>
           </div>
-          <div class="llm-field">
-            <label class="llm-label" for="llm-connection-type">接入方式</label>
-            <linshe-select id="llm-connection-type" v-model="llmConnectionType" :options="llmConnectionOptions" aria-label="接入方式" @update:model-value="onLlmConnectionChange" />
+        </div>
+        <p class="fd">deepseek的key获取地址：<a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" class="ext-link">https://platform.deepseek.com/api_keys</a> ，充多少用多少</p>
+
+        <!-- 接入方式（上游 v3.10.0）：OpenAI 兼容接口 / Google Vertex AI -->
+        <label class="fl llm-label" for="llm-connection-type">接入方式</label>
+        <linshe-select
+          id="llm-connection-type"
+          v-model="llmConnectionType"
+          :options="llmConnectionOptions"
+          style="margin-bottom:6px"
+          aria-label="接入方式"
+          @update:model-value="onLlmConnectionChange"
+        />
+        <template v-if="llmConnectionType === 'vertexai'">
+          <label class="fl llm-label" for="vertex-account">服务账号 JSON</label>
+          <linshe-input
+            id="vertex-account"
+            v-model="vertexServiceAccount"
+            type="textarea"
+            :rows="4"
+            placeholder="粘贴完整 service_account JSON（包括最外层大括号）；留空则沿用已保存的账号"
+            @input="onVertexAccountInput"
+          />
+          <div class="vertex-status-row">
+            <linshe-button
+              variant="secondary"
+              size="sm"
+              :loading="vertexValidating"
+              :disabled="vertexValidating || (!vertexServiceAccount.trim() && !hasVertexServiceAccount)"
+              @click="validateVertexAccount"
+            >验证 JSON</linshe-button>
+            <span class="vertex-status" aria-live="polite">{{ vertexValidation || (vertexServiceAccount.trim() ? '新 JSON 尚未验证 / 保存' : hasVertexServiceAccount ? '服务账号已配置' : '缺少服务账号') }}</span>
           </div>
-          <Transition name="llm-connection" mode="out-in">
-            <div v-if="llmConnectionType === 'openai'" key="openai" class="llm-credentials">
-              <div class="llm-inline-help">
-                <p class="llm-help-copy">选择 API 地址并填写服务商提供的 Key，再获取或手动输入模型 ID。DeepSeek 官方接口建议选择 deepseek-flash。<a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" class="ext-link">获取 DeepSeek API Key ↗</a></p>
-              </div>
-              <div class="llm-field">
-                <label class="llm-label" for="llm-endpoint-preset">API 地址</label>
-                <div class="llm-endpoint-row">
-                  <linshe-select id="llm-endpoint-preset" v-model="llmBaseURLSelectVal" :options="llmBaseURLOptions" aria-label="API 地址预设" />
-                  <linshe-input v-if="isCustomBaseURL" v-model="llmBaseURL" placeholder="https://your-api-endpoint/v1" aria-label="自定义 API 地址" @input="onLlmEndpointInput" />
-                </div>
-              </div>
-              <div class="llm-field">
-                <div class="llm-field-heading">
-                  <label class="llm-label" for="llm-api-key">API Key</label>
-                  <span class="llm-credential-status" aria-live="polite">{{ llmApiKeyTouched ? '待保存' : llmPreview.hasApiKey ? `已保存 · ${llmPreview.preview}` : '尚未设置' }}</span>
-                </div>
-                <div class="llm-key-row">
-                  <linshe-input
-                    id="llm-api-key"
-                    v-model="llmApiKey"
-                    :type="showApiKey ? 'text' : 'password'"
-                    name="linshe-llm-key"
-                    autocomplete="new-password"
-                    :placeholder="llmPreview.hasApiKey ? '已保存密钥，输入新密钥可替换' : '输入 API Key'"
-                    @input="onLlmKeyInput"
-                  />
-                  <div class="llm-inline-actions">
-                    <linshe-button variant="ghost" size="sm" title="复制完整 API Key" @click="copyLlmApiKey">复制</linshe-button>
-                    <linshe-button variant="ghost" size="sm" @click="showApiKey = !showApiKey">{{ showApiKey ? '隐藏' : '显示' }}</linshe-button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div v-else key="vertexai" class="llm-credentials">
-              <div class="llm-field">
-                <label class="llm-label" for="vertex-account">服务账号 JSON</label>
-                <linshe-input id="vertex-account" v-model="vertexServiceAccount" type="textarea" :rows="4" autocomplete="off" spellcheck="false" :placeholder="hasVertexServiceAccount ? '已保存服务账号；留空保留，粘贴新 JSON 可替换' : '粘贴完整 service_account JSON（包括最外层大括号）'" @input="onVertexAccountInput" />
-                <div class="vertex-status-row">
-                  <linshe-button variant="secondary" size="sm" :loading="vertexValidating" :disabled="vertexValidating || (!vertexServiceAccount.trim() && !hasVertexServiceAccount)" @click="validateVertexAccount">验证 JSON</linshe-button>
-                  <span class="vertex-status" aria-live="polite">{{ vertexValidation || (vertexServiceAccount.trim() ? '新 JSON 尚未验证 / 保存' : hasVertexServiceAccount ? '服务账号已配置' : '缺少服务账号') }}</span>
-                </div>
-              </div>
-              <div class="llm-field">
-                <label class="llm-label" for="vertex-region">地区</label>
-                <linshe-select id="vertex-region" v-model="vertexRegion" :options="vertexRegionOptions" aria-label="地区" searchable allow-free-input @update:model-value="onLlmEndpointInput" />
-                <p class="llm-field-hint">默认 global，模型可用性取决于项目权限和地区。</p>
-              </div>
-            </div>
-          </Transition>
-        </section>
+          <label class="fl llm-label" for="vertex-region">地区</label>
+          <linshe-select
+            id="vertex-region"
+            v-model="vertexRegion"
+            :options="vertexRegionOptions"
+            searchable
+            allow-free-input
+            aria-label="地区"
+            @update:model-value="onLlmEndpointInput"
+          />
+          <p class="fd">默认 global，模型可用性取决于项目权限和地区。</p>
+        </template>
+
+        <LlmProfilesPanel
+          :profiles="llmProfiles" :active-id="activeLlmProfileId"
+          :busy="llmBusy" :select="switchProfile" :remove="removeProfile" :create="addProfile"
+        />
+        <!-- API Key / API 地址：仅 OpenAI 兼容接口需要（Vertex 走服务账号） -->
+        <template v-if="llmConnectionType === 'openai'">
+        <!-- API Key -->
+        <label class="fl llm-label">API Key</label>
+        <div class="apikey-row">
+          <linshe-input
+            v-model="llmApiKey"
+            :type="showApiKey ? 'text' : 'password'"
+            class="fi"
+            name="linshe-llm-key"
+            autocomplete="new-password"
+            style="margin-bottom:0"
+            :placeholder="llmPreview.hasApiKey ? '已保存密钥，输入新密钥可替换' : 'sk-xxxxxxxxxxxxxxxxxxxxxxxx'"
+            @input="onLlmKeyInput"
+          />
+          <linshe-button class="sp-btn-small" size="sm" style="flex-shrink:0" title="复制完整 API Key" @click="copyLlmApiKey">复制</linshe-button>
+          <linshe-button class="sp-btn-small" variant="ghost" size="sm" style="flex-shrink:0" @click="showApiKey = !showApiKey">
+            {{ showApiKey ? '隐藏' : '显示' }}
+          </linshe-button>
+        </div>
+        <div v-if="llmPreview.hasApiKey" class="key-status">
+          <span class="key-ok">🔑 当前:</span>
+          <code class="key-preview" role="button" tabindex="0" title="点击复制完整 API Key" @click="copyLlmApiKey" @keydown.enter="copyLlmApiKey">{{ llmPreview.preview }}</code>
+        </div>
+        <div v-else class="key-status key-missing">⚠️ 未设置，AI 对话功能不可用</div>
+
+        <!-- API 地址 -->
+        <label class="fl llm-label" style="margin-top:14px">API 地址</label>
+        <linshe-select v-model="llmBaseURLSelectVal" :options="llmBaseURLOptions" placeholder="请选择API地址" style="margin-bottom:6px" />
+        <linshe-input v-if="isCustomBaseURL" v-model="llmBaseURL" class="fi" placeholder="https://your-api-endpoint/v1" @input="onLlmEndpointInput" />
+        </template>
 
         <section class="llm-section" aria-labelledby="llm-model-heading">
           <div class="llm-section-heading"><h4 id="llm-model-heading">模型参数</h4></div>
@@ -437,7 +520,7 @@
             <div class="llm-field">
               <label class="llm-label" for="llm-max-tokens">最大输出 tokens</label>
               <linshe-input id="llm-max-tokens" v-model.number="llmMaxTokens" type="number" min="1" step="1" :invalid="!llmMaxTokensValid" aria-describedby="llm-max-tokens-hint" @input="onLlmMaxTokensInput" />
-              <p id="llm-max-tokens-hint" class="llm-token-hint" :class="{ 'is-invalid': !llmMaxTokensValid }" aria-live="polite">{{ llmMaxTokensHint }}</p>
+              <p id="llm-max-tokens-hint" class="llm-token-hint" :class="{ 'is-invalid': !llmMaxTokensValid, 'is-oversized': llmMaxTokensValid && llmMaxTokensOversized }" aria-live="polite">{{ llmMaxTokensHint }}</p>
             </div>
             <div class="llm-field">
               <span class="llm-label">思考模式</span>
@@ -447,30 +530,42 @@
           </div>
         </section>
 
-        <linshe-modal v-model="showLlmHelp" title="LLM 接入说明">
-          <div class="llm-help-section">
-            <h4>Google Vertex AI / Agent Platform</h4>
-            <p class="llm-help-copy">使用完整版 Service Account：粘贴下载的完整 JSON，点击「验证 JSON」。项目 ID 会自动读取，无需 API Key 或 API 地址；地区默认 global。保存后隐藏 JSON，仅显示配置状态。</p>
-            <p class="llm-help-copy">可获取模型目录或手动填写模型 ID（如 gemini-2.5-pro）。目录不代表项目已获授权，请用「测试连接」验证。Gemini Pro 选择关闭思考时，会使用模型允许的最低档位或自动预算。</p>
+        <div v-if="isCustomBaseURL" class="toggle-row thinking-setting">
+          <div>
+            <div class="tl llm-label">思考模式</div>
+            <div class="td">默认「关」：请求里明确禁用思考，回复更快也更省 token。开启后模型先思考再作答，适合需要推演复杂设定的场景，但更慢、更耗额度。</div>
           </div>
-          <template #footer><linshe-button variant="secondary" @click="showLlmHelp = false">知道了</linshe-button></template>
-        </linshe-modal>
+          <!-- 分段选择统一用 LinsheTabs：原先自绘的滑块选中色取的是 --accent（暖色主题下是珊瑚红），
+               看着像警告色，与页面其它分段控件也不一致（2026-10-30 用户反馈「反色」）。 -->
+          <linshe-tabs
+            :model-value="llmThinkingMode === 'enabled' ? 'enabled' : 'disabled'"
+            :options="thinkingModeOptions"
+            size="sm"
+            aria-label="思考模式"
+            @update:modelValue="onThinkingModePick"
+          />
+        </div>
 
         <template v-if="isCustomBaseURL">
-          <div class="llm-advanced-heading">
-            <linshe-button variant="link" size="sm" :aria-expanded="llmAdvancedOpen" aria-controls="llm-advanced-body" @click="toggleLlmAdvanced">
-              高级设置
-              <svg class="llm-advanced-chevron" :class="{ open: llmAdvancedOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
-            </linshe-button>
-            <span class="llm-field-hint">请求参数与兼容选项</span>
+          <div
+            role="button"
+            tabindex="0"
+            class="llm-advanced-toggle"
+            :aria-expanded="llmAdvancedOpen"
+            @click="toggleLlmAdvanced"
+            @keydown.enter.prevent="toggleLlmAdvanced"
+            @keydown.space.prevent="toggleLlmAdvanced"
+          >
+            <span class="llm-advanced-label llm-label">高级设置</span>
+            <svg class="llm-advanced-chevron" :class="{ open: llmAdvancedOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
           </div>
           <CollapseTransition :show="llmAdvancedOpen">
-            <div id="llm-advanced-body" class="llm-advanced-body">
+            <div class="llm-advanced-body">
               <!-- 自定义请求头（仅自定义API时显示，部分中转站如 OpenRouter 需要） -->
           <div class="toggle-row llm-custom-toggle">
             <div>
               <div class="tl">自定义请求头</div>
-              <div class="td">{{ llmConnectionType === 'vertexai' ? '附加 HTTP 请求头；认证头由服务账号自动生成' : '为 OpenRouter 等中转服务附加 HTTP 请求头' }}</div>
+              <div class="td">为 OpenRouter 等中转服务附加 HTTP 请求头</div>
             </div>
             <linshe-switch v-model="llmHeadersEnabled" title="启用自定义请求头" aria-label="启用自定义请求头" @change="markLlmDirty" />
           </div>
@@ -492,7 +587,7 @@
           <div class="toggle-row llm-custom-toggle">
             <div>
               <div class="tl">自定义请求体</div>
-              <div class="td">{{ llmConnectionType === 'vertexai' ? '支持 generationConfig、safetySettings 等 Google 原生参数；输出额度以 MAX_tokens 为准' : '注入 agent 等额外 body 参数；输出额度以 MAX_tokens 为准，其余同名字段覆盖内置参数' }}</div>
+              <div class="td">注入 agent 等额外 body 参数；同名字段会覆盖内置参数</div>
             </div>
             <linshe-switch v-model="llmExtraBodyEnabled" title="启用自定义请求体" aria-label="启用自定义请求体" @change="markLlmDirty" />
           </div>
@@ -504,7 +599,7 @@
               class="fi llm-json-textarea"
               type="textarea"
               :invalid="!llmExtraBodyValid"
-              :placeholder="llmExtraBodyPlaceholder"
+              placeholder="{&quot;agent&quot;:&quot;my-agent&quot;,&quot;agentName&quot;:&quot;Nova&quot;}"
               @input="markLlmDirty"
             />
             <p v-if="!llmExtraBodyValid" class="gen-error" role="alert">JSON 格式无效</p>
@@ -524,7 +619,10 @@
               <div class="td">同时运行的后台 LLM 任务数上限</div>
             </div>
             <div class="freq-control">
-              <linshe-slider v-model="backgroundConcurrency" :min="1" :max="10" :step="1" aria-label="最大并发后台请求数" @change="markLlmDirty()" />
+              <input
+type="range" min="1" max="10" step="1"
+                v-model.number="backgroundConcurrency" @change="markLlmDirty()"
+/>
               <span class="freq-val">{{ backgroundConcurrency }}</span>
             </div>
           </div>
@@ -540,13 +638,22 @@
           </CollapseTransition>
         </template>
 
-        <div class="llm-footer">
-          <div class="llm-footer-actions">
-            <linshe-button variant="primary" :disabled="!llmDirty || !llmHeadersValid || !llmExtraBodyValid || !llmMaxTokensValid" @click="saveLlmConfig">保存</linshe-button>
-            <linshe-button variant="secondary" :loading="llmTesting" :disabled="llmTesting || !llmHeadersValid || !llmExtraBodyValid" @click="runLlmConnectionTest">测试连接</linshe-button>
-            <span class="llm-save-status" aria-live="polite">{{ llmDirty ? '有未保存的修改' : llmSaved ? '已保存' : '' }}</span>
-          </div>
-          <linshe-button variant="link" size="sm" @click="showRelayModal = true">推荐中转站</linshe-button>
+        <div class="sa" style="margin-top:12px">
+          <linshe-button variant="primary" :disabled="!llmDirty || !llmHeadersValid || !llmExtraBodyValid || !llmContextWindowValid || !llmMaxTokensValid || llmSaving" :loading="llmSaving" @click="saveLlmConfig">保存</linshe-button>
+          <span v-if="llmSaved" class="smsg">已保存</span>
+          <linshe-button class="llm-test-btn" variant="secondary" :disabled="llmTesting || !llmHeadersValid || !llmExtraBodyValid" @click="runLlmConnectionTest">
+            {{ llmTesting ? '测试中…' : '测试连接' }}
+          </linshe-button>
+          <div
+            role="button"
+            tabindex="0"
+            class="relay-intro-btn relay-intro-footer"
+            @click="showRelayModal = true"
+            @keydown.enter.prevent="showRelayModal = true"
+            @keydown.space.prevent="showRelayModal = true"
+          >
+推荐中转站
+</div>
         </div>
         </div>
 
@@ -645,7 +752,7 @@
         <div class="toggle-row freq-row">
           <div>
             <div class="tl">主动聊天频率</div>
-            <div class="td">{{ freqSlider <= 0 ? '关闭主动聊天。' : `频率触发间隔约 ${chatFreqLabel}，实际时间会有浮动。` }}</div>
+            <div class="td">0 关闭，越大越频繁。</div>
           </div>
           <div class="freq-control">
             <input
@@ -653,14 +760,14 @@ type="range" min="0" max="1" step="0.1"
               v-model.number="freqSlider"
               @change="onFreqChange"
             />
-            <span class="freq-val">{{ chatFreqLabel }}</span>
+            <span class="freq-val">{{ freqSlider.toFixed(1) }}</span>
           </div>
         </div>
 
         <div class="toggle-row freq-row">
           <div>
             <div class="tl">奇遇触发频率</div>
-            <div class="td">{{ eventFreqSlider <= 0 ? '关闭自动触发。' : `约每 ${eventFreqLabel} 检查一次，满足条件时触发奇遇。` }}</div>
+            <div class="td">0 关闭自动触发，1 为默认频率（约 30 分钟一次）。</div>
           </div>
           <div class="freq-control">
             <input
@@ -668,22 +775,7 @@ type="range" min="0" max="1" step="0.1"
               v-model.number="eventFreqSlider"
               @change="onEventFreqChange"
             />
-            <span class="freq-val">{{ eventFreqLabel }}</span>
-          </div>
-        </div>
-
-        <div class="toggle-row freq-row">
-          <div>
-            <div class="tl">朋友圈发帖频率</div>
-            <div class="td">{{ momentFreqHint }}</div>
-          </div>
-          <div class="freq-control">
-            <input
-type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
-              v-model.number="momentFreqStepIdx"
-              @change="onMomentFreqChange"
-            />
-            <span class="freq-val">{{ momentFreqLabel }}</span>
+            <span class="freq-val">{{ eventFreqSlider.toFixed(1) }}</span>
           </div>
         </div>
 
@@ -719,6 +811,270 @@ type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
 <gear-icon :size="17" />
 </div>
           <linshe-switch v-model="features.weather" @change="saveFeature('weather', features.weather)" />
+        </div>
+
+        <!-- 亲密度看板（总开关：关闭后不再自动记账，看板写入与回填接口返回 409） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">亲密度看板</div>
+            <div class="td">记录角色的身体档案与相处统计，并允许角色在对话中知晓；关闭后停止自动记账与历史回填</div>
+          </div>
+          <linshe-switch v-model="features.intimate" aria-label="亲密度看板" title="亲密度看板" @change="saveIntimateFeature('intimate', features.intimate)" />
+        </div>
+
+        <!-- 历史对话回填（默认开：把以往会话中能识别的记录补进看板流水） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">历史对话回填</div>
+            <div class="td">把以往的对话记录补进看板流水，仅在亲密度看板开启时生效</div>
+          </div>
+          <linshe-switch v-model="features.intimateBackfill" aria-label="历史对话回填" title="历史对话回填" @change="saveIntimateFeature('intimateBackfill', features.intimateBackfill)" />
+        </div>
+
+        <!-- 全部角色知晓身体档案（一键批量开关：不用逐个角色打开看板顶部的知晓开关。
+             空档案在注入时被判为空内容、零注入，所以对没填档案的角色打开它不产生 token 成本） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">全部角色知晓身体档案</div>
+            <div class="td">{{ injectAllHint }}。档案为空时不会注入任何内容，也不消耗 token</div>
+          </div>
+          <linshe-switch
+            v-model="injectAllOn"
+            :disabled="injectAll.saving"
+            aria-label="全部角色知晓身体档案"
+            title="全部角色知晓身体档案"
+            @change="saveInjectAll"
+          />
+        </div>
+      </div>
+
+      <!-- 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）
+           顶上三个开关是纯 prompt 增强（零额外 LLM 调用），默认开；关闭后与加功能前逐字节一致。
+           「重写兜底」antiRepetitionReroll（专题 L4 / D2）**已接线**：默认关，打开后每触发一次会**多消耗一次模型调用**，
+           故说明里写明代价；替换语义见 stores/chat.js 与 docs/chat/anti-repetition.md。 -->
+      <div class="card anti-rep-card">
+        <h3>反重复与话题推进</h3>
+        <p class="fd">角色连续几轮围绕同一话题打转时，动态提示她换角度、引入新信息或推进事件；同一情绪持续多轮时提示她像真人一样打断自己。全部是提示词层的增强，不额外调用模型。</p>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">反车轱辘话</div>
+            <div class="td">最近几轮话题重叠超过阈值时，提示她换一种说法或推进话题（另附一条近端自身输出标注）</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetition"
+            aria-label="反车轱辘话"
+            title="反车轱辘话"
+            @change="saveAntiRepFeature('antiRepetition', features.antiRepetition)"
+          />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">反钻牛角尖</div>
+            <div class="td">同一情绪极值连续多轮且话题没换时，提示她自我打断、分心或做个小决定，让对话往前走</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetitionLock"
+            aria-label="反钻牛角尖"
+            title="反钻牛角尖"
+            @change="saveAntiRepFeature('antiRepetitionLock', features.antiRepetitionLock)"
+          />
+        </div>
+
+        <!-- B1 阶段二：升级档（默认开）。关掉只留温和提示；重写兜底 antiRepetitionReroll 本轮不接线，故无入口。 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">重复时自动加强约束</div>
+            <div class="td">她连续 3 轮在复述同一件事时，把约束从温和升到更强；一旦不再重复立刻回落。关掉则只保留温和提示</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetitionEscalation"
+            aria-label="重复时自动加强约束"
+            title="重复时自动加强约束"
+            @change="saveAntiRepFeature('antiRepetitionEscalation', features.antiRepetitionEscalation)"
+          />
+        </div>
+
+        <!-- D2 重写兜底（默认关）：用户点名「做个开关放到设置里说明」，说明里必须写清代价 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">重写这一轮</div>
+            <div class="td">她还在复读时，把这一轮的话重写一次（会多消耗一次模型调用，默认关闭）—— 重写后原先那段会被整段换掉，不会重复出现</div>
+          </div>
+          <linshe-switch
+            v-model="features.antiRepetitionReroll"
+            aria-label="重写这一轮"
+            title="重写这一轮"
+            @change="saveAntiRepFeature('antiRepetitionReroll', features.antiRepetitionReroll)"
+          />
+        </div>
+
+        <!-- 玩具系统总开关（用户拍板：一次性解锁，同 touchGroupAdult 先例；默认关） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">解锁成人玩具</div>
+            <div class="td">打开后，触摸面板里多一块「玩具控制」：可以给她戴上跳蛋 / 振动棒 / 肛塞 / 乳夹 / 项圈，调强度、随时摘下，她会当场有反应（默认关）</div>
+          </div>
+          <linshe-switch
+            v-model="features.toys"
+            aria-label="解锁成人玩具"
+            title="解锁成人玩具"
+            @change="saveFeatureWithToast('toys', features.toys, '成人玩具')"
+          />
+        </div>
+
+        <!-- 采样层（专题 L3）：默认留空 = 请求体里完全不发送这两个字段，行为与历史完全一致。
+             规划 C5 要求先拿真网关探针确认参数被接受再上 UI；未探明前请保持留空。 -->
+        <div class="anti-rep-penalty">
+          <div class="anti-rep-penalty-copy">
+            <div class="tl">重复惩罚参数（高级）</div>
+            <div class="td">透传 presence_penalty / frequency_penalty 给模型接口，范围 -2 ~ 2。留空表示不发送；部分第三方中转站不接受该参数，若保存后回复出错请清空重试。</div>
+          </div>
+          <div class="anti-rep-penalty-inputs">
+            <label class="anti-rep-field">
+              <span class="anti-rep-field-label">presence</span>
+              <linshe-input v-model="antiRepPenaltyPresence" class="fi anti-rep-input" placeholder="留空" :invalid="!antiRepPenaltyPresenceValid" @keyup.enter="onAntiRepPenaltySave" />
+            </label>
+            <label class="anti-rep-field">
+              <span class="anti-rep-field-label">frequency</span>
+              <linshe-input v-model="antiRepPenaltyFrequency" class="fi anti-rep-input" placeholder="留空" :invalid="!antiRepPenaltyFrequencyValid" @keyup.enter="onAntiRepPenaltySave" />
+            </label>
+            <linshe-button variant="secondary" size="sm" :loading="antiRepPenaltySaving" :disabled="!antiRepPenaltyValid" @click="onAntiRepPenaltySave">保存</linshe-button>
+            <span v-if="antiRepPenaltySaved" class="smsg">已保存</span>
+          </div>
+        </div>
+        <p v-if="antiRepPenaltyError" class="gen-error" role="alert">{{ antiRepPenaltyError }}</p>
+      </div>
+
+      <!-- SLG 动作系统（触摸互动 · 专题-SLG动作系统）
+           前两个开关默认开：总开关控制聊天页动作条与 POST /touch；即时反应关掉后走"隐式注入"，
+           她的反应并进下一轮回复，不额外调用模型（配额清零只影响即时那条路）。
+           第三个（群聊敏感动作）**默认关**：关着时群里点 Lv3 一律被拦，行为与加开关前一致。 -->
+      <div class="card touch-action-card">
+        <h3>动作系统（触摸互动）</h3>
+        <p class="fd">聊天页输入框上方会出现一条动作胶囊条（摸头 / 抱抱 / 亲脸颊…）。点下去她会当场有反应，连续点同一个动作会逐渐不耐烦。即时反应是"立刻单独回一条"，关掉后改成并进下一轮回复。</p>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">动作系统</div>
+            <div class="td">关闭后聊天页不再显示动作条，后端也会拒绝动作请求（已记录的动作反应不受影响）</div>
+          </div>
+          <linshe-switch
+            v-model="features.touch"
+            aria-label="动作系统"
+            title="动作系统"
+            @change="saveTouchFeature('touch', features.touch)"
+          />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">即时反应</div>
+            <div class="td">点动作后立刻单独发一条反应（含表情与心情变化）；每日 100 次，额度用完自动并回下一轮</div>
+          </div>
+          <linshe-switch
+            v-model="features.touchInstant"
+            aria-label="即时反应"
+            title="即时反应"
+            @change="saveTouchFeature('touchInstant', features.touchInstant)"
+          />
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="tl">群聊里的敏感动作</div>
+            <div class="td">允许在群聊里对角色做 Lv3 敏感动作（摸胸 / 摸臀等）。默认关闭：这种事留到只有你们俩的时候；打开后群成员可能围观</div>
+          </div>
+          <linshe-switch
+            v-model="features.touchGroupAdult"
+            aria-label="群聊里的敏感动作"
+            title="群聊里的敏感动作"
+            @change="saveTouchFeature('touchGroupAdult', features.touchGroupAdult)"
+          />
+        </div>
+
+        <!-- 动作出图档位（阶段三）：三档用 LinsheTabs，键与后端 features.touchImageMode 同口径 -->
+        <div class="toggle-row touch-image-mode-row">
+          <div>
+            <div class="tl">动作出图</div>
+            <div class="td">她做完动作后要不要顺手配一张图。「智能」只在合适的时候配（默认）；「总是」每次都配；「从不」只要文字。</div>
+          </div>
+          <linshe-tabs
+            :model-value="normalizeTouchImageMode(features.touchImageMode)"
+            :options="TOUCH_IMAGE_MODES"
+            size="sm"
+            class="touch-image-mode-tabs"
+            @update:model-value="saveTouchImageMode"
+          />
+        </div>
+
+        <!-- 即时反应风格（task-30）：后端 features.touchReactionMode 一直是完整的，前端此前零引用 -->
+        <div class="toggle-row touch-image-mode-row">
+          <div>
+            <div class="tl">动作反应风格</div>
+            <div class="td">她回应你动作时的写法。「对话式」把人格、心情、关系、日程和最近几句对话都喂给她，回得更像真人、还能顺着话题接话（默认）；「快速」只给最近两句、回得短，更快但更像应付。</div>
+          </div>
+          <linshe-tabs
+            :model-value="normalizeTouchReactionMode(features.touchReactionMode)"
+            :options="TOUCH_REACTION_MODES"
+            size="sm"
+            class="touch-image-mode-tabs"
+            @update:model-value="saveTouchReactionMode"
+          />
+        </div>
+
+        <!-- 群聊围观插话概率（task-22）：开关 + 概率滑块；关掉＝这轮其他成员都不发言 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">群聊里的围观插话</div>
+            <div class="td">在群里对某人做动作时，其他成员凑过来插一句的概率。关掉＝这一轮谁都不插话（与加功能前完全一致）</div>
+          </div>
+          <linshe-switch
+            v-model="bystanderEnabled"
+            aria-label="群聊里的围观插话"
+            title="群聊里的围观插话"
+            @change="saveBystanderEnabled"
+          />
+        </div>
+
+        <div v-if="bystanderEnabled" class="bystander-row">
+          <div class="bystander-slider">
+            <linshe-slider
+              id="touch-bystander-chance"
+              v-model="bystanderPercent"
+              :min="0"
+              :max="100"
+              :step="5"
+              aria-label="围观插话概率"
+              @change="saveBystanderChance"
+            />
+          </div>
+          <span class="bystander-value">{{ bystanderPercent }}%</span>
+        </div>
+
+        <!-- 群聊记忆轮次（2026-10-31 用户要求可开到 30 轮）：
+             一轮＝全体成员各说一遍；轮次越大记得越久，但每次请求的 prompt 也越大。 -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">群聊记忆轮次</div>
+            <div class="td">一轮＝全体成员各说一遍。调大后记得更久；30 轮时每次请求约 3~5 万 tokens，更慢也更贵</div>
+          </div>
+          <span class="bystander-value">{{ groupMemRounds }} 轮</span>
+        </div>
+        <div class="bystander-row">
+          <div class="bystander-slider">
+            <linshe-slider
+              id="group-mem-rounds"
+              v-model="groupMemRounds"
+              :min="2"
+              :max="30"
+              :step="1"
+              aria-label="群聊记忆轮次"
+              @change="saveGroupMemRounds"
+            />
+          </div>
+          <span class="bystander-value">{{ groupMemRounds }} 轮</span>
         </div>
       </div>
 
@@ -761,40 +1117,41 @@ type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
             </div>
             <p class="novelai-model-hint">切换配置会整组替换下面的接口、模型、参数与提示词；新增配置以当前这套为底复制一份。</p>
             <p class="fd">NovelAI 生图固定单张，使用这里设置的分辨率和参数，不跟随系统分辨率。免费标准档适用尺寸：512×512、832×1216、1216×832、1024×1024，步数上限为 28。</p>
-            <label class="novelai-setting-label" for="novelai-protocol">连接方式</label>
-            <linshe-select id="novelai-protocol" v-model="novelaiApiFormat" aria-label="NovelAI 连接方式" :options="novelaiApiFormatOptions" @update:model-value="changeNovelaiFormat" />
             <div class="novelai-api-mode-row">
+              <!-- 三协议（上游 v3.10.0）：官方直连 / native 原生 / relay OpenAI 兼容中转 -->
+              <linshe-select
+                id="novelai-protocol"
+                v-model="novelaiApiFormat"
+                class="novelai-api-format-select"
+                :options="novelaiApiFormatOptions"
+                aria-label="NovelAI 连接方式"
+                @update:model-value="changeNovelaiFormat(); markConnDirty()"
+              />
               <linshe-input
                 id="novelai-url"
-                :model-value="novelaiApiFormat === 'official' ? 'https://image.novelai.net' : novelaiUrl"
-                :disabled="novelaiApiFormat === 'official'"
+                v-model="novelaiUrl"
                 class="novelai-api-url"
-                placeholder="接口地址（支持域名、版本路径或完整生图地址）"
+                :disabled="novelaiApiFormat === 'official'"
+                placeholder="接口地址"
                 aria-label="NovelAI 接口地址"
-                @update:model-value="novelaiUrl = $event; markConnDirty()"
+                @input="markConnDirty"
               />
             </div>
-            <Transition name="novelai-hint" mode="out-in">
-              <p :key="novelaiApiFormat" class="novelai-model-hint">{{ novelaiApiFormat === 'relay' ? 'OpenAI 兼容中转使用 /v1/images/generations。' : novelaiApiFormat === 'native' ? '原生中转使用 /ai/generate-image，请填写该站点发放的 Key。' : '官方直连使用 NovelAI 账户设置中的 Persistent API Token。' }}保存后生效。</p>
-            </Transition>
-            <div class="novelai-proxy-heading">
-              <linshe-button variant="link" size="sm" :aria-expanded="novelaiProxyOpen" aria-controls="novelai-proxy-body" @click="novelaiProxyOpen = !novelaiProxyOpen">
-                网络代理
-                <svg class="llm-advanced-chevron" :class="{ open: novelaiProxyOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
-              </linshe-button>
-            </div>
-            <CollapseTransition :show="novelaiProxyOpen">
-              <div id="novelai-proxy-body">
-                <label class="novelai-setting-label" for="novelai-proxy">代理地址（可选）</label>
-                <linshe-input id="novelai-proxy" v-model="novelaiProxyUrl" placeholder="例如 http://127.0.0.1:7890" @input="markConnDirty" />
-                <p class="novelai-model-hint">代理须能从运行邻舍后端的电脑访问；留空读取后端 HTTP_PROXY / HTTPS_PROXY / NO_PROXY，未设置则直连。支持 HTTP/HTTPS 代理。</p>
-              </div>
-            </CollapseTransition>
+            <label class="novelai-setting-label" for="novelai-proxy">代理地址（可选）</label>
+            <linshe-input
+              id="novelai-proxy"
+              v-model="novelaiProxyUrl"
+              class="novelai-api-url"
+              placeholder="例如 http://127.0.0.1:7890（留空走环境变量代理）"
+              aria-label="NovelAI 代理地址"
+              @input="markConnDirty"
+            />
+            <p class="novelai-model-hint">{{ novelaiApiFormat === 'official' ? '官方 API 直连 NovelAI。' : novelaiApiFormat === 'native' ? '原生协议：直连自建/中转的 NovelAI 兼容服务。' : '中转站模式使用上方地址。' }}保存后生效。</p>
             <div class="novelai-model-row">
-              <linshe-select v-model="novelaiModel" class="novelai-model-select" :options="novelaiModels" searchable allow-free-input placeholder="选择或输入绘图模型" @update:model-value="markConnDirty" />
-              <linshe-button variant="secondary" size="md" :loading="novelaiModelsLoading" @click="fetchNovelaiModels">{{ novelaiApiFormat === 'relay' ? '获取模型' : '验证连接' }}</linshe-button>
+              <linshe-select v-model="novelaiModel" class="novelai-model-select" :options="novelaiModels" searchable allow-free-input placeholder="请先自动获取模型" @update:model-value="markConnDirty" />
+              <linshe-button variant="secondary" size="md" :loading="novelaiModelsLoading" @click="fetchNovelaiModels">自动获取</linshe-button>
             </div>
-            <p class="novelai-model-hint">{{ novelaiApiFormat === 'relay' ? '模型列表可能不对外开放；获取失败时可手动填写模型，再用画风测试验证生图。' : '显示内置绘图模型，也可手动输入；连接验证检查订阅鉴权，实际可用模型取决于账户或中转站。' }}</p>
+            <p v-if="novelaiModels.length === 0" class="novelai-model-hint">填写 API Key 后点击“自动获取”，读取{{ novelaiApiFormat === 'relay' ? '当前中转站' : '官方 API' }}提供的模型。</p>
             <label class="novelai-setting-label" for="novelai-quality-prompt">质量提示词</label>
             <linshe-input
               id="novelai-quality-prompt"
@@ -881,9 +1238,9 @@ type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
         </Transition>
         <div class="sr">
           <span :class="['sd', health?.connected ? 'on' : 'off']"></span>
-          <span>{{ health?.connected ? '已连接' : health?.connected === null ? '尚未验证' : '未连接' }}</span>
+          <span>{{ health?.connected ? '已连接' : '未连接' }}</span>
           <span v-if="health?.provider === 'novelai' && health?.modelAvailable === false" class="conn-health-hint">当前模型未在服务端模型列表中</span>
-          <span v-else-if="health?.error || health?.message" class="conn-health-hint">{{ health.error || health.message }}</span>
+          <span v-else-if="health?.error" class="conn-health-hint">{{ health.error }}</span>
         </div>
         <div class="sa" style="margin-top:12px">
           <linshe-button variant="primary" :disabled="!connDirty" @click="saveComfyUrl">保存</linshe-button>
@@ -971,6 +1328,47 @@ type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
         </div>
       </div>
 
+      <!-- 破限规则集：入口卡片（复用「聊天记忆」入口样式，2026-10-15） -->
+      <div class="card memory-settings-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>破限规则集</h3>
+            <p>给模型一段「别拒答」的底稿，并决定它注入哪些对话链路（私聊 / 群聊 / 奇遇 / 日程 / 朋友圈 …）</p>
+          </div>
+          <linshe-switch v-model="features.jailbreak" title="启用破限注入" aria-label="启用破限注入" @change="saveFeatureWithToast('jailbreak', features.jailbreak, '破限注入')" />
+        </div>
+
+        <div
+          role="button"
+          tabindex="0"
+          class="memory-settings-entry sheen"
+          aria-label="打开破限规则集：多套底稿切换、注入范围与正文编辑"
+          @click="router.push('/settings/jailbreak')"
+          @keydown.enter.prevent="router.push('/settings/jailbreak')"
+          @keydown.space.prevent="router.push('/settings/jailbreak')"
+        >
+          <span class="memory-entry-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6zM9 12l2 2 4-4" />
+            </svg>
+          </span>
+          <span class="memory-entry-copy">
+            <span class="memory-entry-title">打开破限规则集</span>
+            <span class="memory-entry-desc">多套底稿随时切换 · 按调用链投递 · 正文可编辑</span>
+            <span class="memory-entry-tags">
+              <span class="memory-entry-tag">规则集切换</span>
+              <span class="memory-entry-tag">注入范围</span>
+              <span class="memory-entry-tag">正文编辑</span>
+            </span>
+          </span>
+          <span class="memory-entry-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
+        </div>
+      </div>
+
       <!-- MaiBot 桥接：入口卡片（复用「聊天记忆」入口样式） -->
       <div class="card memory-settings-card maibot-settings-card">
         <div class="memory-settings-header">
@@ -1044,6 +1442,19 @@ type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
           </span>
         </div>
       </div>
+
+      <!-- 程序时间：白天/黑夜、第几天、快进 N 天、设定具体日期时间（现实模拟时钟） -->
+      <div class="card card-full memory-settings-card time-control-card">
+        <div class="memory-settings-header">
+          <div>
+            <h3>程序时间</h3>
+            <p>游戏里的"现在几点"。快进一天或直接跳到某个日期，所有角色的日程与睡眠会跟着重算；聊天记录的时间戳仍按真实时间走</p>
+          </div>
+        </div>
+        <TimeControlPanel />
+      </div>
+
+      <DataBackupPanel />
 </div>
 
     <!-- 收藏画师串弹窗 -->
@@ -1151,7 +1562,6 @@ type="range" min="0" :max="MOMENT_FREQ_STEPS.length - 1" step="1"
         <linshe-button variant="primary" @click="confirmWeatherCity">保存</linshe-button>
       </template>
     </linshe-modal>
-
     <!-- 工作流模式弹窗 -->
     <linshe-modal v-model="showWfModeDialog" title="工作流模式" wide>
       <div class="wf-mode-options">
@@ -1192,7 +1602,7 @@ v-model="wfCustomDraft" :options="customWorkflowOptions"
         </div>
       </Transition>
       <div v-if="wfModeDraft !== 'custom'" class="wf-mode-downloads">
-        <p class="wf-mode-dl-hint">邻舍需要Anima base或者turbo中的至少一个，如需额外下载：</p>
+        <p class="wf-mode-dl-hint">整合包内一般只有一个模型（检查路径ComfyUI-aki-v3\ComfyUI\models\diffusion_models），如需额外下载：</p>
         <div class="wf-dl-item">
           <span class="wf-dl-label">Anima-turbo：</span>
           <a href="https://civitai.com/api/download/models/3108589?fileId=2988553" target="_blank" rel="noopener">Civitai 下载</a>
@@ -1235,23 +1645,40 @@ base
         <linshe-button variant="primary" :disabled="wfSaving" @click="saveWfModeDialog">{{ wfSaving ? '保存中...' : '保存' }}</linshe-button>
       </template>
     </linshe-modal>
+
+    <!-- LLM 接入说明（上游 v3.10.0 D 组） -->
+    <linshe-modal v-model="showLlmHelp" title="LLM 接入说明">
+      <div class="llm-help-section">
+        <h4>Google Vertex AI / Agent Platform</h4>
+        <p class="fd">使用完整版 Service Account：粘贴下载的完整 JSON，点击「验证 JSON」。项目 ID 会自动读取，无需 API Key 或 API 地址；地区默认 global。保存后隐藏 JSON，仅显示配置状态。</p>
+        <p class="fd">可获取模型目录或手动填写模型 ID（如 gemini-2.5-pro）。目录不代表项目已获授权，请用「测试连接」验证。Gemini Pro 选择关闭思考时，会使用模型允许的最低档位或自动预算。</p>
+      </div>
+      <template #footer><linshe-button variant="secondary" @click="showLlmHelp = false">知道了</linshe-button></template>
+    </linshe-modal>
 </div>
 </template>
 
 <script setup>
-import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/modelCapabilities.js'
-import { validateVertexServiceAccount } from '../api/index.js'
 import { ref, reactive, computed, onMounted, inject, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+// 上游 v3.10.0 合并（2026-10-19）：输出额度默认值 / Vertex 校验 / 设置向导 / 自定义工作流
+import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/modelCapabilities.js'
+import { validateVertexServiceAccount } from '../api/index.js'
 import DeepseekSetup from '../components/DeepseekSetup.vue'
+import DeviceAccessPanel from '../components/settings/DeviceAccessPanel.vue'
+import RuntimeHealthPanel from '../components/settings/RuntimeHealthPanel.vue'
+import DataBackupPanel from '../components/settings/DataBackupPanel.vue'
+import LlmProfilesPanel from '../components/settings/LlmProfilesPanel.vue'
+import { useLlmProfiles } from '../composables/useLlmProfiles.js'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, imageProviderHealth, testStyle, testHires, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getLlmProfiles, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
 import BeforeAfterSlider from '../components/BeforeAfterSlider.vue'
 import LinsheSelect from '../components/ui/LinsheSelect.vue'
 import LinsheTabs from '../components/ui/LinsheTabs.vue'
+import { TOUCH_IMAGE_MODES, TOUCH_IMAGE_MODE_KEY, DEFAULT_TOUCH_IMAGE_MODE, normalizeTouchImageMode, touchImageModeLabel, TOUCH_REACTION_MODES, TOUCH_REACTION_MODE_KEY, DEFAULT_TOUCH_REACTION_MODE, normalizeTouchReactionMode, touchReactionModeLabel } from '../components/touchActionLogic.js'
 import LinsheAutoTextarea from '../components/ui/LinsheAutoTextarea.vue'
 import CollapseTransition from '../components/CollapseTransition.vue'
 import GlobalLoraModal from '../components/GlobalLoraModal.vue'
@@ -1263,8 +1690,11 @@ import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
 import LinsheSlider from '../components/ui/LinsheSlider.vue'
 import GearIcon from '../components/GearIcon.vue'
 import MemoryHealthPanel from '../components/MemoryHealthPanel.vue'
+import TimeControlPanel from '../components/TimeControlPanel.vue'
 import UpdateTag from '../components/UpdateTag.vue'
 import { CHANGELOG_ENTRIES } from '../data/changelog.js'
+import { getIntimateInjectAll, setIntimateInjectAll } from '../api/intimate.js'
+
 
 const settingsStore = useSettingsStore()
 const themeModes = THEME_MODES
@@ -1318,6 +1748,165 @@ const hiresMaxSize = ref(2000)
 const hiresArtistMode = ref('empty')
 const hiresArtist = ref('')
 const hiresLoraCount = computed(() => (hiresLoras.value || []).filter(l => l.path && l.enabled !== false).length)
+// ── 细化是否按 turbo 参数走（与后端 config.comfyui.hiresTurbo 一致，默认 true）──
+// 打开＝细化阶段强制 CFG 1.0 / 12 步（忽略 hiresSteps/hiresCfg）；关闭＝沿用那两个值。切换即时生效。
+const hiresTurbo = ref(true)
+
+// ── 姿势参考（Anima Control Pose）──
+// 开关打开后，所有走 ComfyUI 的生图都会带上姿势控制（后端在 comfyClient 里按 config 决定是否注入）。
+const poseEnabled = ref(false)
+// 体位骨架（2026-11-03）：默认开 —— "生图跟着体位走"的主开关；后端字段缺失时按开显示（与 config.js 默认 true 一致）
+const poseFromPosition = ref(true)
+// 体位骨架竖构图（2026-11-04）：默认开 —— 横图会把满画布骨架画成近景特写
+const poseFromPositionPortrait = ref(true)
+const poseImage = ref('')
+const poseInputDir = ref('')
+const poseInputDirReady = ref(false)
+const poseSaving = ref(false)
+const poseUploading = ref(false)
+const poseDirSaving = ref(false)
+const poseFileInput = ref(null)
+
+async function loadPoseControl() {
+  try {
+    const d = await getPoseControl()
+    poseEnabled.value = !!d.enabled
+    poseFromPosition.value = d.poseFromPosition !== false
+    poseFromPositionPortrait.value = d.poseFromPositionPortrait !== false
+    poseImage.value = d.image || ''
+    poseInputDir.value = d.inputDir || ''
+    poseInputDirReady.value = !!d.inputDirReady
+  } catch { /* 读不到就保持默认（关闭），不打断设置页其它配置 */ }
+}
+
+async function onPoseToggle(v) {
+  poseSaving.value = true
+  try {
+    const d = await updatePoseControl({ enabled: !!v })
+    poseEnabled.value = !!d.enabled
+    toastFn?.(d.enabled ? '姿势参考已开启（每张约多 6 秒）' : '姿势参考已关闭', 'success')
+  } catch (e) {
+    poseEnabled.value = !v
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseSaving.value = false }
+}
+
+/** 体位骨架开关：与固定参考图是两件事，各自保存 */
+async function onPoseFromPositionToggle(v) {
+  poseSaving.value = true
+  try {
+    const d = await updatePoseControl({ poseFromPosition: !!v })
+    poseFromPosition.value = d.poseFromPosition !== false
+    toastFn?.(poseFromPosition.value ? '体位骨架已开启：出图跟着体位走' : '体位骨架已关闭', 'success')
+  } catch (e) {
+    poseFromPosition.value = !v
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseSaving.value = false }
+}
+
+async function onPosePortraitToggle(v) {
+  poseSaving.value = true
+  try {
+    const d = await updatePoseControl({ poseFromPositionPortrait: !!v })
+    poseFromPositionPortrait.value = d.poseFromPositionPortrait !== false
+    toastFn?.(poseFromPositionPortrait.value ? '体位场景改用竖构图出图' : '体位场景跟随你的尺寸设置', 'success')
+  } catch (e) {
+    poseFromPositionPortrait.value = !v
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseSaving.value = false }
+}
+
+function pickPoseReference() { poseFileInput.value?.click() }
+
+async function onPoseFileChosen(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { toastFn?.('请选择 PNG / JPG / WEBP 图片', 'error'); return }
+  if (file.size > 12 * 1024 * 1024) { toastFn?.('图片不能超过 12MB', 'error'); return }
+  poseUploading.value = true
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(file)
+    })
+    const d = await uploadPoseReference(base64)
+    poseImage.value = d.image || d.name || ''
+    poseEnabled.value = !!d.enabled
+    toastFn?.('姿势参考图已就绪', 'success')
+  } catch (err) {
+    toastFn?.(err.message || '上传失败', 'error')
+  } finally { poseUploading.value = false }
+}
+
+async function savePoseInputDir() {
+  poseDirSaving.value = true
+  try {
+    await updatePoseControl({ inputDir: poseInputDir.value })
+    const info = await getPoseControl()
+    poseInputDir.value = info.inputDir || ''
+    poseInputDirReady.value = !!info.inputDirReady
+    toastFn?.(poseInputDirReady.value ? 'input 目录已保存' : '目录不存在或无法访问', poseInputDirReady.value ? 'success' : 'error')
+  } catch (e) {
+    toastFn?.(e.message || '保存失败', 'error')
+  } finally { poseDirSaving.value = false }
+}
+
+// ── 细化精度三档（D1 用户裁决：精度可选高中低，默认 8 步）──
+// 键 features.hiresQuality（high|medium|low，默认 low）；映射：高 12 步 / 中 10 步 / 低 8 步（都走 turbo CFG 1.0）。
+const HIRES_QUALITY_MODES = [
+  { value: 'high', label: '高' },
+  { value: 'medium', label: '中' },
+  { value: 'low', label: '低' },
+]
+const DEFAULT_HIRES_QUALITY = 'low'
+
+/** 任意输入 → 合法档位；不认识的一律回落默认 low（8 步） */
+function normalizeHiresQuality(value) {
+  return HIRES_QUALITY_MODES.some(mode => mode.value === value) ? value : DEFAULT_HIRES_QUALITY
+}
+
+function hiresQualityLabel(value) {
+  const mode = HIRES_QUALITY_MODES.find(item => item.value === normalizeHiresQuality(value))
+  return mode ? mode.label : ''
+}
+
+// 三档保存：走通用 features PUT；失败把本地档位拨回去，避免「界面改了、后端没存上」
+async function saveHiresQuality(value) {
+  const next = normalizeHiresQuality(value)
+  const previous = normalizeHiresQuality(features.hiresQuality)
+  if (next === previous) return
+  features.hiresQuality = next
+  try {
+    await updateFeatureFlag('hiresQuality', next)
+    toastFn?.('细化精度已改为「' + hiresQualityLabel(next) + '」', 'success')
+  } catch (err) {
+    features.hiresQuality = previous
+    toastFn?.('细化精度保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+// turbo 模式下的细化参数，与后端 config.comfyui.hiresTurboSteps / hiresTurboCfg 的默认值保持一致
+const HIRES_TURBO_STEPS = 12
+const HIRES_TURBO_CFG = 1.0
+// 细化摘要显示**实际生效**的参数：turbo 打开时后端会忽略 hiresSteps/hiresCfg；
+// 进阶版还要带上工作流版本，并在「采样跟随原图」时标明采样来源（该模式步数/CFG 取自源工作流）
+const hiresSummary = computed(() => {
+  const lora = hiresLoraCount.value > 0 ? ` · LoRA ${hiresLoraCount.value}` : ''
+  const advancedPrefix = hiresWorkflowMode.value === 'advanced' ? '进阶版 · ' : ''
+  // 2026-10-01：进阶版 + 跟随原图时，步数/CFG **由源工作流决定**（turbo 开着时则由 turbo 参数决定），
+  // 这时再把「35 步 · CFG 5」和「采样跟随原图」并排写出来是两个互斥的说法 —— 二选一，别并列。
+  const followsSource = hiresWorkflowMode.value === 'advanced' && hiresSamplingMode.value === 'source'
+  if (hiresTurbo.value) {
+    // turbo 接管步数/CFG 时仍跟随原图的只剩采样器与调度器，措辞要写准（别写成「采样跟随原图」）
+    return `${advancedPrefix}最长边 ${hiresMaxSize.value} · ${HIRES_TURBO_STEPS} 步 · 重绘 ${hiresDenoise.value} · CFG ${HIRES_TURBO_CFG.toFixed(1)}${lora} · turbo${followsSource ? ' · 采样器跟随原图' : ''}`
+  }
+  if (followsSource) {
+    return `${advancedPrefix}最长边 ${hiresMaxSize.value} · 采样跟随原图 · 重绘 ${hiresDenoise.value}${lora}`
+  }
+  return `${advancedPrefix}最长边 ${hiresMaxSize.value} · ${hiresSteps.value} 步 · 重绘 ${hiresDenoise.value} · CFG ${hiresCfg.value}${lora}`
+})
 // ── 质量提示词（非空覆盖工作流默认，留空不改） ──
 const qualityPrompt = ref('')
 const qualityDialog = reactive({ show: false, text: '' })
@@ -1353,19 +1942,26 @@ const imageProviderOptions = [
   { value: 'novelai', label: 'NovelAI' },
 ]
 const novelaiUrl = ref('')
+// 三协议（上游 v3.10.0）：official=官方直连 / native=原生协议 / relay=OpenAI 兼容中转
 const novelaiApiFormat = ref('relay')
-const novelaiProxyUrl = ref('')
-const novelaiProxyOpen = ref(false)
 const novelaiApiFormatOptions = [
-  { value: 'official', label: 'NovelAI 官方' },
-  { value: 'native', label: 'NovelAI 原生协议中转' },
-  { value: 'relay', label: 'OpenAI 兼容中转' },
+  { value: 'official', label: 'NovelAI 官方 API' },
+  { value: 'native', label: '原生协议（自建 / 兼容服务）' },
+  { value: 'relay', label: 'OpenAI 兼容中转站' },
 ]
-const novelaiBuiltinModels = ['nai-diffusion-5-full', 'nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-full', 'nai-diffusion-4-curated-preview', 'nai-diffusion-3', 'nai-diffusion-furry-3'].map(value => ({ value, label: value }))
+const novelaiProxyUrl = ref('')
+// 官方/原生有内置模型清单；中转站的模型要问接口要
+const novelaiBuiltinModels = ['nai-diffusion-5-full', 'nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-full']
 function changeNovelaiFormat() {
-  novelaiModels.value = novelaiApiFormat.value === 'relay' ? [] : novelaiBuiltinModels
-  markConnDirty()
+  novelaiModels.value = novelaiApiFormat.value === 'relay'
+    ? []
+    : novelaiBuiltinModels.map(id => ({ value: id, label: id }))
 }
+/** 兼容旧代码/旧模板的布尔口径：官方 = official，其余 = relay 语义 */
+const novelaiApiFormatOfficial = computed({
+  get: () => novelaiApiFormat.value === 'official',
+  set: (v) => { novelaiApiFormat.value = v ? 'official' : 'relay' },
+})
 const novelaiModel = ref('nai-diffusion-4-5-full')
 const novelaiArtist = ref('@ebora')
 const novelaiModels = ref([])
@@ -1424,7 +2020,62 @@ watch(() => showAddNovelaiProfile.value, async (visible) => {
 })
 const connDirty = ref(false)
 const connSaved = ref(false)
-const features = reactive({ emotion: false, memory: false, replyGuesses: false, realtimeAffinityDisplay: false, serializeBackgroundLLM: false, backgroundLLMMaxConcurrency: 3, mergeMessages: false, weather: true })
+const features = reactive({ emotion: false, memory: false, replyGuesses: false, realtimeAffinityDisplay: false, serializeBackgroundLLM: false, backgroundLLMMaxConcurrency: 3, mergeMessages: false, weather: true, intimate: true, intimateBackfill: true, antiRepetition: true, antiRepetitionLock: true, antiRepetitionEscalation: true, antiRepetitionReroll: false, hiresQuality: DEFAULT_HIRES_QUALITY, toys: false, touch: true, touchInstant: true, touchGroupAdult: false, touchImageMode: DEFAULT_TOUCH_IMAGE_MODE, touchReactionMode: DEFAULT_TOUCH_REACTION_MODE, touchBystanderChance: 0.3, jailbreak: true })
+
+/**
+ * 亲密度看板两个总开关的读取口径：**fail-closed**。
+ * 它们是"会写档案 / 写流水"的功能，只有后端明确给出布尔 `true` 才算开启：
+ *   · 键缺失（旧后端没有这两个键）→ 关闭。不能沿用 reactive 的初始默认值，否则界面显示"已开启"、
+ *     而后端根本没有这个概念（静默不一致）。
+ *   · 脏值（字符串 `"false"` 之类）→ 关闭，且不把非布尔塞进 LinsheSwitch（否则 Vue prop 类型告警，
+ *     且非空字符串为真会渲染成"开"）。
+ * 依据：task-22 浏览器实机核对的反例 F1（缺键）/ F2（脏值），两条原本都渲染成了"开"。
+ */
+function normalizeIntimateFlags(source) {
+  if (!source || typeof source !== 'object') return
+  features.intimate = source.intimate === true
+  features.intimateBackfill = source.intimateBackfill === true
+}
+
+/**
+ * 「全部角色知晓身体档案」总开关（2026-11-06）：状态口径来自后端统计，不用本地记忆。
+ * 开关打开 = 所有角色都已开启；部分开启时显示为关，副标题写明已开启数量，
+ * 因为开关本身表达不了"3/12"这种中间态。
+ */
+const injectAll = reactive({ total: 0, enabled: 0, saving: false })
+const injectAllOn = ref(false)
+const injectAllHint = computed(() => {
+  if (injectAll.total === 0) return '还没有角色'
+  if (injectAll.enabled >= injectAll.total) return `全部 ${injectAll.total} 个角色已开启`
+  return `${injectAll.enabled} / ${injectAll.total} 个角色已开启`
+})
+
+async function loadInjectAllStatus() {
+  try {
+    const d = await getIntimateInjectAll()
+    injectAll.total = Number(d?.total) || 0
+    injectAll.enabled = Number(d?.enabled) || 0
+    injectAllOn.value = injectAll.total > 0 && injectAll.enabled >= injectAll.total
+  } catch {
+    // 读失败保持"关"，不阻塞设置页其它配置
+  }
+}
+
+async function saveInjectAll(val) {
+  injectAll.saving = true
+  try {
+    const d = await setIntimateInjectAll(val === true)
+    injectAll.total = Number(d?.total) || 0
+    injectAll.enabled = Number(d?.enabled) || 0
+    injectAllOn.value = injectAll.total > 0 && injectAll.enabled >= injectAll.total
+    toastFn?.(val ? `已为 ${injectAll.enabled} 个角色开启「知晓身体档案」` : '已关闭所有角色的「知晓身体档案」', 'success')
+  } catch (err) {
+    injectAllOn.value = !val
+    toastFn?.(`全部角色知晓保存失败：${err.message || '未知错误'}`, 'error')
+  } finally {
+    injectAll.saving = false
+  }
+}
 const freqSlider = ref(0.5)
 const eventFreqSlider = ref(1)
 // 仅换算显示，保留原有 0~1 参数；公式对应两个 scheduler 的现有间隔。
@@ -1438,19 +2089,20 @@ const eventFreqLabel = computed(() => eventFreqSlider.value <= 0
 // 具体时间档控制角色的统一间隔；镇民保留默认排期，关闭档同时关闭两者。
 // 时间档从慢到快排列，最右侧额外提供沿用原有频率的「默认」档。
 const MOMENT_FREQ_STEPS = [
-  { value: 0,    label: '关闭',    hint: '不自动发帖。' },
-  { value: 1 / 18, label: '36 小时', hint: '每 36 小时发一条。' },
-  { value: 1 / 12, label: '24 小时', hint: '每 24 小时发一条。' },
-  { value: 1 / 8, label: '16 小时', hint: '每 16 小时发一条。' },
-  { value: 1 / 6, label: '12 小时', hint: '每 12 小时发一条。' },
-  { value: 0.25, label: '8 小时',  hint: '每 8 小时发一条。' },
-  { value: 0.5,  label: '4 小时',  hint: '每 4 小时发一条。' },
-  { value: 1,    label: '2 小时',  hint: '每 2 小时发一条。' },
-  { value: 2,    label: '1 小时',  hint: '每 1 小时发一条。' },
-  { value: 4,    label: '30 分钟', hint: '每 30 分钟发一条。' },
-  { value: 8,    label: '15 分钟', hint: '每 15 分钟发一条。' },
-  { value: 24,   label: '5 分钟',  hint: '每 5 分钟发一条。' },
-  { value: 1, mode: 'default', label: '默认', hint: '每个角色约 2～8 小时发一条。' },
+  { value: 0,    label: '关闭',    hint: '关闭自动发帖（仍可手动发）。' },
+  // 上游 v3.10.0 新增的「36 小时」档（2026-10-19 合并）：比 24 小时更慢，给低活跃角色留白
+  { value: 1 / 18, label: '36 小时', hint: '每个角色以 36 小时为中心，随机间隔 28.8~43.2 小时。' },
+  { value: 1 / 12, label: '24 小时', hint: '每个角色以 24 小时为中心，随机间隔 19.2~28.8 小时。' },
+  { value: 1 / 8, label: '16 小时', hint: '每个角色以 16 小时为中心，随机间隔 12.8~19.2 小时。' },
+  { value: 1 / 6, label: '12 小时', hint: '每个角色以 12 小时为中心，随机间隔 9.6~14.4 小时。' },
+  { value: 0.25, label: '8 小时',  hint: '每个角色以 8 小时为中心，随机间隔 6.4~9.6 小时。' },
+  { value: 0.5,  label: '4 小时',  hint: '每个角色以 4 小时为中心，随机间隔 3.2~4.8 小时。' },
+  { value: 1,    label: '2 小时',  hint: '每个角色以 2 小时为中心，随机间隔 1.6~2.4 小时。' },
+  { value: 2,    label: '1 小时',  hint: '每个角色以 1 小时为中心，随机间隔 48~72 分钟。' },
+  { value: 4,    label: '30 分钟', hint: '每个角色以 30 分钟为中心，随机间隔 24~36 分钟。' },
+  { value: 8,    label: '15 分钟', hint: '每个角色以 15 分钟为中心，随机间隔 12~18 分钟。' },
+  { value: 24,   label: '5 分钟',  hint: '每个角色以 5 分钟为中心，随机间隔 4~6 分钟，LLM 与生图消耗很高。' },
+  { value: 1, mode: 'default', label: '默认', hint: '沿用原有频率：每个角色约 2~8 小时一条，首次等待 1~4 小时。' },
 ]
 const DEFAULT_MOMENT_STEP = MOMENT_FREQ_STEPS.length - 1
 const momentFreqStepIdx = ref(DEFAULT_MOMENT_STEP)
@@ -1498,6 +2150,10 @@ const disturbDialog = reactive({
 })
 const dirty = ref(false)
 const saved = ref(false)
+// 保存中：防止连点，也避免用户在请求未回时以为没生效又点一次
+const comfySaving = ref(false)
+// 模型配置保存中：按钮 loading，防止连点（保存失败必须有可见反馈，见 saveLlmConfig）
+const llmSaving = ref(false)
 const health = ref(null)
 
 const presets = [
@@ -1586,12 +2242,8 @@ const llmPreview = ref({ provider: 'deepseek', hasApiKey: false, preview: '', mo
 const freeEgg = ref(false)
 const llmApiKey = ref('')
 /**
- * 用户是否**手动输入过** API Key。
- *
- * 这个字段是「只写」的：后端只回脱敏 preview、从不回填真实值，所以正常情况下输入框
- * 应该是空的，只有用户主动输入才提交。但输入框是 type=password，浏览器会把它当密码框
- * 记住并自动填充旧值 —— 一保存就把浏览器里的旧 key 写回库，覆盖掉正确的那个。
- * 所以提交时以这个标志为准：没手动输入过就**不提交 apiKey**，浏览器填什么都不影响。
+ * 只有**用户手动输入过**才把 apiKey 提交（上游 v3.10.0 口径）：
+ * 浏览器自动填充的旧值如果被当成"用户输入"，会被写回库/覆盖 Profile。
  */
 const llmApiKeyTouched = ref(false)
 function onLlmKeyInput() {
@@ -1600,6 +2252,7 @@ function onLlmKeyInput() {
   markLlmDirty()
 }
 const llmBaseURL = ref('https://api.deepseek.com')
+// 接入方式：OpenAI 兼容接口 / Google Vertex AI（服务账号）
 const llmConnectionType = ref('openai')
 const llmConnectionOptions = [
   { value: 'openai', label: 'OpenAI 兼容接口（DeepSeek / 自定义）' },
@@ -1619,6 +2272,7 @@ function onVertexAccountInput() {
   clearLlmModels()
   markLlmDirty()
 }
+/** 回显已保存的 Vertex 配置：账号明文永远不回显，只回 hasVertexServiceAccount */
 function restoreVertexSettings(saved) {
   llmConnectionType.value = saved.connectionType === 'vertexai' ? 'vertexai' : 'openai'
   vertexRegion.value = saved.vertexRegion || 'global'
@@ -1637,6 +2291,8 @@ function onLlmConnectionChange() {
   } else {
     llmBaseURL.value = 'https://api.deepseek.com'
     llmModel.value = 'deepseek-flash'
+    // DeepSeek 官方地址原生态支持 thinking:disabled，用它速度更快更省 token；
+    // 只有自定义中转（默认 'omit'）才完全不发思考字段。
     llmThinkingMode.value = 'disabled'
     isCustomBaseURL.value = false
   }
@@ -1667,7 +2323,11 @@ const llmModels = ref([])
 const llmModelsLoading = ref(false)
 const llmModelsError = ref('')
 const llmModelSelect = ref(null)
-const llmModelOptions = computed(() => (llmModels.value.length ? llmModels.value : llmConnectionType.value === 'vertexai' ? ['gemini-2.5-pro', 'gemini-2.5-flash'] : []).map(model => ({ value: model, label: model })))
+// Vertex 没有"取模型列表"那一步，给两个常用模型兜底
+const llmModelOptions = computed(() => (llmModels.value.length
+  ? llmModels.value
+  : llmConnectionType.value === 'vertexai' ? ['gemini-2.5-pro', 'gemini-2.5-flash'] : []
+).map(model => ({ value: model, label: model })))
 const llmModelSelectVal = computed({
   get: () => llmModel.value,
   set: (val) => {
@@ -1677,6 +2337,7 @@ const llmModelSelectVal = computed({
     markLlmDirty()
   },
 })
+// ── 输出额度（MAX_tokens）：默认按「地址 + 模型」算，模型能力拿到后优先用接口上限 ──
 const llmMaxTokens = ref(defaultMaxTokens(llmBaseURL.value, llmModel.value))
 const llmMaxTokensValid = computed(() => isValidMaxTokens(llmMaxTokens.value))
 const llmTokenSource = ref('default')
@@ -1686,9 +2347,24 @@ let llmTokenEditVersion = 0
 const llmMaxTokensHint = computed(() => {
   if (!llmMaxTokensValid.value) return '请输入大于 0 的整数。'
   const amount = Number(llmMaxTokens.value).toLocaleString()
+  // 输出额度没有硬上限（服务商各自不同），但填出远超常用值的大数会被服务商拒绝或截断，
+  // 而界面上只表现为「模型未完成本轮回复」，非常难查（2026-11-06 真机：填了 340000）。
+  const cap = llmModelCapabilities.value[llmModel.value]?.maxTokens
+    || defaultMaxTokens(llmBaseURL.value, llmModel.value)
+  if (isValidMaxTokens(cap) && Number(llmMaxTokens.value) > cap * 1.5) {
+    return `当前额度 ${amount} tokens，远超这个模型的常用上限 ${Number(cap).toLocaleString()}`
+      + ' —— 部分服务商会直接拒绝或截断回复，建议改回常用值。'
+  }
   if (llmTokenSource.value === 'model') return '已从模型能力自动填入 ' + amount + ' tokens，可手动调整。'
   if (llmTokenSource.value === 'manual' || llmTokenSource.value === 'saved') return '当前额度 ' + amount + ' tokens，仍受服务商上限约束。'
   return '默认额度 ' + amount + ' tokens；自动获取模型后优先使用接口上限，也可手动调整。'
+})
+/** 额度是否远超模型常用上限（只做提示，不拦保存：用户可能确实知道自己在干什么） */
+const llmMaxTokensOversized = computed(() => {
+  if (!llmMaxTokensValid.value) return false
+  const cap = llmModelCapabilities.value[llmModel.value]?.maxTokens
+    || defaultMaxTokens(llmBaseURL.value, llmModel.value)
+  return isValidMaxTokens(cap) && Number(llmMaxTokens.value) > cap * 1.5
 })
 function clearLlmModels() {
   llmModelsVersion++
@@ -1702,6 +2378,7 @@ function fillLlmMaxTokens() {
   llmMaxTokens.value = isValidMaxTokens(capability?.maxTokens) ? capability.maxTokens : defaultMaxTokens(llmBaseURL.value, llmModel.value)
   llmTokenSource.value = isValidMaxTokens(capability?.maxTokens) ? 'model' : 'default'
 }
+/** 保存/切换配置后回填（含 Vertex 的公开字段；账号明文不接受回显） */
 function restoreLlmMaxTokens(saved) {
   restoreVertexSettings(saved)
   clearLlmModels()
@@ -1720,11 +2397,35 @@ function onLlmEndpointInput() {
   markLlmDirty()
 }
 const llmThinkingMode = ref('disabled')
+// ── 上下文窗口声明（token）：留空交给服务端从上游模型列表探测 / 用默认值 ──
+// 用字符串持有输入，避免数字输入框在清空过程中把用户输到一半的内容吃掉。
+const llmContextWindowText = ref('')
+const llmContextWindowValid = computed(() => {
+  const raw = String(llmContextWindowText.value ?? '').trim()
+  if (!raw) return true   // 留空 = 自动探测，合法
+  return /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) && Number(raw) > 0
+})
+/** 保存口径：留空传 null（服务端清掉声明），否则传整数 token */
+const llmContextWindowValue = computed(() => {
+  const raw = String(llmContextWindowText.value ?? '').trim()
+  if (!raw || !llmContextWindowValid.value) return null
+  return Number(raw)
+})
+function applyLlmContextWindow(value) {
+  llmContextWindowText.value = value === null || value === undefined || value === '' ? '' : String(value)
+}
+// 只留「关 / 开」两项（2026-10-30 用户要求）：
+// 后端的 omit（一个思考字段都不发）仍保留给免费通道与个别中转自动使用，
+// 界面上统一按「关」呈现 —— 它就是"不启用思考"，用户没必要为此多一个选项。
 const thinkingModeOptions = [
-  { value: 'enabled', label: '开' },
   { value: 'disabled', label: '关' },
-  { value: 'omit', label: '不传' },
+  { value: 'enabled', label: '开' },
 ]
+/** 只两档：点「关」写 disabled（明确禁用），点「开」写 enabled；历史值 omit 在界面上即「关」 */
+function onThinkingModePick(value) {
+  llmThinkingMode.value = value === 'enabled' ? 'enabled' : 'disabled'
+  markLlmDirty()
+}
 const isCustomBaseURL = ref(false)
 // 目前只内置 DeepSeek 一个官方地址，其余服务统一走「自定义…」手填
 const presetURLs = ['https://api.deepseek.com']
@@ -1741,6 +2442,7 @@ const llmBaseURLSelectVal = computed({
     } else {
       isCustomBaseURL.value = false
       llmBaseURL.value = val
+      // 换回官方地址：思考口径与自定义请求头一律复位（上游 v3.10.0）
       llmThinkingMode.value = 'disabled'
       llmHeadersEnabled.value = false
       llmExtraBodyEnabled.value = false
@@ -1759,20 +2461,24 @@ const llmHeadersEnabled = ref(false)
 const llmHeadersText = ref('{}')
 const llmHeadersValid = computed(() => {
   if (!llmHeadersEnabled.value) return true
-  try { JSON.parse(llmHeadersText.value); return true } catch { return false }
+  try { const value = JSON.parse(llmHeadersText.value); return !!value && typeof value === 'object' && !Array.isArray(value) } catch { return false }
 })
 const llmExtraBodyEnabled = ref(false)
 const llmExtraBodyText = ref('{}')
-const llmExtraBodyPlaceholder = computed(() => JSON.stringify(llmConnectionType.value === 'vertexai' ? { generationConfig: { topK: 40 } } : { agent: 'my-agent', agentName: 'Nova' }))
+// Vertex 的额外请求体是 Google 的 generationConfig，OpenAI 兼容接口则是自定义字段
+const llmExtraBodyPlaceholder = computed(() => JSON.stringify(llmConnectionType.value === 'vertexai'
+  ? { generationConfig: { topK: 40 } }
+  : { agent: 'my-agent', agentName: 'Nova' }))
 const llmExtraBodyValid = computed(() => {
   if (!llmExtraBodyEnabled.value) return true
-  try { JSON.parse(llmExtraBodyText.value); return true } catch { return false }
+  try { const value = JSON.parse(llmExtraBodyText.value); return !!value && typeof value === 'object' && !Array.isArray(value) } catch { return false }
 })
 const showApiKey = ref(false)
 const llmDirty = ref(false)
 const llmSaved = ref(false)
 const llmTesting = ref(false)
-function markLlmDirty() { llmDirty.value = true; llmSaved.value = false }
+let llmDraftRevision = 0
+function markLlmDirty() { llmDraftRevision++; llmDirty.value = true; llmSaved.value = false }
 
 // 高级设置抽屉
 const llmAdvancedOpen = ref(false)
@@ -1782,8 +2488,8 @@ function toggleLlmAdvanced() { llmAdvancedOpen.value = !llmAdvancedOpen.value }
 const showRelayModal = ref(false)
 const showNovelaiRelayModal = ref(false)
 const relayStations = [
-  { name: '词元跳动', keysUrl: 'https://tokendance.space/keys', url: 'https://tokendance.space/gateway/v1', desc: '仍然提供v4-flash-preview，超低价格，文风优秀' },
-  { name: '基元律动', keysUrl: 'https://tokenrhythm.studio/i/rf_tr_8BNBDW?share_id=3a6de008-4004-4711-8060-791aa9f4fd1a', url: 'https://tokenrhythm.studio/v1', desc: '有18元注册奖励，deepseek最新多模态模型全天谷价' },
+  { name: '词元跳动', keysUrl: 'https://tokendance.space/keys', url: 'https://tokendance.space/gateway/v1', desc: '仍然提供v4flash预览版，所以没有涨价' },
+  { name: '基元律动', keysUrl: 'https://tokenrhythm.studio/i/rf_tr_sFVpaGViDHbVQrjGtHKXT2in', url: 'https://tokenrhythm.studio/v1', desc: '注册即送68元，邀请还送68元，同样还有flash预览版，但是不够稳定' },
 ]
 
 const relayConfigBusy = ref(false)
@@ -1794,9 +2500,7 @@ async function applyNovelaiRelayConfig() {
   novelaiRelayConfigBusy.value = true
   try {
     const url = 'https://nai.rinko.ai'
-    const result = await updateComfyConfig({ novelaiUrl: url, novelaiApiFormat: 'relay' })
-    novelaiApiFormat.value = 'relay'
-    novelaiModels.value = []
+    const result = await updateComfyConfig({ novelaiUrl: url })
     novelaiUrl.value = result.novelaiUrl || url
     health.value = null
     connSaved.value = true
@@ -1826,46 +2530,20 @@ function uniqueProfileName(baseName) {
 }
 
 async function applyRelayConfig(station) {
-  if (relayConfigBusy.value) return
+  if (llmBusy.value || relayConfigBusy.value) return
   relayConfigBusy.value = true
   try {
-    isCustomBaseURL.value = true
-    llmBaseURL.value = station.url
-    llmModel.value = 'deepseek-flash'
-    clearLlmModels()
-    fillLlmMaxTokens()
-    llmThinkingMode.value = 'disabled'
-    llmHeadersEnabled.value = false
-    llmHeadersText.value = '{}'
-    llmExtraBodyEnabled.value = false
-    llmExtraBodyText.value = '{}'
     const name = uniqueProfileName(station.name)
-    const result = await addLlmProfile(name, {
-      connectionType: 'openai',
-      apiKey: '',
-      baseURL: station.url,
-      model: 'deepseek-flash',
-      thinkingMode: 'disabled',
-      headers: {},
-      extraBody: {},
-      serializeBackgroundLLM: false,
-      mergeMessages: false,
-      backgroundConcurrency: 3,
-    })
-    if (!result.ok) throw new Error(result.error || '新增配置失败')
-    const profiles = result.profiles || []
-    llmProfiles.value = profiles
-    const created = profiles.find(p => p.name === name)
-    if (!created) throw new Error('未找到新增配置')
-    await switchProfile(created.id)
-    if (activeLlmProfileId.value !== created.id) throw new Error('启用新配置失败')
-    showRelayModal.value = false
-    toastFn?.(`已新增并启用「${name}」`, 'success')
-  } catch (err) {
-    toastFn?.('快速配置失败: ' + (err.message || '未知错误'), 'error')
-  } finally {
-    relayConfigBusy.value = false
-  }
+    const success = await addProfile(name, {
+      connectionType: 'openai', apiKey: '', baseURL: station.url, model: 'deepseek-flash',
+      thinkingMode: 'disabled', headers: {}, extraBody: {},
+      serializeBackgroundLLM: false, mergeMessages: false, backgroundConcurrency: 3,
+    }, { activateNew: true })
+    if (success) {
+      showRelayModal.value = false
+      toastFn?.('已新增并启用「' + name + '」', 'success')
+    }
+  } finally { relayConfigBusy.value = false }
 }
 
 // 每日免费鸡蛋：点击按钮开/关；开 = 走 opencode zen 免费端点（免 Key、强制关思考），关 = 恢复自有配置
@@ -1939,31 +2617,28 @@ function burstEggSplash() {
 }
 
 function onFreeEggClick() {
-  if (freeEggBusy.value) return
+  if (llmBusy.value) return
   burstEggSplash()
   toggleFreeEgg()
 }
 async function toggleFreeEgg() {
-  if (freeEggBusy.value) return
+  if (llmBusy.value) return
   freeEggBusy.value = true
-  freeEgg.value = !freeEgg.value
   try {
-    const result = await setLlmFreeEgg(freeEgg.value)
-    if (result.ok) {
-      llmPreview.value = { ...result }
-      settingsStore.setHasApiKey(result.hasApiKey)
-      llmApiKey.value = ''
-      llmApiKeyTouched.value = false
-      llmDirty.value = false
-      llmSaved.value = false
-      toastFn?.(freeEgg.value ? '已开启每日免费鸡蛋 🥚' : '已恢复自有 LLM 配置', 'success')
+    if (llmDirty.value) {
+      const options = { title: '切换免费模式', message: '当前修改尚未保存，切换会放弃这些修改。', okText: '放弃修改并切换' }
+      const accepted = confirmFn ? await confirmFn(options) : window.confirm(options.message)
+      if (!accepted) return
     }
+    const next = !freeEgg.value
+    const result = await setLlmFreeEgg(next)
+    if (!result.ok) throw new Error(result.error || '服务端未完成切换')
+    freeEgg.value = next
+    applyLlmConfig(result)
+    toastFn?.(next ? '已开启每日免费鸡蛋 🥚' : '已恢复自有 LLM 配置', 'success')
   } catch (err) {
-    freeEgg.value = !freeEgg.value
     toastFn?.('切换免费鸡蛋失败: ' + (err.message || '未知错误'), 'error')
-  } finally {
-    freeEggBusy.value = false
-  }
+  } finally { freeEggBusy.value = false }
 }
 
 function copyTextToClipboard(text) {
@@ -2012,6 +2687,7 @@ async function loadAvailableModels() {
     return
   }
 
+  // 版本号：慢请求回来时如果地址/模型/手动额度已经变过，就不许覆盖用户的新选择
   const requestVersion = ++llmModelsVersion
   const editVersion = llmTokenEditVersion
   llmModelsLoading.value = true
@@ -2047,8 +2723,8 @@ async function loadAvailableModels() {
 
 // ── LLM Profile 切换 ──
 const showLlmHelp = ref(false)
-const llmProfiles = ref([])
-const activeLlmProfileId = ref('')
+// 设置页两种形态（上游 v3.10.0）：guided=DeepSeek 简易向导 / full=完整配置
+// loading / error 是首屏读配置的过渡态 —— 别把「还没读到」当成「没配置」
 const llmSetupMode = ref('loading')
 const llmCardFirst = ref(false)
 const canReturnToGuidedSetup = computed(() => !llmDirty.value && !freeEgg.value && canUseDeepseekSetup({
@@ -2059,6 +2735,7 @@ function openFullLlmSetup() {
   llmSetupMode.value = 'full'
 }
 function returnToGuidedSetup() {
+  // 只在「没改过 + 仍是官方预设」时允许回去，否则会把用户的自定义配置藏起来
   if (!canReturnToGuidedSetup.value) return
   writeLlmSetupPreference(localStorage, 'guided')
   llmSetupMode.value = 'guided'
@@ -2080,144 +2757,67 @@ function onGuidedLlmConnected(result) {
   writeLlmSetupPreference(localStorage, 'guided')
 }
 
-const showAddProfile = ref(false)
-const newProfileName = ref('')
-const newProfileInput = ref(null)
-watch(() => showAddProfile.value, async (v) => {
-  if (v) {
-    newProfileName.value = ''
-    await nextTick()
-    newProfileInput.value?.focus()
-  }
+const profileManager = useLlmProfiles({
+  api: { addLlmProfile, deleteLlmProfile, activateLlmProfile },
+  notify: (message, type) => toastFn?.(message, type),
+  confirm: options => confirmFn ? confirmFn(options) : window.confirm(options.title + '\n\n' + options.message),
+  isDirty: () => llmDirty.value,
+  isBlocked: () => llmSaving.value || freeEggBusy.value,
+  applyConfig: applyLlmConfig,
+  refreshFeatures: async () => {
+    const cfg = await getConfig()
+    // Profile changes own only these options. Unrelated settings may have local drafts.
+    features.serializeBackgroundLLM = cfg.features.serializeBackgroundLLM ?? false
+    features.mergeMessages = cfg.features.mergeMessages ?? false
+    backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
+    restoreLlmCustomMode()
+  },
 })
+const { profiles: llmProfiles, activeId: activeLlmProfileId, busy: profileBusy,
+  load: loadLlmProfiles, switchProfile, addProfile, removeProfile } = profileManager
+const llmBusy = computed(() => profileBusy.value || llmSaving.value || freeEggBusy.value)
 
-async function loadLlmProfiles(data) {
-  if (data) {
-    llmProfiles.value = data.llmProfiles || []
-    activeLlmProfileId.value = data.activeLlmProfileId || ''
-  } else {
-    const res = await getLlmProfiles()
-    llmProfiles.value = res.profiles || []
-    activeLlmProfileId.value = res.activeProfileId || ''
-  }
+function restoreLlmCustomMode() {
+  isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || llmHeadersEnabled.value || llmExtraBodyEnabled.value
+    || Boolean(features.mergeMessages || features.serializeBackgroundLLM)
 }
 
-async function switchProfile(id) {
-  if (id === activeLlmProfileId.value) return
-  try {
-    const result = await activateLlmProfile(id)
-    if (result.ok) {
-      activeLlmProfileId.value = result.activeProfileId
-      llmProfiles.value = result.profiles || []
-      if (result.llmConfig) {
-        llmPreview.value = { ...result.llmConfig }
-        llmBaseURL.value = result.llmConfig.baseURL || 'https://api.deepseek.com'
-        llmModel.value = result.llmConfig.model || 'deepseek-chat'
-        llmThinkingMode.value = result.llmConfig.thinkingMode || 'disabled'
-        restoreLlmMaxTokens(result.llmConfig)
-        const hasCustom = (result.llmConfig.headers && Object.keys(result.llmConfig.headers).length > 0)
-          || (result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length > 0)
-        isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
-        llmHeadersEnabled.value = Boolean(result.llmConfig.headers && Object.keys(result.llmConfig.headers).length)
-        llmExtraBodyEnabled.value = Boolean(result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length)
-        llmHeadersText.value = result.llmConfig.headers && Object.keys(result.llmConfig.headers).length
-          ? JSON.stringify(result.llmConfig.headers, null, 2) : '{}'
-        llmExtraBodyText.value = result.llmConfig.extraBody && Object.keys(result.llmConfig.extraBody).length
-          ? JSON.stringify(result.llmConfig.extraBody, null, 2) : '{}'
-        settingsStore.setHasApiKey(result.llmConfig.hasApiKey)
-        llmApiKey.value = ''
-        llmApiKeyTouched.value = false
-        llmDirty.value = false
-        llmSaved.value = false
-        // 刷新完整的 features 和 concurrency（profile 切换会影响这些）
-        const cfg = await getConfig()
-        Object.assign(features, cfg.features)
-        backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
-        freqSlider.value = cfg.features.proactiveChatFreq ?? 0.5
-        eventFreqSlider.value = cfg.features.eventFreq ?? 1
-        momentFreqStepIdx.value = momentStepFromValue(cfg.features.momentFreq, cfg.features.momentFreqMode)
-      }
-    }
-  } catch (err) {
-    console.error('[llm] switch profile failed:', err)
-  }
-}
-
-async function addProfile() {
-  const name = newProfileName.value.trim()
-  if (!name) return
-  try {
-    await addLlmProfile(name)
-    showAddProfile.value = false
-    newProfileName.value = ''
-    await loadLlmProfiles()
-  } catch (err) {
-    console.error('[llm] add profile failed:', err)
-  }
-}
-
-async function removeProfile(id) {
-  const profile = llmProfiles.value.find(p => p.id === id)
-  const name = profile?.name || '该配置'
-  const title = `删除「${name}」`
-  const body = llmProfiles.value.length <= 1
-    ? '这是最后一套配置，不可删除'
-    : `将删除该配置快照，当前正在使用的配置不受影响，此操作不可撤销`
-
-  if (!confirmFn) {
-    if (!window.confirm(`${title}\n\n${body}`)) return
-  } else {
-    const ok = await confirmFn({ title, message: body, danger: true, okText: '删除' })
-    if (!ok) return
-  }
-  if (llmProfiles.value.length <= 1) return
-  try {
-    const result = await deleteLlmProfile(id)
-    if (result.ok) {
-      llmProfiles.value = result.profiles || []
-      activeLlmProfileId.value = result.activeProfileId || ''
-      // 如果删除的是激活的，需要刷新当前配置
-      const cfg = await getConfig()
-      llmPreview.value = { ...cfg.llm }
-      llmBaseURL.value = cfg.llm.baseURL || 'https://api.deepseek.com'
-      llmModel.value = cfg.llm.model || 'deepseek-chat'
-      llmThinkingMode.value = cfg.llm.thinkingMode || 'disabled'
-      restoreLlmMaxTokens(cfg.llm)
-      const hasCustom = (cfg.llm.headers && Object.keys(cfg.llm.headers).length > 0)
-        || (cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length > 0)
-        || cfg.features?.mergeMessages
-      isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
-      llmHeadersEnabled.value = Boolean(cfg.llm.headers && Object.keys(cfg.llm.headers).length)
-      llmExtraBodyEnabled.value = Boolean(cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length)
-      llmHeadersText.value = cfg.llm.headers && Object.keys(cfg.llm.headers).length
-        ? JSON.stringify(cfg.llm.headers, null, 2) : '{}'
-      llmExtraBodyText.value = cfg.llm.extraBody && Object.keys(cfg.llm.extraBody).length
-        ? JSON.stringify(cfg.llm.extraBody, null, 2) : '{}'
-      Object.assign(features, cfg.features)
-      backgroundConcurrency.value = cfg.features.backgroundLLMMaxConcurrency ?? 3
-      settingsStore.setHasApiKey(cfg.llm.hasApiKey)
-      llmApiKey.value = ''
-      llmApiKeyTouched.value = false
-      llmDirty.value = false
-      llmSaved.value = false
-    }
-  } catch (err) {
-    console.error('[llm] delete profile failed:', err)
-  }
+function applyLlmConfig(saved) {
+  llmPreview.value = { ...saved }
+  llmBaseURL.value = saved.baseURL || 'https://api.deepseek.com'
+  llmModel.value = saved.model || 'deepseek-chat'
+  llmThinkingMode.value = saved.thinkingMode || 'disabled'
+  restoreLlmMaxTokens(saved)
+  applyLlmContextWindow(saved.contextWindow)
+  llmHeadersEnabled.value = Boolean(saved.headers && Object.keys(saved.headers).length)
+  llmExtraBodyEnabled.value = Boolean(saved.extraBody && Object.keys(saved.extraBody).length)
+  restoreLlmCustomMode()
+  llmHeadersText.value = JSON.stringify(saved.headers || {}, null, 2)
+  llmExtraBodyText.value = JSON.stringify(saved.extraBody || {}, null, 2)
+  settingsStore.setHasApiKey(saved.hasApiKey)
+  llmApiKey.value = ''
+  llmApiKeyTouched.value = false
+  llmDirty.value = false
+  llmSaved.value = false
 }
 
 onMounted(async () => {
+  // 数据备份摘要独立加载：读失败只影响这一行，不阻塞设置页其它配置
+  loadPoseControl()
   try {
     const data = await getConfig()
+    // 画师串口径（与后端 routes/images.js 一致）：空串 '' ＝ 用户明确要「不要画师串」，
+    // 必须原样保留；只有 undefined / 字段缺失（旧配置）才回落到上一个页签的值。
+    // 所以这里一律用 ??，不能用 || —— || 会把显式空串当成"没值"，把 @chat 又塞回去。
+    // 三个页签各自的字段分别判断，互不影响。
     form.value = {
       artist: data.comfy.artist, width: data.comfy.width, height: data.comfy.height,
-      // 空字符串表示明确不注入画师串；只有缺失字段才回退。
       momentsArtist: data.comfy.momentsArtist ?? data.comfy.artist,
-      momentsWidth: data.comfy.momentsWidth || 1600,
-      momentsHeight: data.comfy.momentsHeight || 1200,
+      momentsWidth: data.comfy.momentsWidth ?? 1600,
+      momentsHeight: data.comfy.momentsHeight ?? 1200,
       eventArtist: data.comfy.eventArtist ?? data.comfy.momentsArtist ?? data.comfy.artist,
-      eventWidth: data.comfy.eventWidth || 1600,
-      eventHeight: data.comfy.eventHeight || 1200,
+      eventWidth: data.comfy.eventWidth ?? 1600,
+      eventHeight: data.comfy.eventHeight ?? 1200,
     }
     globalLoras.value = data.comfy.globalLora || []
     hiresSamplingMode.value = data.comfy.hiresSamplingMode ?? 'source'
@@ -2226,6 +2826,7 @@ onMounted(async () => {
     hiresWorkflowMode.value = data.comfy.hiresWorkflowMode === 'advanced' ? 'advanced' : 'basic'
     hiresUpscaleModel.value = data.comfy.hiresUpscaleModel ?? 'RealESRGAN_x4plus_anime_6B.pth'
     hiresLoras.value = data.comfy.hiresLora || []
+    hiresTurbo.value = data.comfy.hiresTurbo ?? true
     hiresSteps.value = data.comfy.hiresSteps ?? 35
     hiresCfg.value = data.comfy.hiresCfg ?? 5
     hiresDenoise.value = data.comfy.hiresDenoise ?? 0.2
@@ -2240,6 +2841,8 @@ onMounted(async () => {
     applyNovelaiConfig(data.comfy)
     settingsStore.setComfySize(data.comfy.width, data.comfy.height)
     Object.assign(features, data.features)
+    normalizeIntimateFlags(data.features)
+    loadInjectAllStatus()
     freqSlider.value = features.proactiveChatFreq ?? 0.5
     eventFreqSlider.value = features.eventFreq ?? 1
     momentFreqStepIdx.value = momentStepFromValue(features.momentFreq, features.momentFreqMode)
@@ -2259,13 +2862,20 @@ onMounted(async () => {
     llmBaseURL.value = data.llm.baseURL || 'https://api.deepseek.com'
     llmModel.value = data.llm.model || 'deepseek-chat'
     llmThinkingMode.value = data.llm.thinkingMode || 'disabled'
+    // 输出额度 / 接入方式 / Vertex 公开字段（上游 v3.10.0）
     restoreLlmMaxTokens(data.llm)
+    applyLlmContextWindow(data.llm.contextWindow)
     const hasCustom = (data.llm.headers && Object.keys(data.llm.headers).length > 0)
       || (data.llm.extraBody && Object.keys(data.llm.extraBody).length > 0)
       || data.features?.mergeMessages
     isCustomBaseURL.value = !presetURLs.includes(llmBaseURL.value) || hasCustom
     llmHeadersEnabled.value = Boolean(data.llm.headers && Object.keys(data.llm.headers).length)
     llmExtraBodyEnabled.value = Boolean(data.llm.extraBody && Object.keys(data.llm.extraBody).length)
+    // 反重复采样参数：null = 不发送该字段（默认）→ 输入框留空
+    antiRepPenaltyPresence.value = data.llm.antiRepetitionPenalty === null || data.llm.antiRepetitionPenalty === undefined
+      ? '' : String(data.llm.antiRepetitionPenalty)
+    antiRepPenaltyFrequency.value = data.llm.antiRepetitionFrequency === null || data.llm.antiRepetitionFrequency === undefined
+      ? '' : String(data.llm.antiRepetitionFrequency)
     llmHeadersText.value = data.llm.headers && Object.keys(data.llm.headers).length
       ? JSON.stringify(data.llm.headers, null, 2) : '{}'
     llmExtraBodyText.value = data.llm.extraBody && Object.keys(data.llm.extraBody).length
@@ -2276,6 +2886,7 @@ onMounted(async () => {
       workflowScene.value = { chat: 'turbo', group: 'base', moments: 'base', events: 'base', schedule: 'base', mailbox: 'base', ...data.workflow.scene }
     }
     loadLlmProfiles(data)
+    // 读到了配置才决定形态：没配置 / 用户选过 guided → 简易向导；否则完整配置
     loadNovelaiProfiles(data)
     llmSetupMode.value = initialLlmSetupMode(data, readLlmSetupPreference(localStorage))
     llmCardFirst.value = llmSetupMode.value === 'guided' || !data.llm.hasApiKey
@@ -2416,22 +3027,32 @@ async function removeNovelaiProfile(id) {
 }
 
 async function saveComfy() {
-  await updateComfyConfig({
-    artist: form.value.artist, width: form.value.width, height: form.value.height,
-    momentsArtist: form.value.momentsArtist, momentsWidth: form.value.momentsWidth, momentsHeight: form.value.momentsHeight,
-    eventArtist: form.value.eventArtist, eventWidth: form.value.eventWidth, eventHeight: form.value.eventHeight,
-  })
-  settingsStore.setComfySize(form.value.width, form.value.height)
-  settingsStore.setEventSize(form.value.eventWidth, form.value.eventHeight)
-  dirty.value = false; saved.value = true
-  setTimeout(() => saved.value = false, 2000)
+  if (comfySaving.value) return
+  comfySaving.value = true
+  try {
+    await updateComfyConfig({
+      artist: form.value.artist, width: form.value.width, height: form.value.height,
+      momentsArtist: form.value.momentsArtist, momentsWidth: form.value.momentsWidth, momentsHeight: form.value.momentsHeight,
+      eventArtist: form.value.eventArtist, eventWidth: form.value.eventWidth, eventHeight: form.value.eventHeight,
+    })
+    settingsStore.setComfySize(form.value.width, form.value.height)
+    settingsStore.setEventSize(form.value.eventWidth, form.value.eventHeight)
+    dirty.value = false; saved.value = true
+    setTimeout(() => saved.value = false, 2000)
+  } catch (err) {
+    // 以前这里没有 try/catch：保存失败就是 unhandled rejection，界面毫无反应、
+    // dirty 仍是 true，用户会以为已经存上了（生图配置恰恰是最需要确认写库成功的地方）。
+    toastFn?.(`生图配置保存失败：${err?.message || '未知错误'}`, 'error')
+  } finally {
+    comfySaving.value = false
+  }
 }
 
 function onGlobalLoraSaved(globalList) {
   if (Array.isArray(globalList)) globalLoras.value = globalList
 }
 
-function onHiresFixSaved({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode }) {
+function onHiresFixSaved({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turbo }) {
   if (samplingMode !== undefined) hiresSamplingMode.value = samplingMode
   if (globalLoraScale !== undefined) hiresGlobalLoraScale.value = globalLoraScale
   if (sourceBlend !== undefined) hiresSourceBlend.value = sourceBlend
@@ -2444,6 +3065,22 @@ function onHiresFixSaved({ loras, steps, cfg, denoise, maxSize, artistMode, arti
   if (maxSize !== undefined) hiresMaxSize.value = maxSize
   if (artistMode !== undefined) hiresArtistMode.value = artistMode
   if (artist !== undefined) hiresArtist.value = artist
+  if (turbo !== undefined) hiresTurbo.value = turbo
+}
+
+// 「细化用 turbo 参数」开关：即改即存（改完立刻生效，无需重启）；
+// 保存失败回滚本地开关，避免界面显示与后端实际状态不一致（沿用本页 saveIntimateFeature 的写法）
+async function onHiresTurboToggle(val) {
+  try {
+    await updateHiresSettings({ turboMode: val })
+    hiresTurbo.value = val
+    toastFn?.(val
+      ? `细化已改用 turbo 参数（CFG ${HIRES_TURBO_CFG.toFixed(1)} / ${HIRES_TURBO_STEPS} 步）`
+      : '细化已恢复「设置」里的步数与 CFG', 'success')
+  } catch (err) {
+    hiresTurbo.value = !val
+    toastFn?.(`turbo 参数保存失败：${err.message || '未知错误'}`, 'error')
+  }
 }
 
 function openGlobalLora() {
@@ -2553,13 +3190,13 @@ async function checkHealth() {
     proxyUrl: novelaiProxyUrl.value.trim(),
     url: imageProvider.value === 'novelai' ? novelaiUrl.value : comfyUrl.value,
     model: novelaiModel.value,
-    ...(novelaiApiKey.value.trim() || novelaiApiKeyCleared.value ? { apiKey: novelaiApiKey.value.trim() } : {}),
+    ...(novelaiApiKey.value.trim() ? { apiKey: novelaiApiKey.value.trim() } : {}),
   })
   health.value = result
   if (result.provider === 'novelai') {
-    novelaiModels.value = result.models?.length
+    novelaiModels.value = Array.isArray(result.models)
       ? result.models.map(model => ({ value: model, label: model }))
-      : novelaiApiFormat.value === 'relay' ? [] : novelaiBuiltinModels
+      : []
   }
 }
 
@@ -2572,32 +3209,40 @@ async function fetchNovelaiModels() {
       proxyUrl: novelaiProxyUrl.value.trim(),
       url: novelaiUrl.value,
       model: novelaiModel.value,
-      ...(novelaiApiKey.value.trim() || novelaiApiKeyCleared.value ? { apiKey: novelaiApiKey.value.trim() } : {}),
+      ...(novelaiApiKey.value.trim() ? { apiKey: novelaiApiKey.value.trim() } : {}),
     })
     health.value = result
-    novelaiModels.value = result.models?.length
+    novelaiModels.value = Array.isArray(result.models)
       ? result.models.map(model => ({ value: model, label: model }))
-      : novelaiApiFormat.value === 'relay' ? [] : novelaiBuiltinModels
-    if (result.connected) toastFn?.(result.modelSource === 'builtin' ? '鉴权成功，可选择内置绘图模型或手动输入' : `已获取 ${result.models?.length || 0} 个模型`, 'success')
-    else toastFn?.(result.error || '获取模型列表失败', result.connected === null ? 'info' : 'error')
+      : []
+    if (result.connected) toastFn?.(`已获取 ${result.modelCount} 个模型`, 'success')
+    else toastFn?.(result.error || '获取模型列表失败', 'error')
   } finally {
     novelaiModelsLoading.value = false
   }
 }
 
 function buildLlmPayload() {
+  if (!llmContextWindowValid.value) throw new Error('上下文窗口必须为正整数，或留空自动探测')
+  if (!llmHeadersValid.value || !llmExtraBodyValid.value) throw new Error('自定义请求头与请求体必须为 JSON 对象')
+  // 接入方式（上游 v3.10.0）：Vertex 走服务账号，不下发 apiKey
   const payload = { connectionType: llmConnectionType.value }
   if (llmConnectionType.value === 'vertexai') {
     payload.vertexRegion = vertexRegion.value.trim() || 'global'
     if (vertexServiceAccount.value.trim()) payload.vertexServiceAccount = vertexServiceAccount.value.trim()
   }
   // 只有用户手动输入过才提交 apiKey —— 否则浏览器自动填充的旧值会被当成"用户的输入"写回库
-  if (llmConnectionType.value === 'openai' && llmApiKeyTouched.value && llmApiKey.value.trim()) payload.apiKey = llmApiKey.value.trim()
+  if (llmConnectionType.value === 'openai' && llmApiKeyTouched.value && llmApiKey.value.trim()) {
+    payload.apiKey = llmApiKey.value.trim()
+  }
   if (llmBaseURL.value) payload.baseURL = llmBaseURL.value
   if (llmModel.value) payload.model = llmModel.value
+  // 输出额度：非法值直接拦在这里，不要发一个半截配置给后端
   if (!llmMaxTokensValid.value) throw new Error('MAX_tokens 必须为正整数')
   payload.maxTokens = llmMaxTokens.value
   payload.thinkingMode = llmThinkingMode.value
+  // 上下文窗口：留空传 null，让服务端从上游探测 / 用默认值
+  payload.contextWindow = llmContextWindowValue.value
   payload.headers = isCustomBaseURL.value && llmHeadersEnabled.value
     ? JSON.parse(llmHeadersText.value)
     : {}
@@ -2613,7 +3258,7 @@ async function runLlmConnectionTest() {
     toastFn?.('请先修正 LLM 自定义请求头或请求体 JSON', 'warning')
     return
   }
-  if (llmConnectionType.value === 'openai' && !llmBaseURL.value.trim()) {
+  if (!llmBaseURL.value.trim()) {
     toastFn?.('请先填写 API 地址', 'warning')
     return
   }
@@ -2633,52 +3278,41 @@ async function runLlmConnectionTest() {
 }
 
 async function saveLlmConfig() {
-
+  if (llmBusy.value) return
+  llmSaving.value = true
+  const revision = llmDraftRevision
   try {
     const payload = buildLlmPayload()
-    const result = await updateLlmConfig(payload)
-    if (!result.ok) throw new Error(result.error || '保存 LLM 设置失败')
-    if (result.ok) {
-      settingsStore.setHasApiKey(result.hasApiKey)
-      llmPreview.value = { ...result }
-      llmBaseURL.value = result.baseURL || llmBaseURL.value
-      llmModel.value = result.model || llmModel.value
-      llmThinkingMode.value = result.thinkingMode || 'disabled'
-      restoreLlmMaxTokens(result)
-      llmHeadersEnabled.value = Boolean(result.headers && Object.keys(result.headers).length)
-      llmExtraBodyEnabled.value = Boolean(result.extraBody && Object.keys(result.extraBody).length)
-      llmHeadersText.value = result.headers && Object.keys(result.headers).length
-        ? JSON.stringify(result.headers, null, 2) : '{}'
-      llmExtraBodyText.value = result.extraBody && Object.keys(result.extraBody).length
-        ? JSON.stringify(result.extraBody, null, 2) : '{}'
-      if (payload.apiKey) llmApiKey.value = ''
-      llmApiKeyTouched.value = false
-
-      // 保存后台 LLM 任务队列设置（仅自定义 API 时有效，否则强制关闭）
-      if (isCustomBaseURL.value) {
-        await updateFeatureFlag('serializeBackgroundLLM', features.serializeBackgroundLLM)
-        if (features.serializeBackgroundLLM) {
-          await updateBackgroundConcurrency(backgroundConcurrency.value)
-        }
-        await updateFeatureFlag('mergeMessages', features.mergeMessages)
-      } else {
-        features.serializeBackgroundLLM = false
-        backgroundConcurrency.value = 3
-        await updateFeatureFlag('serializeBackgroundLLM', false)
-        features.mergeMessages = false
-        await updateFeatureFlag('mergeMessages', false)
-      }
-
-      await syncActiveLlmProfile()
-
-      llmDirty.value = false
+    const custom = isCustomBaseURL.value
+    const queue = custom && features.serializeBackgroundLLM
+    const concurrency = custom ? backgroundConcurrency.value : 3
+    const merge = custom && features.mergeMessages
+    const requireSaved = result => {
+      if (!result?.ok) throw new Error(result?.error || result?.message || '服务端未确认保存')
+      return result
+    }
+    const result = requireSaved(await updateLlmConfig(payload))
+    if (!result?.ok) throw new Error('服务端未确认保存')
+    // Keep the draft until all steps finish, so a failed secondary setting can be retried.
+    requireSaved(await updateFeatureFlag('serializeBackgroundLLM', queue))
+    if (queue) requireSaved(await updateBackgroundConcurrency(concurrency))
+    requireSaved(await updateFeatureFlag('mergeMessages', merge))
+    requireSaved(await syncActiveLlmProfile())
+    settingsStore.setHasApiKey(result.hasApiKey)
+    if (revision === llmDraftRevision) {
+      applyLlmConfig(result)
+      isCustomBaseURL.value = custom
+      features.serializeBackgroundLLM = queue
+      features.mergeMessages = merge
+      backgroundConcurrency.value = concurrency
       llmSaved.value = true
-      setTimeout(() => llmSaved.value = false, 2000)
+      setTimeout(() => { llmSaved.value = false }, 2000)
+    } else {
+      toastFn?.('提交的配置已保存，之后的修改仍待保存。', 'info')
     }
   } catch (err) {
-    console.error('[llm] save failed:', err)
-    toastFn?.(err.message || '保存 LLM 设置失败', 'error')
-  }
+    toastFn?.('模型配置未全部保存：' + (err?.message || '网络或服务异常') + '，草稿已保留，可重试。', 'error')
+  } finally { llmSaving.value = false }
 }
 
 function isPresetActive(p) {
@@ -2701,6 +3335,216 @@ async function saveFeature(key, val) {
   await updateFeatureFlag(key, val)
 }
 
+// ── 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）──
+// 两个开关都是纯 prompt 增强，保存失败时回滚本地开关（沿用页面既有 toastFn 口径）
+const antiRepFeatureLabels = { antiRepetition: '反车轱辘话', antiRepetitionLock: '反钻牛角尖', antiRepetitionEscalation: '重复时自动加强约束', antiRepetitionReroll: '重写这一轮' }
+
+/**
+ * 功能开关的保存闭环（失败回滚本地开关 + toast）——反重复卡片与动作卡片共用一份，
+ * 免得两处各写一套回滚逻辑。保存失败时把开关拨回去，避免"界面显示开了、后端没存上"的静默不一致。
+ */
+async function saveFeatureWithToast(key, val, label) {
+  try {
+    await updateFeatureFlag(key, val)
+    toastFn?.(val ? `已开启${label}` : `已关闭${label}`, 'success')
+  } catch (err) {
+    features[key] = !val
+    toastFn?.(`${label}保存失败：${err.message || '未知错误'}`, 'error')
+  }
+}
+
+async function saveAntiRepFeature(key, val) {
+  return saveFeatureWithToast(key, val, antiRepFeatureLabels[key] || '设置')
+}
+
+// ── SLG 动作系统（触摸互动 · 专题-SLG动作系统 · 阶段一）──
+const touchFeatureLabels = { touch: '动作系统', touchInstant: '即时反应', touchGroupAdult: '群聊里的敏感动作' }
+
+async function saveTouchFeature(key, val) {
+  return saveFeatureWithToast(key, val, touchFeatureLabels[key] || '设置')
+}
+
+// 动作出图档位（阶段三）：三档选择，键与后端 features.touchImageMode 同口径
+// （always | smart | never，默认 smart）。失败回滚到上一档，避免"界面显示改了、后端没存上"。
+async function saveTouchImageMode(value) {
+  const next = normalizeTouchImageMode(value)
+  const previous = normalizeTouchImageMode(features.touchImageMode)
+  if (next === previous) return
+  features.touchImageMode = next
+  try {
+    await updateFeatureFlag(TOUCH_IMAGE_MODE_KEY, next)
+    toastFn?.('动作出图已改为「' + touchImageModeLabel(next) + '」', 'success')
+  } catch (err) {
+    features.touchImageMode = previous
+    toastFn?.('动作出图保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// 动作反应风格（task-30）：键 features.touchReactionMode，取值 conversation | quick，默认 conversation。
+// 与出图档位同口径：失败回滚到上一档，避免"界面显示改了、后端没存上"。
+async function saveTouchReactionMode(value) {
+  const next = normalizeTouchReactionMode(value)
+  const previous = normalizeTouchReactionMode(features.touchReactionMode)
+  if (next === previous) return
+  features.touchReactionMode = next
+  try {
+    await updateFeatureFlag(TOUCH_REACTION_MODE_KEY, next)
+    toastFn?.('动作反应已改为「' + touchReactionModeLabel(next) + '」', 'success')
+  } catch (err) {
+    features.touchReactionMode = previous
+    toastFn?.('动作反应保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// ── 群聊围观插话概率（task-22）──
+// 契约：features.touchBystanderChance 是 **数字 0~1 = 开启**，'' / null / false = 关闭（退回 task-17 口径）。
+// 写：通用 PUT /api/config/features { key:'touchBystanderChance', value } —— 数字由后端 0~1 夹取，
+//     'off' / null = 关闭，非数字回落 0.3（见 agent-core/src/config.js:549-556）。
+// 失败一律回滚本地值；features 变了会带动下面的 watch 把开关与滑块一起同步回去。
+const BYSTANDER_DEFAULT_PERCENT = 30
+
+/** 0~1（或 '' / null / false）→ 整数百分比；非法 / 关闭都给默认 30 */
+function chanceToPercent(value) {
+  if (value === '' || value === null || value === undefined || value === false) return BYSTANDER_DEFAULT_PERCENT
+  const n = Number(value)
+  if (!Number.isFinite(n)) return BYSTANDER_DEFAULT_PERCENT
+  return Math.round(Math.min(1, Math.max(0, n)) * 100)
+}
+
+/** 任意输入 → 0~100 整数百分比（滑块的值已经是百分比，别拿 chanceToPercent 再乘一遍）；非数字回落默认 30 */
+function clampPercent(value) {
+  if (value === '' || value === null || value === undefined || value === false) return BYSTANDER_DEFAULT_PERCENT
+  const n = Number(value)
+  if (!Number.isFinite(n)) return BYSTANDER_DEFAULT_PERCENT
+  return Math.round(Math.min(100, Math.max(0, n)))
+}
+
+const bystanderEnabled = ref(true)
+const bystanderPercent = ref(BYSTANDER_DEFAULT_PERCENT)
+
+// ── 群聊记忆轮次（2026-10-31 用户要求可开到 30 轮）──
+// 后端 PUT /api/config/group-summary-interval 接受 2~30；值落在 system_settings 里，所有群共享。
+const groupMemRounds = ref(4)
+getConfig()
+  .then(c => {
+    const n = Number(c?.groupChat?.summaryInterval ?? c?.values?.['groupChat.summaryInterval'])
+    if (Number.isFinite(n) && n >= 2) groupMemRounds.value = Math.min(30, Math.round(n))
+  })
+  .catch(() => {})
+async function saveGroupMemRounds(value) {
+  const n = Math.min(30, Math.max(2, Math.round(Number(value) || 4)))
+  groupMemRounds.value = n
+  try {
+    await updateGroupSummaryInterval(n)
+    toastFn?.(`群聊记忆已设为 ${n} 轮`, 'success')
+  } catch (err) {
+    toastFn?.('群聊记忆轮次保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// 载入 / 回滚后同步本地开关与滑块；**关闭时保留上次的百分比**，方便再打开
+watch(() => features.touchBystanderChance, (value) => {
+  const closed = value === '' || value === null || value === undefined || value === false
+  bystanderEnabled.value = !closed
+  if (!closed) bystanderPercent.value = chanceToPercent(value)
+}, { immediate: true })
+
+async function saveBystanderEnabled(enabled) {
+  const previous = features.touchBystanderChance
+  const pct = clampPercent(bystanderPercent.value)
+  const next = enabled ? (pct / 100) : 'off'
+  features.touchBystanderChance = next
+  try {
+    await updateFeatureFlag('touchBystanderChance', next)
+    toastFn?.(enabled
+      ? '已开启群聊围观插话（' + pct + '%）'
+      : '已关闭群聊围观插话：这轮其他成员都不发言', 'success')
+  } catch (err) {
+    features.touchBystanderChance = previous
+    toastFn?.('围观插话保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+async function saveBystanderChance(percent) {
+  // 关闭状态下不发送概率（关闭语义由 'off' 表达）
+  if (!bystanderEnabled.value) return
+  const pct = clampPercent(percent)
+  const previous = features.touchBystanderChance
+  if (chanceToPercent(previous) === pct) return
+  features.touchBystanderChance = pct / 100
+  try {
+    await updateFeatureFlag('touchBystanderChance', pct / 100)
+    toastFn?.('围观插话概率已改为 ' + pct + '%', 'success')
+  } catch (err) {
+    features.touchBystanderChance = previous
+    toastFn?.('围观插话保存失败：' + (err.message || '未知错误'), 'error')
+  }
+}
+
+// 重复惩罚参数（L3）：留空 = 不发送该字段。字符串与 number 都接受，范围 -2 ~ 2。
+const antiRepPenaltyPresence = ref('')
+const antiRepPenaltyFrequency = ref('')
+const antiRepPenaltySaving = ref(false)
+const antiRepPenaltySaved = ref(false)
+const antiRepPenaltyError = ref('')
+
+function parsePenaltyInput(raw) {
+  const text = String(raw ?? '').trim()
+  if (!text) return { valid: true, value: null }
+  const n = Number(text)
+  if (!Number.isFinite(n) || n < -2 || n > 2) return { valid: false, value: null }
+  return { valid: true, value: n }
+}
+
+const antiRepPenaltyPresenceValid = computed(() => parsePenaltyInput(antiRepPenaltyPresence.value).valid)
+const antiRepPenaltyFrequencyValid = computed(() => parsePenaltyInput(antiRepPenaltyFrequency.value).valid)
+const antiRepPenaltyValid = computed(() => antiRepPenaltyPresenceValid.value && antiRepPenaltyFrequencyValid.value)
+
+async function onAntiRepPenaltySave() {
+  antiRepPenaltyError.value = ''
+  const presence = parsePenaltyInput(antiRepPenaltyPresence.value)
+  const frequency = parsePenaltyInput(antiRepPenaltyFrequency.value)
+  if (!presence.valid || !frequency.valid) {
+    antiRepPenaltyError.value = '两个参数都必须是 -2 ~ 2 之间的数字，留空表示不发送'
+    return
+  }
+  antiRepPenaltySaving.value = true
+  try {
+    const result = await updateAntiRepetitionPenalty({ presence: presence.value, frequency: frequency.value })
+    const savedPresence = result?.antiRepetitionPenalty
+    const savedFrequency = result?.antiRepetitionFrequency
+    antiRepPenaltyPresence.value = savedPresence === null || savedPresence === undefined ? '' : String(savedPresence)
+    antiRepPenaltyFrequency.value = savedFrequency === null || savedFrequency === undefined ? '' : String(savedFrequency)
+    antiRepPenaltySaved.value = true
+    setTimeout(() => { antiRepPenaltySaved.value = false }, 2000)
+  } catch (err) {
+    antiRepPenaltyError.value = `保存失败：${err.message || '未知错误'}`
+  } finally {
+    antiRepPenaltySaving.value = false
+  }
+}
+
+// 亲密度看板 / 历史对话回填两个开关的中文名（保存结果提示复用）
+const intimateFeatureLabels = { intimate: '亲密度看板', intimateBackfill: '历史对话回填' }
+
+// 看板开关关闭是有实际副作用的操作（停止自动记账），所以单独处理：
+// 保存失败时回滚本地开关，避免界面显示与后端实际状态不一致（沿用页面既有 toastFn）
+async function saveIntimateFeature(key, val) {
+  const label = intimateFeatureLabels[key] || '设置'
+  try {
+    await updateFeatureFlag(key, val)
+    toastFn?.(val ? `已开启${label}` : `已关闭${label}`, 'success')
+  } catch (err) {
+    features[key] = !val
+    toastFn?.(`${label}保存失败：${err.message || '未知错误'}`, 'error')
+  }
+}
+
+// ── 深度思考（测试版）：开关在 settings store 持久化，聊天页实时读取 ──
+const deepThinkMode = computed(() => settingsStore.deepThinkMode)
+function onDeepThinkChange(v) {
+  settingsStore.setDeepThinkMode(v)
+}
 
 // 滑块松手时触发，持久化到后端并更新 features
 async function onFreqChange() {
@@ -2819,15 +3663,18 @@ const testModes = [
   { value: 'event', label: '奇遇参数' },
 ]
 const styleTesting = ref(false)
-const styleStage = ref('prompt')
-const generatedPromptPrepared = ref(true)
 const styleError = ref('')
 const styleImages = ref([])
+// 两阶段提示词（上游 v3.9.0 契约）：先 preparing（LLM 完善中），再 generating（生图中）。
+// 后端通过 testStyle 的 onPrompt 回调在最终结果到达前就把提示词推给前端，所以失败/中断时
+// 已经产出的提示词也不该丢——这条链路是「提示词可见」而不是「出图计时」。
+const styleStage = ref('prompt')
+// 当前展示的 prompting 是否已经过完善（决定重生成时要不要再走一遍 LLM 合并）
+const generatedPromptPrepared = ref(true)
 const styleElapsed = ref(null)  // ms
 const styleTiming = ref(null)  // { comfyui_ms, download_ms, overhead_ms }
 const freeSceneDesc = ref('')  // 自由画面描述（LLM 完善提示词）
 const generatedPrompt = ref('')  // RAG 召回合并后的最终 prompt 展示
-const promptRevealed = ref(false)  // 点击自由描述框后保持提示词区域展开
 const promptEditing = ref(false)  // prompt 展示框的点击编辑态
 const promptEditRef = ref(null)
 
@@ -2846,7 +3693,6 @@ function submitOnEnter(event, action) {
 
 // 点击 prompt 框进入编辑：光标定位到末尾
 async function startPromptEdit() {
-  if (styleTesting.value) return
   promptEditing.value = true
   await nextTick()
   promptEditRef.value?.focusToEnd()
@@ -2861,7 +3707,6 @@ function focusSceneDesc() {
 }
 function onSceneDescFocus() {
   sceneDescFocused.value = true
-  promptRevealed.value = true
 }
 
 // 失焦后组件自动回到单行
@@ -2879,23 +3724,12 @@ const BASE_WORKFLOW_MODE_OPTIONS = [
   { value: 'base', label: 'base', desc: '只用 Anima_base 模型，泛用性最强的基底模型，构图能力强，画师串遵循强，速度较慢' },
   { value: 'hybrid', label: 'base+turbo', desc: 'turbo + base，切换时需要加载模型导致首图较慢' },
 ]
-// 自定义工作流卡片：始终作为最后一个模式选项出现，选中后遍历 workflow 目录
+// 自定义工作流卡片：仅当 workflow 目录里存在可选工作流时才出现（上游 v3.10.0）
 const CUSTOM_WORKFLOW_MODE_OPTION = {
   value: 'custom',
   label: '自定义',
-  desc: '使用你自己放在 workflow 目录下的工作流',
+  desc: '使用上游自带的生图工作流，或你自己放进 workflow 目录的工作流，所有生图场景统一生效（角色专属工作流仍优先）',
 }
-// 「自定义」模式下生图时，按节点标题注入的内容（对应 imageSkill.js 的 NODE_TITLES 注入逻辑）
-// type 取内置工作流实测的节点类名：负面=CLIPTextEncode，宽/长=PrimitiveInt，其余=PrimitiveString
-const workflowInjectRows = [
-  { node: '画面描述', type: 'PrimitiveString', desc: '替换为本次生成的画面描述（优先替换标题节点里含「请输入画面描述」占位符的输入）' },
-  { node: '画师串', type: 'PrimitiveString', desc: '当前画师串（角色 / 场景 / 全局设置）' },
-  { node: '图片的宽', type: 'PrimitiveInt', desc: '目标图片宽度' },
-  { node: '图片的长', type: 'PrimitiveInt', desc: '目标图片高度' },
-  { node: '质量提示词', type: 'PrimitiveString', desc: '质量提示词；留空时保留工作流里自带的默认值' },
-  { node: '负面提示词', type: 'CLIPTextEncode', desc: '负面提示词；留空时保留默认值，缺少该标题时自动写入 KSampler 负面输入来源的文本节点' },
-  { node: 'lora触发词', type: 'PrimitiveString', desc: '所有已启用 LoRA 的触发词拼接' },
-]
 // 放大细化工作流由 HiresFix 单独管理，不作为生图工作流选项
 const NON_GENERATION_WORKFLOWS = ['放大细化工作流.json', '放大细化工作流-进阶.json']
 
@@ -2917,10 +3751,24 @@ const wfResetting = ref(false)
 const wfSaving = ref(false)
 const showWfModeDialog = ref(false)
 
-const workflowModeOptions = computed(() => [...BASE_WORKFLOW_MODE_OPTIONS, CUSTOM_WORKFLOW_MODE_OPTION])
-const customWorkflowOptions = computed(() =>
-  customWorkflowList.value.map(w => ({ value: w.filename, label: w.label }))
-)
+const workflowInjectRows = [
+  { node: '画面描述', type: 'PrimitiveString', desc: '替换为本次生成的画面描述（优先替换标题节点里含「请输入画面描述」占位符的输入）' },
+  { node: '画师串', type: 'PrimitiveString', desc: '当前画师串（角色 / 场景 / 全局设置）' },
+  { node: '图片的宽', type: 'PrimitiveInt', desc: '目标图片宽度' },
+  { node: '图片的长', type: 'PrimitiveInt', desc: '目标图片高度' },
+  { node: '质量提示词', type: 'PrimitiveString', desc: '质量提示词；留空时保留工作流里自带的默认值' },
+  { node: '负面提示词', type: 'CLIPTextEncode', desc: '负面提示词；留空时保留默认值，缺少该标题时自动写入 KSampler 负面输入来源的文本节点' },
+  { node: 'lora触发词', type: 'PrimitiveString', desc: '所有已启用 LoRA 的触发词拼接' },
+]
+
+const workflowModeOptions = computed(() => customWorkflowList.value.length > 0
+  ? [...BASE_WORKFLOW_MODE_OPTIONS, CUSTOM_WORKFLOW_MODE_OPTION]
+  : BASE_WORKFLOW_MODE_OPTIONS)
+// 内置生图工作流也在这份列表里（后端 builtin: true）—— 「自定义」开箱即可选，不用先自备文件
+const customWorkflowOptions = computed(() => customWorkflowList.value.map(w => ({
+  value: w.filename,
+  label: w.builtin ? `${w.label}（内置）` : w.label,
+})))
 
 // 弹窗草稿状态
 const wfModeDraft = ref('turbo')
@@ -2945,7 +3793,7 @@ function openWfModeDialog() {
   wfSceneDraft.value = { ...workflowScene.value }
   wfCustomDraft.value = workflowCustomTemplate.value
   showWfModeDialog.value = true
-  // 每次打开都重新拉取，workflow 目录新增文件后无需刷新页面
+  // 每次打开都重新拉取：workflow 目录新增文件后不用刷新页面
   fetchCustomWorkflows()
 }
 
@@ -3023,8 +3871,9 @@ async function executeStyleTest({ prompt = '', sceneDesc = '', reuseSceneLoras =
       reuseSceneLoras,
       alreadyPrepared,
     }, {
-      onPrompt: ({ generatedPrompt: prompt, stage }) => {
-        generatedPrompt.value = prompt
+      // 流式回调：最终结果还没回来就先展示提示词（跨字节分块由 api 层负责拼）
+      onPrompt: ({ generatedPrompt: text, stage }) => {
+        generatedPrompt.value = text
         generatedPromptPrepared.value = stage === 'generating'
         styleStage.value = stage
       },
@@ -3044,6 +3893,8 @@ async function executeStyleTest({ prompt = '', sceneDesc = '', reuseSceneLoras =
     styleError.value = '请求失败: ' + (err.message || '网络错误')
   } finally {
     styleTesting.value = false
+    // 收尾把阶段落回生成态：提示词已经确定，后面只等图片
+    if (styleStage.value !== 'prompt') styleStage.value = 'generating'
   }
 }
 
@@ -3129,7 +3980,7 @@ function resetTestPrompts() {
 </script>
 
 <style scoped>
-.settings-view { padding: 32px; overflow-y: auto; overflow-x: hidden; height: 100vh; height: 100dvh; flex: 1; min-width: 0; width: 100%; container-type: inline-size; }
+.settings-view { padding: 32px; overflow-y: auto; height: 100vh; height: 100dvh; flex: 1; }
 .page-header {
   margin-bottom: 28px;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -3145,10 +3996,14 @@ function resetTestPrompts() {
 .header-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
 .hint { font-size: 13px; color: var(--text-secondary); }
 
-/* 双列用 minmax(0,1fr)：格子默认 min-width:auto，生成图（最大 480px）会把列撑到
-   内容宽度之外，设置页横向溢出、滚动后左列被顶出可视区（平板上「左侧被遮盖」的根因） */
-.settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 不参与 grid 的整行卡片（设备连接）：单独占一行，行高只由自己决定 */
+.settings-standalone { margin-bottom: 16px; }
 .memory-settings-card { gap: 0; }
+
+/* ── 程序时间（面板自带皮肤，这里只负责与卡片头的间距） ── */
+.time-control-card .memory-settings-header { margin-bottom: 12px; }
+
 .maibot-settings-card .memory-settings-entry { margin-top: 14px; }
 .memory-settings-header h3 { margin-bottom: 4px; }
 .memory-settings-header p {
@@ -3272,6 +4127,12 @@ function resetTestPrompts() {
 }
 
 .gen-error { margin-top: 6px; font-size: 12px; color: var(--danger, #ff4d4f); }
+/* 输出额度提示（上游 4.2.1 改成 llm-token-hint 类，但没写样式）：非法红、远超上限黄 */
+.llm-token-hint { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+.llm-token-hint.is-invalid { color: var(--danger, #ff4d4f); }
+.llm-token-hint.is-oversized { color: var(--warning, #faad14); }
+/* 额度远超模型常用上限：只提示不拦保存，避免用户确实想填大值时被卡住 */
+.gen-warn { margin-top: 6px; font-size: 12px; color: var(--warning, #faad14); }
 .fr { display: flex; gap: 12px; }
 .fh { flex: 1; min-width: 0; }
 .fr .fl {
@@ -3290,6 +4151,27 @@ function resetTestPrompts() {
   font-size: 12px; color: var(--text-secondary);
 }
 /* ── 全局细化 / HiresFix 独立层级 ── */
+/* ── 姿势参考（Anima Control Pose）── */
+/* 体位骨架那一行：与上面参考图行同构，用虚线分隔表示"另一种方式"，别被看成同一个开关 */
+.pose-ref-row--body {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.pose-ref-section {
+  margin: 8px 0 0; padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.pose-ref-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.pose-ref-title { font-size: var(--fs-md); font-weight: 600; color: var(--text-primary); }
+.pose-ref-row { display: flex; align-items: flex-start; gap: 12px; }
+.pose-ref-copy { flex: 1; min-width: 0; }
+.pose-ref-desc { font-size: var(--fs-sm); color: var(--text-secondary); margin: 0 0 4px; }
+.pose-ref-hint { font-size: var(--fs-xs); color: var(--text-secondary); opacity: .8; }
+.pose-ref-dir { margin-top: 10px; }
+.pose-ref-dir-row { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
+.pose-ref-dir-row > :first-child { flex: 1; min-width: 0; }
+
 .hiresfix-section {
   margin: 8px 0 0; padding: 16px 0;
   border-top: 1px solid var(--border);
@@ -3313,6 +4195,14 @@ function resetTestPrompts() {
 .hiresfix-desc {
   font-size: 12px; color: var(--text-secondary); margin-top: 2px;
 }
+/* ── turbo 参数开关行（与上一行同区，靠上边框分隔）── */
+.hiresfix-quality-tabs { flex-shrink: 0; }
+.hiresfix-turbo-row {
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  align-items: flex-start;
+}
+.hiresfix-turbo-title { font-size: 13px; font-weight: 600; color: var(--text-bright); }
 .hiresfix-summary { font-size: 12px; color: var(--text-secondary); }
 .hiresfix-link, .quality-link {
   font-size: 13px;
@@ -3344,13 +4234,13 @@ function resetTestPrompts() {
 
 /* ── 外部链接高亮 ── */
 .ext-link {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
   font-weight: 500;
   transition: color 0.15s;
 }
-.ext-link:hover { color: var(--accent-hover); }
+.ext-link:hover { color: var(--accent-text); }
 
 /* ── 画师串收藏夹：输入框一体 + 轻量文字标签 ── */
 .fav-input-row {
@@ -3399,10 +4289,40 @@ function resetTestPrompts() {
 
 .toggle-row { display: flex; gap: 14px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--glass-border); }
 .toggle-row:last-child { border-bottom: none; }
+/* 动作出图档位：窄屏让三档换到下一行，别把说明文字挤成一列 */
+.touch-image-mode-row { flex-wrap: wrap; }
+.touch-image-mode-tabs { flex-shrink: 0; }
+/* 围观插话概率：滑块撑满，右侧百分比定宽不跳 */
+.bystander-row { display: flex; align-items: center; gap: 12px; padding: 0 0 14px; }
+.bystander-slider { flex: 1; min-width: 0; }
+.bystander-value { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; color: var(--text-secondary); }
 .tl { font-size: 14px; font-weight: 500; color: var(--text-bright); }
 /* 测试版小标签：珊瑚描边弱强调 */
-
+.beta-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--accent-text);
+  border: 1px solid var(--accent-light);
+  vertical-align: 1px;
+}
 .td { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+/* ── 反重复与话题推进（专题·车轱辘话与钻牛角尖 · 阶段一）──
+   只做本卡内部排版，控件皮肤一律走 Linshe 组件与既有 token，不覆盖组件样式 */
+.anti-rep-card .anti-rep-penalty {
+  display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between; align-items: flex-start;
+  padding: 14px 0 0; margin-top: 2px; border-top: 1px solid var(--glass-border);
+}
+.anti-rep-card .anti-rep-penalty-copy { flex: 1 1 260px; min-width: 220px; }
+.anti-rep-card .anti-rep-penalty-inputs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.anti-rep-field { display: flex; flex-direction: column; gap: 4px; }
+.anti-rep-field-label { font-size: 11px; color: var(--text-secondary); }
+.anti-rep-card .anti-rep-input { width: 92px; }
 
 .freq-control {
   display: flex; align-items: center; gap: 10px; flex-shrink: 0;
@@ -3429,11 +4349,7 @@ function resetTestPrompts() {
   background: var(--accent); border: none; cursor: pointer;
 }
 .freq-val {
-  font-size: 14px; font-weight: 600; color: var(--accent);
-  /* 固定宽度 + 右对齐：这几行是 space-between 布局、值区靠右，
-     宽度不一致会把滑块往左挤（「5 分钟」比「1.0」宽就错位了）。
-     统一宽度后所有滑块左右边缘才能对齐。56px 容得下最宽的「30 分钟」。 */
-  min-width: 56px; text-align: right; white-space: nowrap;
+  font-size: 14px; font-weight: 600; color: var(--accent-text); min-width: 28px; text-align: right;
 }
 
 /* ── 防打扰模式 ── */
@@ -3544,13 +4460,9 @@ function resetTestPrompts() {
 .novelai-model-row { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 14px; }
 .novelai-model-select { flex: 1; min-width: 0; }
 .novelai-api-mode-row { display: flex; align-items: center; gap: 12px; min-width: 0; margin: 8px 0; }
+.novelai-api-mode-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: 0 0 100px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
 .novelai-api-url { flex: 1; min-width: 0; }
-.novelai-proxy-heading { display: flex; align-items: center; margin: 4px 0 10px; }
-.novelai-hint-enter-active, .novelai-hint-leave-active { transition: opacity var(--dur-interaction) var(--ease-standard); }
-.novelai-hint-enter-from, .novelai-hint-leave-to { opacity: 0; }
-.novelai-model-hint { overflow-wrap: anywhere; }
-.image-connection-card .sr { flex-wrap: wrap; }
-.novelai-model-hint { margin: 4px 0 10px; color: var(--text-secondary); font-size: var(--fs-xs); line-height: 1.5; }
+.novelai-model-hint { margin: -4px 0 6px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
 .novelai-resolution-field { min-width: 0; margin: 10px 0; }
 .novelai-steps-field { min-width: 0; margin: 10px 0; }
 .novelai-param-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
@@ -3575,8 +4487,21 @@ function resetTestPrompts() {
 
 .sp-btn-small { padding:6px 14px; font-size:12px; margin-right:6px; }
 
+/* ── LLM API ── */
+.apikey-row { display: flex; gap: 8px; align-items: center; }
+.apikey-row .fi { flex: 1; min-width: 0; }
+.key-status { margin-top: 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.key-ok { color: #24682a; }   /* --success(#52c41a) 在白底上只有 1.9:1；#24682a 约 5.2:1 */
+.key-missing { color: var(--danger); padding: 6px 10px; border-radius: 6px; background: rgba(255, 77, 79, 0.06); }
+.key-preview { font-size: 12px; padding: 2px 8px; border-radius: 4px; background: var(--glass-bg-strong); border: 1px solid var(--glass-border); color: var(--text-secondary); cursor: pointer; transition: border-color 0.15s; }
+.key-preview:hover { border-color: var(--accent); }
+
 /* ── 每日免费鸡蛋（LLM 卡片右上角按钮） ── */
 .llm-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+/* LLM 卡片首屏：简易向导形态下给它更多存在感（上游 v3.10.0） */
+.llm-card-first { border-color: var(--accent, #d9a441); }
+.llm-setup-intro-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.llm-setup-intro-actions { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 .llm-card-header h3 { margin-bottom: 0; }
 .free-egg-btn {
   display: inline-flex;
@@ -3603,13 +4528,13 @@ function resetTestPrompts() {
 /* ── 推荐中转站入口与弹窗 ── */
 .relay-intro-btn {
   padding: 0; border: none; background: none;
-  font-size: 12px; font-weight: 500; color: var(--accent);
+  font-size: 12px; font-weight: 500; color: var(--accent-text);
   text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
   user-select: none;
   white-space: nowrap;
   transition: color 0.15s;
 }
-.relay-intro-btn:hover { color: var(--accent-hover); }
+.relay-intro-btn:hover { color: var(--accent-text); }
 .relay-intro-footer { margin-left: auto; }
 .relay-modal-tip { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; }
 .relay-station {
@@ -3641,7 +4566,7 @@ function resetTestPrompts() {
 .relay-sponsor-note strong { font-weight: 600; color: var(--text-muted, #b3aca4); }
 @media (max-width: 640px) {
   .relay-station-head { align-items: flex-start; }
-
+  .novelai-api-mode-toggle { flex-basis: 120px; }
 }
 
 /* LLM API 面板切换：退出淡出上收，进入弹性下压 */
@@ -3710,59 +4635,84 @@ function resetTestPrompts() {
 .free-egg-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .free-egg-desc { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
 .free-egg-hint { font-size: 11px; color: var(--text-secondary); opacity: 0.75; margin-top: 2px; }
-/* LLM 设置：平面分区，控件皮肤由 Linshe 组件统一管理。 */
-.llm-card { container-type: inline-size; }
-.llm-card-first { order: -1; }
-.llm-full-intro { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 10px; }
-.llm-full-intro .llm-intro { margin-bottom: 0; }
-.llm-intro { margin: 0 0 10px; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.6; }
-.llm-profile-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 12px; }
-.llm-profile-item { display: flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; }
-.llm-profile-item > :first-child { min-width: 0; max-width: 100%; }
-.llm-profile-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; text-align: left; }
-.llm-inline-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.llm-section { padding: 10px 0; border-top: 1px solid var(--glass-border); }
-.llm-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; margin-bottom: 6px; }
-.llm-section-heading h4, .llm-help-section h4 { margin: 0; color: var(--text-bright); font-size: var(--fs-md); font-weight: 600; }
-.llm-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.llm-label { color: var(--text-primary); font-size: var(--fs-sm); font-weight: 600; line-height: 1.5; }
-.llm-field-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
-.llm-credential-status, .llm-save-status { font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
-.llm-credentials { display: grid; gap: 10px; margin-top: 10px; min-width: 0; }
-.llm-endpoint-row { display: grid; grid-template-columns: minmax(140px, 0.8fr) minmax(0, 2fr); gap: 8px; }
-.llm-endpoint-row > :only-child { grid-column: 1 / -1; }
-.llm-key-row, .llm-model-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.llm-key-row > :first-child, .llm-model-row > :first-child { flex: 1; min-width: 0; }
-.llm-model-row > :last-child { flex-shrink: 0; }
-.llm-parameter-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 10px; }
-.llm-field-hint, .llm-token-hint { margin: 0; color: var(--text-secondary); font-size: var(--fs-xs); line-height: 1.6; overflow-wrap: anywhere; }
-.llm-token-hint.is-invalid, .model-fetch-error { color: var(--danger); }
-.model-fetch-error { margin: 0; font-size: var(--fs-sm); line-height: 1.5; overflow-wrap: anywhere; }
-.llm-connection-enter-active, .llm-connection-leave-active { transition: opacity 0.3s var(--ease-standard); }
-.llm-connection-enter-from, .llm-connection-leave-to { opacity: 0; }
-.vertex-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.vertex-status { font-size: var(--fs-xs); line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
-.llm-advanced-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 0; border-top: 1px solid var(--glass-border); }
-.llm-advanced-chevron { flex-shrink: 0; transition: transform 0.3s var(--ease-standard); }
-.llm-advanced-chevron.open { transform: rotate(180deg); }
-.llm-advanced-body { padding-bottom: 12px; }
-.llm-custom-toggle, .llm-option-row { border-bottom: none; }
+.llm-model-row { display: flex; align-items: stretch; gap: 8px; margin-bottom: 14px; }
+.llm-model-row .ls-select-wrapper { flex: 1; min-width: 0; }
+.model-fetch-btn {
+  min-width: 82px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.model-fetch-error { margin-top: -8px; margin-bottom: 14px; color: var(--danger); font-size: 12px; line-height: 1.5; }
+/* 上下文窗口：输入框已有 .fi 的底部留白，说明行只需贴住上一条 */
+.llm-context-window-hint { margin-top: -8px; margin-bottom: 14px; }
+.thinking-setting { min-width: 0; }
+.thinking-setting,
+.llm-custom-toggle,
+.llm-option-row { border-bottom: none; }
 .llm-custom-editor { padding: 4px 0 2px; }
 .llm-json-textarea { min-height: 72px; font-family: monospace; font-size: 12px; resize: vertical; }
-.llm-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--glass-border); padding-top: 10px; }
-.llm-footer-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-.llm-help-copy { margin: 0 0 12px; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.7; }
-.llm-help-section + .llm-help-section { border-top: 1px solid var(--glass-border); margin-top: 20px; padding-top: 20px; }
-.llm-help-section h4 { margin-bottom: 10px; }
-.llm-inline-help .llm-help-copy { margin: 0; line-height: 1.6; }
-.llm-inline-help .ext-link { margin-left: 6px; font-size: var(--fs-sm); }
-@container (max-width: 480px) {
-  .llm-endpoint-row, .llm-parameter-grid { grid-template-columns: minmax(0, 1fr); }
-  .llm-key-row { flex-wrap: wrap; }
-  .llm-key-row > :first-child { flex-basis: 100%; }
-  .llm-key-row > .llm-inline-actions { margin-left: auto; }
-  .llm-parameter-grid { gap: 10px; }
+.llm-label { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+.llm-advanced-toggle {
+  display: flex; align-items: center; justify-content: flex-start; gap: 6px;
+  width: 100%; margin-top: 4px; padding: 12px 0 10px;
+  border: none; border-bottom: 1px solid var(--glass-border);
+  background: none; color: var(--text-bright);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
 }
+.llm-advanced-label { min-width: 0; }
+.llm-advanced-chevron { flex-shrink: 0; color: var(--text-secondary); transition: color 0.15s, transform 0.25s ease; }
+.llm-advanced-toggle:hover .llm-advanced-chevron { color: var(--accent); }
+.llm-advanced-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.llm-advanced-chevron.open { transform: rotate(180deg); }
+.llm-advanced-body { padding-top: 2px; }
+
+/* ── LLM Profile 切换 ── */
+.llm-profiles-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+.profile-item-row { display: flex; align-items: center; gap: 0; }
+.profile-tag {
+  padding: 4px 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-strong);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  border-radius: 8px;
+  font-family: inherit;
+  user-select: none;
+}
+.profile-item-row .profile-tag { border-radius: 0; }
+.profile-item-row .profile-tag:first-child { border-radius: 9999px 0 0 9999px; }
+.profile-item-row .profile-tag:last-child { border-radius: 0 9999px 9999px 0; }
+.profile-item-row .profile-tag:first-child:last-child { border-radius: 9999px; }
+.profile-item-row .profile-tag:first-child:not(:last-child) { padding-right: 8px; }
+.profile-item-row .profile-tag:last-child:not(:first-child) { padding-left: 6px; }
+.profile-tag:hover { border-color: var(--accent); color: var(--text-bright); }
+.profile-tag.active {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  font-weight: 600;
+}
+.profile-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  flex-shrink: 0;
+}
+.profile-delete-btn { padding: 4px 8px; min-width: unset; border: none; background: transparent; }
+.profile-delete-btn:hover { background: rgba(255, 77, 79, 0.08); }
+.profile-x { font-size: 14px; line-height: 1; color: var(--danger); }
+.profile-add { border-radius: 20px; border-style: dashed; color: var(--text-muted); }
+.profile-add:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── 测试画风 ── */
 .style-test-row { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 12px; flex-wrap: wrap; }
@@ -3772,8 +4722,6 @@ function resetTestPrompts() {
 /* 生成提示词按钮：随输入内容渐入渐出 */
 .gen-btn-fade-enter-active, .gen-btn-fade-leave-active { transition: opacity 0.25s ease; }
 .gen-btn-fade-enter-from, .gen-btn-fade-leave-to { opacity: 0; }
-.prompt-reveal-enter-active, .prompt-reveal-leave-active { transition: opacity 0.3s var(--ease-standard); }
-.prompt-reveal-enter-from, .prompt-reveal-leave-to { opacity: 0; }
 .generated-prompt-box {
   padding: 10px 14px; margin-bottom: 12px; border-radius: 12px;
   background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
@@ -3799,18 +4747,8 @@ function resetTestPrompts() {
 .style-elapsed { font-size: 13px; color: var(--text-secondary); padding: 4px 10px; border-radius: 6px; background: var(--glass-bg-strong); border: 1px solid var(--glass-border); }
 .style-timing-breakdown { font-size: 12px; color: var(--text-muted, #999); }
 .style-timing-breakdown::before { content: ' '; }
-.style-preview-img { max-width: min(480px, 100%); max-height: 480px; border-radius: 12px; border: 1px solid var(--glass-border); cursor: pointer; object-fit: contain; background: var(--glass-bg-strong); transition: transform 0.2s ease; }
+.style-preview-img { max-width: 480px; max-height: 480px; border-radius: 12px; border: 1px solid var(--glass-border); cursor: pointer; object-fit: contain; background: var(--glass-bg-strong); transition: transform 0.2s ease; }
 .style-preview-img:hover { transform: scale(1.03); }
-
-
-/* 按扣除导航与会话侧栏后的正文宽度切换，兼容平板横屏和分屏。 */
-@container (max-width: 960px) {
-  .settings-grid { grid-template-columns: minmax(0, 1fr); }
-  .fr, .free-scene-row { flex-direction: column; align-items: stretch; }
-  .sa { flex-wrap: wrap; }
-}
-.settings-grid > * { min-width: 0; }
-.style-preview-img { display: block; }
 
 
 /* ── 移动端：卡片单列 + 间距收缩 ── */
@@ -3845,7 +4783,9 @@ function resetTestPrompts() {
 
 @media (prefers-reduced-motion: reduce) {
   .memory-settings-entry,
-  .memory-entry-arrow { transition: none; }
+  .memory-entry-arrow,
+  .thinking-option span,
+  .thinking-options::before { transition: none; }
   .memory-settings-entry:hover .memory-entry-arrow { transform: none; }
 }
 

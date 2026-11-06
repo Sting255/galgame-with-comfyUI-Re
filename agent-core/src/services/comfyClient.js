@@ -2,17 +2,32 @@ import fs from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
 import { config } from '../config.js';
+import { maybeApplyPoseControl } from './poseControl.js';
 import { withImageGpu } from './speechGpu.js';
 
 const getBase = () => config.comfyui.url.replace(/\/+$/, '');
 const getWsBase = () => config.comfyui.url.replace(/^http/, 'ws');
-const EXECUTION_TIMEOUT_MS = 60 * 60 * 1000; // 1 小时，WebSocket 与轮询兜底共用
+/**
+ * 单张图的等待上限（WebSocket 与轮询兜底共用）。
+ *
+ * 2026-11-06 真机：原来写死 **1 小时**，等于没有超时 —— ComfyUI 卡住三分钟时，
+ * 前端只能一直转圈、刷新也没用，等它缓过来又一次性倒出十几张。
+ * 现在默认 2 分钟（turbo 单张 3~6 秒，慢图也很少超过 30 秒），可用 COMFY_IMAGE_TIMEOUT_MS 覆盖。
+ */
+const DEFAULT_EXECUTION_TIMEOUT_MS = 120_000;
+const EXECUTION_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.COMFY_IMAGE_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_EXECUTION_TIMEOUT_MS;
+  return Math.min(Math.max(raw, 30_000), 60 * 60 * 1000);
+})();
 
 // ── 节点定义缓存（从 ComfyUI /object_info 获取，~2.8MB，常驻内存）──
 
 let objectInfoCache = null;   // 完整响应，含 input/output/meta 等，供未来扩展使用
 let widgetSlotMap = null;     // Map<nodeType, [{name, slot}]>  所有 widget 输入的位置
 let pollingTimer = null;
+/** "目标 ComfyUI 缺姿势节点"只提醒一次，避免每张图刷一行 */
+let poseNodeMissingWarned = false;
 
 /**
  * 从 ComfyUI 获取所有已注册节点的完整 input schema。
@@ -63,6 +78,22 @@ function buildWidgetSlotMap(objectInfo) {
     }
   }
   return map;
+}
+
+/**
+ * 某个节点类型在**目标 ComfyUI 上**是否已注册。
+ *
+ * 为什么需要：自定义节点（如姿势控制的 `AnimaPoseControl`）不是装在所有机器上的。
+ * 往工作流里注入一个不存在的节点，ComfyUI 会直接 400
+ * `missing_node_type: Node 'AnimaPoseControl' not found`，整张图都生不出来
+ * —— 2026-11-03 用户在没装该节点的机器上实测踩到。
+ *
+ * @param {string} nodeType 例如 'AnimaPoseControl'
+ * @returns {boolean|null} true 有 / false 没有 / **null 清单还没取到**（未知，调用方不应据此拦截）
+ */
+export function hasNodeType(nodeType) {
+  if (!objectInfoCache) return null;
+  return Object.prototype.hasOwnProperty.call(objectInfoCache, nodeType);
 }
 
 /** 启动后台轮询，直到成功获取 object_info */
@@ -357,8 +388,13 @@ export function guiToApi(workflow) {
           for (let j = 0; j < missingSlots.length && wvIdx + j < wvs.length; j++) {
             apiNode.inputs[missingSlots[j].name] = wvs[wvIdx + j] ?? '';
           }
-          console.log(`[comfyClient] ${node.type}(id=${node.id}) hardcoded fallback:`,
-            missingSlots.map((f, j) => `${f.name}=${JSON.stringify(wvs[wvIdx + j])}`).join(', '));
+          // 2026-10-01：只有真的补了槽位才打印。原来无条件打印，于是日志里天天出现
+          // `[comfyClient] PrimitiveInt(id=122) hardcoded fallback:`（冒号后面空白），
+          // 看起来像「填了空值导致生不出图」，实际是 missingSlots 为空 —— 纯噪声，会带偏排查。
+          if (missingSlots.length > 0) {
+            console.log(`[comfyClient] ${node.type}(id=${node.id}) hardcoded fallback:`,
+              missingSlots.map((f, j) => `${f.name}=${JSON.stringify(wvs[wvIdx + j])}`).join(', '));
+          }
         }
       }
     }
@@ -454,13 +490,33 @@ function formatComfyUIError(errText, status) {
   return `ComfyUI returned ${status}: ${errText.slice(0, 300)}`;
 }
 
-export async function submitWorkflow(guiWorkflow, onProgress) {
-  return withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress));
+export async function submitWorkflow(guiWorkflow, onProgress, options = {}) {
+  return withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress, options));
 }
 
-async function submitWorkflowWithGpu(guiWorkflow, onProgress) {
+async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   const clientId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const apiPrompt = guiToApi(guiWorkflow);
+  // 姿势控制：options.poseJson（体位骨架）优先，其次设置里的固定参考图；
+  // 两者都没有时这里什么都不做，原有链路逐字节不变。
+  //
+  // ⚠️ 2026-11-03 真机事故：**目标 ComfyUI 没装自定义节点时不能注入**。
+  // 用户换到另一台没装 `ComfyUI-anima-pose-control` 的机器，注入后 ComfyUI 直接 400
+  // `missing_node_type: Node 'AnimaPoseControl' not found`，整张图生不出来 ——
+  // 这比"没有姿势"严重得多（姿势是增强，出图是底线）。
+  // 所以先查节点清单：**明确没有**就跳过注入、照常出图；清单还没取到（null）时按原逻辑继续尝试。
+  const poseNodeOk = hasNodeType('AnimaPoseControl');
+  if (poseNodeOk === false) {
+    if (!poseNodeMissingWarned) {
+      poseNodeMissingWarned = true;
+      console.warn('[poseControl] 目标 ComfyUI 没有 AnimaPoseControl 节点（未装 ComfyUI-anima-pose-control），'
+        + '已跳过骨架注入，按无姿势出图；这条只提醒一次。'
+        + '如果这是你自己的机器：程序会每 30 分钟把随包的节点资产装进 ComfyUI（assets/pose-control，'
+        + '需要启动器里配好 comfyui_exe），装完重启 ComfyUI 即生效。');
+    }
+  } else {
+    maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });
+  }
 
   const body = {
     client_id: clientId,
@@ -759,6 +815,13 @@ export async function uploadImage(buffer, filename) {
   return data.name || filename;
 }
 
+/**
+ * ⚠️ 死导出（2026-10-15 标注，**只标注不删**）：全仓只在定义处出现，`src/` / `app.js` / `test/` 零调用。
+ * 原意是"ComfyUI 出图后从输出目录捞最新一张"——那是在还没拿到返回值时的兜底手段；
+ * 现在出图链一律走 `submitWorkflow` 的返回值（含 base64），不需要回目录找文件。
+ * 保留原因：真机排查时"这张图到底落在哪"是个高频问题，留着它可以手动调用对一下；
+ * 真要清就**同批处理**（清单见 `scripts/scan-dead-code.mjs` 的输出，别只删这一个）。
+ */
 export function findLatestImageInFolder(folderPath, subfolder = 'bot') {
   const dir = path.join(folderPath, subfolder);
   if (!fs.existsSync(dir)) return null;

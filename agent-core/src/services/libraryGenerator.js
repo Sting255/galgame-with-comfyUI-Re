@@ -8,8 +8,24 @@
 import { chatSync } from './lorebook/runtime.js';
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting } from '../db/index.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
+// 2026-10-13 合并上游 v3.9.0：参考图 → 场景方向（图片转写），供奇遇事件库/朋友圈话题库复用
 import { LIBRARY_IMAGE_SCENE_PROMPT, validateLibraryImageInput } from './libraryImageScene.js';
+// 2026-10-15 收口：JSON 扫描器与转义修复都走 `jsonExtract.js`（全仓唯一正源）。
+// 本文件旧版是「扫出 JSON **字符串**」，与 jsonExtract.extractFirstJson 语义一致，直接换 import。
+import { extractFirstJson, repairJson } from './jsonExtract.js';
 
+const BATCH_SIZE = 8;
+
+/**
+ * 把用户上传的参考图转写成一段「场景方向」文本（2026-10-13 合并上游 v3.9.0）。
+ *
+ * 用途：用户在事件库/话题库的生成框里贴一张图 + 可选补充要求 ⇒ 产出中文场景方向，
+ * 直接塞进 generateEventTypes / generateTopics 的 direction 参数。
+ * 只描述可见信息，不编造身份关系；人物用可替换称呼，便于现有角色参与。
+ *
+ * @param {{image: string, type: 'event-types'|'topics', direction?: string}} input
+ * @returns {Promise<string>} 场景方向文本
+ */
 export async function describeLibraryImage(input) {
   const { image, type, direction } = validateLibraryImageInput(input);
   const msgs = buildSystemLayers(LIBRARY_IMAGE_SCENE_PROMPT, type === 'event-types' ? 'event' : 'moments');
@@ -21,8 +37,6 @@ export async function describeLibraryImage(input) {
   if (typeof result !== 'string' || !result.trim()) throw new Error('未识别到场景，请换张图片重试');
   return result.trim();
 }
-
-const BATCH_SIZE = 8;
 
 // 多层 system 组装：system0 = 破限词 + 世界观（如果有）；system1 = 世界观强化（有世界观时注入）
 function buildSystemLayers(designerPrompt, worldScope) {
@@ -38,27 +52,8 @@ function buildSystemLayers(designerPrompt, worldScope) {
   return msgs;
 }
 
-// 修复 LLM 输出的非法 JSON 转义
-function repairJson(text) {
-  return text.replace(/\\([^"\\\/bfnrtu])/g, '$1');
-}
-
-// 从 LLM 原始输出中提取第一个完整 JSON 对象（括号计数，防多段 JSON 拼在一起）
-function extractFirstJson(text) {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0, inString = false, escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\') { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
-  }
-  return null; // 括号未闭合
-}
+// 2026-10-15 收口：扫描器与转义修复都搬去 `jsonExtract.js`（全仓唯一正源）。
+// 本文件旧版是「扫出 JSON **字符串**」，与 jsonExtract.extractFirstJson 语义一致，直接换 import。
 
 function clampInt(value, min, max, fallback) {
   const n = Number.parseInt(value, 10);

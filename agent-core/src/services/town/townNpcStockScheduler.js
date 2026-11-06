@@ -62,6 +62,16 @@ async function tick() {
 }
 
 export function startTownNpcStockScheduler() {
+  // 2026-10-19：函数内守卫（双保险）。
+  //   tick() 里已有 `if (processing || !config.features.town) return`，但那只挡住"干活"，
+  //   定时器照样会起（白占一个 interval + 每 3 分钟空跑一次）。
+  //   app.js 也加了守卫；这里再挡一次，是因为本函数可能被别处调用
+  //   （如前端手动触发货架刷新），靠调用方记得判断不如函数内挡。
+  //   详见 目标/20261019-小镇剥离方案v2.md
+  if (!config.features.town) {
+    console.log('[townStock] feature disabled, scheduler skipped');
+    return;
+  }
   if (timer) return;
   startupTimer = setTimeout(() => { startupTimer = null; tick().catch(() => {}); }, FIRST_TICK_DELAY_MS);
   timer = setInterval(() => { tick().catch(() => {}); }, TICK_INTERVAL_MS);

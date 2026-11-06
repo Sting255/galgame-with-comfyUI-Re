@@ -1,10 +1,10 @@
 /**
- * characterStanding.js — 四套场景立绘（工装 / 私服 / 居家 / 睡衣）
+ * characterStanding.js — 五套场景立绘（裸体 / 常服 / 私服 / 居家 / 睡衣）
  *
  * ── 解决什么问题 ──
  *
  * 角色原本只有一张立绘（characters.standing_url）。做完「场景服装」之后，角色在不同场合
- * 穿不同衣服，但形象面板只能看到那一张 —— 本模块让每个角色在四个场景下各有一张立绘，
+ * 穿不同衣服，但形象面板只能看到那一张 —— 本模块让每个角色在五个场景下各有一张立绘，
  * 详情页可以左右切换查看。
  *
  * ── 三条数据的关系（别搞混）──
@@ -16,8 +16,8 @@
  *
  * ── 兜底规则 ──
  *
- * work（工装）槽没图时回落到 characters.standing_url —— 于是「用户已有的那张立绘」
- * 天然就是工装形象，切换过去不会是空白，用户不会觉得立绘凭空消失。
+ * work（常服）槽没图时回落到 characters.standing_url —— 于是「用户已有的那张立绘」
+ * 天然就是常服形象，切换过去不会是空白，用户不会觉得立绘凭空消失。
  */
 
 import { getDb } from '../db/index.js';
@@ -27,7 +27,7 @@ const SCENE_KEYS = OUTFIT_SCENES.map(s => s.key);
 const LABEL_BY_KEY = Object.fromEntries(OUTFIT_SCENES.map(s => [s.key, s.label]));
 
 /**
- * 该角色的四套场景立绘（四行始终齐全、顺序固定）。
+ * 该角色的五套场景立绘（四行始终齐全、顺序固定）。
  * work 槽用 characters.standing_url 兜底；is_fallback 标记该行的图其实是兜底来的
  * （「删除」时应清空 work 槽的显式记录，而不是去删那张默认立绘 —— 见路由层）。
  * @returns {Array<{scene, sceneLabel, image_url, prompt_text, is_fallback}>}

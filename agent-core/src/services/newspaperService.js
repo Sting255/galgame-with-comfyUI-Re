@@ -17,16 +17,22 @@ import { getDb, getSystemRules, getWorldSetting, getGlobalRule } from '../db/ind
 import { chatWithPreset } from './presets/narrative.js';
 import { generateImageRaw } from './imageSkill.js';
 import { recordCompletedImageTask } from './imageTaskRecorder.js';
+// `deleteImageFileByUrl`：删期（deleteNewspaperEdition(s)）清理配图用（上游 v3.10.0 合并，2026-10-19）
 import { saveBase64Image, deleteImageFileByUrl } from './imagePaths.js';
-
 import { config } from '../config.js';
-import { getLocalDateKey } from '../utils/localDate.js';
+// 2026-10-01（用户："日报的板块如果日期更新了也要去更新日报"）：
+// 报纸的"今天"必须跟**程序时间**走，不能跟真实日期走。
+// 原来用 `getProgramDateKey()`（真实日期）⇒ 用户把时间推进一天，报纸还是真实日期那一期、
+// 新的一天没有报纸（`getTodayNewspaper()` 查不到 ⇒ 前端一直空着）。这里统一换成程序日期口径。
+// 注意：`publish_date` 存的仍是 `YYYY-MM-DD`，历史回看 `getNewspaperByDate` 不受影响。
+import { getProgramDateKey, getProgramNow } from './programTime.js';
 import { getLightNoteWithWeather } from './timeLight.js';
 import { extractFirstJson, repairJson } from './eventGenerator.js';
 import { buildCharacterPersona } from './characterPersona.js';
 import { getActiveOutfits } from './outfitService.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
 import { ITEM_EFFECTS, WORLD_OUTFIT_CHANCE } from './itemService.js';
+import { parseCharacterLoras as parseCharacterLorasImpl } from './characterLoras.js';
 
 export const NEWSPAPER_NAME = '邻舍日报';
 export const NEWSPAPER_TAGLINE = '今日事 · 早知道';
@@ -37,7 +43,12 @@ export const GROUP_INJECT_ROUNDS = 4;
 // 每天零点起生成当天报纸：replyQueueScheduler 的第一个调度 tick 触发（内部自带去重/节流/错误兜底）
 // 注：日程已不注入报纸素材，无需再等清晨日程刷新；零点刷新让"昨天的预告"与"今天的事"严格对应
 export const GENERATION_HOUR = 0;
-const FAIL_RETRY_DELAY_MS = 15 * 60 * 1000; // LLM 失败后 15 分钟内不重试
+// 2026-10-02 修（真机日志：调时后现场看不到报纸，`[newspaper] Daily generation failed: Connection error`
+// 之后 20 分钟才补出来）：原来失败一律冷却 15 分钟 ⇒ 网关偶发抖一下，报纸就"消失"一刻钟。
+// 现在分两档：**第一次失败 20 秒后就重试**（网关抖一下基本能自愈），连续失败才退到 15 分钟，避免刷接口。
+const FAIL_RETRY_DELAY_MS = 15 * 60 * 1000;
+const FAIL_RETRY_FAST_MS = 20 * 1000;
+let consecutiveFails = 0;
 
 let generating = null;      // 当天生成任务的去重句柄
 let lastFailedAt = 0;
@@ -57,7 +68,7 @@ function safeParseJson(text) {
 
 export function getTodayNewspaper() {
   const db = getDb();
-  return db.prepare('SELECT * FROM town_newspapers WHERE publish_date = ?').get(getLocalDateKey()) || null;
+  return db.prepare('SELECT * FROM town_newspapers WHERE publish_date = ?').get(getProgramDateKey()) || null;
 }
 
 /** 报纸行 → 前端结构（绑定角色补充头像/名字；today 与历史回看共用） */
@@ -106,7 +117,9 @@ export function getNewspaperByDate(dateKey) {
   return row ? mapPaperRowForFrontend(row) : null;
 }
 
-// ── 删除 / 清除往期 ───────────────────────────────────────────
+// ── 删除 / 清除往期（上游 v3.10.0 合并，2026-10-19）────────────────
+// 本地口径差异：`today` 用 `getProgramDateKey()`（程序世界日期），不是真实日期 ——
+// 与 getTodayNewspaper() 保持同一口径，否则调时后"今天"会指错一期。
 
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -174,7 +187,7 @@ export function deleteNewspaperEdition(dateKey) {
  */
 export function deleteNewspaperEditions({ keepToday = true, beforeDate = null } = {}) {
   const db = getDb();
-  const today = getLocalDateKey();
+  const today = getProgramDateKey();
   const where = [];
   const params = [];
   if (keepToday) { where.push('publish_date != ?'); params.push(today); }
@@ -221,10 +234,43 @@ export function setWorldStateDismissed(dismissed) {
   const changed = db.prepare('UPDATE town_newspapers SET world_dismissed = ? WHERE id = ? AND world_dismissed != ?')
     .run(dismissed ? 1 : 0, row.id, dismissed ? 1 : 0).changes;
   if (changed > 0) {
-    console.log(`[newspaper] World state ${dismissed ? 'dismissed' : 'restored'} for ${getLocalDateKey()}`);
+    console.log(`[newspaper] World state ${dismissed ? 'dismissed' : 'restored'} for ${getProgramDateKey()}`);
   }
   return true;
 }
+
+/**
+ * 首轮就把格式约束贴在最后一条 user 消息里（2026-10-22）。
+ * system 里那份完整格式说明在长 prompt 中会被模型忽略，实测日报每次都写成 Markdown。
+ */
+const NEWSPAPER_FORMAT_TAIL = `【输出格式 · 硬性要求】
+只输出一个 JSON 对象，结构如下（字段名不可改）：
+{"news":[{"category":"栏目名","title":"标题","content":"正文","image_prompt":"英文画面描述"}],"character_event":{"title":"特稿标题","content":"特稿正文","note":"第二人称预告","image_prompt":"英文画面描述"}}
+news 3~4 条；character_event 必须有且只写今日主角；所有 image_prompt 必须是纯英文。
+不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
+
+/**
+ * 报纸草稿解析：抽首个 JSON → 修复 → 归一化。抽不到就抛，调用方据此触发「格式纠正重试」。
+ */
+function parseNewspaperDraft(raw, withWorldState) {
+  const jsonStr = extractFirstJson(raw);
+  if (!jsonStr) throw new Error('No JSON found in LLM response');
+  return normalizeNewspaperDraft(JSON.parse(repairJson(jsonStr)), { withWorldState });
+}
+
+/**
+ * 「格式纠正」重试指令（2026-10-22）
+ *
+ * 实测：`response_format: { type: 'json_object' }` 被网关忽略，模型直接写成
+ * Markdown 报纸排版（`# 📰 银河游戏日报` + 头条/深度小标题），`extractFirstJson` 抽不到，
+ * 日报每次生成都失败（`[newspaper] No JSON found`）。
+ * 这里把上一版回灌，只要求它把内容改写成 JSON —— 不做二次创作。
+ */
+const NEWSPAPER_JSON_ONLY_REPAIR = `你上一次的回答不是合法 JSON（写成了 Markdown 报纸排版：标题、分栏、小标题）。
+现在把**同样的报纸内容**改写成下面这个结构的纯 JSON（字段名不可改）：
+{"news":[{"category":"栏目名","title":"标题","content":"正文","image_prompt":"英文画面描述"}],"character_event":{"title":"特稿标题","content":"特稿正文","note":"第二人称预告","image_prompt":"英文画面描述"}}
+news 3~4 条；character_event 必须有；所有 image_prompt 必须是纯英文。
+只输出 JSON：不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
 
 function dbCharacterBrief(characterId) {
   return getDb().prepare('SELECT id, display_name, avatar_path FROM characters WHERE id = ?').get(characterId) || null;
@@ -232,17 +278,25 @@ function dbCharacterBrief(characterId) {
 
 // ── 生成调度入口（replyQueueScheduler tick 调用；不阻塞 tick） ──
 
-export function maybeGenerateDailyNewspaper(now = new Date()) {
+export function maybeGenerateDailyNewspaper(now = getProgramNow()) {
   if (now.getHours() < GENERATION_HOUR) return null;
-  if (generating) return generating;
   const existing = getTodayNewspaper();
   // 当天报纸已出：只剩补图一条路（生成中途重启 / ComfyUI 当时没开 / 单张失败都靠这里兜底）
   if (existing) return maybeRefillTodayImages(existing);
-  if (Date.now() - lastFailedAt < FAIL_RETRY_DELAY_MS) return null;
+  // 失败冷却分两档：第一次失败 20 秒后就重试（网关抖一下能自愈），连续失败才退到 15 分钟
+  const cooldown = consecutiveFails <= 1 ? FAIL_RETRY_FAST_MS : FAIL_RETRY_DELAY_MS;
+  if (Date.now() - lastFailedAt < cooldown) return null;
+  if (generating) return generating;
   generating = generateDailyNewspaper()
+    .then(() => { consecutiveFails = 0; return { ok: true }; })
     .catch(err => {
       lastFailedAt = Date.now();
-      console.error('[newspaper] Daily generation failed:', err.message);
+      consecutiveFails += 1;
+      console.error(`[newspaper] Daily generation failed: ${err.message}（第 ${consecutiveFails} 次，`
+        + `${Math.round((consecutiveFails <= 1 ? FAIL_RETRY_FAST_MS : FAIL_RETRY_DELAY_MS) / 1000)} 秒后重试）`);
+      // ⚠️ 不要再"吞掉错误就当成功"：调用方（比如整点翻页 job）要能看出这次没成，
+      //    否则日志里会出现 `[rollover] daily_newspaper ok` 这种假成功（真机就是这么误导人的）。
+      return { ok: false, error: err.message || String(err) };
     })
     .finally(() => { generating = null; });
   return generating;
@@ -250,7 +304,10 @@ export function maybeGenerateDailyNewspaper(now = new Date()) {
 
 const IMAGE_REFILL_RETRY_DELAY_MS = FAIL_RETRY_DELAY_MS; // 缺图补印的失败冷却
 
-/** 手动重印：新文字成功落库前保留原报，配图沿用后台补印。 */
+/**
+ * 手动重印：新文字成功落库前保留原报，配图沿用后台补印。
+ * （上游 v3.10.0 合并，2026-10-19；`generateDailyNewspaper({replace, backgroundImages})` 两个选项随之补回）
+ */
 export async function regenerateTodayNewspaper() {
   if (generating) throw new Error('日报正在生成中，请稍后再试');
   generating = generateDailyNewspaper({ replace: true, backgroundImages: true });
@@ -276,7 +333,7 @@ function maybeRefillTodayImages(row) {
     } finally {
       // 还有缺图（失败/静默无图）就冷却一段时间再试；补齐了则下次 tick 直接跳过
       const latest = getTodayNewspaper() || row;
-      if (latest.id === row.id && collectImageTasks(latest).length > 0) lastImageRefillFailedAt = Date.now();
+      if (collectImageTasks(latest).length > 0) lastImageRefillFailedAt = Date.now();
       refillingImages = null;
     }
   })();
@@ -287,7 +344,7 @@ function maybeRefillTodayImages(row) {
 
 /** 抽当天特稿主角（同步查询；导出供回归测试——此函数曾被误写成 async 导致调用处拿到 Promise） */
 export function pickFeaturedCharacter(db) {
-  // 需要同时具备聊天（事件注入）与朋友圈（吐槽帖）两条链路，两边都禁用的角色不抽；
+  // 需要同时具备聊天（事件注入）与朋友圈（吐槽帖）两条链路，两边都禁用的角色不抽。
   // 注意必须是同步函数：曾误写成 async 而调用处没 await，featured 变成 Promise，
   // id/display_name 全变 undefined，报纸主角链接与提示词一起失效。
   return db.prepare(`
@@ -298,8 +355,8 @@ export function pickFeaturedCharacter(db) {
   `).get() || null;
 }
 
-// 变身日概率（世界状态日内，变身 vs 服装 = 40% vs 60%）
-export const WORLD_TRANSFORM_CHANCE = 0.4;
+// 变身日概率（世界状态日内，变身 vs 服装 = 50% vs 50%；本地口径保留五五开，上游是 0.4）
+export const WORLD_TRANSFORM_CHANCE = 0.5;
 
 /**
  * 变身日预设形态池：抽中变身日后从这里均匀锁定一种，全镇当天统一变成这同一种。
@@ -317,10 +374,9 @@ export const WORLD_TRANSFORM_FORMS = [
 ];
 
 /**
- * 世界影响抽取：服装 / 变身四六开（变身 40%）；服装内部与开箱 rollEffectKey 同口径——
+ * 世界影响抽取：服装 / 变身五五开；服装内部与开箱 rollEffectKey 同口径——
  * 40% 命中世界观服装（WORLD_OUTFIT_CHANCE，需世界观存在，否则回落固定款），
  * 其余在固定款里均匀抽。发型卡、功能道具不参与。
- * 变身不再由 LLM 决定形态：从 WORLD_TRANSFORM_FORMS 预设池里均匀锁定一种，全镇统一。
  * @returns {{ key: string, kind: string, name: string, theme: string }}
  */
 export function pickWorldLoot(hasWorldSetting = false) {
@@ -335,9 +391,15 @@ export function pickWorldLoot(hasWorldSetting = false) {
   return { key, kind: effect.kind, name: effect.name, theme: effect.theme };
 }
 
+/**
+ * 生成当天的报纸。
+ * @param {{ replace?: boolean, backgroundImages?: boolean }} [opts]
+ *   - `replace`：已有当天报纸时删掉重出一期（「重新生成报纸」按钮；上游 v3.10.0 合并，2026-10-19）
+ *   - `backgroundImages`：文字先上线、配图交给后台补印（不阻塞本次请求）
+ */
 export async function generateDailyNewspaper({ replace = false, backgroundImages = false } = {}) {
   const db = getDb();
-  const publishDate = getLocalDateKey();
+  const publishDate = getProgramDateKey();
   const previous = getTodayNewspaper();
   if (previous && !replace) {
     console.log('[newspaper] Today\'s paper already exists, skip');
@@ -361,7 +423,7 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
     { role: 'system', content: [getSystemRules(), worldSetting].filter(Boolean).join('\n\n') },
     { role: 'system', content: buildFormatPrompt(withWorldState, featured.display_name, worldLoot) },
     { role: 'system', content: buildEditorialPrompt(featured.display_name) },
-    { role: 'user', content: buildMaterialsPrompt(featured, withWorldState, worldLoot) },
+    { role: 'user', content: buildMaterialsPrompt(featured, withWorldState, worldLoot) + '\n\n' + NEWSPAPER_FORMAT_TAIL },
   ];
 
   let raw = '';
@@ -372,16 +434,36 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
       response_format: { type: 'json_object' },
       label: '报纸编辑部',
     });
-    const jsonStr = extractFirstJson(raw);
-    if (!jsonStr) throw new Error('No JSON found in LLM response');
-    draft = normalizeNewspaperDraft(JSON.parse(repairJson(jsonStr)), { withWorldState });
+    draft = parseNewspaperDraft(raw, withWorldState);
   } catch (err) {
-    console.error('[newspaper] LLM generation failed:', err.message);
-    console.log(`[newspaper] Raw LLM response:\n${raw}`);
-    throw err;
+    // 格式类失败（网关忽略 response_format，模型写成 Markdown 报纸排版）：
+    // 把上一版回灌，只要求「改写成纯 JSON」再试一次 —— 比原样重试成功率高得多。
+    // 实测 2026-10-22：不加重试时日报每次都失败（No JSON found），功能实际不可用。
+    let repaired = false;
+    if (raw.trim()) {
+      try {
+        console.warn('[newspaper] 首轮输出非 JSON，带格式纠正指令重试');
+        const retryRaw = await chatWithPreset([
+          ...msgs,
+          { role: 'assistant', content: raw.slice(0, 6000) },
+          { role: 'user', content: NEWSPAPER_JSON_ONLY_REPAIR },
+        ], { temperature: 0.3, response_format: { type: 'json_object' }, label: '报纸编辑部' });
+        draft = parseNewspaperDraft(retryRaw, withWorldState);
+        raw = retryRaw;
+        repaired = true;
+      } catch (retryErr) {
+        console.error('[newspaper] 格式纠正重试仍失败:', retryErr.message);
+      }
+    }
+    if (!repaired) {
+      console.error('[newspaper] LLM generation failed:', err.message);
+      console.log(`[newspaper] Raw LLM response:\n${raw}`);
+      throw err;
+    }
   }
 
   // ── 落库（文字先上线，配图后台逐张补）──
+  // 重印时沿用原期号（上游 v3.10.0 口径），否则取全表最大期号 + 1
   const edition = previous?.edition || (db.prepare('SELECT COALESCE(MAX(edition), 0) AS maxEdition FROM town_newspapers').get()?.maxEdition || 0) + 1;
   // 吐槽帖排在 1.5~7 小时后，避开清晨无人的时段
   const complaintAfter = new Date(Date.now() + (1.5 * 3600_000 + Math.random() * 5.5 * 3600_000)).toISOString();
@@ -392,7 +474,7 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
     character_avatar: featured.avatar_path || null,
   };
   const insertResult = db.transaction(() => {
-    // 新 id 防止旧的在途配图覆盖重印后的文章；删除与插入原子提交。
+    // 新 id 防止旧的在途配图覆盖重印后的文章；删除与插入原子提交（上游 v3.10.0）
     if (replace) db.prepare('DELETE FROM town_newspapers WHERE publish_date = ?').run(publishDate);
     return db.prepare(`
     INSERT INTO town_newspapers (publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, moment_done, complaint_after)
@@ -409,11 +491,12 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
   );
   })();
   const paperId = Number(insertResult.lastInsertRowid);
-  console.log(`[newspaper] 《${NEWSPAPER_NAME}》第${edition}期 published for ${getLocalDateKey()} (featured: ${featured.display_name}, worldState: ${draft.world_state ? draft.world_state.name : 'none'})`);
+  console.log(`[newspaper] 《${NEWSPAPER_NAME}》第${edition}期 published for ${publishDate} (featured: ${featured.display_name}, worldState: ${draft.world_state ? draft.world_state.name : 'none'})`);
 
   // ── 配图：逐张生成（不阻塞文字上线，失败留空由前端占位 + tick 补印兜底）──
   const row = db.prepare('SELECT * FROM town_newspapers WHERE id = ?').get(paperId);
   if (backgroundImages) {
+    // 手动重印走后台补图：请求立刻返回文字，配图由 tick 补印（`lastImageRefillFailedAt` 清零 = 不等冷却）
     lastImageRefillFailedAt = 0;
     maybeRefillTodayImages(row);
   } else {
@@ -423,7 +506,7 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
   return db.prepare('SELECT * FROM town_newspapers WHERE id = ?').get(paperId);
 }
 
-async function generateNewsImage(prompt, { ragQuery, loras, character } = {}) {
+async function generateNewsImage(prompt, { ragQuery, loras, character, priority = 'high' } = {}) {
   // 生图参数与朋友圈发帖保持同步（generateMomentImages）：画师优先角色单独设置、
   // 分辨率用 moments 档、有 LoRA 时同样透传角色自定义工作流；scene 也沿用 'moments'
   //（全局 LoRA 面板里勾了「朋友圈」的条目对报纸配图同样生效——报纸 ≈ 全员可见的朋友圈）
@@ -434,7 +517,11 @@ async function generateNewsImage(prompt, { ragQuery, loras, character } = {}) {
     width: config.comfyui.momentsWidth,
     height: config.comfyui.momentsHeight,
     scene: 'moments',
-    priority: 'low',
+    // 2026-11-06 真机：日报配图原来是 low，被"高优任务后 180 秒静默期"压着 ——
+    // 12:49:03 最后一张聊天图完成 → 12:52:00 才开始补图，正好卡满 180 秒，
+    // 用户看到的就是"日报一直不出图、要等很久"。
+    // 现在默认 high：报纸一天只有一期、配图也就 4 张，抢这几秒换用户不用干等，值。
+    priority,
     ...(loras?.length ? { customWorkflow: character?.custom_workflow || null, loras } : {}),
   });
   if (!genResult?.success || !genResult.images?.length) return null;
@@ -471,17 +558,42 @@ export function collectImageTasks(row) {
   return tasks;
 }
 
+/** 正在生成的日报配图键 `${paperId}:${key}:${prompt}`（防止两条补图路径重复生成同一张） */
+const inflightPaperImages = new Set();
+
 /** 给报纸补齐缺失配图（逐张生成；单张失败不阻断其余）。返回补上的张数 */
 async function fillPaperImages(row) {
   const tasks = collectImageTasks(row);
   let filled = 0;
   for (const task of tasks) {
-    if (await generateAndStorePaperImage(row, task)) filled++;
+    // 2026-11-06 真机一次出事：日报同一批 4 张 prompt 各生了两遍（共 10 张图、白烧 3 分钟）。
+    // 原因是两条补图路径能同时进来 —— tick 的 maybeRefillTodayImages 有 refillingImages 锁，
+    // 而 backgroundImages=false 的同步分支直接 await fillPaperImages，没有锁。
+    // 两道防线：① 同一张图正在生成时记进 inflight，另一路跳过；
+    //           ② 轮到自己生成前重新读一次库，槽位已经有图就跳过（另一路可能刚写完）。
+    const key = `${row.id}:${task.key}:${String(task.image || '').slice(0, 80)}`;
+    if (inflightPaperImages.has(key)) continue;
+    inflightPaperImages.add(key);
+    try {
+      const fresh = getDb().prepare('SELECT * FROM town_newspapers WHERE id = ?').get(row.id);
+      if (fresh) {
+        const stillMissing = collectImageTasks(fresh).some(item => item.image === task.image);
+        if (!stillMissing) continue;
+        if (await generateAndStorePaperImage(fresh, task)) filled++;
+        continue;
+      }
+      if (await generateAndStorePaperImage(row, task)) filled++;
+    } finally {
+      inflightPaperImages.delete(key);
+    }
   }
   return filled;
 }
 
-/** 生成一张配图并写回对应槽位（tick 自动补印与前端手动重新生成共用）。返回是否成功 */
+/**
+ * 生成一张配图并写回对应槽位（tick 自动补印与前端手动重新生成共用）。返回是否成功。
+ * 上游 v3.10.0 从这个函数里抽出「单张」能力，手动补印才有得复用 —— 本地 2026-10-19 合并。
+ */
 async function generateAndStorePaperImage(row, task) {
   const db = getDb();
   try {
@@ -519,7 +631,7 @@ async function generateAndStorePaperImage(row, task) {
     } else {
       const items = safeParseJson(fresh.items_json) || [];
       // 常规任务按 image_prompt 认条目；正文兜底任务（image_prompt 为空）按标题认，
-      // 否则多条都没 prompt 时会补到同一条上
+      // 否则多条都没 prompt 时会补到同一条上（上游 v3.10.0 口径）
       const target = items.find(i => !i.image && (task.item.image_prompt
         ? i.image_prompt === task.item.image_prompt
         : i.title === task.item.title));
@@ -600,15 +712,9 @@ export async function regenerateNewspaperImage({ date, slot, index } = {}) {
   return { ok: true, newspaper: mapPaperRowForFrontend(fresh) };
 }
 
-function parseCharacterLoras(loras) {
-  if (!loras) return [];
-  try {
-    const parsed = typeof loras === 'string' ? JSON.parse(loras) : loras;
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
+// 角色 LoRA 解析：2026-10-17 收口到 `characterLoras.js`（全仓唯一实现）。
+// ⚠️ 这里是**裸版**口径（原样交给 generateImageRaw）⇒ 必须显式传 `raw: true`。
+const parseCharacterLoras = (loras) => parseCharacterLorasImpl(loras, { raw: true });
 
 // ── 注入块（chat.js / groupChatEngine.js 调用） ──
 
@@ -714,7 +820,7 @@ export function getPendingComplaint() {
     SELECT * FROM town_newspapers
     WHERE publish_date = ? AND character_id IS NOT NULL AND moment_done = 0
       AND complaint_after IS NOT NULL AND complaint_after <= datetime('now')
-  `).get(getLocalDateKey());
+  `).get(getProgramDateKey());
   if (!row) return null;
   const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(row.character_id);
   if (!character) return null;
@@ -745,7 +851,7 @@ export function buildFormatPrompt(withWorldState, featuredName = '今日主角',
   const worldStateExample = withWorldState ? `,
   "world_state": {
     "name": "状态名（2~6字，要让读者一眼看出今天全镇与素材里给到的「${worldLoot?.name || '今日异变'}」有关，如「全镇换装日」这种叫法，不要照抄示例）",
-    "description": "第三人称说明（120~200字：这种状态今天如何笼罩小镇、居民会经历什么、到明天自然消退。全镇居民都受到素材指定的同一种效果影响——换上的是同一套服装/变成的是同一种形态，要写出大家换上/变身后的具体样子与生活变化）",
+    "description": "第三人称说明（120~200字：这种状态今天如何笼罩小镇、居民会经历什么、到明天自然消退。全镇居民都受到素材指定的效果影响，要写出大家换上/变身后的具体样子与生活变化）",
     "outfit": "第三人称全镇统一外观描述（60~120字：只写外观不写剧情，按素材【今日镇内异变】的效果主题取材，写清居民们换上的服装款式/变身后的形态细节——配色、材质、标志性元素等；这段文字会被作为今天的临时外观注入每个角色的外观段与立绘生成，全镇统一同一种）",
     "news": "报纸对它的报道（120~240字，可带一点「号外」式的打趣口吻，报道全镇居民受这个效果影响的众生相）",
     "effect_prompt": "第二人称状态指令（120~240字：直接告诉每个角色「今天你身上发生了什么变化、言行会有哪些具体表现」；必须紧扣素材指定的效果——今天全镇居民都换上了这套服装/变成了这种形态，把外观细节写具体；这段文字会被逐字注入每个角色的提示词，必须可直接执行，不要写成新闻报道腔）",
@@ -818,12 +924,12 @@ export function buildMaterialsPrompt(featured, withWorldState, worldLoot = null)
   });
   const lootBlock = withWorldState && worldLoot ? `\n【今日镇内异变】
 今天全镇居民都受到同一个效果影响，world_state 必须围绕它展开，不得自创其他状态：
-- 类型：${worldLoot.kind === 'transform' ? '变身形态（全镇每个居民都变成素材指定的同一种拟人形态）' : '服装（每个居民换上同一主题的服装）'}
+- 类型：${worldLoot.kind === 'transform' ? '变身形态（每个居民变成一种拟人特殊形态）' : '服装（每个居民换上同一主题的服装）'}
 - 名称：${worldLoot.name}
 - 效果主题（外观细节以此为准）：${worldLoot.theme}
-${worldLoot.kind === 'transform' ? '- 形态已由编辑部锁定为上面的「名称」与「效果主题」：全镇每个居民都变成这同一种形态，器官组合严格按效果主题、不得增删或替换，禁止写成各家长不同器官；具体外观细节可在主题范围内演绎，全天保持一致' : '- 服装的具体款式细节按上面的效果主题演绎，全镇统一'}` : '';
+${worldLoot.kind === 'transform' ? '- 具体变成什么形态由你结合<world_setting>决定，但全镇统一为同一种，且全天保持' : '- 服装的具体款式细节按上面的效果主题演绎，全镇统一'}` : '';
 
-  return `今天是 ${getLocalDateKey()}（${weekday}）。${weatherNote ? `今日天象参考：${weatherNote}。` : ''}
+  return `今天是 ${getProgramDateKey()}（${weekday}）。${weatherNote ? `今日天象参考：${weatherNote}。` : ''}
 主编，请基于<world_setting>演算今天的报纸${withWorldState ? '，并按格式附上今天的 world_state' : ''}。
 
 【今日主角】${featured.display_name}

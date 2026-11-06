@@ -204,6 +204,23 @@ export async function embedMemoryText(text, settings, options) {
   return { profile: result.profile, embedding: result.embeddings[0], source: result.source, elapsedMs: result.elapsedMs };
 }
 
+/**
+ * 重排 query 的长度上限（字符）。
+ *
+ * 2026-10-20 日志实证：群聊记录整段拼进 query 后，内置重排直接回
+ * `Query is too long. Please provide a shorter query.`，整轮降级成无重排（hits 质量下降）。
+ * 这里统一截断——保留开头（通常含最新一轮）而不是简单截尾。
+ */
+const RERANK_QUERY_MAX_CHARS = 1000;
+
+function clampRerankQuery(query) {
+  const text = String(query ?? '');
+  if (text.length <= RERANK_QUERY_MAX_CHARS) return text;
+  const head = text.slice(0, RERANK_QUERY_MAX_CHARS - 200);
+  const tail = text.slice(-200);
+  return `${head} … ${tail}`;
+}
+
 async function requestRerank(query, candidates, provider, source) {
   const topN = Math.min(provider.topN || 7, candidates.length);
   const { data, elapsedMs } = await postJson(endpoint(provider.baseURL, '/rerank'), {
@@ -232,6 +249,8 @@ async function localRerank(query, candidates, topN) {
 
 export async function rerankMemories(query, candidates, settings = getMemorySettings({ includeSecrets: true })) {
   if (candidates.length < 2) return candidates;
+  // 超长 query 直接截断：重排接口会拒绝，降级比截断更亏（顺序不变但会丢掉语义信号）
+  query = clampRerankQuery(query);
   const userProvider = settings.reranker;
   if (isCompleteUserProvider(userProvider)) {
     try {

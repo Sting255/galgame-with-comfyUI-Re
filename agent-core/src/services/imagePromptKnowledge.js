@@ -1,6 +1,5 @@
 import { config } from '../config.js';
 import { getDb } from '../db/index.js';
-import { containsExplicitAdultContent } from '../db/imagePromptKnowledgePolicy.js';
 import { vectorSearch, upsertVectors, deleteVector, getImageKnowledgeCount } from './vectorClient.js';
 import { isUserQuiet } from './imageSkill.js';
 
@@ -83,22 +82,71 @@ function sceneMatches(row, scene) {
   return !scene || scenes.length === 0 || scenes.includes(scene);
 }
 
-function queryAllowsCategory(query, category) {
-  return !String(category || '').startsWith('adult_') || containsExplicitAdultContent(query);
-}
+// ── 成人类目闸门已整条拆除（2026-10-21，用户裁定「聊天出图不要有任何审查限制」）─────────
+//
+// 旧口径（2026-09-02 → 2026-10-21）：`adult_*` 类目只有 query 命中
+// `EXPLICIT_ADULT_PATTERN` 露骨词表时才允许召回；`pose.pr24.*`（84 条体位）在
+// 10-21 那次先被单独豁免。真机反馈是**画面和对话对不上**：对话本身写得含蓄、
+// 或只有「她继续」这种短句时，露骨词表一条都不命中 ⇒ 整个体位/解剖词库被整类屏蔽
+// ⇒ 英文画面描述里已经写了性行为，尾巴上却补不到任何体位/身体细节 tag。
+//
+// 现在的口径：**成人内容不再参与检索准入判断**，只保留「相关性」——
+//   ① 关键词召回必须真的命中（`score > 0`）；
+//   ② 向量召回必须过 `VECTOR_THRESHOLD`；
+//   ③ `pose.pr24.*` 另加体位意图词约束（见 `POSE_INTENT_RE`，那是防日常照片被
+//      体位词污染，不是内容封禁）。
+// 所以日常照片不会平白冒出体位标签，而露骨语境一律拿得到全套成人词库。
+//
+// ⚠️ 不要恢复这条闸门：`test/imagePromptAdultRetrieval.test.js` 钉住了
+// 「非露骨 query 也能召回成人词库」与「日常 query 仍不追加成人 tag」两条边界。
+
+/**
+ * 体位意图词表：query 里没有这些词时，84 条体位（`pose.pr24.*`）不参与检索。
+ *
+ * 为什么需要：`standing` / `girl` 这类词在 84 条标签里高频出现，
+ * 一句日常照片描述（`girl standing in a classroom`）会召回 31 条体位，把普通配图污染成体位图。
+ * 这条约束只针对**相关性**，不涉及成人内容封禁（成人闸门 2026-10-21 已整条拆除）。
+ */
+const POSE_INTENT_RE = /体位|姿势|体式|性交|做爱|做愛|性爱|插|抽送|后入|骑乘|跪|趴|跨|张开腿|缠|合体|交合|口交|乳交|足交|手交|指交|肛|舔|射|潮吹|高潮|penetrat\w*|doggystyle|missionary|cowgirl|paizuri|fellatio|deepthroat|blowjob|handjob|fingering|cunnilingus|creampie|sex|nude|naked|nsfw|pose|position/i;
 
 export function keywordSearchImagePromptKnowledge(query, { scene = 'chat', limit = 20, db = getDb() } = {}) {
   const terms = tokenize(query);
   const rows = db.prepare(`SELECT * FROM image_prompt_knowledge WHERE is_active = 1`).all();
   return rows
-    .filter(row => sceneMatches(row, scene) && queryAllowsCategory(query, row.category))
+    .filter(row => sceneMatches(row, scene))
     .map(row => {
       const title = row.title.toLowerCase();
       const searchTerms = row.search_terms.toLowerCase();
       const content = row.content.toLowerCase();
+      // `pose.pr24.*`（84 条体位）只按 searchTerms / title 匹配，**不按 content 匹配**：
+      // 那些条目的 content 是英文画面模板（`the girl is lying on her back…`），
+      // 一句普通的 `girl standing in a classroom` 会靠 `girl` 命中全部 84 条（实测 48/50）。
+      // 这不是"过滤体位"，是修掉"通用词命中正文"造成的假召回。
+      // `pose.pr24.*`（84 条体位）走**更严格**的匹配：
+      //   ① 不看 content（内容是英文画面模板，`girl` 之类的通用词会命中全部 84 条）；
+      //   ② 英文词按 **token 完全相等**匹配（不是子串）：否则 `includes('a')`、`includes('in')`
+      //      会让任何英文 query 召回几乎全部体位（实测 45/50）；短于 3 字符的英文词直接忽略；
+      //   ③ 中文仍允许子串 —— tokenize 对中文切的是 2-gram，靠子串才能命中「从后面插进来 → 后入」；
+      //   ④ **必须带体位意图**（见 POSE_INTENT_RE）：一句「girl standing in a classroom」虽然含
+      //      `standing`，但那是日常照片描述，不该把 84 条体位召进普通配图。
+      // 这不是"过滤体位"：用户裁定的「不过滤」指的是不因成人内容封禁数据（成人闸门已拆除），
+      // 这里约束的是**相关性**，体位/性行为语境下照样全额可用。
+      const isPose = String(row.knowledge_id).startsWith('pose.pr24.');
+      if (isPose && !POSE_INTENT_RE.test(query)) return null;
+      const poseTokens = isPose ? new Set(searchTerms.split(/\s+/).filter(Boolean)) : null;
       let score = row.is_default ? 0.05 : 0;
       let matched = false;
       for (const term of terms) {
+        if (isPose) {
+          if (/^[a-z0-9_-]+$/i.test(term)) {
+            if (term.length < 3) continue;
+            if (poseTokens.has(term)) { score += 3; matched = true; }
+            continue;
+          }
+          if (searchTerms.includes(term)) { score += 3; matched = true; }
+          else if (title.includes(term)) { score += 2; matched = true; }
+          continue;
+        }
         if (searchTerms.includes(term)) { score += 3; matched = true; }
         if (title.includes(term)) { score += 2; matched = true; }
         if (content.includes(term)) { score += 1; matched = true; }
@@ -106,7 +154,7 @@ export function keywordSearchImagePromptKnowledge(query, { scene = 'chat', limit
       if (matched && !row.knowledge_id.startsWith('ipk.lib.')) score += FRAMEWORK_KEYWORD_BOOST;
       return { ...rowToItem(row), score };
     })
-    .filter(item => item.score > 0)
+    .filter(item => item && item.score > 0)
     .sort((a, b) => b.score - a.score || b.priority - a.priority)
     .slice(0, limit);
 }
@@ -267,8 +315,13 @@ function fuseRrf(keywordItems, vectorItems, rowsById) {
 // 成人 query 下，角色词（如「初音未来」）的 n-gram 命中常把无关组顶进 topN，而体位等
 // 纯 keyword 召回的 adult 组可能被向量侧条目 + priority 决胜整体挤出配额。
 // 对融合结果中完全缺席的成人类目，从 keyword 召回里补一个最佳条目作保底位。
+//
+// 2026-10-21：`containsExplicitAdultContent(query)` 的前置判断一并去掉（成人闸门已拆）。
+// 现在只要 keyword 召回里**真的出现了** adult_* 条目（= 已过相关性匹配），就该保住它，
+// 不再要求 query 命中露骨词表 —— 否则"对话含蓄、画面露骨"的那种轮次仍然拿不到词库。
 export function collectAdultRescueItems(query, fused, keywordItems, { maxSlots = ADULT_RESCUE_SLOTS } = {}) {
-  if (!containsExplicitAdultContent(query)) return [];
+  const adultKeywordItems = keywordItems.filter(item => String(item.category || '').startsWith('adult_'));
+  if (adultKeywordItems.length === 0) return [];
   const fusedAdultCategories = new Set(
     fused.filter(item => String(item.category || '').startsWith('adult_')).map(item => item.category)
   );
@@ -306,7 +359,7 @@ function applyCategoryQuota(items, defaults, limit, reservedItems = []) {
 export async function retrieveImagePromptKnowledge(query, { scene = 'chat', limit = 9, db = getDb(), timeoutMs = RAG_TIMEOUT_DEFAULT_MS } = {}) {
   const startedAt = performance.now();
   const rows = db.prepare(`SELECT * FROM image_prompt_knowledge WHERE is_active = 1`).all();
-  const sceneRows = rows.filter(row => sceneMatches(row, scene) && queryAllowsCategory(query, row.category));
+  const sceneRows = rows.filter(row => sceneMatches(row, scene));
   const rowsById = new Map(sceneRows.map(row => [row.knowledge_id, rowToItem(row)]));
   const keywordItems = keywordSearchImagePromptKnowledge(query, { scene, limit: limit * 3, db });
   let vectorItems = [];
@@ -360,14 +413,22 @@ export async function retrieveImagePromptKnowledge(query, { scene = 'chat', limi
 }
 
 let syncSchedulerTimer = null;
+let syncInitialTimer = null;
 let syncCheckInFlight = false;
 const SYNC_CHECK_INTERVAL_MS = 60 * 1000;
 
 export function startKnowledgeSyncScheduler() {
   if (syncSchedulerTimer) return;
   console.log('[imagePromptKnowledge] sync scheduler started (runs when user is quiet)');
-  setTimeout(syncTick, 15 * 1000);
+  syncInitialTimer = setTimeout(syncTick, 15 * 1000);
   syncSchedulerTimer = setInterval(syncTick, SYNC_CHECK_INTERVAL_MS);
+}
+
+export function stopKnowledgeSyncScheduler() {
+  clearTimeout(syncInitialTimer);
+  clearInterval(syncSchedulerTimer);
+  syncInitialTimer = null;
+  syncSchedulerTimer = null;
 }
 
 async function syncTick() {

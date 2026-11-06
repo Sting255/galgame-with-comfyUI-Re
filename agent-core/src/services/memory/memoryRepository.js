@@ -3,8 +3,9 @@ import { randomUUID } from 'crypto';
 import { getDb } from '../../db/index.js';
 import { getMemorySettings, MEMORY_MODE } from './memoryConfig.js';
 import { embedMemoryText, getPreferredMemoryEmbeddingProfile } from './memoryProviders.js';
-import { upsertVector, deleteVector, deleteByConversation } from '../vectorClient.js';
+import { upsertVector, deleteVector, deleteByConversation, vectorSearch } from '../vectorClient.js';
 import { createMemoryIndexWorker } from './memoryIndexWorker.js';
+// 灵魂引擎（上游 v3.9.0 合并）：记忆落库那一刻的四维 energy 快照
 import { getSoulSnapshot } from '../soulEngine.js';
 
 const MEMORY_TYPES = new Set(['knowledge', 'skill', 'emotion', 'event']);
@@ -24,6 +25,40 @@ export function tripleCorpusFor(profile) {
   if (!fingerprint) return MEMORY_TRIPLES_CORPUS;
   return `${MEMORY_TRIPLES_PREFIX}${fingerprint}`;
 }
+
+/**
+ * 灵魂快照：记忆落库那一刻的四维 energy（JSON 字符串）。
+ * 灵魂系统关闭（config.features.soul=false）或非 1v1 角色会话（群聊无 character 上下文）→ 空串。
+ * 存量记忆没有快照，不回填；共鸣时按无快照跳过。
+ * （上游 v3.9.0 合并）
+ */
+function resolveSoulSnapshot(conversationId) {
+  const match = /^char_(\d+)/.exec(String(conversationId || ''));
+  if (!match) return '';
+  try {
+    const snapshot = getSoulSnapshot(match[1]);
+    return snapshot ? JSON.stringify(snapshot) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * memory_fragments 是否已带上 soul_snapshot 列（上游 v3.9.0 灵魂引擎合并）。
+ * 真实库由 db/soulSchema.js 的 migrateSoulSchema 补列；单测里的最小 fixture 可能没有这一列，
+ * 因此插入时按实际列裁剪，不写不存在的列（合并口径：不改本地测试 fixture）。
+ */
+let _soulSnapshotColumnCache = null;
+function hasSoulSnapshotColumn(db) {
+  if (_soulSnapshotColumnCache !== null) return _soulSnapshotColumnCache;
+  try {
+    const columns = new Set(db.prepare(`PRAGMA table_info(memory_fragments)`).all().map(c => c.name));
+    _soulSnapshotColumnCache = columns.has('soul_snapshot');
+  } catch {
+    _soulSnapshotColumnCache = false;
+  }
+  return _soulSnapshotColumnCache;
+}
 // 三元组向量 id 前缀：与记忆碎片 id 共用 memory_index_jobs 表，前缀隔离避免任务去重/互斥互相干扰
 export const TRIPLE_JOB_PREFIX = 'trip_';
 // 记忆整理嵌入走用户自定义 → 系统内置 API（120s）→ 本地 ONNX 的优先级，
@@ -36,23 +71,6 @@ const PRIORITY_HISTORY = 10;
 // 索引任务失败自动重试上限（与整理 daemon 的 MAX_ATTEMPTS 同口径）：
 // 到上限才落 failed，否则回 pending，由 worker 在 100ms 重泵时自然重试。
 export const MAX_INDEX_ATTEMPTS = 3;
-
-/**
- * 灵魂快照：记忆落库那一刻的四维 energy（JSON 字符串）。
- * 灵魂系统关闭（config.features.soul=false）或非 1v1 角色会话（群聊无 character 上下文）→ 空串。
- * 存量记忆没有快照，不回填；共鸣时按无快照跳过。
- */
-function resolveSoulSnapshot(conversationId) {
-  const match = /^char_(\d+)/.exec(String(conversationId || ''));
-  if (!match) return '';
-  try {
-    const snapshot = getSoulSnapshot(match[1]);
-    return snapshot ? JSON.stringify(snapshot) : '';
-  } catch {
-    // 灵魂侧异常不得影响记忆落库
-    return '';
-  }
-}
 
 /**
  * 索引任务失败后应落的状态（纯函数，便于单测）。
@@ -174,15 +192,20 @@ export function applyMemoryActions({ conversationId, sourceRawStartId, sourceRaw
       if (duplicate) continue;
       const memoryId = `mem_${randomUUID()}`;
       const legacyType = item.memory.memoryType === 'emotion' ? 'emotion' : 'fact';
+      // soul_snapshot 列（上游 v3.9.0 合并）按实际表结构裁剪，见 hasSoulSnapshotColumn
+      const withSoul = hasSoulSnapshotColumn(db);
+      const soulCols = withSoul ? ', soul_snapshot' : '';
+      const soulVals = withSoul ? ', ?' : '';
+      const soulArgs = withSoul ? [soulSnapshot] : [];
       db.prepare(`
         INSERT INTO memory_fragments(
           conversation_id, source_msg_id, fragment_type, content, entities, chroma_id,
           memory_id, memory_type, subject, judgment, reasoning, tags, content_hash, status,
           source_raw_start_id, source_raw_end_id, embedding_profile, embedding_state, updated_at,
           keywords, perspectives, episodic_note, semantic_note,
-          event_time, valid_from, valid_to, importance, strength, retrieval_count, soul_snapshot
+          event_time, valid_from, valid_to, importance, strength, retrieval_count${soulCols}
         ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, CURRENT_TIMESTAMP,
-                  ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?, 1.0, 0, ?)
+                  ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?, 1.0, 0${soulVals})
       `).run(
         conversationId, sourceMessageId, legacyType, item.memory.judgment, JSON.stringify(item.memory.tags),
         memoryId, item.memory.memoryType, item.memory.subject, item.memory.judgment, item.memory.reasoning,
@@ -190,7 +213,7 @@ export function applyMemoryActions({ conversationId, sourceRawStartId, sourceRaw
         profile?.fingerprint || null, profile ? 'pending' : 'disabled',
         JSON.stringify(item.memory.keywords), JSON.stringify(item.memory.perspectives),
         item.memory.episodicNote, item.memory.semanticNote,
-        eventTime, item.memory.importance, soulSnapshot
+        eventTime, item.memory.importance, ...soulArgs
       );
       for (const entity of item.memory.entities) {
         const entityId = upsertMemoryEntity(db, entity.name);
@@ -232,7 +255,13 @@ export function insertGeneralizedMemory({ conversationId, memory, sourceMemoryId
   const duplicate = db.prepare(`SELECT memory_id FROM memory_fragments WHERE conversation_id = ? AND content_hash = ? AND status = 'active'`).get(conversationId, contentHash);
   if (duplicate) return null;
   const memoryId = `mem_${randomUUID()}`;
+  // 灵魂快照（上游 v3.9.0 合并）：泛化记忆落库那一刻的四维 energy，供召回时反向共鸣
   const soulSnapshot = resolveSoulSnapshot(conversationId);
+  // soul_snapshot 列按实际表结构裁剪，见 hasSoulSnapshotColumn
+  const withSoul = hasSoulSnapshotColumn(db);
+  const soulCols = withSoul ? ', soul_snapshot' : '';
+  const soulVals = withSoul ? ', ?' : '';
+  const soulArgs = withSoul ? [soulSnapshot] : [];
   const tx = db.transaction(() => {
     db.prepare(`
       INSERT INTO memory_fragments(
@@ -240,9 +269,9 @@ export function insertGeneralizedMemory({ conversationId, memory, sourceMemoryId
         memory_id, memory_type, subject, judgment, reasoning, tags, content_hash, status,
         source_raw_start_id, source_raw_end_id, embedding_profile, embedding_state, updated_at,
         keywords, perspectives, episodic_note, semantic_note,
-        event_time, valid_from, valid_to, importance, strength, retrieval_count, soul_snapshot
+        event_time, valid_from, valid_to, importance, strength, retrieval_count${soulCols}
       ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, CURRENT_TIMESTAMP,
-                ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, NULL, ?, 1.0, 0, ?)
+                ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, NULL, ?, 1.0, 0${soulVals})
     `).run(
       conversationId, null, 'fact', normalized.judgment, JSON.stringify(normalized.tags),
       memoryId, normalized.memoryType, normalized.subject, normalized.judgment, normalized.reasoning,
@@ -252,7 +281,7 @@ export function insertGeneralizedMemory({ conversationId, memory, sourceMemoryId
       profile?.fingerprint || null, profile ? 'pending' : 'disabled',
       JSON.stringify(normalized.keywords), JSON.stringify(normalized.perspectives),
       normalized.episodicNote, normalized.semanticNote,
-      normalized.importance, soulSnapshot
+      normalized.importance, ...soulArgs
     );
     for (const entity of normalized.entities) {
       const entityId = upsertMemoryEntity(db, entity.name);
@@ -552,6 +581,145 @@ export async function reindexAllMemories() {
   enqueueFollowUpsForProcessingUpserts(db, PRIORITY_RETRY);
   wakeMemoryIndexWorker();
   return { total, queued: total, tripleTotal, tripleQueued: tripleTotal };
+}
+
+/** 少于这么多条「已索引」的 active 记忆就不做一致性判断（新装/新建库本来就该是空的） */
+const MIN_ACTIVE_INDEXED_FOR_CHECK = 20;
+
+/**
+ * 向量库 ↔ 数据库的一致性自检（2026-10-01 补，真机发现）。
+ *
+ * ## 现场（真机实测）
+ * 库：`memory_fragments` **420 行全部** `embedding_state='indexed'`、`embedding_profile='5006f4a66a1d8f61'`、
+ * `chroma_id` 非空；而向量库里 `memory_v2_5006f4a66a1d8f61` **只有 16 条**。
+ * ⇒ 403 条 active 记忆的**向量检索等于没有**（只剩文本/FTS 那一路），
+ *   而库里那句「已索引」让系统以为一切正常：`memory_index_jobs` 里不会再有它们，
+ *   `reindexAllMemories()` 也只在**用户改嵌入配置**时才被调用（`routes/config.js:48`）。
+ *
+ * ## 成因（与「图丢了」同一类）
+ * 一键导入只换 `agent.db`，**不带派生数据**。`vector-service/chroma_data` 是索引产物，
+ * 必须与库对得上。这里**故意不把 chroma_data 塞进导出包**：搬一份索引，不如让库自己重建
+ * （库才是真相源；导入包也不会因此膨胀）。
+ *
+ * ## 判据（真机三轮才收敛，三轮都有实测证据）
+ * 向量服务没有「按语料查总数」的接口（`/health` 里的 `collection_count` 是历史语料名，常年 0，不可用），
+ * 只能借 `/search`。而 chroma 的 top-k 检索**只要语料非空就必然返回结果**，所以：
+ *   · 第一版只判「返回空不空」—— **实测漏判**：真机语料里有 16 条陈年向量（非空 ⇒ 探针返回 1 条 ⇒
+ *     被判成"一致"），而库里声称 420 条已索引。
+ *   · 第二版改成按条数判（请求 `min(activeIndexed, 100)` 条，服务端 `top_k` 上限就是 100），
+ *     拿回来的条数少于请求量的 90% 才算失同步。真机：请求 100 拿到 16 ⇒ 命中 ✓。
+ *   · 第三版（当前）补上**探针自身报错**这一类 —— 真机实测的报错是：
+ *       `Search error: Collection expecting embedding with dimension of 1024, got 768`
+ *     也就是**语料是用 1024 维的远端嵌入模型建的，而当前设置里嵌入没配置、查询回落本地 768 维模型**，
+ *     于是**每一次向量检索都被服务端拒绝**（`activeSearch` 里只留一行 warn，静默降级成纯文本检索）。
+ *     这种"检索根本跑不起来"恰恰就是最该报、最该修的状态 —— 所以：
+ *       · 连接类失败（向量服务没起来 / 超时）⇒ **跳过**，这是暂时的，重建也没意义；
+ *       · 其它错误（维度不符、collection 异常…）⇒ **判定失同步并重建**，让数据迁到当前 profile 的语料。
+ *
+ * ## 语料名为什么从**库里的行**推、而不是从当前设置推
+ * 第一版用 `getEmbeddingProfile()`（当前设置）取语料名 —— **实测这一版根本没生效**：
+ * 嵌入在当前设置里没配置时它返回 `null`，直接抛异常被 catch 吞掉，日志里只剩一行"跳过"。
+ * 而库里那 420 行的 `embedding_profile` 明明写着 `5006f4a66a1d8f61`。
+ * 也就是说：**"这批记忆当年被写进了哪个语料"是历史事实，只有库知道**，与今天的设置无关。
+ * 所以取 active+indexed 行里条数最多的那个非空 `embedding_profile`，语料即 `memory_v2_<它>`
+ * （与 `memoryRepository.js` 里删除/清理路径的命名口径一致）。
+ *
+ * 少于 `MIN_ACTIVE_INDEXED_FOR_CHECK` 条时不判（新装/新建库本来就该是空的，避免误报与无谓重建）。
+ * 库里没有非空 `embedding_profile` 时也不判（推不出语料名，判不了）。
+ *
+ * ## 安全性
+ * 一切异常都不许冒出去：自检失败最多是"这次没修"，绝不能把启动搞挂。
+ *
+ * @returns {Promise<{checked:boolean, activeIndexed?:number, inSync?:boolean, hits?:number, corpus?:string, reason?:string, reindexed?:object, error?:string}>}
+ */
+export async function ensureVectorIndexConsistency({
+  db = getDb(),
+  probe = '她',
+  searchVectors = vectorSearch,
+  reindex = reindexAllMemories,
+  embed = embedMemoryText,
+} = {}) {
+  try {
+    const row = db.prepare(`
+      SELECT embedding_profile AS profile, COUNT(*) AS n
+      FROM memory_fragments
+      WHERE status = 'active' AND embedding_state = 'indexed' AND COALESCE(embedding_profile, '') <> ''
+      GROUP BY embedding_profile ORDER BY n DESC LIMIT 1
+    `).get();
+    const activeIndexed = Number(row?.n) || 0;
+    if (!row || activeIndexed < MIN_ACTIVE_INDEXED_FOR_CHECK) {
+      return { checked: false, activeIndexed };
+    }
+    const corpus = `memory_v2_${row.profile}`;
+    // 服务端 top_k 上限 100（server.py 的 SearchRequest: ge=1, le=100）
+    const want = Math.min(activeIndexed, 100);
+
+    // ⚠️ 探针**必须带上 embedding**，跟 activeSearch 调用搜索时一模一样。
+    // 不带的话向量服务会用自带的本地模型编码查询（768 维），而语料可能是远端 1024 维模型建的
+    // ⇒ 每次探针都报 `Collection expecting embedding with dimension of 1024, got 768`。
+    // 第一版就是这么写的，后果是**每次启动都误判失同步、每次都重建 403 条记忆** ——
+    // 那是拿用户的嵌入额度在烧钱。
+    let embedding = null;
+    try {
+      const settings = getMemorySettings({ includeSecrets: true });
+      const embedded = await embed(probe, settings, { timeoutMs: INDEX_EMBED_TIMEOUT_MS, failureKind: 'embedding_index' });
+      embedding = embedded?.embedding ?? null;
+    } catch (err) {
+      console.warn('[memory] 索引自检：探针文本嵌入失败:', err?.message || err);
+    }
+
+    let got = 0;
+    let probeError = null;
+    try {
+      const hits = await searchVectors(probe, { topK: want, corpus, embedding });
+      got = Array.isArray(hits) ? hits.length : 0;
+    } catch (err) {
+      probeError = err?.message || String(err);
+    }
+
+    if (!probeError && got >= Math.ceil(want * 0.9)) {
+      // 一致时也留一行：否则"自检到底跑没跑"在支持现场是无解的（静默=看不出跑过）
+      console.log(`[memory] 向量索引自检：${activeIndexed} 条已索引，语料 ${corpus} 探到 ${got} 条，一致`);
+      return { checked: true, activeIndexed, inSync: true, hits: got, corpus };
+    }
+    // 连接类失败：向量服务没起来 / 超时 —— 暂时的，重建立刻也会失败，跳过（下次启动再判）
+    if (probeError && isVectorUnreachable(probeError)) {
+      console.warn('[memory] 向量服务暂时不可达，本次跳过索引自检:', probeError);
+      return { checked: false, unreachable: true, error: probeError };
+    }
+    // 维度不符这类**重建也救不了**的错（worker 重嵌时会遇到同样的维度问题）⇒ 只报警，绝不动数据。
+    // 否则就成了「每次启动重建一遍」，白烧用户的嵌入额度。
+    if (probeError && /dimension|expecting embedding/i.test(probeError)) {
+      console.warn(
+        `[memory] 记忆的向量检索当前不可用：${probeError}。`
+        + '多半是嵌入服务不可用、回落了本地模型（维度与语料不符），或换过嵌入模型但还没重建。'
+        + '这会让向量通道静默失效、只剩文本检索 —— 请检查「设置 → 记忆」里的嵌入配置；'
+        + '本次**不重建**（重建也救不了维度问题）。',
+      );
+      return { checked: true, activeIndexed, inSync: false, unavailable: true, corpus, error: probeError };
+    }
+
+    const reason = probeError
+      ? `语料 ${corpus} 的检索报错（${probeError}）`
+      : `语料 ${corpus} 只探到 ${got}/${want} 条`;
+    console.warn(
+      `[memory] 向量索引与数据库不同步：库里有 ${activeIndexed} 条 active 记忆（profile=${row.profile}）标记为「已索引」，`
+      + `但${reason} —— 多半是换过库 / 导入过数据 / 换过嵌入模型 → 自动重建索引`,
+    );
+    const reindexed = await reindex();
+    console.log(`[memory] 向量索引重建已入队：${JSON.stringify(reindexed)}`);
+    return { checked: true, activeIndexed, inSync: false, hits: got, corpus, reason, reindexed };
+  } catch (err) {
+    console.warn('[memory] 向量索引自检跳过（不影响启动）:', err?.message || err);
+    return { checked: false, error: err?.message || String(err) };
+  }
+}
+
+/** 「向量服务连不上」类错误：只影响"这次判不判"，不影响"要不要重建" */
+function isVectorUnreachable(message) {
+  const text = String(message || '').toLowerCase();
+  if (!text) return false;
+  return /fetch failed|econnrefused|econnreset|etimedout|socket hang up|network|timed? ?out|aborted/.test(text);
 }
 
 // 三元组语料分流（方案 A）的自愈补嵌：分流前的存量三元组 embedding_profile 为空、向量躺在共享

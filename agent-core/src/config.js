@@ -1,62 +1,162 @@
 import dotenv from 'dotenv';
-import { normalizeNovelaiFormat, normalizeNovelaiKey } from './services/novelaiClient.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { randomUUID } from 'node:crypto';
+import { resolveServicePort } from './utils/servicePort.js';
+import { resolveComfySubdir, describeComfyPathFailure } from './utils/comfyPaths.js';
+import { resolveEnvPath, persistEnvValues } from './utils/envFile.js';
 // 设置读写走独立的 db/settings 模块（不经过 db/index.js，避免形成 config ↔ db 循环依赖）
 import { setSetting, getSetting } from './db/settings.js';
 import { notifyWeatherSourceChange } from './services/weatherSource.js';
+// 上游 v3.10.0 合并（2026-10-19）：
+// · NovelAI 三协议（official / native / relay）的归一化只认 novelaiClient 里那一份
+// · 输出额度（MAX_tokens）与 Vertex 接入的默认值来自这两个模块
+import { normalizeNovelaiFormat, normalizeNovelaiKey } from './services/novelaiClient.js';
 import { defaultMaxTokens, isValidMaxTokens } from './llm/modelCapabilities.js';
 import { parseServiceAccount, normalizeVertexRegion } from './llm/vertex-client.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const envPath = resolve(__dirname, '..', '.env');
+const envPath = resolveEnvPath();
 dotenv.config({ path: envPath });
 
 // 每日免费鸡蛋：opencode zen 免费端点（无需 API Key，按 IP 限流）
 const FREE_EGG_BASE_URL = 'https://opencode.ai/zen/v1';
-// 免费模型名单（2026-09 检测：deepseek-flash-free / hy3-free 已下线，muse-spark 系地区封锁）；
+// 免费模型名单（2026-09-28 全量复测 82 个模型，逐个匿名打一次 /chat/completions）：
+//   仅 space-bunny-free 仍返回 200；原名单 mimo-v2.5-free 以及 mimo-v2.6-flash-free、
+//   nemotron-3-ultra-free、nemotron-3.5-lightning-free、longcat-2.5-preview-free、big-pickle、
+//   ling-3.0-flash-fin-free 等免费档已统一改为 403 FreeTierError
+//   「OpenCode's free tier can only be used from within OpenCode」= 必须登录 OpenCode（带 Key）才能用；
+//   muse-spark-*-contributor-free 为 403 地区封锁，deepseek-v4-flash-free 已 400 下线，
+//   jev-1.13-free 只能走 /systemone 端点、不能当聊天模型。
+//   上游模型会随时变动，重新复测的方法见 docs/hypnosis-acceptance-report.md §K。
 // 本轮失败过的模型只记内存，下次开启重新开始
-export const FREE_EGG_MODELS = ['mimo-v2.5-free'];
+export const FREE_EGG_MODELS = ['space-bunny-free'];
 const FREE_EGG_MODEL = FREE_EGG_MODELS[0];
+
+/**
+ * HiresFix 细化精度三档（2026-09-30 · D1 实测用户裁决）。
+ *
+ * · `high` = 12 步 / `medium` = 10 步 / `low` = **8 步（默认）**，CFG 固定 1.0（turbo 蒸馏模型）。
+ * · 只认这三个值，其它（空/大写混写之外的怪值）一律回落 `low` —— 与 updateFeatureFlag 的三态分支持同一口径。
+ * · 步数的**实际映射**在 `services/imageRefine.js` 的 `HIRES_QUALITY_STEPS` / `resolveTurboSteps()`。
+ * @returns {'high'|'medium'|'low'}
+ */
+export function normalizeHiresQuality(value) {
+  // 只 trim 首尾空白；**不做大小写折叠**（'HIGH' 视为非法回落 low）——
+  // 与前端 web-ui 那份 normalizeHiresQuality 的判定保持一致，避免两边对同一个值有两种理解。
+  const text = String(value ?? '').trim();
+  return HIRES_QUALITY_VALUES.includes(text) ? text : HIRES_QUALITY_DEFAULT;
+}
+
+export const HIRES_QUALITY_VALUES = ['high', 'medium', 'low'];
+export const HIRES_QUALITY_DEFAULT = 'low';
 
 export const config = {
   systemRules: { content: '' },
   // 开发环境检测：生产启动（launcher / PM2）会注入 NODE_ENV=production；npm run dev 等开发启动不设置
   isDev: process.env.NODE_ENV !== 'production',
-  port: parseInt(process.env.PORT, 10) || 3099,
+  port: resolveServicePort(),
+  // 监听地址（2026-10-18 补）。**默认不传 = 监听全部接口**，与历史行为逐字节一致。
+  //
+  // 为什么默认是全接口而不是 127.0.0.1：手机端（Android WebView 壳）访问 PC 上的服务是刚需，
+  // 改默认值会直接把这个用法打断。想只给本机用时再显式设 `HOST=127.0.0.1`。
+  //
+  // 注意别把它写成 `undefined` 之外的假值：`app.listen(port, undefined)` 与
+  // `app.listen(port)` 等价（都监听全部接口），但传 `'0.0.0.0'` 是显式全接口、
+  // 传空串 `''` 在 Node 里会被当成"监听所有地址"的通配符 —— 所以这里**非空才用**。
+  host: process.env.HOST && process.env.HOST.trim() ? process.env.HOST.trim() : undefined,
   // DB_PATH 显式配置时原样使用（支持绝对路径）；默认值锚定 agent-core/，不随启动 cwd 漂移
   dbPath: process.env.DB_PATH || resolve(__dirname, '..', 'data', 'agent.db'),
   llm: {
     provider: process.env.LLM_PROVIDER || 'deepseek',
+    // 接入方式：openai 兼容接口 / Google Vertex AI（服务账号）（上游 v3.10.0 合并，2026-10-19）
     _connectionType: 'openai',
     vertexRegion: 'global',
     vertexServiceAccount: '',
+    // 免费鸡蛋模式强制走 openai（鸡蛋端点不是 Vertex）
     get connectionType() { return this.freeEgg ? 'openai' : this._connectionType; },
     set connectionType(v) { this._connectionType = v; },
     // 每日免费鸡蛋开关（仅内存，不做持久化：重启后默认关闭）。
-    // 开启后通过下方 getter 覆盖生效值：免 Key 走免费端点 + 强制关闭思考；
+    // 开启后通过下方 getter 覆盖生效值：免 Key 走免费端点 + 不发送 thinking 参数；
     // 用户自有的 Key/地址/模型保存在 _* 字段中，关闭开关即原样恢复。
     freeEgg: false,
     _apiKey: process.env.LLM_API_KEY || process.env.DEEPSEEK_API_KEY,
     _baseURL: process.env.LLM_BASE_URL || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
     _model: process.env.LLM_MODEL || 'deepseek-flash',
+    // 输出额度（MAX_tokens）：null = 按「地址 + 模型」算默认值（上游 v3.10.0 合并）
     _maxTokens: isValidMaxTokens(Number(process.env.LLM_MAX_TOKENS)) ? Number(process.env.LLM_MAX_TOKENS) : null,
-    _thinkingMode: ['enabled', 'disabled', 'omit'].includes(process.env.LLM_THINKING_MODE)
-      ? process.env.LLM_THINKING_MODE
-      : 'disabled',
+    // 思考模式三态：enabled / disabled / omit（omit = 请求体完全不出现 thinking 字段）。
+    // **默认 'disabled'**（2026-10-20 用户口径「默认直接关掉思考」）：请求里明确禁用思考，
+    // 回复更快、更省 token。少数第三方中转不认这个非标准字段、直接回 400 时，
+    // 用户在设置里改「不传」即可（同时也不发 reasoning_effort）；
+    // llm-client 另有 400 自动降级重试兜底。
+    // 免费鸡蛋通道由 getter 强制 'omit'，与用户口径互不影响。
+    _thinkingMode: (() => {
+      const raw = String(process.env.LLM_THINKING_MODE ?? '').trim().toLowerCase();
+      return ['enabled', 'disabled', 'omit'].includes(raw) ? raw : 'disabled';
+    })(),
+    // 思考强度（部分网关只认这个，不认 thinking.type）。合法值 low / high / max。
+    // **默认 'low'，且空串/非法值一律归一回 'low'**（2026-10-15 实测结论 + 用户明确要求
+    // "默认一定要关掉思考"）：
+    //   · `thinking:{type:'disabled'}` 是主力 —— deepseek 系靠它真正关掉
+    //     （实测 cn:deepseek-v4-flash：不传 reasoning_len=294，传了 =0）
+    //   · `reasoning_effort:'low'` 是兜底 —— 少数模型**不传就直接报错**
+    //     （cn:glm-5.1 实测：不传 → 网关回 "the reasoning effort value is not supported
+    //      by the current model"；传 low → 正常出正文）
+    //   两个一起发对 deepseek 无害（实测仍 reasoning_len=0），所以默认两个都发。
+    // ⚠️ 这里**故意不提供"置空"出口**：历史口径里空串表示"不发该字段"，
+    //    但用户要求是"默认一定关思考"—— 置空会让 deepseek 系退回开着思考跑
+    //    （实测 reasoning_len≈294、白烧 token 还变慢）。真要放开思考请传 high/max。
+    _reasoningEffort: (() => {
+      const raw = String(process.env.LLM_REASONING_EFFORT ?? '').trim().toLowerCase();
+      return ['low', 'high', 'max'].includes(raw) ? raw : 'low';
+    })(),
     _headers: (() => { try { return JSON.parse(process.env.LLM_HEADERS || '{}'); } catch { return {}; } })(),
     _extraBody: (() => { try { return JSON.parse(process.env.LLM_EXTRA_BODY || '{}'); } catch { return {}; } })(),
+    // 反重复采样层（专题 L3 / 规划 C5）：presence_penalty / frequency_penalty。
+    // **默认 0**（= 与加参数前的请求体逐字节一致）；唯一真值来源是 DB system_settings
+    // （anti_repetition_penalty / anti_repetition_frequency），由设置页写入。
+    // 口径：null 表示"不设置 → 请求体里完全不发送该字段"；数字（含 0）按 OpenAI 语义透传。
+    antiRepetitionPenalty: null,
+    antiRepetitionFrequency: null,
+    // 上下文窗口（token）：用户声明 / 上游 /v1/models 探到的值 / 保守默认，三者的取舍见 services/contextUsage.js。
+    // 值可能来自上游，因此必须与来源一起存：只有 source='declared' 才算用户声明。
+    _contextWindow: parseInt(process.env.LLM_CONTEXT_WINDOW, 10) || null,
+    _contextWindowSource: ['declared', 'provider', 'default'].includes(process.env.LLM_CONTEXT_WINDOW_SOURCE)
+      ? process.env.LLM_CONTEXT_WINDOW_SOURCE
+      : null,
     get apiKey() { return this.freeEgg ? '' : this._apiKey; },
     set apiKey(v) { this._apiKey = v; },
     get baseURL() { return this.freeEgg ? FREE_EGG_BASE_URL : this._baseURL; },
     set baseURL(v) { this._baseURL = v; },
     get model() { return this.freeEgg ? FREE_EGG_MODEL : this._model; },
     set model(v) { this._model = v; },
-    get maxTokens() { return this.freeEgg ? defaultMaxTokens(this.baseURL, this.model) : (this._maxTokens ?? defaultMaxTokens(this.baseURL, this.model)); },
+    // 输出额度：免费鸡蛋按免费模型的默认上限；否则用显式配置，没有再按「地址 + 模型」算默认
+    get maxTokens() {
+      return this.freeEgg
+        ? defaultMaxTokens(this.baseURL, this.model)
+        : (this._maxTokens ?? defaultMaxTokens(this.baseURL, this.model));
+    },
     set maxTokens(v) { this._maxTokens = v; },
-    get thinkingMode() { return this.freeEgg ? 'disabled' : this._thinkingMode; },
-    set thinkingMode(v) { this._thinkingMode = v; },
+    get contextWindow() { return this.freeEgg ? null : this._contextWindow; },
+    set contextWindow(v) { this._contextWindow = v; },
+    get contextWindowSource() { return this.freeEgg ? null : this._contextWindowSource; },
+    set contextWindowSource(v) { this._contextWindowSource = v; },
+    // 免费鸡蛋：端点免 Key，且免费档（space-bunny-free）对 thinking:{type:'disabled'}
+    // 直接返回 400 invalid_request，故取 'omit' —— configuredThinking() 返回 null，
+    // 请求体里完全不发送 thinking 字段（传 'disabled' 会让鸡蛋每次请求都失败）。
+    get thinkingMode() { return this.freeEgg ? 'omit' : this._thinkingMode; },
+    // 三态直通：enabled / disabled / omit（omit = 不发 thinking 字段）；脏值归一到默认 'disabled'。
+    set thinkingMode(v) { this._thinkingMode = ['enabled', 'disabled', 'omit'].includes(v) ? v : 'disabled'; },
+    // 思考强度（部分网关只认这个，不认 thinking.type）。合法值 low / high / max。
+    // **默认 'low'**：见上面 _reasoningEffort 的实测注释 —— thinking:{disabled} 与
+    // reasoning_effort:'low' 两个一起发，才能覆盖"deepseek 系靠前者关、少数模型靠后者才不报错"。
+    get reasoningEffort() { return this.freeEgg ? '' : this._reasoningEffort; },
+    set reasoningEffort(v) {
+      // 显式空串/非法值也归一到默认 'low'（用户口径：默认关思考）
+      this._reasoningEffort = ['low', 'high', 'max'].includes(v) ? v : 'low';
+    },
     get headers() { return this.freeEgg ? {} : this._headers; },
     set headers(v) { this._headers = v; },
     get extraBody() { return this.freeEgg ? {} : this._extraBody; },
@@ -71,9 +171,10 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
   comfyui: {
     imageProvider: 'comfyui',
     url: (process.env.COMFYUI_URL || 'http://localhost:8188').replace(/\/+$/, ''),
-    novelaiApiFormat: normalizeNovelaiFormat(process.env.NOVELAI_API_FORMAT),
+    novelaiApiFormat: normalizeNovelaiFormat(process.env.NOVELAI_API_FORMAT || 'relay'),
+    // 出图请求的代理（NovelAI 直连常被墙）：空串 = 走环境变量代理（上游 v3.10.0 合并）
+    novelaiProxyUrl: String(process.env.NOVELAI_PROXY_URL || '').trim(),
     novelaiUrl: (process.env.NOVELAI_URL || '').replace(/\/+$/, ''),
-    novelaiProxyUrl: process.env.NOVELAI_PROXY_URL || '',
     novelaiModel: process.env.NOVELAI_MODEL || 'nai-diffusion-4-5-full',
     novelaiArtist: process.env.NOVELAI_ARTIST || '@ebora',
     novelaiWidth: parseInt(process.env.NOVELAI_WIDTH, 10) || 1216,
@@ -85,6 +186,21 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     novelaiQualityPrompt: process.env.NOVELAI_QUALITY_PROMPT || 'masterpiece, best quality, score_9, score_8, highres, absurdres, year 2025',
     novelaiNegativePrompt: process.env.NOVELAI_NEGATIVE_PROMPT || 'lowres, bad_anatomy, bad_hands, text, error, missing_fingers, extra_digit, fewer_digits, cropped, worst_quality, low_quality, normal_quality, jpeg_artifacts, signature, watermark, username, blurry, bad_feet, fused_fingers, too_many_fingers, long_neck, cross-eyed, mutated_hands, polar_lowres, bad_body, bad_proportions, gross_proportions, text, error, missing_fingers, missing_arms, missing_legs, extra_digit, extra_arms, extra_leg, extra_foot',
     outputDir: process.env.COMFYUI_OUTPUT_DIR || './output',
+    // 姿势参考图要落进 ComfyUI 自己的 input/ 目录（LoadImage 只认那里）。
+    // 留空 = 不启用姿势控制：猜路径会得到「静默出图没姿势」的坑，宁可显式要求配置。
+    inputDir: String(process.env.COMFYUI_INPUT_DIR || '').trim(),
+    // 姿势控制开关 / 阈值 / 当前参考图文件名（由设置页持久化，见 db/settings.js）
+    poseControlEnabled: false,
+    poseControlStrength: 1,
+    poseControlImage: '',
+    // 参考图宽高比（w/h）。姿势控制按它校正生成尺寸：横图配竖构图骨架会让模型完全不跟随。
+    poseControlAspect: 0,
+    // 体位骨架（按推进面板的体位程序化生成 pose_json 直接喂给 AnimaPoseControl）。
+    // 与上面的「固定参考图」是两个独立开关：调用方传了 poseJson 才生效，默认开。
+    poseFromPosition: true,
+    // 体位骨架的**竖构图**（2026-11-03 实测结论）：骨架是铺满画布的，横图会把"趴跪"画成近景特写，
+    // 竖图（768×1024）才是完整双人构图 —— 用户挑的样张正是这个尺寸。关掉则沿用工作流原尺寸。
+    poseFromPositionPortrait: true,
     artist: process.env.COMFYUI_ARTIST || '@ebora',
     width: parseInt(process.env.COMFYUI_WIDTH, 10) || 768,
     height: parseInt(process.env.COMFYUI_HEIGHT, 10) || 512,
@@ -107,6 +223,12 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     hiresSteps: 35,  // HiresFix 细化步数
     hiresCfg: 5.0,   // HiresFix 细化 CFG
     hiresDenoise: 0.2,  // HiresFix 细化重绘幅度
+    // HiresFix「按 turbo 模型最优参数细化」开关（真机结论：放大细化工作流.json 的主模型是
+    // anima_turboV10，却一直注入 CFG 5.0/35 步 —— CFG>1 会让 turbo 每步多跑一条无条件分支，
+    // 双倍算力且画质退化）。true = 强制用下面两个值；false = 沿用用户填的 hiresSteps/hiresCfg。
+    hiresTurbo: true,
+    hiresTurboSteps: 12,   // 开关打开时的细化步数（turbo 蒸馏模型适用区间）
+    hiresTurboCfg: 1.0,    // 开关打开时的细化 CFG（turbo 必须 1.0，此时负面提示词不生效是正常特性）
     hiresMaxSize: 2000,  // HiresFix 细化最长边像素
     hiresArtistMode: 'empty', // HiresFix 画师串: inherit沿用/empty留空/specified指定
     hiresArtist: '',     // HiresFix 指定模式下的画师串
@@ -131,14 +253,6 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
       return Number.isFinite(v) ? Math.max(0, Math.min(24, v)) : 1;
     })(),
     momentFreqMode: '', // 未记录模式的旧设置：freq=1 为默认，其余为具体时间档
-    // 传媒内容页自动抓帖间隔（分钟）。
-    // **默认 0 = 关闭**：传媒属于「用户想看时才看」的内容，
-    // 默认自动抓帖会在后台持续调 LLM，与"按需生成"的取向不符。
-    // 想要自动补内容可在传媒页的「自动」档位里开启。
-    mediaAutoMinutes: (() => {
-      const v = parseInt(process.env.MEDIA_AUTO_MINUTES, 10);
-      return Number.isFinite(v) ? v : 0;
-    })(),
     disturbMode: process.env.FEATURE_DISTURB_MODE === 'true', // 默认关：防打扰模式
     schedule: process.env.FEATURE_SCHEDULE !== 'false', // 默认开：日程系统
     scheduleRefreshDays: Math.max(1, Math.min(3, parseInt(process.env.SCHEDULE_REFRESH_DAYS, 10) || 1)), // 日程刷新周期（天），1~3
@@ -149,12 +263,104 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     weather: process.env.FEATURE_WEATHER !== 'false', // 默认开：实时天气
     groupChat: process.env.FEATURE_GROUP_CHAT !== 'false', // 默认开：群聊系统
     groupIdleBudget: Math.max(0, parseInt(process.env.GROUP_IDLE_BUDGET ?? '0', 10) || 0), // 默认关闭；显式设为正数后启用每群每日后台闲聊预算
-    town: process.env.FEATURE_TOWN !== 'false', // 默认开：AI 小镇（世界页）
-    townLLM: process.env.FEATURE_TOWN_LLM !== 'false', // 默认开：小镇 LLM 事件（相遇对话/状态气泡）；关闭则退化为纯移动模拟
-    townAutoLLM: process.env.FEATURE_TOWN_AUTO_LLM !== 'false', // 默认开：小镇「自动/定时」LLM 事件（tick 驱动的相遇对话+摘要、批量状态气泡）；关闭只影响后台自动生成，玩家主动发起的 NPC/工坊对话仍走模型
-    townBuildingFeatures: process.env.FEATURE_TOWN_BUILDING_FEATURES !== 'false', // 默认开：小镇特殊建筑「描述驱动的可执行玩法」（关闭后隐藏新入口、拒绝新生成/新操作）
+    // 媒体内容页的自动抓帖间隔（分钟，上游 v3.9.0 合并）。0 = 关闭（只手动刷新）。
+    // 档位表在 services/mediaService.js 的 MEDIA_AUTO_STEPS，这里只存当前选中值。
+    mediaAutoMinutes: Math.max(0, parseInt(process.env.MEDIA_AUTO_MINUTES ?? '20', 10) || 0), // 默认 20 分钟一档
+    // ── AI 小镇（世界页）：**默认关**（2026-10-19 改）──
+    // 小镇玩法尚未定稿，先默认不运行（不占运行资源、界面不出现入口）。
+    //
+    // ⚠️ 三个必须知道的口径（见 目标/20261019-小镇剥离方案v2.md）：
+    //  1. **只关"行为"，表照建**。非小镇代码有 105 处直接读 town_* 表
+    //     （routes/events.js 20 处、services/newspaperService.js 15 处、routes/moments.js 5 处…），
+    //     不建表会直接 `no such table` ⇒ 所以**不要**给 db/index.js 的 town 迁移加守卫。
+    //  2. 文件**不删**。上游也在持续改小镇（v3.10.0 改了 18 个），删了以后就拿不到；
+    //     软关让上游更新照收、放原路径，随时可开回来。
+    //  3. 开启方式：设 `FEATURE_TOWN=true`（或写入 .env）。
+    //
+    // 实现口径：`FEATURE_TOWN === 'true'`（显式开启）而非 `!== 'false'`（默认开启）。
+    // 老口径是 `!== 'false'`，语义是"默认开、可关"；新口径是"默认关、可开"——
+    // 这才是"剥离"该有的语义。
+    town: process.env.FEATURE_TOWN === 'true',
+    // 三个子开关**级联**到主开关：主开关关 ⇒ 全部关（避免出现"主关子开"的半开状态）。
+    // 传 `FEATURE_TOWN=true` 后，仍可用 `FEATURE_TOWN_LLM=false` 单独关掉 LLM 事件。
+    townLLM: process.env.FEATURE_TOWN === 'true' && process.env.FEATURE_TOWN_LLM !== 'false', // 小镇 LLM 事件（相遇对话/状态气泡）；关闭则退化为纯移动模拟
+    townAutoLLM: process.env.FEATURE_TOWN === 'true' && process.env.FEATURE_TOWN_AUTO_LLM !== 'false', // 小镇「自动/定时」LLM 事件（tick 驱动的相遇对话+摘要、批量状态气泡）；关闭只影响后台自动生成，玩家主动发起的 NPC/工坊对话仍走模型
+    townBuildingFeatures: process.env.FEATURE_TOWN === 'true' && process.env.FEATURE_TOWN_BUILDING_FEATURES !== 'false', // 小镇特殊建筑「描述驱动的可执行玩法」（关闭后隐藏新入口、拒绝新生成/新操作；上游 v3.9.0 合并）
     bgmMuted: false, // 默认关：小镇 BGM 静音（世界页顶栏音符钮切换）
-    soul: true, // 默认开启：灵魂系统（不再提供设置页开关，见 services/soulEngine.js）
+    intimate: process.env.FEATURE_INTIMATE !== 'false', // 默认开：亲密档案与统计看板（自动记账 + 看板总开关）
+    intimateBackfill: process.env.FEATURE_INTIMATE_BACKFILL !== 'false', // 默认开：历史会话回填默认开启
+    hypnosis: process.env.FEATURE_HYPNOSIS !== 'false', // 默认开：催眠手机（关闭时写操作 409，读状态不拦）
+    // ── 提示词破限（Prompt Shield）──
+    // **默认开**：往每一次 LLM 调用（chatSync / chatStream 两个收口）的 messages 最前面
+    // 插一条 system 消息，内容是「不拒答」提示词 —— 避免模型拿"世界观涉及校园/成人内容"为由
+    // 拒答，把奇遇 / 日程 / 朋友圈 / 亲密这几条链路整条打断。
+    // 真机已复现：日程生成连续两次被拒 ⇒ 无 JSON ⇒ 接口 500（2026-10-14 测试轮日志）。
+    // 实现收口 services/promptShield.js，挂载点 src/llm/llm-client.js。
+    // 关掉＝与加这个功能前逐字节一致（applyShield 直接返回原数组，零拷贝零开销）。
+    // 正文默认值在 promptShield.DEFAULT_PROMPT，可在设置页编辑（存 system_settings.jailbreak_prompt）。
+    jailbreak: process.env.FEATURE_JAILBREAK !== 'false',
+    // ── 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）──
+    // 两层各自独立可关，默认**开**（都是纯 prompt 增强，零额外 LLM 调用）：
+    //   antiRepetition     = L1-1 近端自身输出标注 + L2 动态反重复指令（车轱辘话）
+    //   antiRepetitionLock = L2 反钻牛角尖指令（同一情绪极值多轮 + 话题没换）
+    antiRepetition: process.env.FEATURE_ANTI_REPETITION !== 'false',
+    antiRepetitionLock: process.env.FEATURE_ANTI_REPETITION_LOCK !== 'false',
+    // ── 反重复 阶段二（2026-09-30）──
+    //   antiRepetitionEscalation = 自动升级：连续高复述 → 下一轮把约束升到 mode="escalated"。
+    //     默认**开**（升级不花额外调用，只是把约束写硬一档）；关闭后完全按阶段一的温和/强档判定。
+    //   antiRepetitionReroll     = 超阈值时**再请求一次 LLM** 替换已流式输出的内容。默认**关**
+    //     （多一次调用 + 替换已展示内容有体感跳变）。
+    //     2026-10-13 核实更正：**重写兜底已经接线**（`routes/chat.js` L889 计划 / L1672 执行 / L1780 发
+    //     `replace_last_assistant`），不是"预留键"。打开它就会真的多烧一次调用；没开则与加功能前一致。
+    //     （旧注释与旧交接文档写的"尚未实现、打开无效"是过时口径，已作废。）
+    antiRepetitionEscalation: process.env.FEATURE_ANTI_REPETITION_ESCALATION !== 'false',
+    antiRepetitionReroll: process.env.FEATURE_ANTI_REPETITION_REROLL === 'true',
+    // ── SLG 动作系统（触摸互动 · 专题-SLG动作系统）──
+    //   touch           = 动作系统总开关（关闭时 POST /touch 409 且零写入；只读清单不拦）
+    //   touchInstant    = 即时反应小调用（默认开；关掉＝"省额度模式"，全部走隐式注入、一次模型都不调）
+    //   touchGroupAdult = 群聊里的 Lv3（敏感档）：**默认关**（隐私边界：别在群里当众演限制级），
+    //                     用户在设置页显式打开后才放行 ⇒ 关闭时行为与加开关前完全一致。
+    touch: process.env.FEATURE_TOUCH !== 'false',
+    touchInstant: process.env.FEATURE_TOUCH_INSTANT !== 'false',
+    touchGroupAdult: process.env.FEATURE_TOUCH_GROUP_ADULT === 'true',
+    // 出图判定配额（2026-10-01，用户：「需要把所有和生图相关的都看看 其他地方好像还是有限制」）：
+    // 同一会话里**连续多少轮**"她决定要图"都没成功出图，就不再让她继续决定（防止反复调判定模型白烧额度）。
+    // 原来这个 3 是硬编码的（两处 `?? 3` + 一处 `set(…, 3)`）：两轮失败就见底，
+    // 用户观感就是"生图被限制了"。⇒ 默认提到 6 并且可配
+    // （设置页 feature_imageJudgeQuota / 环境变量 FEATURE_IMAGE_JUDGE_QUOTA）。
+    imageJudgeQuota: Number(process.env.FEATURE_IMAGE_JUDGE_QUOTA || 6),
+    // 动作出图概率的整体缩放（2026-10-01，审计"生图相关的限制"）：
+    // 智能档基础概率是 {Lv2:0.5, Lv3:0.75, Lv4:0.9}（同日从 0.25/0.5/0.6 调高），
+    // 这个系数整体乘上去并夹到 1 ⇒ 想让图更多就调大（例如 1.5），想更省就调小。
+    // 想要"每次都出"直接用三档开关里的 always（`touchImageMode`）。
+    touchImageChanceScale: Number(process.env.FEATURE_TOUCH_IMAGE_CHANCE_SCALE || 1),
+    // 性爱交互姿势（2026-10-01，用户要的玩法）：**默认开**。
+    // 关掉时：读状态不拦（前端仍能显示），但任何推进动作回 409 —— 与玩具/催眠那类"功能开关"同口径。
+    intimateActions: process.env.FEATURE_INTIMATE_ACTIONS !== 'false',
+    // 成人玩具系统（专题-玩具系统 §2.8）：**默认关** —— 解锁后设置页才显示「玩具」开关、前端才显示玩具控制区；
+    // 持久化键走通用布尔分支 feature_toys（updateFeatureFlag 的 feature_${key}）。
+    toys: process.env.FEATURE_TOYS === 'true',
+    // 动作出图档位（task-19）：'always' | 'smart' | 'never'，**默认 smart**。
+    // 智能 = 只对 Lv2/Lv3 按概率出图（判定与概率在 touchActionService，本文件不做校验）。
+    touchImageMode: process.env.FEATURE_TOUCH_IMAGE_MODE || 'smart',
+    // 群聊围观概率（task-22 的概率模型）：2026-11-06 起默认 0.8 —— 用户反馈"群里互动别人完全没反应"，
+    // 30% 在真机上等于基本没人应声。
+    // null/false = 关闭（与 task-17 的"最多 1 人"纯 prompt 口径逐字节一致）；
+    // 读取侧是 groupTouchConsumption.resolveTouchBystanderChance（非数字回落同一默认、0~1 夹取），
+    // 这里只提供"可被 system_settings 覆盖"的键（loadSystemSettings 是白名单式的）。
+    touchBystanderChance: process.env.FEATURE_TOUCH_BYSTANDER_CHANCE !== undefined
+      ? Number(process.env.FEATURE_TOUCH_BYSTANDER_CHANCE)
+      : 0.8,
+    // 反应风格（task-30）：'conversation'（**默认**：对话式 —— 全量喂料 + 放开输出的 1~4 句）
+    //   | 'quick'（快速：旧口径 —— 短喂料 + 1~2 句 + max_tokens 300，一键回退）。
+    // 校验/回落见 updateFeatureFlag 的二态分支（非这两个值一律回落 conversation）。
+    touchReactionMode: process.env.FEATURE_TOUCH_REACTION_MODE || 'conversation',
+    // HiresFix 细化精度三档（2026-09-30 · D1 实测裁决）：'high'=12 步 / 'medium'=10 步 / 'low'=8 步（**默认 low**）。
+    // 只影响 HiresFix 那一次细化的步数（CFG 恒 1.0）；非法值/未设一律回落 low（normalizeHiresQuality）。
+    hiresQuality: normalizeHiresQuality(process.env.FEATURE_HIRES_QUALITY),
+    // 灵魂系统（上游 v3.9.0 合并，见 services/soulEngine.js）：默认开，无设置页开关。
+    // 关闭时所有对外入口返回 null/''，不落库、不共鸣、不改行为参数，与加功能前一致。
+    soul: process.env.FEATURE_SOUL !== 'false',
   },
   // 灵魂系统（角色自我认知状态层）。开关是 features.soul；此处只放可配的回归中心 mid。
   // min/max 硬编码在 soulEngine，刻意不暴露（源插件那四个属性无消费方，是死配置）。
@@ -294,7 +500,7 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
   workflow: {
     mode: 'turbo',     // 'base' | 'turbo' | 'hybrid' | 'custom'
     // mode === 'custom' 时使用的工作流文件名（位于 workflow/ 目录，如 制图工作流-pro-yinyue.json）
-    // 文件缺失时自动回退 turbo，不会导致生图失败
+    // 文件缺失时自动回退 turbo，不会导致生图失败（上游 v3.10.0 合并，2026-10-19）
     customTemplate: '',
     scene: {           // hybrid 模式下的场景→工作流映射
       chat: 'turbo',
@@ -318,10 +524,12 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     temperature: parseFloat(process.env.GROUP_CHAT_TEMPERATURE) >= 0.5 && parseFloat(process.env.GROUP_CHAT_TEMPERATURE) <= 1.2
       ? parseFloat(process.env.GROUP_CHAT_TEMPERATURE)
       : 0.7,
-    // 群聊记忆总结/滑动窗口推进轮次（2~6），所有群共享；DB system_settings 持久化，启动时覆盖默认值
+    // 群聊记忆总结/滑动窗口推进轮次（2~30），所有群共享；DB system_settings 持久化，启动时覆盖默认值
+    // 2026-10-31：用户要求更长的对话记忆。默认给 10（不是 30）—— 30 轮原文约 3~5 万 tokens，
+    // 与「省上下文 + 提速」直接冲突；10 轮原文 + 摘要 + 向量召回才是既记得久又不慢的组合。
     summaryInterval: (() => {
       const n = parseInt(process.env.GROUP_CHAT_SUMMARY_INTERVAL, 10);
-      return Number.isInteger(n) ? Math.max(2, Math.min(6, n)) : 4;
+      return Number.isInteger(n) ? Math.max(2, Math.min(30, n)) : 10;
     })(),
   },
   weather: {
@@ -332,22 +540,6 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
 // 启动时如果 tlsVerify=false，设置进程级环境变量让 fetch/ws 信任自签名证书
 if (config.comfyui.tlsVerify === false) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-}
-
-function persistEnv(key, value) {
-  let envContent = '';
-  if (fs.existsSync(envPath)) {
-    envContent = fs.readFileSync(envPath, 'utf8');
-  } else {
-    envContent = '# 此文件由系统自动管理，通过 Settings 页面修改配置即可\n';
-  }
-  const line = `${key}=${String(value)}`;
-  if (envContent.includes(`${key}=`)) {
-    envContent = envContent.replace(new RegExp(`^${key}=.*$`, 'm'), line);
-  } else {
-    envContent += `\n${line}`;
-  }
-  fs.writeFileSync(envPath, envContent, 'utf8');
 }
 
 // 同步写入 DB（内存已更新，DB 写入由 setSetting 同步完成）
@@ -364,20 +556,28 @@ export function getNovelaiApiKey() {
   catch { return process.env.NOVELAI_API_KEY || ''; }
 }
 
-export function updateComfyConfig({ artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiProxyUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey }) {
+export function updateComfyConfig({ artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiProxyUrl, novelaiUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey }) {
+  const envUpdates = {};
+  if (url !== undefined) envUpdates.COMFYUI_URL = String(url).trim().replace(/\/+$/, '');
+  if (tlsVerify !== undefined) envUpdates.COMFYUI_TLS_VERIFY = String(tlsVerify === true || tlsVerify === 'true');
+  persistEnvValues(envPath, envUpdates);
   if (imageProvider !== undefined) {
     const provider = imageProvider === 'novelai' ? 'novelai' : 'comfyui';
     config.comfyui.imageProvider = provider;
     persistSettingSync('image_provider', provider);
   }
   if (novelaiApiFormat !== undefined) {
+    // 三协议（official / native / relay）统一走 novelaiClient 的归一化 —— 本地原来只认两档，
+    // 会把 'native' 静默降级成 'relay'（上游 v3.10.0 合并，2026-10-19）
     const value = normalizeNovelaiFormat(novelaiApiFormat);
     config.comfyui.novelaiApiFormat = value;
     persistSettingSync('novelai_api_format', value);
   }
   if (novelaiProxyUrl !== undefined) {
-    config.comfyui.novelaiProxyUrl = String(novelaiProxyUrl).trim();
-    persistSettingSync('novelai_proxy_url', config.comfyui.novelaiProxyUrl);
+    // 只做 trim：空串 = 清除（回落到环境变量代理），格式校验交给 novelaiClient（它要拼 URL）
+    const value = String(novelaiProxyUrl).trim();
+    config.comfyui.novelaiProxyUrl = value;
+    persistSettingSync('novelai_proxy_url', value);
   }
   if (novelaiUrl !== undefined) {
     const value = String(novelaiUrl).trim().replace(/\/+$/, '');
@@ -442,6 +642,8 @@ export function updateComfyConfig({ artist, width, height, url, momentsArtist, m
     persistSettingSync('novelai_negative_prompt', value);
   }
   if (novelaiApiKey !== undefined) {
+    // 归一化（去 `Bearer ` 前缀与首尾空白）只走 novelaiClient 那一份 —— 上游 v3.10.0 合并。
+    // 原来只 trim，用户粘贴 "Bearer xxx" 会带着前缀入库，出图鉴权直接 401。
     persistSettingSync('novelai_api_key', normalizeNovelaiKey(novelaiApiKey));
   } else if (clearNovelaiApiKey === true) {
     persistSettingSync('novelai_api_key', '');
@@ -457,7 +659,7 @@ export function updateComfyConfig({ artist, width, height, url, momentsArtist, m
   }
   if (width !== undefined) { config.comfyui.width = parseInt(width, 10) || config.comfyui.width; persistSettingSync('comfy_width', config.comfyui.width); }
   if (height !== undefined) { config.comfyui.height = parseInt(height, 10) || config.comfyui.height; persistSettingSync('comfy_height', config.comfyui.height); }
-  if (url !== undefined) { const n = String(url).replace(/\/+$/, ''); config.comfyui.url = n; persistEnv('COMFYUI_URL', n); }
+  if (url !== undefined) config.comfyui.url = envUpdates.COMFYUI_URL;
   if (momentsArtist !== undefined) { config.comfyui.momentsArtist = momentsArtist; persistSettingSync('comfy_moments_artist', momentsArtist); }
   if (momentsWidth !== undefined) { config.comfyui.momentsWidth = parseInt(momentsWidth, 10) || config.comfyui.momentsWidth; persistSettingSync('comfy_moments_width', config.comfyui.momentsWidth); }
   if (momentsHeight !== undefined) { config.comfyui.momentsHeight = parseInt(momentsHeight, 10) || config.comfyui.momentsHeight; persistSettingSync('comfy_moments_height', config.comfyui.momentsHeight); }
@@ -466,7 +668,6 @@ export function updateComfyConfig({ artist, width, height, url, momentsArtist, m
   if (eventHeight !== undefined) { config.comfyui.eventHeight = parseInt(eventHeight, 10) || config.comfyui.eventHeight; persistSettingSync('comfy_event_height', config.comfyui.eventHeight); }
   if (tlsVerify !== undefined) {
     config.comfyui.tlsVerify = tlsVerify === true || tlsVerify === 'true';
-    persistEnv('COMFYUI_TLS_VERIFY', String(config.comfyui.tlsVerify));
     if (!config.comfyui.tlsVerify) {
       process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     } else {
@@ -506,7 +707,68 @@ export function updateGlobalLora(loras) {
  * 细化 LoRA 仅作用于放大细化工作流，追加在 LoRA 链末尾；
  * 与全局/角色 LoRA 同 path 时以细化配置的权重为准
  */
-export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode } = {}) {
+/**
+ * 姿势控制（Anima Control Pose）设置：开关 / 强度 / 参考图 / ComfyUI input 目录。
+ * 只写 config + 落库，不做任何业务动作。
+ */
+export function updatePoseControl({ enabled, strength, image, inputDir, aspect, poseFromPosition, poseFromPositionPortrait } = {}) {
+  if (enabled !== undefined) {
+    config.comfyui.poseControlEnabled = enabled === true || enabled === 'true' || enabled === 1;
+    persistSettingSync('comfy_pose_enabled', config.comfyui.poseControlEnabled ? '1' : '0');
+  }
+  if (strength !== undefined) {
+    const n = Number(strength);
+    if (Number.isFinite(n)) {
+      config.comfyui.poseControlStrength = Math.min(2, Math.max(0, n));
+      persistSettingSync('comfy_pose_strength', String(config.comfyui.poseControlStrength));
+    }
+  }
+  if (image !== undefined) {
+    config.comfyui.poseControlImage = String(image || '').trim();
+    persistSettingSync('comfy_pose_image', config.comfyui.poseControlImage);
+  }
+  if (inputDir !== undefined) {
+    config.comfyui.inputDir = String(inputDir || '').trim();
+    persistSettingSync('comfy_input_dir', config.comfyui.inputDir);
+  }
+  if (aspect !== undefined) {
+    const n = Number(aspect);
+    config.comfyui.poseControlAspect = Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  if (poseFromPosition !== undefined) setPoseFromPosition(poseFromPosition);
+  if (poseFromPositionPortrait !== undefined) setPoseFromPositionPortrait(poseFromPositionPortrait);
+  return {
+    enabled: config.comfyui.poseControlEnabled,
+    strength: config.comfyui.poseControlStrength,
+    image: config.comfyui.poseControlImage,
+    inputDir: config.comfyui.inputDir,
+    aspect: config.comfyui.poseControlAspect,
+    poseFromPosition: config.comfyui.poseFromPosition,
+    poseFromPositionPortrait: config.comfyui.poseFromPositionPortrait,
+  };
+}
+
+/**
+ * 体位骨架开关：调用方传了 poseJson 时是否真的注入姿势控制。
+ * 与「固定参考图」开关（poseControlEnabled）互相独立。
+ */
+export function setPoseFromPosition(enabled) {
+  config.comfyui.poseFromPosition = enabled === true || enabled === 'true' || enabled === 1;
+  persistSettingSync('comfy_pose_from_position', config.comfyui.poseFromPosition ? '1' : '0');
+  return config.comfyui.poseFromPosition;
+}
+
+/**
+ * 体位骨架是否强制竖构图（默认开）。
+ * 横图 + 满画布骨架 ⇒ 出图变近景特写；竖图 768×1024 才有完整双人构图（实测）。
+ */
+export function setPoseFromPositionPortrait(enabled) {
+  config.comfyui.poseFromPositionPortrait = enabled === true || enabled === 'true' || enabled === 1;
+  persistSettingSync('comfy_pose_from_position_portrait', config.comfyui.poseFromPositionPortrait ? '1' : '0');
+  return config.comfyui.poseFromPositionPortrait;
+}
+
+export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } = {}) {
   if (['basic', 'advanced'].includes(workflowMode)) {
     config.comfyui.hiresWorkflowMode = workflowMode;
     persistSettingSync('comfy_hires_workflow_mode', workflowMode);
@@ -559,6 +821,11 @@ export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artis
       persistSettingSync('comfy_hires_denoise', String(config.comfyui.hiresDenoise));
     }
   }
+  if (turboMode !== undefined) {
+    // 「随时开关」：只改内存里的 config，imageRefine 每次注入都读 live 值，无需重启
+    config.comfyui.hiresTurbo = turboMode === true || turboMode === 'true';
+    persistSettingSync('comfy_hires_turbo', String(config.comfyui.hiresTurbo));
+  }
   if (maxSize !== undefined) {
     const n = parseInt(maxSize, 10);
     if (Number.isInteger(n)) {
@@ -584,6 +851,42 @@ export function updateHiresLora(loras) {
   updateHiresSettings({ loras });
 }
 
+/**
+ * 反重复采样参数（presence_penalty / frequency_penalty）。
+ *
+ * 专题（阶段一 L3 / 规划 C5）要求「先拿真网关打一发探针确认参数被接受，再上 UI」，
+ * 因此这里只做**加法**：
+ *   - 传 `null`/"清空" → 请求体里完全不发送该字段（与加参数前逐字节一致，默认就是这个状态）
+ *   - 传合法数字（presence ∈ [-2,2]，frequency ∈ [-2,2]）→ 透传给上游
+ * 非法值一律返回 { ok:false }，不写库、不改内存。
+ */
+export function updateAntiRepetitionPenalty({ presence, frequency } = {}) {
+  const parse = (value) => {
+    if (value === null || value === '' || value === undefined) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const presenceValue = parse(presence);
+  const frequencyValue = parse(frequency);
+  if (presenceValue === undefined || (presenceValue !== null && (presenceValue < -2 || presenceValue > 2))) {
+    return { ok: false, error: 'presence_penalty must be a number in [-2, 2] or empty' };
+  }
+  if (frequencyValue === undefined || (frequencyValue !== null && (frequencyValue < -2 || frequencyValue > 2))) {
+    return { ok: false, error: 'frequency_penalty must be a number in [-2, 2] or empty' };
+  }
+
+  if (presence !== undefined) {
+    config.llm.antiRepetitionPenalty = presenceValue;
+    persistSettingSync('anti_repetition_penalty', presenceValue === null ? '' : String(presenceValue));
+  }
+  if (frequency !== undefined) {
+    config.llm.antiRepetitionFrequency = frequencyValue;
+    persistSettingSync('anti_repetition_frequency', frequencyValue === null ? '' : String(frequencyValue));
+  }
+  console.log(`[config] anti-repetition penalty: presence=${config.llm.antiRepetitionPenalty ?? '(off)'} frequency=${config.llm.antiRepetitionFrequency ?? '(off)'}`);
+  return { ok: true, presence: config.llm.antiRepetitionPenalty, frequency: config.llm.antiRepetitionFrequency };
+}
+
 export function updateFeatureFlag(key, value) {
   // 三态字符串开关：'off' | 'smart' | 'force'，不走布尔强转
   if (key === 'imageGenMode') {
@@ -591,6 +894,39 @@ export function updateFeatureFlag(key, value) {
     config.features.imageGenMode = mode;
     persistSettingSync('feature_imageGenMode', mode);
     console.log(`[config] imageGenMode = ${mode}`);
+    return;
+  }
+  // 数值型开关：群聊围观概率 0~1（task-22 的概率模型；null / 'off' = 关闭，退回 task-17 口径）
+  if (key === 'touchBystanderChance') {
+    const raw = (value === null || value === false || value === 'off' || value === '') ? null : Number(value);
+    const chance = raw === null ? null : (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0.3);
+    config.features.touchBystanderChance = chance;
+    persistSettingSync('feature_touchBystanderChance', chance === null ? '' : String(chance));
+    console.log(`[config] touchBystanderChance = ${chance}`);
+    return;
+  }
+  // 二态字符串开关：反应风格 'conversation' | 'quick'（task-30），不走布尔强转
+  if (key === 'touchReactionMode') {
+    const style = value === 'quick' ? 'quick' : 'conversation';
+    config.features.touchReactionMode = style;
+    persistSettingSync('feature_touchReactionMode', style);
+    console.log(`[config] touchReactionMode = ${style}`);
+    return;
+  }
+  // 三态字符串开关：HiresFix 细化精度 'high' | 'medium' | 'low'（D1），不走布尔强转；非法值回落 low
+  if (key === 'hiresQuality') {
+    const quality = normalizeHiresQuality(value);
+    config.features.hiresQuality = quality;
+    persistSettingSync('feature_hiresQuality', quality);
+    console.log(`[config] hiresQuality = ${quality}`);
+    return;
+  }
+  // 三态字符串开关：动作出图档位 'always' | 'smart' | 'never'（task-19），同样不走布尔强转
+  if (key === 'touchImageMode') {
+    const level = ['always', 'smart', 'never'].includes(value) ? value : 'smart';
+    config.features.touchImageMode = level;
+    persistSettingSync('feature_touchImageMode', level);
+    console.log(`[config] touchImageMode = ${level}`);
     return;
   }
   const boolVal = value === true || value === 'true';
@@ -622,6 +958,7 @@ export function updateEventFreq(value) {
 }
 
 /**
+/**
  * 更新朋友圈发帖频率（0~24）
  * 默认保持角色各自 2~8 小时；interval 模式角色统一每 2 小时 / freq 生成一条。
  * 模式用于区分同为 freq=1 的「默认」与「2 小时」；0 = 同时关闭角色和镇民自动发帖。
@@ -633,24 +970,6 @@ export function updateMomentFreq(value, mode) {
   persistSettingSync('feature_momentFreq', String(f));
   persistSettingSync('feature_momentFreqMode', config.features.momentFreqMode);
   console.log(`[config] momentFreq = ${f}`);
-}
-
-/**
- * 更新传媒内容页的自动抓帖间隔（分钟）。
- * 0 = 关闭自动（只手动刷新）；非 0 时夹在 5 分钟 ~ 12 小时之间
- * —— 比 5 分钟更快没有意义（一次生成要调 LLM，实际也跑不过来），
- * 超过 12 小时则近乎等于关闭。
- * @param {number|string} value
- * @returns {number} 实际生效的分钟数
- */
-export function updateMediaAutoMinutes(value) {
-  const raw = parseInt(value, 10);
-  let n = Number.isFinite(raw) ? raw : 20;
-  if (n !== 0) n = Math.max(5, Math.min(720, n));
-  config.features.mediaAutoMinutes = n;
-  persistSettingSync('feature_mediaAutoMinutes', String(n));
-  console.log(`[config] mediaAutoMinutes = ${n}${n === 0 ? '（已关闭自动）' : ''}`);
-  return n;
 }
 
 /**
@@ -703,14 +1022,27 @@ export function updateGroupActivity(value) {
   return value;
 }
 
+/**
+ * 媒体内容页的自动抓帖间隔（分钟，上游 v3.9.0 合并）。
+ * 只接受档位表里的值（0 = 关闭）；非法值抛 400，由路由透出。
+ */
+export function updateMediaAutoMinutes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw Object.assign(new Error('自动抓帖间隔必须是非负分钟数'), { statusCode: 400 });
+  }
+  persistSettingSync('media_auto_minutes', String(n));
+  config.features.mediaAutoMinutes = n;
+  return n;
+}
+
 function resolveLlmApiKey() {
   // 实时读取 .env 中的 API Key（兼容用户手动编辑 .env 不重启的场景）
   let envKey = '';
   try {
     if (fs.existsSync(envPath)) {
       const raw = fs.readFileSync(envPath, 'utf8');
-      const m = raw.match(/^LLM_API_KEY=(.+)$/m);
-      if (m) envKey = m[1].trim();
+      envKey = dotenv.parse(raw).LLM_API_KEY || '';
     }
   } catch {}
   // 优先用内存值（可能通过 UI 刚保存但还没写盘），回退到 .env 文件值
@@ -727,19 +1059,30 @@ export function getLlmConfig() {
   const preview = !key ? '' : (key.length <= 12 ? '***' : `${key.slice(0, 5)}...${key.slice(-4)}`);
   return {
     provider: config.llm.provider,
+    // 接入方式 / Vertex（上游 v3.10.0 合并，2026-10-19）
     connectionType: config.llm.connectionType,
     vertexRegion: config.llm.vertexRegion,
     hasVertexServiceAccount: Boolean(config.llm.vertexServiceAccount),
     freeEgg,
-    // 免费鸡蛋模式下无需 Key 即可用，视为已配置，避免前端"未设置 Key"横幅误报
+    // 免费鸡蛋模式下无需 Key 即可用，视为已配置，避免前端"未设置 Key"横幅误报；
+    // Vertex 接入同理：有服务账号就算已配置
     hasApiKey: freeEgg ? true : config.llm.connectionType === 'vertexai' ? Boolean(config.llm.vertexServiceAccount) : !!key,
     preview,
     baseURL: config.llm.baseURL,
     model: config.llm.model,
     thinkingMode: config.llm.thinkingMode || 'disabled',
+    // 输出额度（实际生效值：显式配置或按模型算的默认）
     maxTokens: config.llm.maxTokens,
+    // 思考强度（部分网关只认这个）。默认 'low' = 关思考；空串回显成 'low'
+    reasoningEffort: config.llm.reasoningEffort || 'low',
     headers: config.llm.headers || {},
     extraBody: config.llm.extraBody || {},
+    // 上下文窗口（token）与来源：declared=用户声明 / provider=上游模型列表 / default=保守默认
+    contextWindow: config.llm.contextWindow ?? null,
+    contextWindowSource: config.llm.contextWindowSource || null,
+    // 反重复采样参数：null = 不发送该字段（默认，与历史请求体一致）
+    antiRepetitionPenalty: config.llm.antiRepetitionPenalty ?? null,
+    antiRepetitionFrequency: config.llm.antiRepetitionFrequency ?? null,
   };
 }
 
@@ -755,56 +1098,131 @@ export function updateFreeEggEnabled(enabled) {
   return { ok: true };
 }
 
-export function updateLlmConfig({ apiKey, baseURL, model, thinkingMode, maxTokens, headers, extraBody, connectionType, vertexRegion, vertexServiceAccount }) {
-  // Validate all new fields before persisting anything; blank JSON means retain the saved secret.
+/**
+ * 规整上下文窗口声明：正整数有效，'' / null / NaN 视为"清空声明"。
+ * 与 services/contextUsage.js 的 normalizeContextWindow 同口径（此处内联避免 config ↔ service 循环依赖）。
+ */
+function parseContextWindow(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim()))) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined; // undefined = 非法值
+  return parsed;
+}
+
+export function updateLlmConfig({ apiKey, baseURL, model, thinkingMode, reasoningEffort, maxTokens, headers, extraBody, connectionType, vertexRegion, vertexServiceAccount, contextWindow, contextWindowSource }) {
+  const previousModel = config.llm._model;
+  const next = {};
+  const envUpdates = {};
+  // ── 先校验全部入参，再落任何字段 ──
+  // 上游 v3.10.0 口径：非法输入必须整体拒绝，不能留"改了一半"的状态（有测试钉住 before/after 相等）
+  let headersValue;
+  let extraBodyValue;
   try {
-    if (connectionType !== undefined && !['openai', 'vertexai'].includes(connectionType)) throw new Error('不支持的 LLM 接入方式');
+    if (connectionType !== undefined && !['openai', 'vertexai'].includes(connectionType)) {
+      throw new Error('不支持的 LLM 接入方式');
+    }
     if (vertexRegion !== undefined) vertexRegion = normalizeVertexRegion(vertexRegion);
-    if (vertexServiceAccount !== undefined && vertexServiceAccount !== '') vertexServiceAccount = JSON.stringify(parseServiceAccount(vertexServiceAccount));
+    if (vertexServiceAccount !== undefined && vertexServiceAccount !== '') {
+      // 服务账号密钥只以规范化后的 JSON 字符串落库；格式不对直接拒绝
+      vertexServiceAccount = JSON.stringify(parseServiceAccount(vertexServiceAccount));
+    }
     for (const [name, raw] of [['headers', headers], ['extraBody', extraBody]]) {
       if (raw === undefined) continue;
       const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} 必须是 JSON 对象`);
-      if (name === 'headers') headers = value;
-      else extraBody = value;
+      if (name === 'headers') headersValue = value;
+      else extraBodyValue = value;
     }
-  } catch (error) { return { ok: false, error: error.message }; }
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
   if (maxTokens !== undefined && !isValidMaxTokens(maxTokens)) {
     return { ok: false, error: 'MAX_tokens 必须为正整数' };
   }
-  if (thinkingMode !== undefined && !['enabled', 'disabled', 'omit'].includes(thinkingMode)) return { ok: false, error: 'thinkingMode must be enabled, disabled, or omit' };
-  if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim())) return { ok: false, error: 'API Key cannot be empty' };
-  if (connectionType !== undefined) { config.llm.connectionType = connectionType; setSetting('llm_connection_type', connectionType); }
-  if (vertexRegion !== undefined) { config.llm.vertexRegion = vertexRegion; setSetting('llm_vertex_region', vertexRegion); }
-  if (vertexServiceAccount) { config.llm.vertexServiceAccount = vertexServiceAccount; setSetting('llm_vertex_service_account', vertexServiceAccount); }
+  if (thinkingMode !== undefined && !['enabled', 'disabled', 'omit'].includes(thinkingMode)) {
+    return { ok: false, error: 'thinkingMode must be enabled, disabled, or omit' };
+  }
+  if (apiKey !== undefined && (!apiKey || typeof apiKey !== 'string' || !apiKey.trim())) {
+    return { ok: false, error: 'API Key cannot be empty' };
+  }
+
+  const parsedWindow = contextWindow === undefined ? undefined : parseContextWindow(contextWindow);
+  if (contextWindow !== undefined && parsedWindow === undefined) {
+    return { ok: false, error: 'contextWindow must be a positive integer' };
+  }
+
+  // 先准备全部字段，文件保存成功后才发布运行状态与数据库设置。
+  if (connectionType !== undefined) {
+    next.connectionType = connectionType;
+  }
+  if (vertexRegion !== undefined) {
+    next.vertexRegion = vertexRegion;
+  }
+  if (vertexServiceAccount) {
+    // 空串表示"保留已保存的凭证"（前端回显时永远拿不到明文，只回 hasVertexServiceAccount）
+    next.vertexServiceAccount = vertexServiceAccount;
+  }
   if (apiKey !== undefined) {
-    config.llm.apiKey = apiKey.trim();
-    persistEnv('LLM_API_KEY', config.llm.apiKey);
+    next.apiKey = apiKey.trim();
+    envUpdates.LLM_API_KEY = next.apiKey;
   }
   if (baseURL !== undefined) {
-    config.llm.baseURL = baseURL;
-    persistEnv('LLM_BASE_URL', baseURL);
+    next.baseURL = baseURL;
+    envUpdates.LLM_BASE_URL = baseURL;
   }
   if (model !== undefined) {
-    config.llm.model = model;
-    persistEnv('LLM_MODEL', model);
+    next.model = model;
+    envUpdates.LLM_MODEL = model;
   }
   if (thinkingMode !== undefined) {
-    config.llm.thinkingMode = thinkingMode;
-    persistEnv('LLM_THINKING_MODE', thinkingMode);
+    next.thinkingMode = thinkingMode;
+    envUpdates.LLM_THINKING_MODE = thinkingMode;
+  }
+  if (reasoningEffort !== undefined) {
+    // 用户口径"默认一定要关掉思考"：low/high/max 照传，**空串与非法值一律归一回 low**
+    // （不提供"置空 = 不发字段"的出口 —— 那会让 deepseek 系退回开着思考跑）。
+    const effort = ['low', 'high', 'max'].includes(String(reasoningEffort)) ? String(reasoningEffort) : 'low';
+    next.reasoningEffort = effort;
+    envUpdates.LLM_REASONING_EFFORT = effort;
   }
   if (maxTokens !== undefined || baseURL !== undefined || model !== undefined) {
-    config.llm.maxTokens = maxTokens ?? defaultMaxTokens(config.llm.connectionType === 'vertexai' ? '' : config.llm.baseURL, config.llm.model);
-    persistEnv('LLM_MAX_TOKENS', String(config.llm.maxTokens));
+    // 换地址/换模型时也要重算默认额度（显式 maxTokens 优先）
+    next.maxTokens = maxTokens ?? defaultMaxTokens(
+      (next.connectionType ?? config.llm._connectionType) === 'vertexai' ? '' : (next.baseURL ?? config.llm._baseURL),
+      next.model ?? config.llm._model,
+    );
+    envUpdates.LLM_MAX_TOKENS = String(next.maxTokens);
   }
-  if (headers !== undefined) {
-    config.llm.headers = typeof headers === 'string' ? JSON.parse(headers) : headers;
-    persistEnv('LLM_HEADERS', JSON.stringify(config.llm.headers));
+  if (headersValue !== undefined) {
+    next.headers = headersValue;
+    envUpdates.LLM_HEADERS = JSON.stringify(next.headers);
   }
-  if (extraBody !== undefined) {
-    config.llm.extraBody = typeof extraBody === 'string' ? JSON.parse(extraBody) : extraBody;
-    persistEnv('LLM_EXTRA_BODY', JSON.stringify(config.llm.extraBody));
+  if (extraBodyValue !== undefined) {
+    next.extraBody = extraBodyValue;
+    envUpdates.LLM_EXTRA_BODY = JSON.stringify(next.extraBody);
   }
+  if (contextWindow !== undefined) {
+    const value = parsedWindow;
+    next.contextWindow = value;
+    // 填了值即视为用户声明；清空则连来源一起清空，交给上游探测/默认值回退
+    next.contextWindowSource = value === null
+      ? null
+      : (['provider', 'default'].includes(contextWindowSource) ? contextWindowSource : 'declared');
+    envUpdates.LLM_CONTEXT_WINDOW = value === null ? '' : String(value);
+    envUpdates.LLM_CONTEXT_WINDOW_SOURCE = next.contextWindowSource || '';
+  } else if (model !== undefined && model !== previousModel) {
+    // 换模型后旧窗口不再成立（无论来自用户声明还是上游探测）：清空，等新模型重新声明/探测
+    next.contextWindow = null;
+    next.contextWindowSource = null;
+    envUpdates.LLM_CONTEXT_WINDOW = '';
+    envUpdates.LLM_CONTEXT_WINDOW_SOURCE = '';
+  }
+  persistEnvValues(envPath, envUpdates);
+  Object.assign(config.llm, next);
+  if (connectionType !== undefined) persistSettingSync('llm_connection_type', connectionType);
+  if (vertexRegion !== undefined) persistSettingSync('llm_vertex_region', vertexRegion);
+  if (vertexServiceAccount) persistSettingSync('llm_vertex_service_account', vertexServiceAccount);
   console.log('[config] LLM settings saved');
   return { ok: true };
 }
@@ -883,18 +1301,22 @@ export function updateCompressConfig({ enabled, type }) {
 }
 
 export function updateWorkflowMode(mode) {
+  // 'custom' = 用 workflow/ 目录里的自定义工作流文件（上游 v3.10.0 合并，2026-10-19）
   if (!['base', 'turbo', 'hybrid', 'custom'].includes(mode)) {
     return { ok: false, error: 'mode must be base, turbo, hybrid, or custom' };
   }
   config.workflow.mode = mode;
   persistSettingSync('workflow_mode', mode);
-  console.log(`[config] workflowMode = ${mode}`);
+  // 标记来源：手动选过之后，autoDetectWorkflowMode 不再覆盖用户的选择
+  persistSettingSync('workflow_mode_source', 'manual');
+  console.log(`[config] workflowMode = ${mode} (manual)`);
   return { ok: true };
 }
 
 /**
- * 设置全局自定义工作流文件名（mode === 'custom' 时生效）
+ * 设置全局自定义工作流文件名（mode === 'custom' 时生效）。
  * 仅接受 workflow/ 目录下的 .json 文件名；传空字符串表示清除。
+ * 上游 v3.10.0 合并（2026-10-19）：这条设置一直缺，设置页 E 组的下拉写不回去。
  */
 export function updateWorkflowCustomTemplate(filename) {
   if (filename !== undefined && filename !== null && typeof filename !== 'string') {
@@ -955,16 +1377,30 @@ function maskApiKey(key) {
 
 export function getLlmProfiles() {
   const profiles = readProfilesFromDb();
-  return profiles.map(p => ({
+  return profiles.map(publicLlmProfile);
+}
+
+/**
+ * 对外（HTTP / 返回值）的配置快照：**永远不含 apiKey 明文与 Vertex 服务账号私钥**。
+ * 上游 v3.10.0 合并时加了「Vertex 凭证只存不读回」的口径 —— 有测试断言
+ * `JSON.stringify(profiles)` 里不能出现 `PRIVATE KEY`。
+ */
+function publicLlmProfile(p) {
+  return {
     id: p.id,
     name: p.name,
     ...maskApiKey(p.apiKey),
-    connectionType: p.connectionType || 'openai',
-    hasVertexServiceAccount: Boolean(p.vertexServiceAccount),
     baseURL: p.baseURL || '',
     model: p.model || '',
+    connectionType: p.connectionType === 'vertexai' ? 'vertexai' : 'openai',
+    vertexRegion: p.vertexRegion || 'global',
+    hasVertexServiceAccount: Boolean(p.vertexServiceAccount),
+    maxTokens: p.maxTokens ?? null,
+    // 每套模型配置自带上下文窗口：declared=添加时用户填的 / provider=上游模型列表 / default=保守默认
+    contextWindow: p.contextWindow ?? null,
+    contextWindowSource: p.contextWindowSource || null,
     createdAt: p.createdAt || '',
-  }));
+  };
 }
 
 export function getActiveProfileId() {
@@ -973,21 +1409,31 @@ export function getActiveProfileId() {
 
 export function addLlmProfile(name, overrides = {}) {
   const profiles = readProfilesFromDb();
-  const id = 'p_' + Date.now();
+  const id = 'p_' + randomUUID();
   const now = new Date().toISOString();
   const profile = {
     id,
     name: name.trim(),
     apiKey: overrides.apiKey !== undefined ? overrides.apiKey : '',
-    connectionType: overrides.connectionType ?? config.llm.connectionType,
-    vertexRegion: overrides.vertexRegion ?? config.llm.vertexRegion,
-    vertexServiceAccount: '', // New snapshots never copy secrets; save credentials after activation.
     baseURL: overrides.baseURL !== undefined ? overrides.baseURL : (config.llm.baseURL || 'https://api.deepseek.com'),
     model: overrides.model !== undefined ? overrides.model : (config.llm.model || 'deepseek-flash'),
+    // 接入方式 / Vertex / 输出额度随配置一起保存（凭证明文只落 Profile，不随返回值外泄）
+    connectionType: overrides.connectionType !== undefined ? overrides.connectionType : (config.llm.connectionType || 'openai'),
+    vertexRegion: overrides.vertexRegion !== undefined ? overrides.vertexRegion : (config.llm.vertexRegion || 'global'),
+    vertexServiceAccount: overrides.vertexServiceAccount !== undefined ? overrides.vertexServiceAccount : (config.llm.vertexServiceAccount || ''),
+    maxTokens: overrides.maxTokens !== undefined ? overrides.maxTokens : (config.llm.maxTokens ?? null),
     thinkingMode: overrides.thinkingMode !== undefined ? overrides.thinkingMode : (config.llm.thinkingMode || 'disabled'),
-    maxTokens: isValidMaxTokens(overrides.maxTokens) ? overrides.maxTokens : (overrides.baseURL !== undefined || overrides.model !== undefined ? defaultMaxTokens(overrides.baseURL ?? config.llm.baseURL, overrides.model ?? config.llm.model) : config.llm.maxTokens),
+    reasoningEffort: overrides.reasoningEffort !== undefined ? overrides.reasoningEffort : (config.llm.reasoningEffort || 'low'),
     headers: overrides.headers !== undefined ? overrides.headers : (config.llm.headers || {}),
     extraBody: overrides.extraBody !== undefined ? overrides.extraBody : (config.llm.extraBody || {}),
+    // 上下文窗口：路由层已按「用户声明 → 上游 /v1/models → 保守默认」定好值再传进来；
+    // 直接调 addLlmProfile 时回退到当前配置的窗口
+    contextWindow: overrides.contextWindow !== undefined
+      ? parseContextWindow(overrides.contextWindow)
+      : (config.llm.contextWindow ?? null),
+    contextWindowSource: overrides.contextWindowSource !== undefined
+      ? overrides.contextWindowSource
+      : (config.llm.contextWindowSource || null),
     serializeBackgroundLLM: overrides.serializeBackgroundLLM !== undefined ? overrides.serializeBackgroundLLM : (config.features.serializeBackgroundLLM || false),
     mergeMessages: overrides.mergeMessages !== undefined ? overrides.mergeMessages : (config.features.mergeMessages || false),
     backgroundConcurrency: overrides.backgroundConcurrency !== undefined ? overrides.backgroundConcurrency : (config.features.backgroundLLMMaxConcurrency || 3),
@@ -995,8 +1441,7 @@ export function addLlmProfile(name, overrides = {}) {
   };
   profiles.push(profile);
   writeProfilesToDb(profiles);
-  const { apiKey: _apiKey, vertexServiceAccount: _account, ...publicProfile } = profile;
-  return { ok: true, profile: { ...publicProfile, ...maskApiKey(profile.apiKey) } };
+  return { ok: true, profile: publicLlmProfile(profile) };
 }
 
 export function deleteLlmProfile(id) {
@@ -1010,43 +1455,60 @@ export function deleteLlmProfile(id) {
   }
   const activeId = getActiveProfileId();
   profiles = profiles.filter(p => p.id !== id);
-  writeProfilesToDb(profiles);
-
   if (activeId === id) {
     const first = profiles[0];
-    setSetting('active_llm_profile_id', first.id);
     _applyProfileToConfig(first);
+    setSetting('active_llm_profile_id', first.id);
   }
+  writeProfilesToDb(profiles);
   return { ok: true };
 }
 
 function _applyProfileToConfig(profile) {
-  config.llm.connectionType = profile.connectionType === 'vertexai' ? 'vertexai' : 'openai';
-  config.llm.vertexRegion = profile.vertexRegion || 'global';
-  config.llm.vertexServiceAccount = profile.vertexServiceAccount || '';
-  setSetting('llm_connection_type', config.llm._connectionType);
-  setSetting('llm_vertex_region', config.llm.vertexRegion);
-  setSetting('llm_vertex_service_account', config.llm.vertexServiceAccount);
-  config.llm.apiKey = profile.apiKey || '';
-  persistEnv('LLM_API_KEY', config.llm.apiKey);
+  const next = {};
+  const envUpdates = {};
+  next.apiKey = profile.apiKey || '';
+  envUpdates.LLM_API_KEY = next.apiKey;
   if (profile.baseURL !== undefined) {
-    config.llm.baseURL = profile.baseURL;
-    persistEnv('LLM_BASE_URL', profile.baseURL);
+    next.baseURL = profile.baseURL;
+    envUpdates.LLM_BASE_URL = profile.baseURL;
   }
   if (profile.model !== undefined) {
-    config.llm.model = profile.model;
-    persistEnv('LLM_MODEL', profile.model);
+    next.model = profile.model;
+    envUpdates.LLM_MODEL = profile.model;
   }
-  config.llm.thinkingMode = ['enabled', 'disabled', 'omit'].includes(profile.thinkingMode)
+  next.thinkingMode = ['enabled', 'disabled', 'omit'].includes(profile.thinkingMode)
     ? profile.thinkingMode
     : 'disabled';
-  persistEnv('LLM_THINKING_MODE', config.llm.thinkingMode);
-  config.llm.maxTokens = isValidMaxTokens(profile.maxTokens) ? profile.maxTokens : defaultMaxTokens(config.llm.baseURL, config.llm.model);
-  persistEnv('LLM_MAX_TOKENS', String(config.llm.maxTokens));
-  config.llm.headers = profile.headers || {};
-  persistEnv('LLM_HEADERS', JSON.stringify(config.llm.headers));
-  config.llm.extraBody = profile.extraBody || {};
-  persistEnv('LLM_EXTRA_BODY', JSON.stringify(config.llm.extraBody));
+  envUpdates.LLM_THINKING_MODE = next.thinkingMode;
+  // 接入方式 / Vertex 凭证随配置切换；旧配置没有这些字段 → 回落到 openai + 空凭证
+  next.connectionType = profile.connectionType === 'vertexai' ? 'vertexai' : 'openai';
+  next.vertexRegion = profile.vertexRegion || 'global';
+  next.vertexServiceAccount = profile.vertexServiceAccount || '';
+  // 输出额度：配置里有就用，没有就按新模型算
+  next.maxTokens = isValidMaxTokens(profile.maxTokens)
+    ? profile.maxTokens
+    : defaultMaxTokens(next.connectionType === 'vertexai' ? '' : (next.baseURL ?? config.llm._baseURL), next.model ?? config.llm._model);
+  envUpdates.LLM_MAX_TOKENS = String(next.maxTokens);
+  next.reasoningEffort = ['low', 'high', 'max'].includes(profile.reasoningEffort)
+    ? profile.reasoningEffort
+    : 'low';
+  envUpdates.LLM_REASONING_EFFORT = next.reasoningEffort;
+  next.headers = profile.headers || {};
+  envUpdates.LLM_HEADERS = JSON.stringify(next.headers);
+  next.extraBody = profile.extraBody || {};
+  envUpdates.LLM_EXTRA_BODY = JSON.stringify(next.extraBody);
+  // 上下文窗口随配置一起切换（旧配置可能没有该字段 → 清空，由上游探测/默认值回退）。
+  // 来源只认三个合法值：config 里的值可能是用户声明也可能是上游查到的，写错来源会误导面板。
+  next.contextWindow = parseContextWindow(profile.contextWindow) ?? null;
+  next.contextWindowSource = next.contextWindow
+    ? (['declared', 'provider', 'default'].includes(profile.contextWindowSource) ? profile.contextWindowSource : 'declared')
+    : null;
+  envUpdates.LLM_CONTEXT_WINDOW = next.contextWindow === null ? '' : String(next.contextWindow);
+  envUpdates.LLM_CONTEXT_WINDOW_SOURCE = next.contextWindowSource || '';
+
+  persistEnvValues(envPath, envUpdates);
+  Object.assign(config.llm, next);
 
   if (profile.serializeBackgroundLLM !== undefined) {
     updateFeatureFlag('serializeBackgroundLLM', profile.serializeBackgroundLLM);
@@ -1065,8 +1527,8 @@ export function activateLlmProfile(id) {
   if (!profile) {
     return { ok: false, error: '配置不存在' };
   }
-  setSetting('active_llm_profile_id', id);
   _applyProfileToConfig(profile);
+  setSetting('active_llm_profile_id', id);
 
   // resetClient is imported dynamically to avoid circular dependency at module level
   return { ok: true };
@@ -1078,18 +1540,22 @@ export function syncActiveLlmProfile() {
   const profiles = readProfilesFromDb();
   const idx = profiles.findIndex(p => p.id === activeId);
   if (idx === -1) return;
+  // 免费模式的 getter 是临时运行视图；档案始终保存用户自己的配置。
   profiles[idx] = {
     ...profiles[idx],
-    connectionType: config.llm._connectionType,
-    vertexRegion: config.llm.vertexRegion,
-    vertexServiceAccount: config.llm.vertexServiceAccount,
-    apiKey: config.llm.apiKey || '',
-    baseURL: config.llm.baseURL || '',
-    model: config.llm.model || '',
-    thinkingMode: config.llm.thinkingMode || 'disabled',
-    maxTokens: config.llm.maxTokens,
-    headers: config.llm.headers || {},
-    extraBody: config.llm.extraBody || {},
+    apiKey: config.llm._apiKey || '',
+    baseURL: config.llm._baseURL || '',
+    model: config.llm._model || '',
+    connectionType: config.llm._connectionType || 'openai',
+    vertexRegion: config.llm.vertexRegion || 'global',
+    vertexServiceAccount: config.llm.vertexServiceAccount || '',
+    maxTokens: config.llm._maxTokens ?? defaultMaxTokens(config.llm._connectionType === 'vertexai' ? '' : config.llm._baseURL, config.llm._model),
+    thinkingMode: config.llm._thinkingMode || 'disabled',
+    reasoningEffort: config.llm._reasoningEffort || 'low',
+    headers: config.llm._headers || {},
+    extraBody: config.llm._extraBody || {},
+    contextWindow: config.llm._contextWindow ?? null,
+    contextWindowSource: config.llm._contextWindowSource || null,
     serializeBackgroundLLM: config.features.serializeBackgroundLLM || false,
     mergeMessages: config.features.mergeMessages || false,
     backgroundConcurrency: config.features.backgroundLLMMaxConcurrency || 3,
@@ -1264,38 +1730,21 @@ export function deleteNovelaiProfile(id) {
  */
 export function autoDetectWorkflowMode() {
   const MARKER_KEY = 'workflow_mode_auto_detected';
-  if (getSetting(MARKER_KEY) === 'true') {
-    // 已检测过，不再自动干预
-    return { skipped: true, reason: 'already_detected' };
-  }
-
-  // 用户显式选择自定义工作流时，自动检测不干预（也不标记，便于日后改回 turbo/base 时仍能自动检测）
-  if (config.workflow?.mode === 'custom') {
-    return { skipped: true, reason: 'explicit_custom_mode' };
+  // 用户**手动**选过模式就永不覆盖（原设计意图保留）；否则每次都按模型目录双向对齐。
+  // 旧实现用一次性标记永久跳过，于是：先只装了 base → 写入 base；后来补装 turbo 也不会纠正，
+  // 真机表现 = 库里 workflow_mode=base、日志却打 keep turbo，出图一直走 31 步 base（实测 18s/张，
+  // 而 turbo 12 步只要 5.4s/张）。
+  if (getSetting('workflow_mode_source') === 'manual') {
+    return { skipped: true, reason: 'manual_choice' };
   }
 
   try {
-    // 推导项目根目录：config.js 位于 agent-core/src/，往上两级到项目根（launcher_config.json 所在）
-    const projectRoot = resolve(__dirname, '..', '..');
-    const launcherConfigPath = resolve(projectRoot, 'launcher_config.json');
-
-    if (!fs.existsSync(launcherConfigPath)) {
-      return { skipped: true, reason: 'launcher_config_not_found' };
-    }
-
-    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf-8'));
-    const comfyuiExe = launcherConfig.comfyui_exe;
-    if (!comfyuiExe) {
-      return { skipped: true, reason: 'comfyui_exe_not_configured' };
-    }
-
-    // comfyui_exe 是启动器 exe 路径，其所在目录即为 ComfyUI 安装根目录
-    const comfyuiRoot = dirname(comfyuiExe);
-    const diffusionModelsDir = resolve(comfyuiRoot, 'ComfyUI', 'models', 'diffusion_models');
-
-    if (!fs.existsSync(diffusionModelsDir)) {
-      // 路径不存在 → 不操作也不标记，下次启动再试
-      return { skipped: true, reason: 'diffusion_models_dir_not_found' };
+    // 路径推导统一走 utils/comfyPaths.js（兼容绘世 exe / main.py / ComfyUI 目录三种填法，
+    // 以及 launcher_config.json 在项目根或上一级两种包结构）
+    const diffusionModelsDir = resolveComfySubdir('models', 'diffusion_models');
+    if (!diffusionModelsDir) {
+      // 推导不出来 → 不操作也不标记，下次启动再试（日志里能看出卡在哪）
+      return { skipped: true, reason: 'diffusion_models_dir_not_found', detail: describeComfyPathFailure() };
     }
 
     // 扫描目录下的模型文件（不递归，仅顶层）
@@ -1310,15 +1759,28 @@ export function autoDetectWorkflowMode() {
     // 成功读到目录 → 标记已检测，后续不再自动干预
     setSetting(MARKER_KEY, 'true');
 
+    const effective = config.workflow?.mode || 'turbo';
     if (hasTurbo) {
-      // 有 turbo 保持 turbo（默认即 turbo，无需改）
-      console.log('[config] autoDetectWorkflowMode: found anima_turboV10, keep turbo');
-      return { detected: true, mode: 'turbo', changed: false };
+      if (effective === 'turbo') {
+        console.log('[config] autoDetectWorkflowMode: found anima_turboV10, keep turbo');
+        return { detected: true, mode: 'turbo', changed: false };
+      }
+      // 装了 turbo 却停在别的模式（多半是历史上只有 base 时被自动写成 base）→ 纠正回来
+      config.workflow.mode = 'turbo';
+      persistSettingSync('workflow_mode', 'turbo');
+      persistSettingSync('workflow_mode_source', 'auto');
+      console.log(`[config] autoDetectWorkflowMode: found anima_turboV10, ${effective} → turbo`);
+      return { detected: true, mode: 'turbo', changed: true };
     }
     if (hasBase) {
-      // 有 base 无 turbo → 切换到 base
+      // 有 base 无 turbo → 切到 base（没得选）
+      if (effective === 'base') {
+        console.log('[config] autoDetectWorkflowMode: found anima_baseV10 (no turbo), keep base');
+        return { detected: true, mode: 'base', changed: false };
+      }
       config.workflow.mode = 'base';
       persistSettingSync('workflow_mode', 'base');
+      persistSettingSync('workflow_mode_source', 'auto');
       console.log('[config] autoDetectWorkflowMode: found anima_baseV10 (no turbo), switch to base');
       return { detected: true, mode: 'base', changed: true };
     }

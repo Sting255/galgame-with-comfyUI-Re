@@ -2,9 +2,13 @@ import { OUTFIT_SCENES } from '../outfitScene.js';
 import { splitAppearanceSection } from '../characterPersona.js';
 
 export { OUTFIT_SCENES };
+
+// 天使固定四套（默认/私服/居家/睡衣）：本 fork 的 OUTFIT_SCENES 多一个『裸体』给居民私密场景用，
+// 天使是神说系统角色，不参与裸体形态，所以这里显式滤掉，与上游 4.1.0 的四套口径保持一致。
+const ANGEL_SCENES = OUTFIT_SCENES.filter(scene => scene.key !== 'nude');
 const parse = text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch { return []; } };
 const bad = text => Object.assign(new Error(text), { status: 400 });
-export const validAngelScene = scene => OUTFIT_SCENES.some(item => item.key === scene);
+export const validAngelScene = scene => ANGEL_SCENES.some(item => item.key === scene);
 
 export function angelBaseAppearance(persona = '') {
   persona = String(persona || '');
@@ -16,7 +20,7 @@ export function angelBaseAppearance(persona = '') {
 
 export function angelOutfits(angel) {
   const stored = parse(angel.scene_outfits_json);
-  return OUTFIT_SCENES.map(scene => {
+  return ANGEL_SCENES.map(scene => {
     const row = stored.find(outfit => outfit.scene === scene.key);
     return { scene: scene.key, sceneLabel: scene.label, defaultName: scene.defaultName,
       name: row?.name || scene.defaultName,
@@ -25,7 +29,7 @@ export function angelOutfits(angel) {
 }
 export function angelStandings(angel) {
   const stored = parse(angel.scene_standings_json);
-  return OUTFIT_SCENES.map(scene => ({ scene: scene.key, sceneLabel: scene.label,
+  return ANGEL_SCENES.map(scene => ({ scene: scene.key, sceneLabel: scene.label,
     image_url: stored.find(row => row.scene === scene.key)?.image_url || (scene.key === 'work' ? angel.standing_url : null),
     prompt_text: stored.find(row => row.scene === scene.key)?.prompt_text || '' }));
 }
@@ -36,7 +40,7 @@ export function cleanAngelOutfits(value) {
     if (!outfit || !validAngelScene(outfit.scene) || seen.has(outfit.scene) || typeof outfit.description !== 'string'
       || outfit.description.length > 30000 || (outfit.name != null && (typeof outfit.name !== 'string' || outfit.name.length > 60))) throw bad('服装场景、名称或描述无效');
     seen.add(outfit.scene);
-    return { scene: outfit.scene, name: outfit.name?.trim() || OUTFIT_SCENES.find(scene => scene.key === outfit.scene).defaultName, description: outfit.description.trim() };
+    return { scene: outfit.scene, name: outfit.name?.trim() || ANGEL_SCENES.find(scene => scene.key === outfit.scene)?.defaultName || outfit.name, description: outfit.description.trim() };
   });
 }
 // 独立的系统角色衣柜不会用单例 id=1 去读取普通角色的服装。

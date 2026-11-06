@@ -37,7 +37,9 @@ function todayStr() {
 }
 
 /** 消耗一次预算；预算耗尽返回 false。预算为每群独立计数 groupChat.activity（默认 2），跨天懒重置 */
-function consumeIdleBudget(db, group) {
+// ⚠️ `export` 只为可测（这两个函数已经按依赖注入收好了 `db` 形参，直接拿真 `:memory:` 库
+//    跑就是**真的在验那条 SQL 与跨天判定**，不是源码文本守卫）。回归见 test/groupIdleBudgetRefund.test.js。
+export function consumeIdleBudget(db, group) {
   const budget = config.groupChat?.activity ?? 2;
   if (budget <= 0) return false;
   const today = todayStr();
@@ -45,6 +47,25 @@ function consumeIdleBudget(db, group) {
   if (used >= budget) return false;
   db.prepare(`UPDATE group_chats SET idle_budget_date = ?, idle_budget_used = ? WHERE id = ?`)
     .run(today, used + 1, group.id);
+  return true;
+}
+
+/**
+ * 退回一次预算（2026-10-17 复查 §P2-3）。
+ *
+ * 原来 `consumeIdleBudget` 是**先扣后跑**，而 round 失败时**不退** ⇒
+ * 一次 LLM 报错/网关超时就白白吃掉当日闲聊额度（默认每群每天只有 2 轮），
+ * 用户看到的现象是"今天群里怎么不说话了"，而日志里只有一行 round failed。
+ *
+ * 口径：只在**当日计数确实是我们扣的那一次**时退（比对 `idle_budget_date === today`），
+ * 且不越界到负数 —— 跨天边界上（扣完就跨天了）宁可少退也不把计数退成 -1。
+ */
+export function refundIdleBudget(db, groupId) {
+  const today = todayStr();
+  const row = db.prepare(`SELECT idle_budget_date, idle_budget_used FROM group_chats WHERE id = ?`).get(groupId);
+  if (!row) return false;
+  if (row.idle_budget_date !== today || (row.idle_budget_used || 0) <= 0) return false;
+  db.prepare(`UPDATE group_chats SET idle_budget_used = idle_budget_used - 1 WHERE id = ?`).run(groupId);
   return true;
 }
 
@@ -78,19 +99,29 @@ async function idleTick() {
 
     processing = true;
     console.log(`[groupIdle] idle chatter for group ${candidate.id} 「${candidate.name}」...`);
+    // 追踪"这一轮到底出没出东西"：出了消息说明额度**真的花掉了**（用户也确实看到了闲聊），
+    // 那就不能退；只有"一条都没出就炸了"才算白烧额度。见下面 catch 里的退款口径。
+    let producedMessages = 0;
     try {
       const { messages } = await runGroupRound(candidate.id, {
         trigger: 'idle',
         emit: (event, data) => {
-          if (event === 'group_msg') broadcast('group_message', data);
+          if (event === 'group_msg') { producedMessages += 1; broadcast('group_message', data); }
           if (event === 'generate_start') broadcast('group_image_start', data);
           if (event === 'generate_done') broadcast('group_image_done', data);
           if (event === 'generate_error') broadcast('group_image_error', data);
         },
       });
+      producedMessages = Math.max(producedMessages, messages.length);
       console.log(`[groupIdle] group ${candidate.id} produced ${messages.length} message(s)`);
     } catch (err) {
       console.error(`[groupIdle] round failed for group ${candidate.id}:`, err.message);
+      // 失败退预算（2026-10-17 §P2-3）：别让一次报错白吃掉当日额度。
+      // ⚠️ 只在**一条消息都没产出**时退 —— 已经广播出去的闲聊额度是真的花掉了，
+      //    退了会变成"花得多、扣得少"，那是对用户的另一种不公平。见 refundIdleBudget 注释。
+      if (producedMessages === 0 && refundIdleBudget(db, candidate.id)) {
+        console.log(`[groupIdle] refunded 1 idle budget for group ${candidate.id} (round failed without output)`);
+      }
     } finally {
       scheduleNextIdle(db, candidate.id);
     }

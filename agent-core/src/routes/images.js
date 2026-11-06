@@ -8,7 +8,8 @@ import { startEditTask, listEditTasks, applyEditTask, discardEditTask, rerunEdit
 import { charArtistOverride } from '../services/characterImageOpts.js';
 import { buildImageCrossRefInfo, buildUserImageCrossRefInfo } from '../services/characterPersona.js';
 import { resolveAngelImageReference } from '../services/godSays/angelImageReference.js';
-import { config, getNovelaiApiKey } from '../config.js';
+import { config, getNovelaiApiKey, updatePoseControl } from '../config.js';
+import { savePoseReference, resolvePoseInputDir } from '../services/poseReference.js';
 import { checkNovelaiConnection } from '../services/novelaiClient.js';
 import { getState, updateServiceConfig, startFullCompression, cancelCompression } from '../services/imageCompressor.js';
 import { getAllImageDirs, IMAGE_CATEGORIES, LEGACY_CATEGORY, saveBase64Image, getImageDir } from '../services/imagePaths.js';
@@ -43,6 +44,43 @@ import { galleryCache, refreshGalleryCache, invalidateGalleryCache } from '../se
 export { invalidateGalleryCache };
 
 // GET /api/images/gallery — 获取相册图片列表（按修改时间倒序，支持分页 + 文件夹/角色筛选）
+// ── 姿势控制（Anima Control Pose）────────────────────────────────
+// 生图链路在 comfyClient 里读这三项决定要不要注入；这里只负责读写与参考图落盘。
+
+router.get('/pose-control', (req, res) => {
+  res.json({
+    enabled: config.comfyui.poseControlEnabled === true,
+    strength: config.comfyui.poseControlStrength ?? 1,
+    image: config.comfyui.poseControlImage || '',
+    inputDir: config.comfyui.inputDir || '',
+    inputDirReady: Boolean(resolvePoseInputDir()),
+    // 2026-11-03 体位骨架：亲密场景按当前体位现算骨架（与上面的固定参考图是两件事）
+    poseFromPosition: config.comfyui.poseFromPosition !== false,
+    // 2026-11-04：体位骨架是否强制竖构图（横图会把满画布骨架画成近景特写）
+    poseFromPositionPortrait: config.comfyui.poseFromPositionPortrait !== false,
+  });
+});
+
+router.put('/pose-control', (req, res) => {
+  const { enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait } = req.body || {};
+  res.json(updatePoseControl({ enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait }));
+});
+
+// 上传姿势参考图：body = { base64: 'data:image/png;base64,...' }
+// 落进 ComfyUI 的 input/ 目录，返回可直接交给 LoadImage 的文件名。
+router.post('/pose-reference', (req, res) => {
+  try {
+    const { base64 } = req.body || {};
+    const saved = savePoseReference(base64);
+    // 传上来就顺手选中 + 打开开关：用户上传一张图就是想用它
+    const aspect = saved.width && saved.height ? saved.width / saved.height : 0;
+    const next = updatePoseControl({ image: saved.name, enabled: true, aspect });
+    res.json({ ok: true, name: saved.name, width: saved.width, height: saved.height, ...next });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message || '参考图保存失败' });
+  }
+});
+
 router.get('/gallery', async (req, res) => {
   try {
     if (!galleryCache.data || Date.now() - galleryCache.mtime > galleryCache.ttl) {
@@ -151,10 +189,24 @@ router.post('/generate', async (req, res) => {
   generateImage(prompt, { promptScene: 'standalone', ragQuery: rag_query, ragTimeoutMs: RAG_TIMEOUT_FAST_MS })
     .then(result => {
       if (result.success) {
+        // 2026-10-01 修（真实流程实测发现）：原来存的是 `i.filename`（**裸文件名**），既没落进
+        // data/images，调用方按 `/images/<名>` 取也必然 404 —— 实测那张图当时躺在
+        // `C:\ComfyUI\ComfyUI\temp\` 里，而 ComfyUI 会清理那个目录。
+        // 现在与聊天 / 朋友圈 / 奇遇同口径：saveBase64Image 落盘 → 存返回的 `/images/...` URL。
+        const urls = [];
+        for (const img of result.images) {
+          if (!img?.base64) continue;
+          const filename = `standalone_${Date.now()}_${img.filename || 'comfy.png'}`;
+          try {
+            urls.push(saveBase64Image('standalone', filename, img.base64));
+          } catch (err) {
+            console.warn('[images] standalone 落盘失败:', err.message);
+          }
+        }
         db.prepare(`
           UPDATE image_tasks SET status = 'done', prompt_refined = ?, output_paths = ?, workflow_template = ?, finished_at = datetime('now')
           WHERE id = ?
-        `).run(result.promptRefined || prompt, JSON.stringify(result.images.map(i => i.filename)), result.wfMode, taskId);
+        `).run(result.promptRefined || prompt, JSON.stringify(urls), result.wfMode, taskId);
       } else {
         db.prepare(`
           UPDATE image_tasks SET status = 'failed', error_message = ?, workflow_template = ?, finished_at = datetime('now')
@@ -196,6 +248,15 @@ router.get('/tasks/:id/status', (req, res) => {
 // mode: 'chat' (对话配图) | 'moments' (朋友圈配图) | 'event' (奇遇配图)，默认 'chat'
 // sceneDesc: 自由画面描述（可选）→ 分层 LLM 生图链路完善为 prompt 后再生图
 router.post('/test-style', async (req, res) => {
+  /**
+   * 实验室可选流式返回提示词（2026-10-15 补：上游 v3.9.0 漏合并）。
+   *
+   * 为什么要有它：实验室的"自由画面描述 → 提示词"要过一层 LLM，再排队等 ComfyUI；
+   * 非流式时用户只能盯着转圈，看不到"初版提示词"和"最终提示词"这两步。
+   * 流式下 `send('prompt', …)` 分两次把两版提示词推给前端（`stage=preparing` / `stage=generating`），
+   * 最后 `send('result', …)` + `res.end()` 收尾。
+   * **其它调用方（`stream !== true`）保留原来的 JSON 响应**，行为不变。
+   */
   let dimensions;
   try { dimensions = studioDimensions(req.body, config.comfyui); }
   catch (error) { return res.status(400).json({ error: error.message }); }
@@ -311,7 +372,10 @@ router.post('/test-style', async (req, res) => {
 
   const isMoments = mode === 'moments';
   const isEvent = mode === 'event';
-  // 测试时显式留空也要生效，与正式生图的空画师串语义一致。
+  // 画师串：用 `??` 而不是 `||` —— **显式传空串 "" 就是"这次不要画师串"**，
+  // 与正式生图的空画师串语义一致；只有"压根没传"（undefined）才回落该场景的配置值。
+  // 2026-10-15 修（上游 v3.9.0 漏合并）：原来用 `||`，空串会被当成没传、又套回 '@chat' 之类，
+  // 用户"清空画师串"在实验室里根本清不掉。
   const finalArtist = artist ?? (isEvent ? config.comfyui.eventArtist : (isMoments ? config.comfyui.momentsArtist : config.comfyui.artist));
   const { width: finalWidth, height: finalHeight } = dimensions;
 
@@ -329,6 +393,7 @@ router.post('/test-style', async (req, res) => {
       return finish({ success: false, error: '提示词生成失败: ' + err.message }, 500);
     }
     generatedPrompt = prompt;
+    // 初版提示词先推一帧（流式下用户能立刻看到"这一版打算画什么"）
     send('prompt', { generatedPrompt, stage: 'preparing' });
     console.log(`[test-style] sceneDesc → prompt in ${Math.round(performance.now() - tPrompt)}ms${sceneLoras.length > 0 ? ` (+${sceneLoras.length} lora(s))` : ''}: ${prompt.slice(0, 80)}...`);
   } else {
@@ -354,9 +419,13 @@ router.post('/test-style', async (req, res) => {
       artist: finalArtist,
       width: finalWidth,
       height: finalHeight,
-      // 实验室沿用 event 模式名；LoRA 过滤与工作流配置使用 events 场景。
+      // 实验室沿用 `event` 这个模式名（前端与 URL 参数都用它），但 LoRA 过滤与工作流配置
+      // 认的场景 key 是 `events`（见 CATEGORY_SCENE / filterGlobalLoras）。
+      // 2026-10-15 修（上游 v3.9.0 漏合并）：原来直接传 `mode`，奇遇模式永远匹配不到
+      // `scenes:['events']` 的全局 LoRA —— 真机表现是"奇遇的测试出图不吃 events 范围的 LoRA"。
       scene: isEvent ? 'events' : mode,
       persistPreparation: false,
+      // 最终提示词（LLM 完善/细化后的那一版）推第二帧
       onPromptPrepared: (preparedPrompt) => {
         generatedPrompt = preparedPrompt;
         send('prompt', { generatedPrompt, stage: 'generating' });
@@ -504,6 +573,8 @@ router.post('/test-hires', async (req, res) => {
       refineOpts.artist = source.artist;
       refineOpts.loras = [];
       refineOpts.sourceMode = source.wfMode;
+      // 实验室沿用 `event` 这个模式名，但细化要按 `events` 场景取全局 LoRA（与 /test-style 同口径）。
+      // 2026-10-15 修（上游 v3.9.0 漏合并）：原来直接传 `source.mode`，奇遇测试图细化吃不到 events 范围的 LoRA。
       refineOpts.scene = source.mode === 'event' ? 'events' : source.mode;
       refineOpts.ext = path.extname(img.filename || '') || '.png';
     } else {
@@ -831,6 +902,7 @@ router.post('/edit-tasks/:id/discard', (req, res) => {
   } catch (err) { sendTaskError(res, err); }
 });
 
+// DELETE /api/images/delete — 删除图片文件，不清理 DB 引用
 /** .png 文件对应的 AVIF 孪生路径（图片压缩会把原 PNG 换成同名 .avif） */
 function avifTwinPath(filePath) {
   return /\.png$/i.test(filePath) ? filePath.replace(/\.png$/i, '.avif') : null;
@@ -838,7 +910,6 @@ function avifTwinPath(filePath) {
 
 /**
  * 把图片 URL 解析成 { dirPath, filename, category, filePath }；不合法时返回 { error, status }。
- *
  * 防目录穿越：文件名不允许路径分隔符与 .. 形态，且解析后必须仍在目标目录内。
  * 注意：**不对中文等非 ASCII 文件名的存在性负责**，存在性由调用方判断。
  */
@@ -878,20 +949,13 @@ function resolveImageTarget(cleanUrl) {
 }
 
 /**
- * 删除单张图片文件并清理相关 DB 引用（不含相册缓存失效，由调用方统一处理）。
+ * 删除一张图片（含聊天引用清理）。与上游 v3.10.0 同一套语义：
  *
- * 抽出来的原因：单删路由与批量删除共用同一套「URL 解析 + 防目录穿越 + 聊天引用清理」逻辑，
- * 批量删除若走前端循环调单删，N 张图就会触发 N 次 invalidateGalleryCache 与 N 个 HTTP 往返。
- *
- * ★ 两个曾经的坑（都表现为「删除失败: file not found」，且图片怎么点都删不掉）：
- *   1. **百分号编码**：表情包等中文文件名可能以 `%E5%93%AD` 形态传来。原实现直接把它当
- *      文件名去 existsSync，必然找不到 —— 而 imageUrlExists 会
- *      decodeURIComponent，只有删图这一条链路漏了。现在原样 + 解码后各试一次。
- *   2. **AVIF 孪生**：图片压缩会把原 PNG 换成同名 .avif。按 .png URL 删除时磁盘上已经没有
- *      该文件，原实现直接 404；deleteImageFileByUrl 里有孪生回退，这里漏了。
- *   3. **幂等**：文件本就不存在（幽灵引用——DB 还存着 URL 但文件早没了）时，原实现返回 404，
- *      导致界面上那张卡片永远删不掉。删除的目标是「让这张图不存在」，已达成即视为成功，
- *      同时照常清理聊天里的 DB 引用。结构非法的 URL 仍然照旧报错，不掩盖真正的调用错误。
+ * ★ 三个必须记住的坑（都表现为「删除失败: file not found」，图片怎么点都删不掉）：
+ *   1. **百分号编码**：表情包等中文文件名可能以 `%E5%93%AD` 形态传来，按原样 existsSync 必然找不到；
+ *   2. **AVIF 孪生**：压缩后磁盘上只有同名 `.avif`，按 `.png` URL 删会 404，还会让图片继续被回退逻辑命中；
+ *   3. **幂等**：文件本就没了（DB 还存着 URL 的幽灵引用）也算删除成功，否则那张卡片永远卡住。
+ *   结构非法的 URL 仍然报 400，不掩盖真正的调用错误。
  *
  * @param {string} imageUrl - 形如 /images/<folder>/<file> 或旧扁平格式 /images/<file>
  * @returns {{ ok: boolean, missing?: boolean, error?: string, status?: number }}
@@ -900,7 +964,7 @@ function deleteOneImage(imageUrl) {
   if (!imageUrl) return { ok: false, error: 'url is required', status: 400 };
 
   const rawUrl = String(imageUrl).replace(/\?.*$/, '');
-  // 候选形态：原样 → 百分号解码（中文文件名）；解码结果与原文相同或解码失败则不重复尝试
+  // 候选形态：原样 → 百分号解码（中文文件名）；相同或解码失败则不重复尝试
   const candidates = [rawUrl];
   try {
     const decoded = decodeURIComponent(rawUrl);
@@ -924,7 +988,7 @@ function deleteOneImage(imageUrl) {
   const { filename, category, filePath, cleanUrl } = target;
 
   try {
-    // ── 物理删除：主文件 + .avif 孪生（压缩后原 PNG 会被同名 .avif 取代）──
+    // ── 物理删除：主文件 + .avif 孪生 ──
     let removed = false;
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
@@ -942,8 +1006,7 @@ function deleteOneImage(imageUrl) {
       }
     }
 
-    // 聊天图片：清理 messages.images 和 raw_messages.prompt
-    // ★ 即使文件已不在（幽灵引用）也照常清理 —— 否则这些引用永远删不掉。
+    // 聊天图片：清理 messages.images 和 raw_messages.prompt（文件已不在也照常清）
     if (category === 'chat') {
       try {
         const db = getDb();
@@ -983,8 +1046,6 @@ function deleteOneImage(imageUrl) {
       }
     }
 
-    // 幂等：文件本就没了也算删除成功 —— DELETE 的目标「这张图不存在了」已经达成。
-    // 否则 DB 里那些指向已丢失文件的「幽灵引用」会让界面上那张卡片永远卡住、点多少次都失败。
     return removed ? { ok: true } : { ok: true, missing: true };
   } catch (err) {
     console.error('[delete] error:', err.message);
@@ -994,27 +1055,27 @@ function deleteOneImage(imageUrl) {
 
 // DELETE /api/images/delete — 删除图片文件，不清理 DB 引用
 router.delete('/delete', (req, res) => {
-  const r = deleteOneImage(req.body?.url);
-  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+  const result = deleteOneImage(req.body?.url);
+  if (!result.ok) return res.status(result.status || 500).json({ error: result.error });
   invalidateGalleryCache();
-  res.json({ success: true, missing: r.missing === true });
+  res.json({ success: true, missing: result.missing === true });
 });
 
 // POST /api/images/delete-batch — 批量删除（相册多选后用）Body: { urls: [] }
-// 逐张复用 deleteOneImage（含聊天引用清理），成功后只失效一次相册缓存。
+// 逐张复用 deleteOneImage（含聊天引用清理与 .avif 孪生），成功后只失效一次相册缓存。
 router.post('/delete-batch', (req, res) => {
   const urls = Array.isArray(req.body?.urls) ? req.body.urls : null;
   if (!urls) return res.status(400).json({ error: 'urls must be an array' });
   if (urls.length === 0) return res.json({ success: true, deleted: 0, failed: 0, failedItems: [] });
-  // 上限兜底：一次别删太多，避免请求长时间挂着（前端也已限制）
+  // 上限兜底：一次别删太多，避免请求长时间挂着（前端也应限制）
   if (urls.length > 2000) return res.status(400).json({ error: '一次最多删除 2000 张' });
 
   let deleted = 0;
   const failedItems = [];
   for (const u of urls) {
-    const r = deleteOneImage(u);
-    if (r.ok) deleted++;
-    else failedItems.push({ url: u, error: r.error });
+    const result = deleteOneImage(u);
+    if (result.ok) deleted++;
+    else failedItems.push({ url: u, error: result.error });
   }
   if (deleted > 0) invalidateGalleryCache();
   console.log(`[delete-batch] 请求 ${urls.length} 张，成功 ${deleted}，失败 ${failedItems.length}`);

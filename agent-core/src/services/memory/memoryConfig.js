@@ -20,6 +20,10 @@ export const DEFAULT_MEMORY_SETTINGS = Object.freeze({
   topK: 7,
   textCandidates: 24,
   vectorCandidates: 24,
+  // 未参与的奇遇不写长期记忆（上游 v3.9.0 口径，2026-10-15 收口）：
+  // 「参与」= 用户至少推进过一个分支（choice_history 长度 > 1 / engaged=1）。
+  // 这个开关**已废弃**：旧配置或旧客户端都不能把它重新打开（见 normalizeMemorySettings 的强制钳位），
+  // 否则没被看过的奇遇会污染 RAG 检索。
   recordUnengagedEvents: false,
   // v3：记忆多重表示 + 实体检索通道 + 语义注入（docs/memory-upgrade-plan.md 阶段一开关）
   v3: { enabled: true },
@@ -82,7 +86,8 @@ export function normalizeMemorySettings(input = {}, previous = null) {
     topK: clampInt(input.topK, base.topK, 1, 20),
     textCandidates: clampInt(input.textCandidates, base.textCandidates, 5, 100),
     vectorCandidates: clampInt(input.vectorCandidates, base.vectorCandidates, 5, 100),
-    // 兼容旧客户端字段；未参与奇遇不再允许写入 RAG，旧配置的 true 也不生效。
+    // 强制 false：不信任入参、也不信任 previous（旧库里可能存过 true）。
+    // 上游 v3.9.0 的口径是「参与过的奇遇才进记忆」，这个键只保留形状、不再有开的能力。
     recordUnengagedEvents: false,
     v3: {
       enabled: v3.enabled === undefined ? (base.v3?.enabled ?? true) : Boolean(v3.enabled),

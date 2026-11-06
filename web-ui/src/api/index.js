@@ -1,14 +1,17 @@
+import { defaultBackupFileName, parseBackupFileName } from '../utils/dataBackup.js'
+
 const BASE = '/api'
 
+// ── 系统规则改写（上游 4.2.1：破限词可在设置里改）──
 export const getSystemRulesOverride = () => request('/config/system-rules')
 export const saveSystemRulesOverride = content => request('/config/system-rules', { method: 'PUT', body: { content } })
 
+// ── 宿舍（同居，上游 v4.2.0）──
 export const getCohabitation = () => request('/cohabitation')
 export const createResidence = body => request('/cohabitation/rooms', { method: 'POST', body })
 export const renameResidence = (id, name) => request(`/cohabitation/rooms/${id}`, { method: 'PUT', body: { name } })
 export const deleteResidence = id => request(`/cohabitation/rooms/${id}`, { method: 'DELETE' })
 export const moveResidenceMember = (id, roomId) => request(`/cohabitation/members/${id}`, { method: 'PUT', body: { roomId } })
-
 export const getGodSaysState = session => request(`/god-says/state${session ? `?session=${session}` : ''}`)
 export const getGodSaysSessions = (before, beforeId) => request(`/god-says/sessions${before ? `?before=${encodeURIComponent(before)}${beforeId ? `&before_id=${beforeId}` : ''}` : ''}`)
 export const deleteGodSaysSession = id => request(`/god-says/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -33,22 +36,14 @@ export const retryGodWorldEvent = id => request(`/god-says/world-events/${id}/re
 export const getLogs = after => request('/logs' + (after ? `?after=${after}` : ''))
 export const clearLogs = () => request('/logs', { method: 'DELETE' })
 
-export const getPromptPresets = () => request('/presets')
-export const createPromptPreset = body => request('/presets', { method: 'POST', body })
-export const updatePromptPreset = (id, body) => request(`/presets/${id}`, { method: 'PUT', body })
-export const activatePromptPreset = (id, active, expectedRevision) => request(`/presets/${id}/active`, { method: 'PUT', body: { active, expectedRevision } })
-export const deletePromptPreset = (id, expectedRevision) => request(`/presets/${id}`, { method: 'DELETE', body: { expectedRevision } })
-export const previewPromptPreset = body => request('/presets/preview', { method: 'POST', body })
-
-/**
- * 统一请求基元：非 2xx 自动抛出服务端 error 信息，成功返回解析后的 JSON。
- *
- * ★ 关于「新功能报 404」：本机后端没有热重载，改了 agent-core 的代码后必须重启服务，
- *   否则新路由根本不存在 —— Express 会直接吐一段 HTML（`Cannot POST /api/xxx`），
- *   而不是我们约定的 JSON `{ error }`。这类 404 极容易被误当成功能 bug。
- *   这里统一识别并补一句人话提示，省得每个调用点各写一遍
- *   （已踩三次：日报删除 / 传媒批量操作 / 外观扩写）。
- */
+// 统一请求基元：非 2xx 自动抛出服务端错误信息（4xx 取人话 `message`，5xx 只取机器码 `error`），成功返回解析后的 JSON。
+//
+// 解析策略（2026-10-15 漏合并修复，对齐上游 v3.9.0 的意图但**不破坏本地 mock 形态**）：
+//   1. 先试 `res.json()` —— 真实 Response 与既有测试 mock 都走这条，行为与改动前逐字节一致；
+//   2. `json()` 不可用或抛错（非 JSON，多半是 Express 默认 HTML 错误页）时，回落 `res.text()` + 手动 parse。
+// 为什么不能一刀切改成 `text()`：那样 30 个既有测试的 mock（`text: async () => ''` + `json: async () => body`）
+// 会全部拿到空对象。而 `json()` 优先让两种 mock 形态都能活，且**仍然保留上游最看重的那条能力** ——
+// "404 + 拿不到结构化 error ⇒ 路由没注册（后端是旧代码）" 的人话提示（已踩三次：日报删除/传媒批量操作/外观扩写）。
 async function request(path, { method = 'GET', body, headers, signal } = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -56,16 +51,41 @@ async function request(path, { method = 'GET', body, headers, signal } = {}) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
   })
-  const raw = await res.text()
   let result = {}
-  try { result = raw ? JSON.parse(raw) : {} } catch { /* 非 JSON（多半是 Express 默认 HTML 错误页） */ }
+  // `json()` 不可用（部分测试 mock 只提供 text()）或抛错（非 JSON，多半是 Express 默认 HTML 错误页）
+  // 时，都要回落 `text()` + 手动 parse —— 早先只 catch 了抛错，漏了"方法不存在"这条，导致那些
+  // mock 解出空对象、服务端返回的 event 被丢弃（eventChoiceCountdown 的服务端覆盖断言就是这么挂的）。
+  let parsed = false
+  if (typeof res.json === 'function') {
+    try {
+      result = await res.json()
+      parsed = true
+    } catch { /* 非 JSON，走下面的 text() 回落 */ }
+  }
+  if (!parsed && typeof res.text === 'function') {
+    try {
+      const raw = await res.text()
+      result = raw ? JSON.parse(raw) : {}
+    } catch { /* 真的不是 JSON（Express 默认 HTML 错误页） */ }
+  }
   if (!res.ok) {
-    // 404 + 拿不到结构化 error ⇒ 路由没注册（后端是旧代码），而不是"功能坏了"
+    // 404 + 拿不到结构化 error ⇒ 路由没注册（后端是旧代码），而不是"功能坏了"。
+    // ⚠️ 消息里必须保留 `404` 与 `not found`：调用方（如 getTimePerception）是按
+    // `/not found|Cannot GET|请求失败 \(404\)/` 认这个错再翻成自己的专业人话的，
+    // 换成别的措辞会让那些翻译集体失效（timeControlPerception.test.js 钉着这条）。
     const isMissingRoute = res.status === 404 && !result.error && !result.message
     if (isMissingRoute) {
-      throw new Error('接口不存在：后端服务还是旧代码，请先在启动器里重启服务再试')
+      throw new Error('接口不存在 (404 not found)：后端服务还是旧代码，请先在启动器里重启服务再试')
     }
-    throw new Error(result.error || result.message || `请求失败 (${res.status})`)
+    // 2026-10-01 修：**4xx 优先取人话（`message`）**。本仓约定是 `error` = 机器码、`message` = 人话，
+    // 而所有调用点都写成 `toast(err.message)`。具体踩到的坑：玩具门控被拒返回
+    // `403 { error:'toy_gate_blocked', code:'affinity_low', message:'她握住你的手腕，摇头。…' }`，
+    // 原来先取 `error` ⇒ 用户看到的是 `toy_gate_blocked` 这串代码，看着就是「玩具一点就报错」。
+    // 5xx 维持原样（只取 `error`）：errorHandler 的注释写明 5xx 的 err.message 可能含 SQL / 路径细节，不透给界面。
+    // ⚠️ 这里**不要加可选链**（`result?.message`）：`realMachineFeedback20261001.test.js` 有一条
+    // 源码文本守卫钉的就是 `result.message || result.error` 这个写法，加了它那条会红。
+    const detail = res.status < 500 ? (result.message || result.error) : result.error
+    throw new Error(detail || `请求失败 (${res.status})`)
   }
   return result
 }
@@ -113,8 +133,6 @@ export async function listCharacters() {
 export async function getMessages(characterId) {
   return request(`/characters/${characterId}/messages`)
 }
-export const getDialogueTranscript = (id, cursor = {}) => request(`/characters/${id}/dialogue?${new URLSearchParams(cursor)}`)
-export const getCharacterStandingState = id => request(`/characters/${id}/standing-display`)
 
 export async function updateCharacter(id, data) {
   return request(`/characters/${id}`, { method: 'PUT', body: data })
@@ -125,18 +143,83 @@ export async function togglePin(characterId, pinned) {
   return request(`/characters/${characterId}/pin`, { method: 'PUT', body: { pinned } })
 }
 
-// 开关角色的日程生成：关闭后不再刷 LLM 生成日程（省 token），
-// 已生成的日程模板保留，角色仍按既有日程活动，只是内容不再变化
-export async function setCharacterScheduleEnabled(characterId, enabled) {
+// ── 角色专属外观/形态 ──
+export function listCharacterOutfits(characterId) {
+  return request(`/characters/${characterId}/outfits`)
+}
+
+export function createCharacterOutfit(characterId, data) {
+  return request(`/characters/${characterId}/outfits`, { method: 'POST', body: data })
+}
+
+export function updateCharacterOutfit(characterId, outfitId, data) {
+  return request(`/characters/${characterId}/outfits/${outfitId}`, { method: 'PUT', body: data })
+}
+
+export function deleteCharacterOutfit(characterId, outfitId) {
+  return request(`/characters/${characterId}/outfits/${outfitId}`, { method: 'DELETE' })
+}
+
+// ── 事件库 / 话题库：参考图 → 场景方向（2026-10-13 合并上游 v3.9.0）──
+/** 上传参考图转写成中文场景方向，供 generate 的 direction 输入框使用 */
+export function describeLibraryImage(payload) {
+  return request('/library/describe-image', { method: 'POST', body: payload })
+}
+
+// ── 场景服装（五态 + 身体单一真源，2026-10-13 合并上游 + PR #24）──/** 列场景服装：{ scenes:[{key,label}], body, outfits:[{scene,name,description,body,text}] } */
+export function listSceneOutfits(characterId) {
+  return request(`/characters/${characterId}/outfit-scenes`)
+}
+
+/** 此刻该穿哪套（source: sleep / schedule / override / fallback） */
+export function getCurrentSceneOutfit(characterId) {
+  return request(`/characters/${characterId}/outfit-now`)
+}
+
+/**
+ * 手动指定「现在穿这套」：scene 传空串 = 清除指定、回到日程换装。
+ * 睡眠时段仍是硬规则 —— 指定了也不覆盖睡衣，返回的 current 会显示实际生效的那套。
+ * @returns {Promise<{scene: string, until: string|null, current: {scene: string, source: string}|null}>}
+ */
+export function setOutfitOverride(characterId, scene, until = null) {
+  return request(`/characters/${characterId}/outfit-override`, { method: 'PUT', body: { scene, until } })
+}
+
+/**
+ * 用 LLM 生成/补全场景外观；save=true 时直接落库。
+ * @param {object} [extra]
+ * @param {Array<{scene,name,body,description}>} [extra.seeds] 已填分项（反推锚点），本次只补未填的
+ * @param {string[]} [extra.scenes] 只补这几套；不传则由后端挑未填的
+ * @param {string} [extra.baseAppearance] 没有任何 seed 时的身体来源兜底（如角色卡外观段）
+ */
+export function generateSceneOutfits(characterId, save = false, extra = {}) {
+  return request(`/characters/${characterId}/outfits/generate`, { method: 'POST', body: { save, ...extra } })
+}
+
+/**
+ * 批量保存五套场景外观（同场景已存在则更新）。
+ * @param {Array<{scene,name,description}>} outfits description 只填"这一套的衣服"
+ * @param {string} [body] 身体描述 —— 单一真源，后端会同步写进该角色全部服装行
+ */
+export function saveSceneOutfits(characterId, outfits, body) {
+  return request(`/characters/${characterId}/outfits/scene`, {
+    method: 'PUT',
+    body: body != null ? { outfits, body } : { outfits },
+  })
+}
+
+// ── 日程生成开关（上游 v3.10.0 合并，2026-10-19）──
+// 关掉即不再为该角色刷新日程（省 LLM 调用），已生成的模板照旧铺垫当天日程。
+export function setCharacterScheduleEnabled(characterId, enabled) {
   return request(`/characters/${characterId}/schedule-enabled`, { method: 'PUT', body: { enabled } })
 }
 
 // 批量开关全体角色的日程生成（「全量省 token」入口）
-export async function setAllCharactersScheduleEnabled(enabled) {
+export function setAllCharactersScheduleEnabled(enabled) {
   return request('/characters/schedule-enabled-all', { method: 'POST', body: { enabled } })
 }
 
-// ── 角色文件夹（单层分类）──
+// ── 角色文件夹（单层分类，上游 v3.9.0 合并）──
 export function listCharacterFolders() {
   return request('/characters/folders')
 }
@@ -163,54 +246,8 @@ export function moveCharacterToFolder(characterId, folderId) {
   return request(`/characters/${characterId}/folder`, { method: 'PUT', body: { folder_id: folderId } })
 }
 
-// ── 角色专属外观/形态 ──
-export function listCharacterOutfits(characterId) {
-  return request(`/characters/${characterId}/outfits`)
-}
-
-export function createCharacterOutfit(characterId, data) {
-  return request(`/characters/${characterId}/outfits`, { method: 'POST', body: data })
-}
-
-export function updateCharacterOutfit(characterId, outfitId, data) {
-  return request(`/characters/${characterId}/outfits/${outfitId}`, { method: 'PUT', body: data })
-}
-
-export function deleteCharacterOutfit(characterId, outfitId) {
-  return request(`/characters/${characterId}/outfits/${outfitId}`, { method: 'DELETE' })
-}
-
-// ── 场景服装（工装/外出/居家/睡眠，由日程决定穿哪套）──
-
-/** 该角色的场景服装 + 场景定义 */
-export function listSceneOutfits(characterId) {
-  return request(`/characters/${characterId}/outfits/scene`)
-}
-
-/** 此刻按日程该穿哪套（用于界面展示/调试） */
-export function getCurrentSceneOutfit(characterId) {
-  return request(`/characters/${characterId}/outfit-now`)
-}
-
-/**
- * 用 LLM 生成场景服装；save=true 时直接落库。
- * @param {object} [extra]
- * @param {string} [extra.baseAppearance] 常态外观（工装描述）：传了就**以它为基准**只换衣服，身体特征不变
- * @param {string[]} [extra.scenes] 只生成这几套（如 ['casual','home','sleep']）；不传则四套都出
- * @param {boolean} [extra.generateImages] 在后台设计、保存并生成对应形象，返回 task_id
- */
-export function generateSceneOutfits(characterId, save = false, extra = {}) {
-  return request(`/characters/${characterId}/outfits/generate`, { method: 'POST', body: { save, ...extra } })
-}
-
-/** 批量保存四套场景服装（同场景已存在则更新描述） */
-export function saveSceneOutfits(characterId, outfits) {
-  return request(`/characters/${characterId}/outfits/scene`, { method: 'PUT', body: { outfits } })
-}
-
-// ── 场景立绘（工装/私服/居家/睡衣四套形象，详情页左右切换）──
-
-/** 四套场景立绘（未生成的场景返回空图；工装槽以默认立绘兜底） */
+// ── 场景立绘（五套形象，详情页左右切换；与场景服装是"图"与"文字"两条线）──
+// 路径与上游 v3.10.0 统一：/characters/:id/standings…（旧 /scene-standings… 后端仍留别名）
 export function listSceneStandings(characterId) {
   return request(`/characters/${characterId}/standings`)
 }
@@ -220,12 +257,11 @@ export function generateSceneStanding(characterId, scene, requirement = '', prom
   return request(`/characters/${characterId}/standings/generate`, { method: 'POST', body: { scene, requirement, prompt } })
 }
 
-/** 上传本地图片作为某场景立绘（base64 data URL） */
+/** 上传某场景的立绘：base64 必须是 data:image/…;base64, 形式 */
 export function uploadSceneStanding(characterId, scene, base64) {
   return request(`/characters/${characterId}/standings/upload`, { method: 'POST', body: { scene, base64 } })
 }
 
-/** 清掉某场景的显式立绘（工装槽会回落到默认立绘） */
 export function deleteSceneStanding(characterId, scene) {
   return request(`/characters/${characterId}/standings/${encodeURIComponent(scene)}`, { method: 'DELETE' })
 }
@@ -297,12 +333,16 @@ export function updateEmojiFixedTags(tags, styleMode, resolution) {
   })
 }
 
-export function preflightEmojiOutfits(character_ids, outfitScene = 'work') {
-  return request(`/characters/emoji/outfits/preflight`, { method: 'POST', body: { character_ids, outfitScene } })
-}
-
+// options 承载 outfitScene / missingOutfitPolicy（上游 v3.10.0：表情包与表情立绘共用显式选装口径）
 export function generateEmojiPrompts(character_ids, style = '', setId = null, options = {}) {
   return request(`/characters/emoji/prompts`, { method: 'POST', body: { character_ids, style, set_id: setId, ...options } })
+}
+/**
+ * 表情包「显式选装」预检：不生成，只告诉前端哪些角色缺该场景的服装。
+ * 前端据此弹「自动补全 / 用默认外观」二选一（上游 v3.10.0）。
+ */
+export function preflightEmojiOutfits(character_ids, outfitScene = 'work') {
+  return request(`/characters/emoji/outfits/preflight`, { method: 'POST', body: { character_ids, outfitScene } })
 }
 
 export function generateEmojiImages(character_ids, keys = [], artist = '@ebora', includeDone = false, setId = null) {
@@ -350,10 +390,14 @@ export function generateAvatar(characterId) {
 }
 
 /** 上传/清除角色聊天背景（base64，空串 = 恢复默认） */
-export async function uploadChatBg(characterId, base64, target = 'chat') {
-  return request(`/characters/${characterId}/chat-bg`, { method: 'POST', body: { base64, target } })
+export async function uploadChatBg(characterId, base64) {
+  return request(`/characters/${characterId}/chat-bg`, { method: 'POST', body: { base64 } })
 }
 
+/**
+ * 生成对话背景（上游 v3.10.0 合并，2026-10-19）。
+ * target='galgame' 时写进角色 galgame 背景；previewOnly=true 只返回预览不落库。
+ */
 export function generateChatBg(characterId, requirement = '', target = 'galgame', previewOnly = false) {
   return request(`/characters/${characterId}/generate-chat-bg`, { method: 'POST', body: { requirement, target, previewOnly } })
 }
@@ -389,6 +433,67 @@ export function expandAppearanceDraft({ brief, characterId, basePrompt, displayN
     method: 'POST',
     body: { brief, character_id: characterId, base_prompt: basePrompt, display_name: displayName, scene_label: sceneLabel },
   })
+}
+
+// ── 地图页（世界地图骨架 = 叙事地理，非游戏网格图；2026-10-29 移植自 PR#24）──
+
+/** 层级标签与 POI 类型（口径在后端，前端不写死） */
+export function getWorldMapMeta() {
+  return request('/worldmap/meta')
+}
+
+export function listWorldMaps() {
+  return request('/worldmap/maps')
+}
+
+export function createWorldMap({ name, worldSettingId = null, note = '' } = {}) {
+  return request('/worldmap/maps', { method: 'POST', body: { name, worldSettingId, note } })
+}
+
+export function getWorldMap(mapId) {
+  return request(`/worldmap/maps/${mapId}`)
+}
+
+export function updateWorldMap(mapId, patch = {}) {
+  return request(`/worldmap/maps/${mapId}`, { method: 'PUT', body: patch })
+}
+
+export function deleteWorldMap(mapId) {
+  return request(`/worldmap/maps/${mapId}`, { method: 'DELETE' })
+}
+
+/** 复制一张地图（整棵子树）为新地图 —— 用作「新建时套模板」 */
+export function duplicateWorldMap(mapId, name = '') {
+  return request(`/worldmap/maps/${mapId}/duplicate`, { method: 'POST', body: { name } })
+}
+
+/** ① 生成骨架（L1 大地区 + L2 子地区，1 次短 LLM） */
+export function generateWorldMapSkeleton(mapId, { brief = '', regionCount, districtPerRegion } = {}) {
+  return request(`/worldmap/maps/${mapId}/generate`, {
+    method: 'POST', body: { brief, regionCount, districtPerRegion },
+  })
+}
+
+/** 导出 Markdown（贴回知识库用） */
+export function exportWorldMapMarkdown(mapId) {
+  return request(`/worldmap/maps/${mapId}/export`)
+}
+
+export function addWorldMapPlace(mapId, place) {
+  return request(`/worldmap/maps/${mapId}/places`, { method: 'POST', body: place })
+}
+
+export function updateWorldMapPlace(placeId, patch) {
+  return request(`/worldmap/places/${placeId}`, { method: 'PUT', body: patch })
+}
+
+export function deleteWorldMapPlace(placeId) {
+  return request(`/worldmap/places/${placeId}`, { method: 'DELETE' })
+}
+
+/** ② 逐区展开（L3 场景 + 每场景 POI；重复调用 = 换一批） */
+export function expandWorldMapPlace(placeId) {
+  return request(`/worldmap/places/${placeId}/expand`, { method: 'POST' })
 }
 
 export const getClothingLibrary = () => request('/characters/clothing-library')
@@ -631,8 +736,15 @@ export function groupChatStream(groupId, items, truncateAfterMsgId = null) {
 }
 
 // ── Config ──
-export async function getConfig() {
-  return request(`/config`)
+/**
+ * 运行状态：最近 60 分钟的失败汇总 + 生图队列水位 + 启动自检结论。
+ * 设置页「运行状态」面板用；统计只在内存里，进程重启即清零。
+ */
+export function getRuntimeHealth(signal) {
+  return request('/health/runtime', { signal })
+}
+
+export async function getConfig() {  return request(`/config`)
 }
 
 export async function updateComfyConfig(data) {
@@ -649,12 +761,138 @@ export async function updateGlobalLora(loras) {
 
 /** 更新 HiresFix 细化专用 LoRA（仅作用于放大细化工作流） */
 /** 更新 HiresFix 细化完整设置（LoRA + 步数/重绘幅度/CFG） */
-export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode }) {
-  return request(`/config/hires`, { method: 'PUT', body: { loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode } })
+export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode }) {
+  return request(`/config/hires`, { method: 'PUT', body: { loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } })
 }
 
 export async function updateFeatureFlag(key, value) {
-  await request(`/config/features`, { method: 'PUT', body: { key, value } })
+  return request(`/config/features`, { method: 'PUT', body: { key, value } })
+}
+
+// ── 提示词破限（Prompt Shield）──────────────────────────────────────────────
+// 往每次 LLM 调用最前面注入一段「不拒答」system 提示词，避免模型拿
+// "世界观涉及成人/校园内容"为由拒答（真机上日程生成被拒两次 → 500）。
+// 开关走通用 feature 分支（key='jailbreak'），正文单独一对读写。
+// GET  → { ok, enabled, source:'db'|'default', bytes, content, defaultContent }
+// PUT  → { enabled?, content?, reset? } 三者至少给一个；reset:true 恢复默认正文
+export async function getJailbreak() {
+  return request(`/config/jailbreak`)
+}
+
+export async function updateJailbreak(patch) {
+  return request(`/config/jailbreak`, { method: 'PUT', body: patch })
+}
+
+// ── 破限规则集（多提示词切换 + 按调用链投递）──────────────────────────────
+// 2026-10-15：把原来"只有一份正文"升级成规则集。上面那对 getJailbreak/updateJailbreak
+// 保留（老界面与"只想改那唯一一份正文"的用法继续可用），下面是规则集那组端点。
+//
+// GET /config/jailbreak/rules → { ok, rules[], activeId, active, targets[], availableTargets[], targetLabels{}, limits{} }
+export async function getJailbreakRules() {
+  return request(`/config/jailbreak/rules`)
+}
+
+// { name?, content?, targets? } → { ok, rule }
+export async function createJailbreakRule(payload) {
+  return request(`/config/jailbreak/rules`, { method: 'POST', body: payload })
+}
+
+export async function getJailbreakRule(id) {
+  return request(`/config/jailbreak/rules/${encodeURIComponent(id)}`)
+}
+
+// 内置规则集只允许改 name / targets（改 content 会 400）
+export async function updateJailbreakRule(id, patch) {
+  return request(`/config/jailbreak/rules/${encodeURIComponent(id)}`, { method: 'PUT', body: patch })
+}
+
+// 内置项与"最后一个自定义项"会 400
+export async function deleteJailbreakRule(id) {
+  return request(`/config/jailbreak/rules/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+// 传空串 = 清掉激活标记，回落旧单正文键 / 代码默认
+export async function activateJailbreakRule(id) {
+  return request(`/config/jailbreak/rules/${encodeURIComponent(id)}/activate`, { method: 'POST' })
+}
+
+export async function getActiveJailbreakRule() {
+  return request(`/config/jailbreak/rules/active`)
+}
+
+// GET → { ok, targets[], available[], labels{} }
+export async function getJailbreakTargets() {
+  return request(`/config/jailbreak/targets`)
+}
+
+export async function setJailbreakTargets(targets) {
+  return request(`/config/jailbreak/targets`, { method: 'PUT', body: { targets } })
+}
+
+// ── SLG 动作系统（触摸互动）───────────────────────────────────────────────
+// 契约见 docs/characters/touch-system.md §6.3。
+// 注意：**门控拒绝是 200 + { allowed:false, code, message }**（“她不愿意”是叙事结果，不是服务端错误），
+// 所以走上面的 request() 不会抛；只有非法 action / 角色（400 / 404）或功能关闭（409）才抛。
+
+/** 动作清单 + 服务端算好的逐条门控（gate 就是 getTouchGate 的真实结果，已含催眠豁免 / Lv3 授权） */
+export function fetchTouchActions(characterId, { maxLevel, scene, allowGroupAdult } = {}) {
+  const query = new URLSearchParams()
+  if (maxLevel !== undefined && maxLevel !== null) query.set('maxLevel', String(maxLevel))
+  if (scene) query.set('scene', scene)
+  if (allowGroupAdult) query.set('allowGroupAdult', '1')
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/characters/${characterId}/touch/actions${suffix}`)
+}
+
+/**
+ * 腻烦度 / 偏好状态：{ states: { <key>: { annoyance, tier, likeRatio, updatedAt } }, quota, pendingCount }
+ *
+ * `pendingCount` = 已经做下、但还没被她回应的动作条数（task-25 ③ 的「还有 N 个动作等她回应」）。
+ * task-29：后端把本端点扩成接受 `?scene=chat|group&groupId=<n>`，返回对应口径的 pendingCount；
+ * **不传参数 = 旧行为（私聊口径）**，所以历史调用点零改动。
+ */
+export function fetchTouchState(characterId, { scene, groupId } = {}) {
+  const query = new URLSearchParams()
+  if (scene) query.set('scene', scene)
+  // groupId 用 undefined/null/'' 判空：**0 是合法群 id，不能被假值判断吃掉**
+  if (groupId !== undefined && groupId !== null && groupId !== '') query.set('groupId', String(groupId))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/characters/${characterId}/touch/state${suffix}`)
+}
+
+/**
+ * 触摸互动统计（阶段三）：次数 / 等级分布 / 最近一次 / 腻烦峰值。
+ * ⚠️ 后端端点尚未落地（task-20 时点）；形状以后端为准，前端 normalizeTouchStats 写得宽容，落地后对齐字段名即可。
+ */
+/**
+ * 玩具接口的**场景参数**（2026-10-03 群聊 bug，两位独立审查者复现）。
+ *
+ * 为什么必须带：前端以前从不告诉服务端"这一下是在群里点的" ⇒ 后端按私聊口径写 `char_<id>` +
+ * `proactive_message`，而群聊页只认 `group_message` / `group_message_update`（`stores/groups.js`）
+ * ⇒ 玩家在群聊玩具面板里装/调/摘，她的反应与配图**全跑到私聊**、群里什么都看不到。
+ * 口径与 touch / 亲密一致：**不传 = 私聊**（URL 与请求体逐字节与改造前一致，老调用点零改动）；
+ * `scene='group'` 时才带上 groupId（group 场景缺 groupId 时后端回 400 人话，所以照传不吞）。
+ * 位置：参数统一放**最后一个** `sceneOpts`，调用方只有 ToyPanel / GroupChatView 两处。
+ */
+function toySceneFields({ scene, groupId } = {}) {
+  if (scene !== 'group') return {}
+  return { scene: 'group', groupId }
+}
+function toySceneQuery({ scene, groupId } = {}) {
+  if (scene !== 'group') return ''
+  const query = new URLSearchParams({ scene: 'group' })
+  // groupId 用 undefined/null/'' 判空：**0 是合法群 id，不能被假值判断吃掉**（同 fetchTouchState）
+  if (groupId !== undefined && groupId !== null && groupId !== '') query.set('groupId', String(groupId))
+  return `?${query.toString()}`
+}
+
+/**
+ * 玩具清单 + 佩戴状态（专题 §2.9-2）。
+ * 路径 / 形状以 `agent-core/src/routes/toys.js` 为准；形状不同时**只改这里**（组件侧刻意写得宽容）。
+ * 群聊里要带 `sceneOpts`：服务端据此给出**群里**的逐件门控（群聊成人开关关着 = 每件 allowed:false）。
+ */
+export function fetchToys(characterId, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys' + toySceneQuery(sceneOpts))
 }
 
 // ── 角色操作反馈（右下角轻通知）──
@@ -686,6 +924,88 @@ export function deleteCharacterReactionPack(characterId) {
 /** 保存用户手动编辑的短句包（服务端走同一套严格校验） */
 export function saveCharacterReactionPack(characterId, pack) {
   return request(`/character-reactions/packs/${characterId}`, { method: 'PUT', body: { pack } })
+}
+
+// ⚠️ 2026-10-01 真机 bug：这三个函数原来写的是 `body: JSON.stringify({ intensity })`，
+// 而下面的 request() 基元**自己就会 stringify**（`JSON.stringify(body)`）——
+// 于是发出去的是 `"{\"intensity\":1}"`（一个 JSON 字符串），Express 的 body-parser 直接报
+// `Unexpected token '"', ""{\"intensity\":1}"" is not valid JSON`，现象就是「玩具一点就报错」。
+// 契约：`body` 一律传**对象**，别在这里自己 stringify（对照 performTouchAction 的写法）。
+// ⚠️ 2026-10-01 真机 bug（第二条）：`POST /api/characters/13/toys/undefined/equip`。
+// `encodeURIComponent(undefined)` 会**静默变成字符串 `"undefined"`**，于是请求打到
+// `/toys/undefined/equip`、服务端只能回 404/400 —— 用户看到的就是「玩具一点就报错」，
+// 而根因在前端某条路径拿不到 key，日志里完全看不出。这里加一道共用闸门：
+// key 缺失时**当场抛人话错误**（调用方 ChatView 三个 handler 都有 try/catch + toast），
+// 绝不再让 `undefined` 变成 URL 的一部分。
+function requireToyKey(toyKey) {
+  const key = typeof toyKey === 'string' ? toyKey.trim() : ''
+  if (!key || key === 'undefined' || key === 'null') {
+    const err = new Error('玩具标识缺失，请刷新后重试')
+    err.code = 'toy_key_missing'
+    throw err
+  }
+  return encodeURIComponent(key)
+}
+
+// 场景参数（`sceneOpts`）统一放最后一个：群聊里必须传 `{ scene:'group', groupId }`，
+// 否则她的反应会写到私聊（见上面 toySceneFields 的说明）。不传 = 私聊，请求体逐字节不变。
+export function equipToy(characterId, toyKey, { intensity = 1 } = {}, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/' + requireToyKey(toyKey) + '/equip', {
+    method: 'POST', body: { intensity, ...toySceneFields(sceneOpts) },
+  })
+}
+
+export function setToyIntensity(characterId, toyKey, intensity, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/' + requireToyKey(toyKey) + '/set-intensity', {
+    method: 'POST', body: { intensity, ...toySceneFields(sceneOpts) },
+  })
+}
+
+export function removeToy(characterId, toyKey, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/' + requireToyKey(toyKey) + '/remove', {
+    method: 'POST', body: { ...toySceneFields(sceneOpts) },
+  })
+}
+
+export function fetchTouchStats(characterId) {
+  return request(`/characters/${characterId}/touch/stats`)
+}
+
+/** 执行一次动作；返回体可能 allowed:false（她不愿意），也可能是成功后的即时反应与提醒 */
+export function performTouchAction(characterId, actionKey, { mode, scene, groupId } = {}) {
+  return request(`/characters/${characterId}/touch/${actionKey}`, {
+    method: 'POST',
+    body: { mode, scene, groupId },
+  })
+}
+
+/**
+ * 反重复采样参数（presence_penalty / frequency_penalty）。
+ * 传 null / '' = 清空 → 后端请求体里完全不发送该字段（与加参数前的请求体逐字节一致）。
+ */
+export function updateAntiRepetitionPenalty({ presence, frequency } = {}) {
+  return request(`/config/anti-repetition`, { method: 'PUT', body: { presence, frequency } })
+}
+
+/**
+ * 「AI 判断行为」的每日判定上限（全局配额，与角色无关）。
+ * 读侧：GET /api/config 顶层 aiJudge = { dailyLimit, usedToday, remaining, unlimited }；
+ * 写侧：PUT /api/config/ai-judge 返回同一个对象（dailyLimit 传 0 = 不限制）。
+ */
+export function updateAiJudgeDailyLimit(dailyLimit) {
+  return request('/config/ai-judge', { method: 'PUT', body: { dailyLimit: Number(dailyLimit) } })
+}
+
+/**
+ * 亲密推进动作的独立每日配额（全局配额，与角色无关；2026-10-15 补）。
+ * 读侧：GET /api/config 顶层 intimateActionQuota = { dailyLimit, usedToday, remaining, unlimited }；
+ *       角色面板另从 GET /api/intimate-actions/:id/state 的回执里读同一形状的 quota。
+ * 写侧：PUT /api/config/intimate-action-quota 返回同一个对象（dailyLimit 传 0 = 不限制）。
+ *
+ * 这个配额只决定"要不要真的调模型"：用完**不哑玩法**，状态照常推进、反应留到下一轮补演。
+ */
+export function updateIntimateActionQuota(dailyLimit) {
+  return request('/config/intimate-action-quota', { method: 'PUT', body: { dailyLimit: Number(dailyLimit) } })
 }
 
 /** 更新主动聊天频率 0~1 */
@@ -724,7 +1044,7 @@ export async function updateScheduleRefreshDays(value, disableThinking) {
 
 /** 更新后台 LLM 并发数 1~10 */
 export async function updateBackgroundConcurrency(value) {
-  await request(`/config/background-llm-concurrency`, { method: 'PUT', body: { value } })
+  return request(`/config/background-llm-concurrency`, { method: 'PUT', body: { value } })
 }
 
 /** 更新防打扰模式总开关 */
@@ -749,7 +1069,7 @@ export async function updateLlmConfig(data) {
 export function testLlmConnection(data) {
   return request(`/config/llm/test`, { method: 'POST', body: data })
 }
-
+/** 校验 Vertex 服务账号 JSON（不落库，供设置页「测试」按钮用；上游 v3.10.0） */
 export function validateVertexServiceAccount(data) {
   return request('/config/llm/vertex/validate', { method: 'POST', body: data })
 }
@@ -786,7 +1106,78 @@ export async function activateLlmProfile(id) {
 }
 
 export async function syncActiveLlmProfile() {
-  await request(`/config/llm/profiles/active/sync`, { method: 'PUT' })
+  return request(`/config/llm/profiles/active/sync`, { method: 'PUT' })
+}
+
+
+// ── 数据备份（一键导出 / 一键导入）──
+//
+// 契约（后端 agent-core/src/routes/data.js）：
+//   GET  /api/data/export?includeConfig=0|1 → 200 二进制 tar.gz（Content-Disposition 给文件名）
+//   GET  /api/data/export/info              → { ok, dbBytes, counts, lastExportAt }
+//   POST /api/data/import                   → body 为归档原始字节，Content-Type: application/gzip
+//
+// 导出/导入都绕开 request()：一个要拿二进制 blob + 响应头，一个要发非 JSON 的原始字节。
+// 失败时把后端的人话（error / detail）和 backupPath 挂在 Error 上交给页面展示。
+
+/** 导出摘要：角色/消息/群/记忆条数 + 预估大小（dbBytes 是估算上界，文案不写「精确」） */
+export function getDataExportInfo() {
+  return request('/data/export/info')
+}
+
+function backupError(status, payload) {
+  const result = payload && typeof payload === 'object' ? payload : {}
+  const error = new Error(result.error || result.detail || `请求失败 (${status})`)
+  error.status = status
+  error.detail = result.detail || ''
+  // 500 时后端会把导入前的自动备份路径带回来，页面必须能显示它以便回滚
+  error.backupPath = result.backupPath || ''
+  return error
+}
+
+/**
+ * 触发浏览器下载整个数据归档。
+ * @param {boolean} includeConfig 是否把 config/.env（含 API Key）一起打包
+ * @returns {Promise<{fileName:string, bytes:number}>}
+ */
+export async function downloadDataArchive(includeConfig = false) {
+  const res = await fetch(`${BASE}/data/export?includeConfig=${includeConfig ? 1 : 0}`)
+  if (!res.ok) throw backupError(res.status, await res.json().catch(() => ({})))
+  const blob = await res.blob()
+  const fileName = parseBackupFileName(res.headers.get('Content-Disposition')) || defaultBackupFileName()
+  saveBlobAsFile(blob, fileName)
+  return { fileName, bytes: blob.size }
+}
+
+/**
+ * 上传归档并覆盖当前数据。上传前必须已经二次确认过。
+ * @param {File|Blob} file 原始 .tar.gz 字节
+ * @returns {Promise<{ok:boolean, restored:object, backupPath:string, restartRecommended:boolean, message:string}>}
+ */
+export async function importDataArchive(file) {
+  const res = await fetch(`${BASE}/data/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/gzip' },
+    body: file,
+  })
+  const result = await res.json().catch(() => ({}))
+  if (!res.ok) throw backupError(res.status, result)
+  return result
+}
+
+/** 临时 <a download> 触发下载（不进模板，因此不受「不用裸元素」约束） */
+function saveBlobAsFile(blob, fileName) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  link.rel = 'noopener'
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // 立刻 revoke 会让部分浏览器中断下载，留足时间再回收
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
 // ── NovelAI 配置 Profile 管理 ──
@@ -895,10 +1286,11 @@ export function retryFailedMemories() {
 export async function getWorldSettings() {
   return request(`/config/world-settings`)
 }
+// ── 世界书（上游 v3.10.0：Sillytraven 预设兼容；挂在 /config/world-settings/:id/lorebook）──
 export const getWorldLorebook = id => request(`/config/world-settings/${id}/lorebook`)
-export const saveWorldLorebook = (id, body) => request(`/config/world-settings/${id}/lorebook`, { method:'PUT', body })
-export const previewWorldLorebook = (id, body) => request(`/config/world-settings/${id}/lorebook/preview`, { method:'POST', body })
-export const probeWorldLorebookCache = id => request(`/config/world-settings/${id}/lorebook/cache-probe`, { method:'POST', body:{} })
+export const saveWorldLorebook = (id, body) => request(`/config/world-settings/${id}/lorebook`, { method: 'PUT', body })
+export const previewWorldLorebook = (id, body) => request(`/config/world-settings/${id}/lorebook/preview`, { method: 'POST', body })
+export const probeWorldLorebookCache = id => request(`/config/world-settings/${id}/lorebook/cache-probe`, { method: 'POST', body: {} })
 
 export async function createWorldSetting(data) {
   return request(`/config/world-settings`, { method: 'POST', body: data })
@@ -967,13 +1359,15 @@ export async function updateUserConfig(data) {
 
 // ── 测试画风（固定提示词，不存 DB；mode: 'chat' | 'moments'；prompt 可选覆盖默认；
 // sceneDesc 可选自由画面描述 → LLM 完善；reuseSceneLoras 复用上次自由画面测试匹配到的角色 lora）──
+// 传了 onPrompt 就走流式（body.stream = true）：后端在最终结果到达前先推 prompt 事件，
+// 用户在「完善提示词」和「出图」两段里都能看到提示词；不传 onPrompt 保持旧的整包 JSON 口径。
 export async function testStyle({ artist, width, height, mode = 'chat', prompt = '', sceneDesc = '', reuseSceneLoras = false, alreadyPrepared = false } = {}, { onPrompt } = {}) {
   const body = { artist, width, height, mode };
   if (prompt) body.prompt = prompt;
   if (sceneDesc) body.sceneDesc = sceneDesc;
   if (reuseSceneLoras) body.reuseSceneLoras = true;
   if (alreadyPrepared) body.alreadyPrepared = true;
-  if (!onPrompt) return request('/images/test-style', { method: 'POST', body })
+  if (!onPrompt) return request(`/images/test-style`, { method: 'POST', body })
   const res = await fetch(`${BASE}/images/test-style`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -995,6 +1389,26 @@ export async function testStyle({ artist, width, height, mode = 'chat', prompt =
   return result
 }
 
+// ── 姿势控制（Anima Control Pose）──
+/** 读当前姿势控制设置（开关 / 强度 / 参考图文件名 / ComfyUI input 目录） */
+export function getPoseControl() {
+  return request('/images/pose-control')
+}
+
+export function getImageTaskStatus(taskId, { signal } = {}) {
+  return request(`/images/tasks/${encodeURIComponent(taskId)}/status`, { signal })
+}
+
+/** 写姿势控制设置；只传要改的字段 */
+export function updatePoseControl(body) {
+  return request('/images/pose-control', { method: 'PUT', body })
+}
+
+/** 上传姿势参考图（data URL），落进 ComfyUI input 目录，返回文件名并自动启用 */
+export function uploadPoseReference(base64) {
+  return request('/images/pose-reference', { method: 'POST', body: { base64 } })
+}
+
 /** 测试细化（最近一张图，HiresFix 参数流程，不落盘，返回原图+细化图） */
 export function testHires() {
   return request(`/images/test-hires`, { method: 'POST' });
@@ -1002,15 +1416,17 @@ export function testHires() {
 
 // ── Moments 朋友圈 ──
 /**
- * 分页拉取朋友圈帖子（服务端 keyset 分页：发布时间、id 倒序，before_id 定位时间游标）
- * @param {{ limit?: number, beforeId?: number }} opts 缺省 limit=1000；传 beforeId 续拉下一批
+ * 朋友圈帖子列表（keyset 分页）
+ * @param {{ before_id?: number, limit?: number }} [params] 不传 = 后端默认（最新 1000 条）
+ *   续拉更旧的一批：传上一批最后一条的 id 作 before_id。
+ *   返回 `{ posts, hasMore }` —— hasMore 由后端多取一条探测。
  */
-export async function listMoments({ limit, beforeId } = {}) {
-  const params = new URLSearchParams()
-  if (limit) params.set('limit', limit)
-  if (beforeId) params.set('before_id', beforeId)
-  const qs = params.toString()
-  return request(`/moments${qs ? `?${qs}` : ''}`)
+export async function listMoments(params) {
+  const qs = new URLSearchParams()
+  if (params?.before_id) qs.set('before_id', String(params.before_id))
+  if (params?.limit) qs.set('limit', String(params.limit))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return request(`/moments${suffix}`)
 }
 
 /**
@@ -1119,6 +1535,8 @@ export async function markMomentsRead() {
 }
 
 export async function generateMoment(characterId, topicId) {
+  // topicId 为「话题库点题」：带上它后端按 id 读原条目（失效话题返回 400/404）；
+  // 不传时后端保持原随机/日程抽题口径。undefined 会被 JSON.stringify 丢掉，兼容旧调用。
   return request(`/moments/generate`, { method: 'POST', body: { character_id: characterId, topic_id: topicId } })
 }
 
@@ -1216,14 +1634,6 @@ export function listGalleryImages(limit = 100, offset = 0, folder = '', characte
   return request(path)
 }
 
-/**
- * 批量删除图片（相册多选用）。后端逐张删除、只失效一次相册缓存。
- * @returns {Promise<{success:boolean, deleted:number, failed:number, failedItems:Array}>}
- */
-export function deleteImagesBatch(urls) {
-  return request(`/images/delete-batch`, { method: 'POST', body: { urls } })
-}
-
 /** 提交后台重新生成任务（完成后需确认才覆盖原图） */
 export function regenerateImage(imageUrl) {
   return request(`/images/regenerate`, { method: 'POST', body: { url: imageUrl } })
@@ -1256,6 +1666,15 @@ export function discardImageEditTask(taskId, token) {
 /** 删除指定图片（物理文件） */
 export function deleteImage(imageUrl) {
   return request(`/images/delete`, { method: 'DELETE', body: { url: imageUrl } })
+}
+
+/**
+ * 批量删除图片（与上游 v3.10.0 统一）。
+ * 后端逐张复用单张删除逻辑：幂等（已不存在也算成功）、百分号编码、.avif 孪生、聊天引用清理。
+ * 注意：相册页的多选入口还没做 —— 接口先就绪，UI 等真要做多选时一起上。
+ */
+export function deleteImagesBatch(urls) {
+  return request(`/images/delete-batch`, { method: 'POST', body: { urls } })
 }
 
 // ── 图片压缩 ──
@@ -1334,6 +1753,17 @@ export async function concludeEvent(eventId) {
 
 export async function deleteEvent(eventId) {
   return request(`/events/${eventId}`, { method: 'DELETE' })
+}
+
+/**
+ * 给已有奇遇补一张配图（§3.5）
+ * 后端用行里存的 prompt/style/resolution 重跑一次生图链路。
+ * 成功 `{ok:true, image:'/images/events/…'}`；
+ * 失败 `{ok:false, error:'人话原因'}` —— 注意失败也是 200，
+ * 这里要把它当"一次正常的业务结果"来处理（把 error 显示给用户），不要当成请求异常。
+ */
+export async function regenerateEventImage(eventId) {
+  return request(`/events/${eventId}/image`, { method: 'POST' })
 }
 
 export async function getEventsUnread() {
@@ -1452,6 +1882,17 @@ export function getCurrentActivity(characterId) {
   return request(`/schedule/${characterId}/current`)
 }
 
+/**
+ * 她今天的「私密时刻」（2026-10-02 新玩法：自慰 / 你闯进来了）。
+ *
+ * 用户原话：「再增加一个事件 叫自慰 和角色敏感度也相关 越高发生概率也就越高 这个可以算到日程里」。
+ * 返回 `{ characterId, has, active, caught, label, line, startTime, endTime, minutesLeft }`；
+ * `has:false` ⇒ 今天没有这一段（前端零渲染）。判定在后端是确定性的，轮询不会闪来闪去。
+ */
+export function getPrivateMoment(characterId) {
+  return request(`/schedule/${characterId}/private-moment`)
+}
+
 /** 编辑单条日程（标记为已编辑，进入当天特殊朋友圈队列） */
 export function updateScheduleActivity(characterId, index, patch) {
   return request(`/schedule/${characterId}/activity`, { method: 'PUT', body: { index, ...patch } })
@@ -1518,10 +1959,11 @@ export async function restoreWorkflow() {
 }
 
 export async function updateWorkflowMode(mode, customTemplate) {
-  const body = { mode }
-  // mode === 'custom' 时一并提交全局自定义工作流文件名
-  if (customTemplate !== undefined) body.customTemplate = customTemplate
-  return request(`/config/workflow-mode`, { method: 'PUT', body })
+  // customTemplate 只在 mode === 'custom' 时有意义（workflow/ 目录下的文件名）
+  return request(`/config/workflow-mode`, {
+    method: 'PUT',
+    body: customTemplate === undefined ? { mode } : { mode, customTemplate },
+  })
 }
 
 export async function updateWorkflowScene(scene) {
@@ -1554,7 +1996,15 @@ export async function deleteLetter(id) {
   return request(`/mailbox/${id}`, { method: 'DELETE' })
 }
 
-// ── 角色日记 ──
+/**
+ * 手动重新投递一封失败的信（2026-10-17 §P2-1）。
+ * 后端把 `failed` 打回 `pending` 并清零 retry_count；`processing`/`completed` 会返回 409（语义化拒绝）。
+ */
+export async function retryLetter(id) {
+  return request(`/mailbox/${id}/retry`, { method: 'POST' })
+}
+
+// ── 角色日记（上游 v3.9.0 合并；只追加，不改已有函数）──
 
 /** 取某个角色某一天的日记（date 省略 = 今天） */
 export function getDiary(characterId, date) {
@@ -1598,6 +2048,7 @@ export async function generateNewspaper() {
   return request(`/newspaper/generate`, { method: 'POST' })
 }
 
+// 重新生成今天的报纸（文字重印，配图后台补）—— 上游 v3.10.0 合并，2026-10-19
 export async function regenerateTodayNewspaper() {
   return request('/newspaper/regenerate', { method: 'POST' })
 }
@@ -1613,14 +2064,11 @@ export async function dismissNewspaperWorldState(dismissed) {
   return request(`/newspaper/dismiss-world`, { method: 'POST', body: { dismissed } })
 }
 
+
 // ── 事件库管理（奇遇事件类型 / 朋友圈话题）──
 
 export async function listEventTypes() {
   return request(`/library/event-types`)
-}
-
-export function describeLibraryImage(type, image, direction, signal) {
-  return request('/library/describe-image', { method: 'POST', body: { type, image, direction }, signal })
 }
 
 export function createEventType(data) {
@@ -1659,8 +2107,7 @@ export function deleteTopic(id) {
   return request(`/library/topics/${id}`, { method: 'DELETE' })
 }
 
-// 批量勾选 / 取消勾选话题（决定参不参与抽题，条目本身保留）
-// 传 { all: true } 表示全选/清空，或 { ids: [...] } 指定条目
+// 批量勾选/取消勾选话题（{ ids } 或 { all: true }）—— 上游 v3.10.0 合并，2026-10-19
 export function setTopicsChecked({ ids = null, all = false, checked }) {
   return request(`/library/topics/set-checked`, { method: 'POST', body: { ids, all, checked } })
 }
@@ -1749,6 +2196,107 @@ export function discardItem(itemId) {
 // 提前移除已生效的效果（服饰/变身会同步撤销临时外观）
 export function removeActiveEffect(effectId) {
   return request(`/items/effects/${effectId}`, { method: 'DELETE' })
+}
+
+// ── 媒体内容页（传媒 / 数字媒体，2026-10-13 合并上游 v3.9.0）──
+
+// 匿名 NPC 头像库
+export function listMediaAvatars() {
+  return request('/media/avatars')
+}
+export function generateMediaAvatars(direction = '', artist = '@ebora', count = 10) {
+  return request('/media/avatars/generate', { method: 'POST', body: { direction, artist, count } })
+}
+export function regenerateMediaAvatar(id, direction = '', artist = '@ebora') {
+  return request(`/media/avatars/${id}/regenerate`, { method: 'POST', body: { direction, artist } })
+}
+export function removeMediaAvatar(id) {
+  return request(`/media/avatars/${id}`, { method: 'DELETE' })
+}
+
+// 媒体 CRUD
+export function listMediaOutlets() {
+  return request('/media/outlets')
+}
+export function createMediaOutlet(body) {
+  return request('/media/outlets', { method: 'POST', body })
+}
+export function generateMediaOutletDraft(body, signal) {
+  return request('/media/outlets/draft', { method: 'POST', body, signal })
+}
+export function updateMediaOutlet(id, body) {
+  return request(`/media/outlets/${id}`, { method: 'PUT', body })
+}
+export function deleteMediaOutlet(id) {
+  return request(`/media/outlets/${id}`, { method: 'DELETE' })
+}
+
+// 板块 CRUD
+export function listMediaBoards(outletId) {
+  return request(`/media/outlets/${outletId}/boards`)
+}
+export function createMediaBoard(outletId, body) {
+  return request(`/media/outlets/${outletId}/boards`, { method: 'POST', body })
+}
+export function updateMediaBoard(boardId, body) {
+  return request(`/media/boards/${boardId}`, { method: 'PUT', body })
+}
+export function deleteMediaBoard(boardId) {
+  return request(`/media/boards/${boardId}`, { method: 'DELETE' })
+}
+
+// 帖子
+export function getMediaUnread(seen = {}) {
+  const q = new URLSearchParams()
+  if (seen?.digital != null) q.set('digital', String(seen.digital))
+  if (seen?.social != null) q.set('social', String(seen.social))
+  const s = q.toString()
+  return request(`/media/unread-count${s ? `?${s}` : ''}`)
+}
+export function listMediaPosts({ outlet = null, board = null, category = null, favoritesOnly = false, limit = 40, offset = 0 } = {}) {
+  const q = new URLSearchParams()
+  if (outlet) q.set('outlet', String(outlet))
+  if (board) q.set('board', String(board))
+  if (category) q.set('category', category)
+  if (favoritesOnly) q.set('favorites', '1')
+  if (limit) q.set('limit', String(limit))
+  if (offset) q.set('offset', String(offset))
+  const s = q.toString()
+  return request(`/media/posts${s ? `?${s}` : ''}`)
+}
+export function setMediaPostFavorite(postId, favorite) {
+  return request(`/media/posts/${postId}/favorite`, { method: 'PUT', body: { favorite } })
+}
+export function regenerateMediaPostImage(postId) {
+  return request(`/media/posts/${postId}/regenerate-image`, { method: 'POST' })
+}
+export function deleteMediaPost(postId) {
+  return request(`/media/posts/${postId}`, { method: 'DELETE' })
+}
+export function deleteMediaPosts(ids) {
+  return request('/media/posts/batch', { method: 'DELETE', body: { ids } })
+}
+export function regenerateMediaPostImages(ids) {
+  return request('/media/posts/batch/regenerate-image', { method: 'POST', body: { ids } })
+}
+
+// 数字报刊（门户·两层生成）
+export function generateMediaSection(postId, sectionKey) {
+  return request(`/media/posts/${postId}/sections/${encodeURIComponent(sectionKey)}`, { method: 'POST' })
+}
+
+// 生成 / 补图 / 自动档位
+export function refreshMediaPosts(body = {}) {
+  return request('/media/refresh', { method: 'POST', body })
+}
+export function fillMediaImages(limit = 6) {
+  return request('/media/fill-images', { method: 'POST', body: { limit } })
+}
+export function getMediaAuto() {
+  return request('/media/auto')
+}
+export function setMediaAuto(minutes) {
+  return request('/media/auto', { method: 'PUT', body: { minutes } })
 }
 
 // ── AI 小镇（世界页）──
@@ -2079,10 +2627,11 @@ export function releaseTownActor(actorId, { worldId, worldEpoch } = {}) {
   return jsonRequest(`${BASE}/town/actors/${encodeURIComponent(actorId)}/release`, townJson('POST', { worldId, worldEpoch }))
 }
 
+
+// 拎起小镇角色（上游 v3.10.0 合并，2026-10-19）：把居民从地图占位里提起来，随玩家移动
 export function carryTownActor(actorId, body) {
   return jsonRequest(`${BASE}/town/actors/${encodeURIComponent(actorId)}/carry`, townJson('POST', body))
 }
-
 
 export function regenerateTownPlayerPortrait(overrides = {}) {
   return jsonRequest(`${BASE}/town/player/portrait`, townJson('POST', overrides))
@@ -2106,143 +2655,161 @@ export const updateExpressionStandingPrompt = (id, slot, prompt, generation) => 
 export const editExpressionStanding = (id, slot, action, body = {}) => request(expressionStandingPath(id, slot) + '/' + action, { method: 'POST', body })
 export const deleteExpressionStanding = (id, slot) => request(expressionStandingPath(id, slot), { method: 'DELETE' })
 export const getStandingDisplayState = () => request('/standing-display/state')
-export const getStandingInteraction = (id, { signal } = {}) => request(`/characters/${id}/standing-interaction`, { signal })
-export const getStandingTouchLines = id => request(`/characters/${id}/expression-standings/touch-lines`)
-export const saveStandingTouchLines = (id, body) => request(`/characters/${id}/expression-standings/touch-lines`, {method:'PUT',body})
-export const generateStandingTouchLines = (id, expectedVersion) => request(`/characters/${id}/expression-standings/touch-lines/generate`, {method:'POST',body:{expectedVersion}})
+// 上游 v4.0.0 合并：立绘触摸台词的语音合成与批量补齐
 export const generateStandingTouchSpeech = (id, body) => request(`/characters/${id}/expression-standings/touch-lines/speech`, {method:'POST',body})
 export const fillAllStandingTouchSpeech = () => request('/expression-standings/touch-lines/speech/fill', {method:'POST'})
 export const setStandingDisplayCharacter = body => request('/standing-display/active', { method: 'PUT', body })
 
-export const fillAllStandingTouchLines = () => request('/expression-standings/touch-lines/fill', { method:'POST' })
-
+// ── 上游 v3.9.0 合并：朋友圈回填（补发今日动态）──────────────────────────────
+// 后端 agent-core/src/services/momentBackfill.js；任务走 image_edit_task_* 那套被动型
+// 后台任务（同一个 imageEditTasks store 就能看到进度），无需新增 SSE 事件与白名单。
 export const backfillMoments = () => request('/moments/backfill', { method: 'POST' })
-
 export const stopBackfillMoments = taskId => request(`/moments/backfill/${encodeURIComponent(taskId)}/stop`, { method: 'POST' })
 
-// ── 媒体内容页（传媒 / 板块 / 帖子）──
+// ── 上游 v3.9.0 合并：立绘互动（空手触摸台词 + 触碰配置）──────────────────────
+// 后端 agent-core/src/services/standingTouchLines.js / standingInteractionService.js。
+// 触碰配置目前只有台词一条链路（本地没有实验版的区域编辑器），所以这里不接
+// standing-interaction 的读改写接口，只保留台词三件套。
+export const getStandingTouchLines = (id, { signal } = {}) => request(`/characters/${id}/expression-standings/touch-lines`, { signal })
+export const saveStandingTouchLines = (id, body) => request(`/characters/${id}/expression-standings/touch-lines`, { method: 'PUT', body })
+export const generateStandingTouchLines = (id, expectedVersion) => request(`/characters/${id}/expression-standings/touch-lines/generate`, { method: 'POST', body: { expectedVersion } })
+export const fillAllStandingTouchLines = () => request('/expression-standings/touch-lines/fill', { method: 'POST' })
+/**
+ * 立绘互动配置（上游 v3.9.0 契约；后端 routes/expressionStandings.js 已挂
+ * `GET /characters/:id/standing-interaction`）：
+ * 一次返回 { characterId, name, isSleeping, version, touchLines: { status, lines, error, version } }
+ * —— 睡眠标记与台词同源，前端不必再自己拼一个 isSleeping:false。
+ * 支持 AbortSignal（立绘触摸会话的超时 / 中断要能取消在飞的读取）。
+ */
+export const getStandingInteraction = (id, { signal } = {}) => request(`/characters/${id}/standing-interaction`, { signal })
 
-export function listMediaAvatars() {
-  return request('/media/avatars')
-}
-export function generateMediaAvatars(direction = '', artist = '@ebora', count = 10) {
-  return request('/media/avatars/generate', { method: 'POST', body: { direction, artist, count } })
-}
-export function regenerateMediaAvatar(id, direction = '', artist = '@ebora') {
-  return request(`/media/avatars/${id}/regenerate`, { method: 'POST', body: { direction, artist } })
-}
-export function removeMediaAvatar(id) {
-  return request(`/media/avatars/${id}`, { method: 'DELETE' })
-}
+// ── 角色资产「一键后台生成」（2026-10-01）────────────────────────────────────
+// 后端 `agent-core/src/routes/assetGeneration.js`；计划由**后端**展开（前端不自己算张数）。
+export const createAssetGenerationJob = body => request('/asset-generation/jobs', { method: 'POST', body })
+export const getAssetGenerationJob = jobId => request(`/asset-generation/jobs/${encodeURIComponent(jobId)}`)
+export const listAssetGenerationJobs = ({ active = false } = {}) =>
+  request(`/asset-generation/jobs${active ? '?active=1' : ''}`)
+export const controlAssetGenerationJob = (jobId, action) =>
+  request(`/asset-generation/jobs/${encodeURIComponent(jobId)}/${encodeURIComponent(action)}`, { method: 'POST', body: {} })
 
-/** 全部媒体（含板块数与帖子数） */
-export function listMediaOutlets() {
-  return request('/media/outlets')
-}
-
-export function createMediaOutlet(body) {
-  return request('/media/outlets', { method: 'POST', body })
-}
-
-export function generateMediaOutletDraft(body, signal) {
-  return request('/media/outlets/draft', { method: 'POST', body, signal })
-}
-
-export function updateMediaOutlet(id, body) {
-  return request(`/media/outlets/${id}`, { method: 'PUT', body })
-}
-
-export function deleteMediaOutlet(id) {
-  return request(`/media/outlets/${id}`, { method: 'DELETE' })
-}
-
-/** 某媒体下的板块 */
-export function listMediaBoards(outletId) {
-  return request(`/media/outlets/${outletId}/boards`)
-}
-
-export function createMediaBoard(outletId, body) {
-  return request(`/media/outlets/${outletId}/boards`, { method: 'POST', body })
-}
-
-export function updateMediaBoard(boardId, body) {
-  return request(`/media/boards/${boardId}`, { method: 'PUT', body })
+// ── 程序时间（世界钟）感知快照（2026-10-02 task-3 追加）──────────────────────────
+// 只读：后端 `agent-core/src/routes/time.js` 的 `GET /api/time/perception`
+// （同一个 router 也挂在旧路径 `/api/schedule/time/perception`，形状一致）。
+// 返回**与注入提示词同源**的时间标签（后端现算 `timeLight.getTimeTag()` / `getTimeLightTag()` /
+// `getLightHint()`）+ 各角色此刻的时段 / 光线 / 在做什么。
+// 纪律：前端**不自己算偏移**（偏移只存在于后端 `program_time_state`），这里只负责取数，
+// 并把后端的机器码翻成人话（409 `time control disabled` 等）。
+export async function getTimePerception({ signal } = {}) {
+  try {
+    return await request('/time/perception', { signal })
+  } catch (err) {
+    const text = String(err?.message || '')
+    if (/disabled/i.test(text)) throw new Error('程序时间功能当前已关闭', { cause: err })
+    if (/not found|Cannot GET|请求失败 \(404\)/i.test(text)) throw new Error('后端还没有时间感知接口（等更新）', { cause: err })
+    throw err
+  }
 }
 
-export function deleteMediaBoard(boardId) {
-  return request(`/media/boards/${boardId}`, { method: 'DELETE' })
-}
+// ── 性爱交互「可点击推进」（2026-10-01 task-1 追加）─────────────────────────────
+// 后端 `agent-core/src/routes/intimateActions.js`，**独立前缀** `/api/intimate-actions`
+// （不走 /api/characters：那一族里 intimate 与 characters 必须紧邻挂载，是冻结契约）。
+//
+// 契约（与面板 IntimateActionPanel.vue 一一对应）：
+//   GET  /api/intimate-actions/:id/state          → { characterId, enabled, state, her, position, positionOptions, paceLevels, actions }
+//   POST /api/intimate-actions/:id/:action        → body { positionKey }（只有换姿势需要）
+//        · 成功   ：{ allowed:true, code:'ok', state, reaction|null, message|null, beat, climaxed, ... }
+//        · 被拒   ：HTTP 200 + { allowed:false, code, message }（message 已是人话 → 直接 toast）
+//        · 400/404/409 交给 request() 抛错（它已经优先取 `message` 人话）
 
-/** 轻量未读计数，沿用媒体页的设备级已读游标。 */
-export function getMediaUnread(seen = {}) {
-  const query = new URLSearchParams({ digital: seen.digital || 0, social: seen.social || 0 })
-  return request(`/media/unread-count?${query}`)
-}
-
-/** 帖子分页（不传 outlet 则跨媒体） */
-export function listMediaPosts({ outlet = null, board = null, category = null, favoritesOnly = false, limit = 40, offset = 0 } = {}) {
-  let path = `/media/posts?limit=${limit}&offset=${offset}`
-  if (outlet) path += `&outlet=${encodeURIComponent(outlet)}`
-  if (board) path += `&board=${encodeURIComponent(board)}`
-  // 分类过滤：digital = 数字报刊；social = 社交平台；收藏可在各分类内独立筛选
-  if (category) path += `&category=${encodeURIComponent(category)}`
-  if (favoritesOnly) path += '&favorites=1'
-  return request(path)
-}
-
-/** 抓一批新帖（异步：返回 started 后靠 SSE media_new_posts 得知完成） */
-export function refreshMediaPosts(body = {}) {
-  return request('/media/refresh', { method: 'POST', body })
-}
-
-export function setMediaPostFavorite(postId, favorite) {
-  return request(`/media/posts/${postId}/favorite`, { method: 'PUT', body: { favorite } })
-}
-
-/** 催一次封面补印 */
-export function fillMediaImages(limit = 6) {
-  return request('/media/fill-images', { method: 'POST', body: { limit } })
-}
-
-/** 传媒自动抓帖状态（当前档位 + 距下次还有多久 + 可选档位表） */
-export function getMediaAuto() {
-  return request('/media/auto')
-}
-
-/** 改传媒自动抓帖频率；minutes=0 关闭自动（只手动刷新） */
-export function setMediaAuto(minutes) {
-  return request('/media/auto', { method: 'PUT', body: { minutes } })
-}
-
-
-/** 为某条媒体内容重新生成配图（周刊/海报会连同小图一起重出） */
-export function regenerateMediaPostImage(postId) {
-  return request(`/media/posts/${postId}/regenerate-image`, { method: 'POST' })
-}
-
-/** 删除某条媒体内容（配图文件一并删除） */
-export function deleteMediaPost(postId) {
-  return request(`/media/posts/${postId}`, { method: 'DELETE' })
-}
-
-/** 批量删除媒体内容。ids 为帖子 id 数组，返回逐条结果（成功数 / 失败明细） */
-export function deleteMediaPosts(ids) {
-  return request('/media/posts/batch', { method: 'DELETE', body: { ids } })
-}
-
-/** 批量重新生图（清空旧图并置回待生成队列） */
-export function regenerateMediaPostImages(ids) {
-  return request('/media/posts/batch/regenerate-image', { method: 'POST', body: { ids } })
+/**
+ * 读进行中状态 + 体位清单 + 逐动作可用性（面板打开 / 每次动作后刷新）
+ *
+ * 2026-10-02：加**场景**参数（用户报「群聊里点插入动作，消息跑到私聊」）——
+ * `scene='group'` 时必须带 `groupId`，后端校验"群存在 + 她是成员"并把会话切到 `group_<gid>`；
+ * 不传 = 私聊（老调用逐字不变）。
+ */
+export function fetchIntimateActionState(characterId, { scene = 'chat', groupId = null, signal } = {}) {
+  const query = scene === 'group' && groupId ? `?scene=group&groupId=${encodeURIComponent(groupId)}` : ''
+  return request(`/intimate-actions/${encodeURIComponent(characterId)}/state${query}`, { signal })
 }
 
 /**
- * 门户：生成（或读取缓存的）某个板块的正文。
- * 已生成过后端直接返回缓存（二次点开秒开）；首次要调 LLM，所以是同步等待。
+ * 点一下推进。
+ * @param {number|string} characterId
+ * @param {'enter'|'thrust'|'faster'|'slower'|'stop'|'position'|'climax'} actionKey
+ * @param {{positionKey?:string, scene?:'chat'|'group', groupId?:number|string}} [payload]
+ *        换姿势必带目标体位 key；**群聊场景必须带** `scene:'group'` + `groupId`（否则她的反应会落到私聊）
  */
-export function generateMediaSection(postId, sectionKey) {
-  return request(`/media/posts/${postId}/sections/${encodeURIComponent(sectionKey)}`, { method: 'POST' })
+/**
+ * 让她自己决定体位：模型按角色性格 + 当下状态从面板候选里挑一个。
+ * 只返回建议（key / label / reason），换姿势仍走 postIntimateAction('position')。
+ */
+export function suggestIntimatePosition(characterId, { scene = 'chat', groupId = null, category = '' } = {}) {
+  const params = new URLSearchParams()
+  if (scene === 'group' && groupId) { params.set('scene', 'group'); params.set('groupId', String(groupId)) }
+  if (category) params.set('category', String(category))
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return request(`/intimate-actions/${encodeURIComponent(characterId)}/suggest-position${query}`)
 }
 
+export function postIntimateAction(characterId, actionKey, payload = {}) {
+  return request(`/intimate-actions/${encodeURIComponent(characterId)}/${encodeURIComponent(actionKey)}`, {
+    method: 'POST',
+    body: payload && Object.keys(payload).length ? payload : {},
+  })
+}
+
+// ── 玩具玩法扩充（2026-10-02 task-2 追加）──────────────────────────────────────
+// 后端同一个 router：`agent-core/src/routes/toys.js`（已由 app.js 挂在 `/api/characters`，
+// **不需要新挂载点**）。契约：
+//   POST /characters/:id/toys/:toyKey/mode   body { mode }   → 振动模式（steady/pulse/wave/random）
+//   POST /characters/:id/toys/:toyKey/curve  body { curve }  → 强度曲线；`null` / 'off' 关掉
+//   POST /characters/:id/toys/tick           body {}         → **推进曲线**（返回本 tick 的档位变化）
+//   GET  /characters/:id/toys/self-play                       → 她自己会不会玩的判定预览（无副作用）
+//   POST /characters/:id/toys/self-play      body { encourage } → 让她自己判断一次（愿意才真的动手）
+// 口径：`GET /toys` 已经顺带 tick（面板轮询它就能看到 liveIntensity 在变）；模式/曲线只对
+// **已佩戴**的玩具生效，未佩戴后端回 404 `toy_not_worn` —— 前端不自己拦（服务端说了算）。
+// 场景：群聊里这五个（含 tick / 判定预览）都要带 `sceneOpts = { scene:'group', groupId }` ——
+// 她自己玩那一句台词是要**发在她正在聊的那个地方**的（2026-10-03 群聊 bug，见 toySceneFields）。
+export function setToyMode(characterId, toyKey, mode, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/' + requireToyKey(toyKey) + '/mode', {
+    method: 'POST', body: { mode, ...toySceneFields(sceneOpts) },
+  })
+}
+
+export function setToyCurve(characterId, toyKey, curve, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/' + requireToyKey(toyKey) + '/curve', {
+    method: 'POST', body: { curve: curve || null, ...toySceneFields(sceneOpts) },
+  })
+}
+
+export function tickToys(characterId, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/tick', { method: 'POST', body: { ...toySceneFields(sceneOpts) } })
+}
+
+export function getSelfPlayState(characterId, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/self-play' + toySceneQuery(sceneOpts))
+}
+
+export function triggerSelfPlay(characterId, { encourage = false } = {}, sceneOpts = {}) {
+  return request('/characters/' + characterId + '/toys/self-play', {
+    method: 'POST', body: { encourage, ...toySceneFields(sceneOpts) },
+  })
+}
+
+// ── 上游 v3.9.0 合并：对话转录 / 角色立绘展示快照（galgame 模式） ──
+export const getDialogueTranscript = (id, cursor = {}) => request(`/characters/${id}/dialogue?${new URLSearchParams(cursor)}`)
+export const getCharacterStandingState = id => request(`/characters/${id}/standing-display`)
+
+// ── 提示词预设（上游 v3.10.0：挂在 /api/presets；预设可在设置页切换启用）──
+export const getPromptPresets = () => request('/presets')
+export const createPromptPreset = body => request('/presets', { method: 'POST', body })
+export const updatePromptPreset = (id, body) => request(`/presets/${id}`, { method: 'PUT', body })
+export const activatePromptPreset = (id, active, expectedRevision) => request(`/presets/${id}/active`, { method: 'PUT', body: { active, expectedRevision } })
+export const deletePromptPreset = (id, expectedRevision) => request(`/presets/${id}`, { method: 'DELETE', body: { expectedRevision } })
+export const previewPromptPreset = body => request('/presets/preview', { method: 'POST', body })
+
+// ── 神说（上游 v4.2.0：工作区、变更决策、批量停止）──
 export const getGodWork = session => request(`/god-says/work?session=${session}`)
 export const decideGodChange = (id, version, decision) => request(`/god-says/changes/${id}/decision`, { method: 'POST', body: { version, decision } })
 

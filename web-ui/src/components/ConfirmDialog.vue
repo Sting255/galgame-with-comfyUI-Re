@@ -88,7 +88,7 @@ defineExpose({ show })
 /* ── 卡片：更结实、层次分明 ── */
 .confirm-card {
   width: 340px; max-width: calc(100vw - 32px);
-  background: var(--popover-bg);
+  background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 20px;

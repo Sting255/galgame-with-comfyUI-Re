@@ -1,28 +1,13 @@
-<div align="center">
-  <img src="https://github.com/user-attachments/assets/2a01f4f4-6a15-4978-b01a-44b0a3c2c935" width="144" alt="Linshe.EXE Logo" />
-  <h1>Linshe.EXE (邻舍.EXE)</h1>
-  <p><strong>AI characters with lives of their own</strong></p>
-  <p>A visual novel-inspired companion app where conversations, memories, and images come together in one town.</p>
-  <p>
-    <a href="https://github.com/icecranberry/galgame-with-comfyUI/releases"><img src="https://img.shields.io/badge/Download-Windows_Package-e9826e?style=for-the-badge" alt="Download the Windows release package" /></a>
-  </p>
-  <p>
-    <a href="#features">Features</a>
-    · <a href="#quick-start">Quick start</a>
-    · <a href="#screenshots">Screenshots</a>
-    · <a href="#development">Development</a>
-    · <a href="./README.md">中文</a>
-  </p>
-  <p>
-    <img src="https://img.shields.io/badge/License-MIT-786b63" alt="License: MIT" />
-    <img src="https://img.shields.io/badge/Client-Web_%7C_Android-e9826e" alt="Client: Web / Android" />
-    <img src="https://img.shields.io/badge/Images-ComfyUI_%7C_NovelAI-c3a477" alt="Images: ComfyUI / NovelAI" />
-  </p>
-</div>
+# Linshe.EXE (邻舍.EXE)
 
-## About
+[中文](./README.md) · [Download](https://github.com/Sting255/galgame-with-comfyUI-Re/releases)
+
+Maintenance: [Current status](docs/项目现状.md) · [Documentation](docs/README.md) · [Project structure](docs/operations/project-structure.md) · [Tests](docs/testing.md) (Chinese).
 
 A local-first AI character companion inspired by visual novels. Create characters and worlds whose conversations, memories, emotions, schedules, and generated images evolve together.
+
+> [!NOTE]
+> **This repo is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI)** — upstream baseline v4.1.1, current version **v4.1.1**. On top of upstream: reworked appearance & body-size system, a new "World Map" page (narrative geography skeleton), 84 intimate poses wired into dialogue & image prompts, and a compatibility layer for local OpenAI-compatible gateways that drop `system` messages / ignore `response_format`. Upstream v4.1.1 (TTS voice synthesis, moments scheduling & tone rework, multi-profile NovelAI config) is fully merged in. The upstream "town" page has been removed locally. Feature walkthrough below is kept in Chinese.
 
 ## Project demo video (Chinese)
 
@@ -88,9 +73,9 @@ Chat with scene backgrounds, character portraits, changing expressions, and type
 
 ![Immersive visual novel chat](https://github.com/user-attachments/assets/f5e7183c-f385-4e8b-b415-f6738b05b6e5)
 
-### Town interactions
+### Upstream town interactions (historical screenshot)
 
-Meet residents on the map, catch up through dialogue, accept adventure invitations, take on work, or trade.
+This screenshot shows a historical upstream feature. The town page has been removed in this fork.
 
 ![Town resident interactions](https://github.com/user-attachments/assets/5cd70530-a961-4770-84c7-bcc9d9aa7a09)
 
@@ -118,11 +103,51 @@ Meet residents on the map, catch up through dialogue, accept adventure invitatio
 
 **Mobile**
 
-Connect through a mobile browser or the Android WebView client to keep interacting with your characters.
+<img src="https://github.com/user-attachments/assets/c8d86580-94a5-4822-96bf-4dc9e459f201" alt="Mobile interface" width="260" />
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/c8d86580-94a5-4822-96bf-4dc9e459f201" alt="Mobile interface" width="260" />
-</p>
+## Features
+
+- **Character companionship**: private and group chats, relationships, emotions, and affinity, with recent conversations, rolling summaries, and long-term memory informing replies.
+- **Daily life**: proactive messages, schedules, social posts, letters, gifts, and inventory.
+- **Adventures**: advance character stories through choices on the Adventures page. The town world page has been removed.
+- **Scene images**: generate images from conversations and character appearances through ComfyUI or NovelAI, with galleries, standing portraits, and upscaling tools.
+- **Customization & devices**: editable personas, world settings, and model profiles; warm and dark themes with time-based switching; browser and Android WebView access.
+
+Chats, characters, and images are stored locally. Cloud language models, image providers, embedding services, and rerankers receive the content needed for their configured tasks.
+
+## Quick start
+
+### Windows release package
+
+1. Download and extract `邻舍.EXE-vX.Y.Z.zip` from [Releases](https://github.com/Sting255/galgame-with-comfyUI-Re/releases), then run `邻舍.EXE.exe`.
+2. Click 「启动邻舍」 on the launcher's home page. The browser opens automatically.
+3. Configure the LLM API address, key, and model in web **Settings**. OpenAI-compatible endpoints are supported.
+4. Configure image generation as needed: ComfyUI requires the models and nodes used by the workflow (default address: `http://localhost:8188`); NovelAI requires its endpoint and key.
+5. Create or import a character in **Tavern** and start chatting.
+
+The package includes portable runtimes, dependencies, and the frontend build. Android connects to the service running on your PC: keep the PC running on the same LAN. Check the selected release's assets for APK availability; see the [Android guide (Chinese)](./android-shell/README.md).
+
+### Run from source
+
+The commands below use **Windows PowerShell**. Use **Node.js 22.18+ (22.x)**, **Python 3.12 with venv**, and **Git** to align with the packaging script.
+
+```powershell
+git clone https://github.com/Sting255/linshe-gai.git
+cd linshe-gai
+
+npm --prefix agent-core install
+npm --prefix web-ui install
+
+python -m venv vector-service/venv
+./vector-service/venv/Scripts/python.exe -m pip install -r vector-service/requirements.txt
+./vector-service/venv/Scripts/python.exe vector-service/download_model.py
+
+npm run dev
+```
+
+Open [localhost:5173](http://localhost:5173) and complete the configuration above. The development script starts the frontend on `5173`, backend on `3099`, and vector service on `8765`. Start ComfyUI separately. The initial embedding model download requires network access; the development script also attempts to download it if missing.
+
+On macOS / Linux, create the environment with `python3 -m venv vector-service/venv`, activate it with `source vector-service/venv/bin/activate`, and use `python` for dependency installation and model download before running `npm run dev`. Desktop EXE and release packaging target Windows.
 
 ## Configuration & data
 
@@ -153,13 +178,13 @@ Remove-Item Env:DB_PATH
 
 | Directory | Purpose |
 | --- | --- |
-| `web-ui/` | Vue 3 + Pinia + Vite frontend, Three.js town renderer |
+| `web-ui/` | Vue 3 + Pinia + Vite frontend, pages loaded on demand |
 | `agent-core/` | Node.js + Express backend, SQLite / FTS5, LLM calls, and scheduling |
 | `vector-service/` | FastAPI + ChromaDB + ONNX semantic memory retrieval |
 | `launcher/` / `android-shell/` | PySide6 launcher / Android WebView client |
 | `scripts/` | Development, build, and release scripts |
 
-Read the [contribution conventions](./AGENTS.md) before making changes; UI changes follow the [design system](./docs/design-system.md). Further guides (Chinese): [Testing](./docs/testing.md) · [Town interactions](./docs/town-interactions.md) · [Town economy](./docs/town-economy.md) · [Upscaling](./docs/hires-workflow.md).
+Read the [contribution conventions](./AGENTS.md) before making changes; start from [project status](./docs/项目现状.md); UI changes follow the [design system](./docs/design-system.md). Further guides (Chinese): [Testing](./docs/testing.md) · [Upscaling](./docs/images/hiresfix.md).
 
 ## License
 

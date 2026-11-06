@@ -3,18 +3,19 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { fileURLToPath } from 'url';
+import { randomBytes } from 'node:crypto';
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlobalRule, getSetting, setSetting, repairFtsIndex } from '../db/index.js';
+// 立绘 ↔ 世界观 一致性（2026-10-01）：生成时记下"这张图是在哪个世界观下生成的"，列表里下发"是否待同步"
+import { currentWorldSignature, withStandingStaleness } from '../services/worldSignature.js';
 import { chatSync } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { runPersonaGeneration } from '../services/characterGenerator.js';
-import { clearImageJudgeCounter } from './chat.js';
 import { invalidateGalleryCache, dataUriExt } from './images.js';
-import { startEditTask, startBackgroundTask } from '../services/imageEditTasks.js';
-import { startSceneOutfitBatch } from '../services/sceneOutfitBatch.js';
+import { startEditTask } from '../services/imageEditTasks.js';
 import { deleteByConversation } from '../services/vectorClient.js';
 import { clearConversationMemories } from '../services/memory/memoryRepository.js';
 import { cropPersonalityForEmotion, generateShortPromptWithLLM, runShortPromptMigration, getMigrationStatus, giveGift, getGiftCooldowns, loadEmotionState, saveEmotionSnapshot, loadOath, setOath, canSendRing, loadAffinity } from '../services/emotionEngine.js';
-import { generateImage, generateImageRaw, getLastWorkflowMode } from '../services/imageSkill.js';
+import { generateImage, generateImageRaw } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
 import { forceProactiveNow } from '../services/proactiveChatScheduler.js';
@@ -24,14 +25,21 @@ import { invalidateCache as invalidateScheduleCache, syncSleepingState } from '.
 import { assignFontForNewCharacter } from '../services/handwritingFontService.js';
 import { refresh as refreshCharSearch } from '../services/characterSearch.js';
 import { listCharacterOutfits, createCharacterOutfit, updateCharacterOutfit, deleteCharacterOutfit } from '../services/outfitService.js';
-import { listSceneOutfits, upsertSceneOutfits, generateSceneOutfits, getSceneOutfitForNow, OUTFIT_SCENES } from '../services/outfitScene.js';
+// 场景服装（五态，2026-10-13 合并上游 v3.9.0 + PR #24）
+import {
+  OUTFIT_SCENES, listSceneOutfits, upsertSceneOutfits, generateSceneOutfits,
+  getSceneOutfitForNow, setCharacterBody, backfillBodyFromExisting,
+  readOutfitOverride, setOutfitOverride,
+} from '../services/outfitScene.js';
 import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS, STANDING_SCENE_LABELS } from '../services/characterStanding.js';
-import { buildCharacterPersona, extractAppearanceIdentityCorpus, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange, APPEARANCE_HEADING_RE } from '../services/characterPersona.js';
+import { buildCharacterPersona, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
-import { pickReactionMarker } from '../services/emojiService.js';
+// 对话背景（上游 v3.9.0 合并）：工厂路由 + 沉浸背景生成（依赖注入便于单测）
 import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
+// 角色操作反馈（右下角轻通知）：表情类别名 → 语义标记，供 reaction-assets 素材选择
+import { pickReactionMarker } from '../services/emojiService.js';
 import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance } from '../services/clothingLibrary.js';
 
 const router = Router();
@@ -56,7 +64,7 @@ router.post('/clothing-appearance-draft', async (req, res) => {
       persona: buildCharacterPersona({ ...character, base_prompt: basePrompt }, { variant: 'full', outfits: null }),
       scene, entries, brief: brief.trim(),
     });
-    const raw = await chatSync(messages, { model: config.llm.model || 'deepseek-chat', temperature: 0.6, label: '衣服库外观生成' });
+    const raw = await chatSync(messages, { model: config.llm.model || 'deepseek-chat', temperature: 0.6, max_tokens: 1800, label: '衣服库外观生成' });
     res.json({ appearance: parseClothingAppearance(raw, entries, scene), tags: entries.map(entry => entry.tag) });
   } catch (error) {
     res.status(502).json({ error: `生成服装提示词失败：${error.message}` });
@@ -120,7 +128,8 @@ router.get('/', (req, res) => {
     return new Date(b.last_message_at) - new Date(a.last_message_at);
   });
 
-  res.json({ characters: enriched });
+  // 立绘是否与"当前世界观"一致（2026-10-01）：前端据此在形象展示上提示 + 一键按当前世界观重生成
+  res.json({ characters: enriched.map(withStandingStaleness) });
 });
 
 // POST /api/characters — 创建角色
@@ -365,6 +374,7 @@ router.put('/:id/pin', (req, res) => {
 // snapshotTodaySchedule 仍能把模板铺成每天的 daily_schedules ——
 // 角色照旧按既有日程活动，只是内容不再变化（省 token 又不丢体验）。
 // 睡眠同步已与这个开关解耦（见 scheduleManager），所以不用手动改 is_sleeping。
+// （上游 v3.10.0 有、本地 2026-10-19 前缺失；两条路由一起补回）
 router.put('/:id/schedule-enabled', (req, res) => {
   const db = getDb();
   const characterId = parseInt(req.params.id, 10);
@@ -372,16 +382,10 @@ router.put('/:id/schedule-enabled', (req, res) => {
   if (!char) return res.status(404).json({ error: 'Character not found' });
 
   const enabled = req.body?.enabled ? 1 : 0;
-  if (enabled) {
-    // 重新开启：刷新时间置空，后台会优先挑中它，尽快生成一次
-    db.prepare('UPDATE characters SET schedule_enabled = 1, next_schedule_refresh_at = NULL WHERE id = ?')
-      .run(characterId);
-  } else {
-    db.prepare('UPDATE characters SET schedule_enabled = 0, next_schedule_refresh_at = NULL WHERE id = ?')
-      .run(characterId);
-    // 顺手对齐一次睡眠状态（此刻可能刚好处在入睡/起床边界）
-    syncSleepingState(characterId);
-  }
+  db.prepare('UPDATE characters SET schedule_enabled = ?, next_schedule_refresh_at = NULL WHERE id = ?')
+    .run(enabled, characterId);
+  // 关掉时顺手对齐一次睡眠状态（此刻可能刚好处在入睡/起床边界）
+  if (!enabled) syncSleepingState(characterId);
   invalidateScheduleCache(characterId);
   console.log(`[char] Schedule generation ${enabled ? 'enabled' : 'disabled'} for ${char.display_name}`);
   res.json({ ok: true, schedule_enabled: enabled });
@@ -405,7 +409,7 @@ router.post('/schedule-enabled-all', (req, res) => {
 // PUT /api/characters/:id — 更新角色
 router.put('/:id', (req, res) => {
   const db = getDb();
-  const { name, display_name, base_prompt, emotion_baseline, avatar_path, chat_bg_path, moments_disabled, proactive_disabled, events_disabled, custom_workflow, loras, artist_override } = req.body;
+  const { name, display_name, base_prompt, emotion_baseline, avatar_path, chat_bg_path, moments_disabled, proactive_disabled, events_disabled, custom_workflow, loras, artist_override, negative_prompt } = req.body;
   const updates = [], params = [];
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name); }
@@ -442,6 +446,11 @@ router.put('/:id', (req, res) => {
   if (custom_workflow !== undefined) { updates.push('custom_workflow = ?'); params.push(custom_workflow || null); }
   if (loras !== undefined) { updates.push('loras = ?'); params.push(Array.isArray(loras) ? JSON.stringify(loras) : (loras || '[]')); }
   if (artist_override !== undefined) { updates.push('artist_override = ?'); params.push(typeof artist_override === 'string' ? artist_override.trim() : null); }
+  // 角色级负面提示词（2026-11-06）：只在该角色单人出场的生图链路注入；空串 = 只用全局负面词
+  if (negative_prompt !== undefined) {
+    updates.push('negative_prompt = ?');
+    params.push(typeof negative_prompt === 'string' ? negative_prompt.trim().slice(0, 200) : '');
+  }
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
   params.push(req.params.id);
   db.prepare(`UPDATE characters SET ${updates.join(', ')} WHERE id = ?`).run(...params);
@@ -517,7 +526,8 @@ router.post('/:id/avatar', (req, res) => {
   const avatarsDir = path.join(projectRoot, 'data', 'avatars');
   fs.mkdirSync(avatarsDir, { recursive: true });
 
-  const filename = `avatar_${avatarCharId}_${Date.now()}.png`;
+  // 同毫秒两次上传会撞名：写新文件后 unlinkSync(oldPath) 删掉的正是刚写的文件（groups.js 同款 bug 已修）
+  const filename = `avatar_${avatarCharId}_${Date.now()}_${randomBytes(3).toString('hex')}.png`;
   const filePath = path.join(avatarsDir, filename);
   const base64Data = base64.replace(/^data:image\/\w+;base64,/, '');
   fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
@@ -611,7 +621,14 @@ router.delete('/:id', async (req, res, next) => {
     db.prepare(`DELETE FROM moment_comments WHERE author_type = 'character' AND author_id = ?`).run(char.id);
     db.prepare(`DELETE FROM moment_posts WHERE character_id = ?`).run(char.id);
 
-    // 3. 删除头像文件
+    // 3. 清理跨角色数据（2026-11-06 真机：删角色报 FOREIGN KEY constraint failed）
+    //    character_bonds 与 inter_character_events 都引用 characters(id)，但建表时没写
+    //    ON DELETE CASCADE ⇒ 只要这个角色和别的角色有过互动/羁绊，就永远删不掉。
+    //    这里显式清理；新库的建表语句已补 CASCADE，老库靠这一步兜底。
+    db.prepare(`DELETE FROM character_bonds WHERE from_character_id = ? OR to_character_id = ?`).run(char.id, char.id);
+    db.prepare(`DELETE FROM inter_character_events WHERE from_character_id = ? OR to_character_id = ?`).run(char.id, char.id);
+
+    // 4. 删除头像文件
     if (char.avatar_path) {
       const __filename = fileURLToPath(import.meta.url);
       const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
@@ -620,7 +637,6 @@ router.delete('/:id', async (req, res, next) => {
     }
 
     // 4. 删除角色（CASCADE 自动清理 character_relationships / user_relationships / character_events / event_history）
-    clearImageJudgeCounter(char.id);
     // 角色的托管居民档案一并删除（影子档案不留在镇上）；普通居民档案不受影响
     const { removeCharacterNpcProfile } = await import('../services/town/townService.js');
     removeCharacterNpcProfile(char.id);
@@ -953,6 +969,7 @@ router.post('/:id/gift', async (req, res) => {
         disableRAG: true,
         ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
         loras: _parseCharLoras(char.loras),
+        characterNegative: char.negative_prompt || '',
         ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
         ...(giftArtist !== null ? { artist: giftArtist } : {}),
         onProgress: (p) => {
@@ -965,7 +982,7 @@ router.post('/:id/gift', async (req, res) => {
           const imageUrl = saveBase64Image('gifts', filename, img.base64);
           db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
             VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-            .run(conversationId, result.imagePrompt, imgResult.promptRefined || result.imagePrompt, JSON.stringify([imageUrl]), getLastWorkflowMode());
+            .run(conversationId, result.imagePrompt, imgResult.promptRefined || result.imagePrompt, JSON.stringify([imageUrl]), imgResult.wfMode ?? null);
           db.prepare(`UPDATE messages SET images = ? WHERE id = ?`)
             .run(JSON.stringify([imageUrl]), msgId);
           console.log(`[gift] image attached to msg #${msgId}: ${imageUrl}`);
@@ -1062,7 +1079,7 @@ ${imageRuleContent ? `【画面描述要求】\n${imageRuleContent}\n` : ''}
 const userMsg = `请根据以下角色设定，生成一张脸部特写头像的画面描述：
 
 ---角色设定---
-${buildCharacterPersona(char, { variant: 'full' })}
+${buildCharacterPersona(char, { variant: 'full', outfitScene: 'base' })}
 ---
 
 要求：脸部特写，表情跟随人格但是表情幅度很小。`;
@@ -1074,7 +1091,7 @@ ${buildCharacterPersona(char, { variant: 'full' })}
     const llmResult = await chatSync([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMsg },
-    ], { model, temperature: 0.6, label: '生成头像提示词' });
+    ], { model, temperature: 0.6, max_tokens: 1024, label: '生成头像提示词' });
 
     // 提取 prompt：纯文本优先，JSON 格式向后兼容
     let promptText;
@@ -1117,13 +1134,13 @@ ${buildCharacterPersona(char, { variant: 'full' })}
     const avatarArtist = charArtistOverride(char);
     const result = await generateImageRaw(promptText, {
       promptScene: 'avatar',
-      priority: 'high',
       disableRAG: true,
       ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
       artist: avatarArtist !== null ? avatarArtist : config.comfyui.momentsArtist,
       width: 768,
       height: 768,
       loras: charLoras.length > 0 ? charLoras : undefined,
+      characterNegative: char.negative_prompt || '',
       ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
       onProgress: (p) => {
         if (p.stage) console.log(`[generate-avatar] ComfyUI: ${p.stage}`);
@@ -1144,7 +1161,7 @@ ${buildCharacterPersona(char, { variant: 'full' })}
 
       db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
         VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-        .run(`char_${char.id}_avatar`, promptText, result.promptRefined || promptText, JSON.stringify(savedPaths), getLastWorkflowMode());
+        .run(`char_${char.id}_avatar`, promptText, result.promptRefined || promptText, JSON.stringify(savedPaths), result.wfMode ?? null);
 
       // 使相册缓存失效
       invalidateGalleryCache();
@@ -1165,6 +1182,9 @@ ${buildCharacterPersona(char, { variant: 'full' })}
   }
 });
 
+// 对话背景（上游 v3.9.0 合并）：/chat-bg 与 /generate-chat-bg 收口到工厂路由。
+// 工厂版向后兼容本地旧调用（target 缺省 = chat，空 base64 = 恢复默认），并新增
+// galgame 槽位、上传格式校验、409 并发保护与 image_tasks 登记。
 router.use(createCharacterBackgroundRouter({ getDb, saveBase64Image, deleteImageFileByUrl, invalidateGalleryCache, generateBackground: generateDialogueBackground }));
 
 // ── 角色立绘（纯白背景全身立绘，1:2，人设卡 short_prompt + 外观注入） ──
@@ -1178,11 +1198,8 @@ router.use(createCharacterBackgroundRouter({ getDb, saveBase64Image, deleteImage
  * @param {object} char
  * @param {string} requirement - 用户额外立绘需求（可空）
  * @param {'normal'|'dynamic'} [mode='normal'] - 姿势风格档位
- * @param {string|null} [scene=null] - 场景立绘（work/casual/home/sleep）。
- *   传了就用**该场景的服装**当「限时服饰」注入，绕开按时间自动选装 —— 否则半夜给角色画
- *   「私服形象」会被日程的睡眠规则强制换成睡衣。null = 默认形象（沿用 auto 选装，与旧行为一致）。
  */
-function buildStandingMessages(char, requirement, mode = 'normal', scene = null) {
+export function buildStandingMessages(char, requirement, mode = 'normal', scene = null) {
   const worldSetting = getWorldSetting();
   const msgs = [
     { role: 'system', content: worldSetting
@@ -1195,31 +1212,22 @@ function buildStandingMessages(char, requirement, mode = 'normal', scene = null)
   ];
   if (worldSetting) msgs.push({ role: 'system', content: getWorldIntegrationRule('interaction') });
   msgs.push({ role: 'system', content: STANDING_IMAGE_PROMPT_RULE.rule_content });
-
-  // 场景立绘：把对应那套服装显式喂给人格组装，避免按当前时间选中别的场景服装
-  let outfits = 'auto';
-  let sceneLabel = '';
-  if (scene) {
-    sceneLabel = STANDING_SCENE_LABELS[scene] || scene;
-    const hit = listSceneOutfits(char.id).find(o => o.scene === scene);
-    outfits = hit ? { limited: [{ name: hit.name, description: hit.description }], exclusive: null } : null;
-  }
-  const personaText = buildCharacterPersona(char, { variant: 'short', person: char.display_name, outfits });
+  // 2026-11-04：指定场景必须取该槽的服装，不受生成时的日程选装影响。
+  // 使用 text 保留本地共用身体描述；缺槽时关闭自动选装，避免悄悄借用另一套。
+  const outfit = scene ? listSceneOutfits(char.id).find(item => item.scene === scene) : null;
+  const outfits = scene
+    ? (outfit ? { limited: [{ name: outfit.name, description: outfit.text || outfit.description }], exclusive: null } : null)
+    : 'auto';
+  const sceneLabel = STANDING_SCENE_LABELS[scene] || scene;
   msgs.push({
     role: 'system',
-    content: scene
-      ? `【角色外观信息 · 本次绘制「${sceneLabel}」形象】\n${personaText}`
-      : `【角色外观信息】\n${personaText}`,
+    content: `【角色外观信息${scene ? ` · 本次绘制「${sceneLabel}」形象` : ''}】\n${buildCharacterPersona(char, { variant: 'short', person: char.display_name, outfits })}`,
   });
-
-  const userBase = requirement
-    ? `特别强调：用户指定了额外需求——“${requirement}”。请在<world_setting>下，结合用户需求，以用户需求为最高优先级，其他设计都需要先满足用户需求（与纯白背景、单人立绘、1:2 竖幅这些硬性要求不冲突的前提下），设计角色立绘并且以英文prompt输出。`
-    : `请在<world_setting>下设计角色立绘并且以英文prompt输出，自由发挥立绘的姿势与镜头角度，充分展现角色的魅力。`;
   msgs.push({
     role: 'user',
-    content: scene
-      ? `【本次要画的是该角色的「${sceneLabel}」形象，角色穿着上面指定的那套服装。】\n${userBase}`
-      : userBase,
+    content: requirement
+      ? `特别强调：用户指定了额外需求——“${requirement}”。请在<world_setting>下，结合用户需求，以用户需求为最高优先级，其他设计都需要先满足用户需求（与纯白背景、单人立绘、1:2 竖幅这些硬性要求不冲突的前提下），设计角色立绘并且以英文prompt输出。`
+      : `请在<world_setting>下设计角色立绘并且以英文prompt输出，自由发挥立绘的姿势与镜头角度，充分展现角色的魅力。`,
   });
   return msgs;
 }
@@ -1239,6 +1247,7 @@ router.post('/:id/generate-standing', async (req, res) => {
     const llmResult = await chatSync(buildStandingMessages(char, requirement, mode), {
       model,
       temperature: 0.7,
+      max_tokens: 1024,
       label: '生成立绘提示词',
     });
 
@@ -1286,6 +1295,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
     width: 768,
     height: 1536,
     loras: charLoras.length > 0 ? charLoras : undefined,
+    characterNegative: char.negative_prompt || '',
     ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
     onProgress: (p) => {
       // stage 只在切换时打印：WS 采样进度消息很密，逐条打印会刷屏
@@ -1308,6 +1318,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
     filename: path.basename(stageBase) + ext,
     promptRefined: result.promptRefined || promptText,
     sourceFilename: img.filename || 'comfy.png',
+    wfMode: result.wfMode ?? null,
   };
 }
 
@@ -1315,7 +1326,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
  * 确认落库：删旧立绘 → 暂存文件转正 → 更新 characters.standing_url → 记 image_tasks。
  * @returns {string} standing_url
  */
-function commitStandingImage({ characterId, pendingPath, promptText, promptRefined, sourceFilename }) {
+function commitStandingImage({ characterId, pendingPath, promptText, promptRefined, sourceFilename, wfMode }) {
   // 旧立绘文件先清掉，再保存新图
   const db = getDb();
   const old = db.prepare('SELECT standing_url FROM characters WHERE id = ?').get(characterId);
@@ -1327,13 +1338,14 @@ function commitStandingImage({ characterId, pendingPath, promptText, promptRefin
   fs.renameSync(pendingPath, destPath);
   const url = buildImageUrl('standing', filename);
 
-  db.prepare('UPDATE characters SET standing_url = ? WHERE id = ?').run(url, characterId);
+  db.prepare('UPDATE characters SET standing_url = ?, standing_world_sig = ? WHERE id = ?')
+    .run(url, currentWorldSignature(), characterId);
 
   console.log(`[generate-standing] Image saved: ${url}`);
 
   db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
     VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
-    .run(`char_${characterId}_standing`, promptText, promptRefined || promptText, JSON.stringify([url]), getLastWorkflowMode());
+    .run(`char_${characterId}_standing`, promptText, promptRefined || promptText, JSON.stringify([url]), wfMode ?? null);
 
   invalidateGalleryCache();
   return url;
@@ -1353,7 +1365,46 @@ async function renderStandingImage(char, promptText) {
     promptText,
     promptRefined: staged.promptRefined,
     sourceFilename: staged.sourceFilename,
+    wfMode: staged.wfMode,
   });
+}
+
+/**
+ * 渲染**某套场景服装**的立绘，写进 character_standings（不是 characters.standing_url）。
+ *
+ * 与 renderStandingImage 的区别：落点是场景立绘表，且 prompt 用「身体 + 该套服装」的
+ * 组合文本（outfitScene.composeOutfitText 已算好 `text`）。没配该套服装时退回角色卡原外观。
+ * @param {string} [explicitPrompt] 已算好的英文 prompt（「再次 Roll 图」直接复用，跳过组合文本）
+ * @returns {Promise<string>} image_url
+ */
+async function renderSceneStanding(char, scene, composedText, explicitPrompt = '') {
+  const promptText = String(explicitPrompt || composedText || '').trim() || String(char.base_prompt || '').trim();
+  if (!promptText || promptText.length < 10) {
+    throw Object.assign(new Error('该场景还没有可用的外观描述，请先填写'), { statusCode: 400 });
+  }
+  // 复用同一条出图链（朋友圈画师串口径 → ComfyUI 768x1536 → 图库）
+  const stageBase = path.join(getPendingDir(), `scene-${char.id}-${scene}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  fs.mkdirSync(path.dirname(stageBase), { recursive: true });
+  const staged = await runStandingGeneration(char, promptText, { stageBase });
+  const filename = `scenestanding_${char.id}_${scene}_${Date.now()}_${staged.sourceFilename || 'comfy.png'}`;
+  const finalPath = path.join(getImageDir('standing'), filename);
+  fs.renameSync(path.join(getPendingDir(), staged.filename), finalPath);
+  const url = buildImageUrl('standing', filename);
+  const previous = getSceneStandingRow(char.id, scene);
+  upsertSceneStanding(char.id, scene, { imageUrl: url, promptText });
+  // 换图即清旧文件（上游 v3.10.0 口径）：否则 standing/ 里会堆一堆没人引用的孤儿
+  if (previous?.image_url && previous.image_url !== url) {
+    try { deleteImageFileByUrl(previous.image_url) } catch { /* 文件不在就当已清 */ }
+  }
+  getDb().prepare(
+    // 列名是 prompt_original（不是 prompt）—— 2026-10-29 真机验收：写成 prompt 会让整条
+    // 场景立绘生成在「图已出、落盘已完成」之后抛 500，前端表现为「生成失败」但图其实有了。
+    `INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, output_paths, workflow_template, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'done', CURRENT_TIMESTAMP)`
+  ).run(`char_${char.id}_scene_standing_${scene}`, promptText, staged.promptRefined || promptText, JSON.stringify([url]), staged.wfMode);
+  invalidateGalleryCache();
+  console.log(`[scene-standing] ${char.display_name} 的「${scene}」立绘已生成：${url}`);
+  return url;
 }
 
 // POST /api/characters/:id/generate-standing-image — 用已有英文 prompt 直接重出立绘（不重新请求 LLM）
@@ -1395,6 +1446,7 @@ router.post('/:id/generate-standing-task', async (req, res) => {
       const llmResult = await chatSync(buildStandingMessages(char, requirement, mode), {
         model,
         temperature: 0.7,
+        max_tokens: 1024,
         label: '生成立绘提示词',
       });
 
@@ -1422,6 +1474,7 @@ router.post('/:id/generate-standing-task', async (req, res) => {
         const staged = await runStandingGeneration(char, text, { stageBase, onProgress });
         ctx.promptRefined = staged.promptRefined;
         ctx.sourceFilename = staged.sourceFilename;
+        ctx.wfMode = staged.wfMode;
         return { filename: staged.filename };
       },
       finalize: (task) => commitStandingImage({
@@ -1430,6 +1483,7 @@ router.post('/:id/generate-standing-task', async (req, res) => {
         promptText: task.meta.promptText,
         promptRefined: ctx.promptRefined,
         sourceFilename: ctx.sourceFilename,
+        wfMode: ctx.wfMode,
       }),
       restart: () => buildTask(text),
     });
@@ -1464,7 +1518,9 @@ router.post('/:id/standing-upload', (req, res) => {
     const ext = mimeMatch[1].toLowerCase() === 'jpeg' ? 'jpg' : mimeMatch[1].toLowerCase();
     const filename = `standing_${char.id}_${Date.now()}_upload.${ext}`;
     const url = saveBase64Image('standing', filename, base64);
-    db.prepare('UPDATE characters SET standing_url = ? WHERE id = ?').run(url, char.id);
+    // 用户手动上传的立绘：记当前世界观签名 = "以这张为准"（不该被当成待同步反复提示）
+    db.prepare('UPDATE characters SET standing_url = ?, standing_world_sig = ? WHERE id = ?')
+      .run(url, currentWorldSignature(), char.id);
     invalidateGalleryCache();
     res.json({ ok: true, standing_url: url });
   } catch (err) {
@@ -1497,10 +1553,11 @@ async function renderSceneStandingImage(char, promptText, scene) {
   const stageBase = path.join(getPendingDir(), `standing-${char.id}-${scene}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   fs.mkdirSync(path.dirname(stageBase), { recursive: true });
   const staged = await runStandingGeneration(char, promptText, { stageBase });
-  return commitSceneStandingImage(char.id, scene, promptText, path.join(getPendingDir(), staged.filename), staged.sourceFilename);
+  return commitSceneStandingImage(char.id, scene, promptText, path.join(getPendingDir(), staged.filename), staged);
 }
 
-function commitSceneStandingImage(characterId, scene, promptText, pendingPath, sourceFilename) {
+function commitSceneStandingImage(characterId, scene, promptText, pendingPath, staged) {
+  const { sourceFilename, promptRefined, wfMode } = staged;
   if (!getDb().prepare('SELECT id FROM characters WHERE id = ?').get(characterId)) {
     throw new Error('角色已不存在，无法替换形象');
   }
@@ -1514,23 +1571,25 @@ function commitSceneStandingImage(characterId, scene, promptText, pendingPath, s
   const url = buildImageUrl('standing', filename);
 
   upsertSceneStanding(characterId, scene, { imageUrl: url, promptText });
+  getDb().prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, output_paths, workflow_template, status, finished_at)
+    VALUES (?, ?, ?, ?, ?, 'done', datetime('now'))`)
+    .run(`char_${characterId}_scene_standing_${scene}`, promptText, promptRefined || promptText, JSON.stringify([url]), wfMode ?? null);
   if (oldRow?.image_url) { try { deleteImageFileByUrl(oldRow.image_url); } catch {} }
   invalidateGalleryCache();
   return url;
 }
 
 function startSceneStandingTask(char, scene, promptText, beforeUrl) {
-  let sourceFilename;
+  let staged;
   return startEditTask({
     action: 'standing',
     url: beforeUrl,
     meta: { characterId: char.id, characterName: char.display_name, scene, promptText },
     run: async ({ stageBase, onProgress }) => {
-      const staged = await runStandingGeneration(char, promptText, { stageBase, onProgress });
-      sourceFilename = staged.sourceFilename;
+      staged = await runStandingGeneration(char, promptText, { stageBase, onProgress });
       return staged;
     },
-    finalize: task => commitSceneStandingImage(char.id, scene, promptText, task.pendingPath, sourceFilename),
+    finalize: task => commitSceneStandingImage(char.id, scene, promptText, task.pendingPath, staged),
     restart: () => startSceneStandingTask(char, scene, promptText, beforeUrl),
   });
 }
@@ -1681,15 +1740,6 @@ router.post('/refine-appearance-draft', async (req, res) => {
     return res.status(400).json({ error: '缺少人格卡内容，无法定位「## 你的外观」段落' });
   }
   const displayName = String(req.body?.display_name || '').trim() || '角色';
-  // ★ 场景信息原先没被用上：前端传了 scene_label 也没读，于是「修睡衣」与「修工装」走完全相同的提示词，
-  //   场景约束（尤其睡衣的赤脚）根本落不到模型那里。这里补上并按场景追加硬性约束。
-  const sceneLabel = String(req.body?.scene_label || '').trim();
-  const sceneConstraint = sceneLabel === '睡衣'
-    ? '\n\n【本套场景约束（最高优先级，覆盖图中不符之处）】这一套是**睡衣**，是睡觉时穿的：'
-      + '（1）**必须赤脚** —— 画面中不得出现任何鞋、靴、拖鞋或袜子；若参考图里脚上有鞋袜，一律按赤脚描述。'
-      + '（2）服装只能是最贴身的睡衣/内衣（睡裙、睡衣睡裤、吊带内衣等），不得是能穿出门的外出服。'
-      + '（3）不要为了保暖或好看给它加上外套、鞋袜、帽子等外出配件（角色长期佩戴的颈饰、发饰可以保留）。'
-    : '';
 
   try {
     // 语料只作为身份上下文传给模型（角色名/作品名的出处），由模型自行组织成「角色名 (作品名) has ...」的开头
@@ -1704,11 +1754,11 @@ router.post('/refine-appearance-draft', async (req, res) => {
       {
         role: 'user',
         content: [
-          { type: 'text', text: `角色「${displayName}」的参考图如下。角色的身份信息（用于生成开头的「角色名 (作品名)」）：${corpus}${sceneConstraint}` },
+          { type: 'text', text: `角色「${displayName}」的参考图如下。角色的身份信息（用于生成开头的「角色名 (作品名)」）：${corpus}` },
           { type: 'image_url', image_url: { url: image } },
         ],
       },
-    ], { model, temperature: 0.3, label: '修正外观' });
+    ], { model, temperature: 0.3, max_tokens: 1024, label: '修正外观' });
 
     // 剥掉代码围栏与引号包装，压成单段
     let appearance = llmResult.trim()
@@ -1817,7 +1867,22 @@ router.post('/expand-appearance-draft', async (req, res) => {
       character = { base_prompt: basePrompt };
     }
     const corpus = extractAppearanceIdentityCorpus(character.base_prompt, displayName);
-    const persona = buildCharacterPersona({ ...character, short_prompt: character.short_prompt || displayName }, { variant: 'short', outfits: null });
+    // 【2026-10-18 C4 合并】这里要的是「角色简述」，不是生图人格拼接，所以**优先用库里那份 short_prompt**：
+    // 上游 v3.9.1 的契约就是「已入库角色只读 short_prompt + 默认外观，绝不把整卡人格带进来」
+    // （见 test/expandAppearanceDraft.test.js 的「不得出现完整人格」断言）。
+    // 注意别改用 buildCharacterPersona({variant:'short'})：本地 2026-10-02 起它改成「从 base_prompt 现裁」，
+    // 现裁结果会把「## 你的性格」整段一起带出来（那是给生图用的口径），在这个扩写场景属于多余上下文。
+    // 只有 short_prompt 为空时才退回现裁（有总比没有好，与 characterPersona 的兜底一致）。
+    const shortPrompt = String(character.short_prompt || '').trim();
+    // 外观段 = 整卡里「## 你的外观」那一段（splitAppearanceSection 只给前后文，自己切中间）。
+    const { before: _personaPart, after: _tailPart } = splitAppearanceSection(character.base_prompt);
+    const appearanceOnly = character.base_prompt.slice(_personaPart.length, character.base_prompt.length - _tailPart.length);
+    // 【2026-10-18 C4 合并】这里要的是「角色简述 + 默认外观」，不是生图人格拼接。
+    // 上游 v3.9.1 的契约（test/expandAppearanceDraft.test.js）：上下文里**必须有** short_prompt 与外观段、
+    // **不得**出现完整人格（「## 你的性格」那段）。所以别用 buildCharacterPersona({variant:'short'})：
+    // 本地 2026-10-02 起它改成「从 base_prompt 现裁」（那是给生图用的口径），现裁会把「## 你的性格」整段带出来。
+    // 没有 short_prompt（未入库招募草稿）时按上游口径退回显示名。
+    const persona = [shortPrompt || displayName, appearanceOnly].filter(s => String(s || '').trim()).join('\n');
     const llmResult = await chatSync([
       // 静态前缀在前，角色与场景上下文在后，用户本次要求收尾。
       { role: 'system', content: getSystemRules({ roleplay: false }) },
@@ -1828,7 +1893,7 @@ router.post('/expand-appearance-draft', async (req, res) => {
         role: 'user',
         content: `用户想要的外观要点：\n${brief}\n\n请按规定格式输出一段完整外观描述。`,
       },
-    ], { model, temperature: 0.75, label: '外观扩写' });
+    ], { model, temperature: 0.75, max_tokens: 1024, label: '外观扩写' });
 
     // 与图片模式同一套清洗：剥代码围栏与引号，压成单段
     const appearance = String(llmResult || '').trim()
@@ -1851,7 +1916,6 @@ router.post('/expand-appearance-draft', async (req, res) => {
   }
 });
 
-
 function _parseCharLoras(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -1861,91 +1925,185 @@ function _parseCharLoras(raw) {
   return [];
 }
 
-// ── 角色专属外观/形态（角色外观系统，生图注入见 services/characterPersona.js）──
+// ── 场景服装（五态：裸体/常服/私服/居家/睡衣，见 services/outfitScene.js）──
+// ⚠ 路由顺序契约：**必须注册在 `/:id/outfits/:outfitId` 之前** ——
+//   否则 Express 会把 "scene" 当成 :outfitId 匹配走，PUT outfits/scene 永远进不来
+//   （2026-10-14 冒烟实测抓到：saved=undefined，正是参数路由抢跑）。
+// 与下面的「角色专属外观」是两条独立通道：那边是道具变身（同时只一套、有 expires_at），
+// 这边是日程驱动选装（五套并存、按日程+睡眠硬规则选一套）。
 
-// ── 场景服装（工装/外出/居家/睡眠，由日程决定穿哪套）──
-// 注意：这几个路径都是 3 段，与下面的 '/:id/outfits/:outfitId' 同形。
-// 靠 HTTP 方法区分（这里都是 GET/POST，下面那条是 PUT/DELETE），所以不会互相吃；
-// 但仍统一放在前面，并保持路径里出现语义词（scene/generate/current），便于日后排查。
-
-// GET /api/characters/:id/outfits/scene — 列出该角色的场景服装（含场景标签）
-router.get('/:id/outfits/scene', (req, res) => {
+// GET /api/characters/:id/outfit-scenes — 该角色的场景服装（含五态骨架与 body 单一真源）
+router.get('/:id/outfit-scenes', (req, res) => {
   const db = getDb();
   const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
-  res.json({ scenes: OUTFIT_SCENES, outfits: listSceneOutfits(char.id) });
+  const outfits = listSceneOutfits(char.id);
+  // body 单一真源：五套共用一份，取任意一条非空的即可（写入时同步到所有行）
+  const body = String(outfits.find(o => String(o.body || '').trim())?.body || '');
+  res.json({ ok: true, scenes: OUTFIT_SCENES, body, outfits });
 });
 
-// GET /api/characters/:id/outfit-now — 此刻按日程该穿哪套（调试 / 界面展示用）
+// GET /api/characters/:id/outfit-now — 此刻该穿哪套（调试/排查用：source 标 sleep/schedule/fallback）
 router.get('/:id/outfit-now', (req, res) => {
   const db = getDb();
-  const char = db.prepare('SELECT id, display_name FROM characters WHERE id = ?').get(req.params.id);
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
   res.json({ character_id: char.id, ...(getSceneOutfitForNow(char.id) || { outfit: null, scene: null, source: 'none' }) });
 });
 
-// POST /api/characters/:id/outfits/generate — 基于默认外观设计私服、居家、睡衣
-// Body: { save?, baseAppearance?, scenes?, instruction?, generateImages? }；自动生图返回后台 task_id，并先保存设计。
+// POST /api/characters/:id/outfits/generate — 用 LLM 生成/补全场景外观
+// Body: { save?: boolean, scenes?: string[], seeds?: [{scene,name,body,description}], baseAppearance?: string }
+//   seeds = **已填好的分项**，作为反推锚点：本次只补未填的（新口径，替代固定「按工装推其余」）
 router.post('/:id/outfits/generate', async (req, res) => {
   const db = getDb();
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+  const char = db.prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
-  if (req.body?.instruction !== undefined && (typeof req.body.instruction !== 'string' || req.body.instruction.length > 4000)) {
-    return res.status(400).json({ error: '服装要求必须是 4000 字符以内的文本' });
-  }
-  if (req.body?.generateImages === true) {
-    const requested = req.body?.scenes ?? ['casual', 'home', 'sleep'];
-    if (!Array.isArray(requested) || !requested.length || requested.some(scene => !['casual', 'home', 'sleep'].includes(scene))) {
-      return res.status(400).json({ error: '自动生成形象仅支持私服、居家、睡衣' });
-    }
-    const scenes = [...new Set(requested)];
-    const baseAppearance = String(req.body?.baseAppearance || '').trim();
-    if (!baseAppearance) return res.status(400).json({ error: '请先填写默认外观' });
-    const snapshot = { ...char, base_prompt: replaceAppearanceSection(char.base_prompt, baseAppearance) };
-    const mode = getSetting(STANDING_MODE_KEY) === 'dynamic' ? 'dynamic' : 'normal';
-    const task = startSceneOutfitBatch({
-      character: snapshot, scenes, startTask: startBackgroundTask,
-      design: () => generateSceneOutfits(snapshot, { baseAppearance, scenes, instruction: req.body?.instruction }),
-      save: outfits => upsertSceneOutfits(char.id, outfits),
-      render: async scene => {
-        const prompt = await generateSceneStandingPrompt(snapshot, scene, '', mode);
-        return renderSceneStandingImage(snapshot, prompt, scene);
-      },
-    });
-    return res.status(202).json({ ok: true, task_id: task.id });
-  }
   try {
-    // baseAppearance：以常态外观（工装）为基准生成，只换衣服不换人；
-    // scenes：只生成指定的换装，不传则设计私服/居家/睡衣；不生成默认外观。
+    // baseAppearance 是**必需**的（sceneOutfitPrompt 会校验：没有身体基准就无法保证五套是同一个人）。
+    // 请求体没带就回落角色卡 base_prompt —— 前端老版本不带这个字段，不能让它们直接 400（2026-10-15）。
+    const baseAppearance = String(req.body?.baseAppearance || char.base_prompt || '').trim();
     const outfits = await generateSceneOutfits(char, {
-      baseAppearance: req.body?.baseAppearance,
+      baseAppearance,
       scenes: req.body?.scenes,
+      seeds: req.body?.seeds,
+      // 上游 v4.2.0：改服装时把目标槽位现有的样子一起给模型，否则它只能凭空重写
       instruction: req.body?.instruction,
+      currentOutfits: String(req.body?.instruction || '').trim() ? listSceneOutfits(char.id) : [],
     });
     const saved = req.body?.save === true ? upsertSceneOutfits(char.id, outfits) : null;
     res.json({ ok: true, outfits, saved });
   } catch (err) {
-    console.error('[outfit-scene] generate failed:', err.message);
-    res.status(500).json({ error: '生成服装失败: ' + err.message });
+    res.status(400).json({ error: err.message || '外观生成失败' });
   }
 });
 
-// PUT /api/characters/:id/outfits/scene — 保存指定场景服装，未提交的槽位保持原样
-// Body: { outfits: [{ scene, name, description }] }
+// PUT /api/characters/:id/outfits/scene — 批量保存场景外观（供界面"编辑后保存"）
+// Body: { body?: string, outfits: [{ scene, name, description }] }
+//   body = 该角色的身体描述（单一真源，写入时同步到全部行）
 router.put('/:id/outfits/scene', (req, res) => {
   const db = getDb();
   const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
   const list = Array.isArray(req.body?.outfits) ? req.body.outfits : null;
   if (!list) return res.status(400).json({ error: 'outfits 必须是数组' });
+
+  // 身体按钮（若前端带了 body 字段就整体写一遍，保证各套一致）
+  const body = req.body?.body != null ? String(req.body.body).trim().slice(0, 2000) : null;
+
+  // ⚠ 不再强制 description 非空 —— `nude` 之外也可能有"这套暂时没写衣服"的中间态；
+  //   只要求 scene 合法 + name 非空（upsertSceneOutfits 内部还会按 SCENE_KEYS 过滤）
   const clean = list
-    .map(o => ({ scene: String(o?.scene || '').trim(), name: String(o?.name || '').trim().slice(0, 60), description: String(o?.description || '').trim() }))
-    .filter(o => o.scene && o.name && o.description);
+    .map(o => ({
+      scene: String(o?.scene || '').trim(),
+      name: String(o?.name || '').trim().slice(0, 60),
+      // 上限 2400：本地 description 只写衣服、通常很短，但「整段外观」型描述（含身体细节）
+      // 也需要能存下，否则会被静默截断、下次编辑看到的就是半句。
+      description: String(o?.description || '').trim().slice(0, 2400),
+      ...(body != null ? { body } : (o?.body != null ? { body: String(o.body).trim().slice(0, 2000) } : {})),
+    }))
+    .filter(o => o.scene && o.name);
   if (!clean.length) return res.status(400).json({ error: '没有有效的服装条目' });
-  if (clean.some(outfit => outfit.description.length > 2400)) return res.status(400).json({ error: '服装描述不能超过 2400 字符' });
+
   const saved = upsertSceneOutfits(char.id, clean);
-  res.json({ ok: true, saved, outfits: listSceneOutfits(char.id) });
+  if (body != null) setCharacterBody(char.id, body);
+  // 老数据回填：这个角色以前只填了 4 态、没有 body ⇒ 以已填分项为锚反推一份身体真源
+  const backfilled = backfillBodyFromExisting(char.id, {
+    baseAppearance: String(db.prepare('SELECT base_prompt FROM characters WHERE id = ?').get(char.id)?.base_prompt || ''),
+  });
+  res.json({ ok: true, saved, backfilled, outfits: listSceneOutfits(char.id) });
 });
+
+// ── 场景立绘（五套形象，详情页左右切换；与场景服装是"图"与"文字"两条线）──
+//
+// **API 与上游 v3.10.0 统一（2026-10-19）**：规范路径是 `/:id/standings…`
+//   GET    /:id/standings            五套场景立绘（work 槽以 characters.standing_url 兜底）
+//   POST   /:id/standings/generate   生成某场景 Body: { scene, requirement?, prompt? }
+//   POST   /:id/standings/upload     上传某场景 Body: { scene, base64 }
+//   DELETE /:id/standings/:scene     清掉某场景的**显式**立绘
+// 旧的 `/scene-standings…` 三个路径保留为**兼容别名**（同一批 handler），前端已切到新路径。
+
+/** 场景名归一化：不合法返回 ''（调用方统一回 400） */
+function normalizeStandingScene(raw) {
+  const scene = String(raw || '').trim();
+  return STANDING_SCENE_KEYS.includes(scene) ? scene : '';
+}
+
+function respondStandingList(res, charId) {
+  res.json({ ok: true, scenes: OUTFIT_SCENES, standings: listSceneStandings(charId) });
+}
+
+// GET /api/characters/:id/standings
+router.get('/:id/standings', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  respondStandingList(res, char.id);
+});
+
+
+// POST /api/characters/:id/standings/upload — 上传某场景立绘 Body: { scene, base64 }
+router.post('/:id/standings/upload', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+
+  const scene = normalizeStandingScene(req.body?.scene);
+  if (!scene) return res.status(400).json({ error: '无效的场景，可选：' + STANDING_SCENE_KEYS.join(' / ') });
+
+  const { base64 } = req.body || {};
+  const mimeMatch = typeof base64 === 'string' && base64.match(/^data:image\/(png|jpeg|webp);base64,/i);
+  if (!mimeMatch) return res.status(400).json({ error: '请上传 PNG / JPG / WEBP 图片' });
+  if (base64.length > 8 * 1024 * 1024) {
+    return res.status(400).json({ error: '图片过大，请压缩后再上传（不超过 6MB）' });
+  }
+
+  try {
+    const previous = getSceneStandingRow(char.id, scene);
+    const ext = mimeMatch[1].toLowerCase() === 'jpeg' ? 'jpg' : mimeMatch[1].toLowerCase();
+    const url = saveBase64Image('standing', `standing_${char.id}_${scene}_${Date.now()}_upload.${ext}`, base64);
+    upsertSceneStanding(char.id, scene, { imageUrl: url, promptText: previous?.prompt_text || '' });
+    if (previous?.image_url && previous.image_url !== url) {
+      try { deleteImageFileByUrl(previous.image_url) } catch { /* 文件不在就当已清 */ }
+    }
+    invalidateGalleryCache();
+    res.json({ ok: true, scene, image_url: url, standings: listSceneStandings(char.id) });
+  } catch (err) {
+    console.error('[scene-standing-upload] error:', err.message);
+    res.status(500).json({ error: '保存立绘失败: ' + err.message });
+  }
+});
+
+/** 删除某场景的显式立绘（规范路径与旧路径共用） */
+function deleteSceneStandingRoute(req, res) {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const scene = normalizeStandingScene(req.params.scene);
+  if (!scene) return res.status(400).json({ error: '未知的场景' });
+  const row = getSceneStandingRow(char.id, scene);
+  if (row?.image_url) { try { deleteImageFileByUrl(row.image_url); } catch { /* ignore */ } }
+  deleteSceneStanding(char.id, scene);
+  invalidateGalleryCache();
+  res.json({ ok: true, scene, standings: listSceneStandings(char.id) });
+}
+
+// DELETE /api/characters/:id/standings/:scene
+router.delete('/:id/standings/:scene', deleteSceneStandingRoute);
+
+// ── 兼容别名：旧 `/scene-standings…`（前端已切新路径，保留给旧缓存包/脚本）──
+router.get('/:id/scene-standings', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  respondStandingList(res, char.id);
+});
+router.post('/:id/scene-standings/:scene/generate', (req, res) => {
+  req.body = { ...(req.body || {}), scene: req.params.scene };
+  return generateSceneStanding(req, res);
+});
+router.delete('/:id/scene-standings/:scene', deleteSceneStandingRoute);
+
+// ── 角色专属外观/形态（角色外观系统，生图注入见 services/characterPersona.js）──
 
 // GET /api/characters/:id/outfits — 列出角色全部专属外观
 router.get('/:id/outfits', (req, res) => {
@@ -1988,6 +2146,27 @@ router.delete('/:id/outfits/:outfitId', (req, res) => {
   const removed = deleteCharacterOutfit(req.params.id, req.params.outfitId);
   if (!removed) return res.status(404).json({ error: 'Outfit not found' });
   res.json({ success: true });
+});
+
+// PUT /api/characters/:id/outfit-override — 手动指定「现在穿这套」 Body: { scene, until? }
+// scene 传空 = 清除指定，回到日程换装。睡眠时段仍是硬规则：指定了也不覆盖睡衣。
+router.put('/:id/outfit-override', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const scene = String(req.body?.scene || '').trim();
+  const until = req.body?.until ? String(req.body.until) : null;
+  try {
+    const saved = setOutfitOverride(char.id, scene, until);
+    const current = getSceneOutfitForNow(char.id);
+    res.json({
+      ...saved,
+      current: current ? { scene: current.scene, source: current.source } : null,
+    });
+  } catch (err) {
+    const code = err.message === 'invalid argument' || err.message === 'character not found' ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
 });
 
 export default router;

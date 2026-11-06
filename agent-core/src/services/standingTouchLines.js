@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
+/**
+ * 部位中文名。**这两个值会原样进 LLM prompt**（`字段对应关系：chest=胸部和乳房；butt=屁股和下体`），
+ * 是模型判断"这个部位能写多露骨"的直接依据，所以按上游 v3.9.0 逐字保持。
+ * 2026-10-15：本地曾被改成 '胸口' / '臀侧'，把露骨度写低了一档 —— 18+ 应用的触摸台词
+ * 会因此变得寡淡，且 `standingTouch.test.js` 的契约断言直接钉的是上游文案。
+ * 前端 `TOUCH_LABELS`（UI 上给用户看的那份）是另一套口径，不要和这里混。
+ */
 export const TOUCH_PARTS = { head: '头顶', face: '脸', shoulder: '肩颈', hand: '手', chest: '胸部和乳房', belly: '肚子', butt: '屁股和下体', thigh: '大腿', calf: '小腿', foot: '脚' };
 
 export function buildTouchLineMessages(character, { systemRules = '', worldRule = '', relationship = null, userName = '用户' } = {}) {

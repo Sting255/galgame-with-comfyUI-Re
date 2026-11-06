@@ -1,6 +1,7 @@
 <template>
-  <linshe-modal :model-value="show && !outfitConfirmation.open" :transition-ms="300" title="表情包管理" full panel-class="emoji-manager-modal" body-class="emoji-manager-body" @close="close">
-<div class="emoji-body">
+  <linshe-modal :model-value="show && !outfitConfirmation.open" title="表情包管理" full panel-class="emoji-manager-modal" body-class="emoji-manager-body" @close="close">
+
+          <div class="emoji-body">
             <!-- 生成 prompt 时的全局扫描遮罩 -->
             <div v-if="starting" class="emoji-gen-overlay">
               <div class="emoji-gen-line"></div>
@@ -24,7 +25,7 @@
                     <span class="emoji-char-trigger-name">{{ selectedCharacterName }}</span>
                     <span class="emoji-char-trigger-count">{{ selectedCountText }}</span>
                   </span>
-                  <svg class="emoji-char-trigger-chevron" :class="{ open: charPickerOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                  <svg class="emoji-char-trigger-chevron" :class="{ open: charPickerOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
                 </div>
                 <Transition name="emoji-picker-fade">
                 <div v-show="!isMobile || charPickerOpen" class="emoji-char-layer" :class="{ open: isMobile && charPickerOpen }">
@@ -42,9 +43,7 @@
                   <div
                     class="emoji-char-avatar"
                     :style="characterAvatarStyle(c)"
-                  >
-{{ c.avatar_path ? '' : (c.display_name || c.name || '?').charAt(0) }}
-</div>
+                  >{{ c.avatar_path ? '' : (c.display_name || c.name || '?').charAt(0) }}</div>
                    <div class="emoji-char-meta">
                      <div class="emoji-char-name">{{ c.display_name || c.name }}</div>
                      <div class="emoji-char-count" :class="{ full: isCharFull(c.id), generating: charGenerating(c.id) }">
@@ -106,11 +105,8 @@
             <!-- 右侧：生成控制 + 表情包网格 -->
             <div class="emoji-right">
               <div class="emoji-toolbar-row">
-                <StandingGenerationDirection v-model="style" v-model:outfit-scene="outfitScene" input-id="emoji-generation-direction" :disabled="generating" />
-                <div class="emoji-generation-footer">
-                <div class="emoji-generation-options">
                 <div class="emoji-gear" role="button" tabindex="0" title="高级设置" @click="showAdvancedSettings = true" @keydown.enter.prevent="showAdvancedSettings = true" @keydown.space.prevent="showAdvancedSettings = true">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 </div>
                 <div
                   class="emoji-mode-badge"
@@ -122,20 +118,13 @@
                   @keydown.enter.prevent="toggleStyleMode"
                   @keydown.space.prevent="toggleStyleMode"
                   title="点击切换表情包风格"
-                >
-{{ STYLE_MODE_LABELS[styleMode] || '半身LINE' }}
-</div>
-                </div>
-                <div class="emoji-generation-actions">
-                <linshe-button
-                  v-if="selectedCharHasPrompts"
-                  variant="secondary"
-                  :disabled="generating || selectedCharId === null"
-                  title="重新提炼表情提示词，并用新提示词生成全部表情图片"
-                  @click="generateAll"
-                >
-                  完全重做
-                </linshe-button>
+                >{{ STYLE_MODE_LABELS[styleMode] || '半身LINE' }}</div>
+                <StandingGenerationDirection
+                  v-model="style"
+                  v-model:outfit-scene="outfitScene"
+                  input-id="emoji-generation-direction"
+                  :disabled="generating"
+                />
                 <linshe-button
                   v-if="selectedCharHasPrompts"
                   variant="primary"
@@ -153,8 +142,14 @@
                 >
                   {{ generating ? '生成中...' : '生成表情包' }}
                 </linshe-button>
-                </div>
-                </div>
+                <linshe-button
+                  v-else
+                  variant="secondary"
+                  class="emoji-redo-btn"
+                  :disabled="generating || selectedCharId === null"
+                  title="重新提炼表情提示词，并用新提示词生成全部表情图片"
+                  @click="generateAll"
+                >完全重做</linshe-button>
               </div>
 
               <!-- 名称切换编辑目标，开关独立勾选参与随机发送的套装 -->
@@ -268,7 +263,7 @@
                       @keydown.enter.prevent="removeEmoji(selectedCharId, key)"
                       @keydown.space.prevent="removeEmoji(selectedCharId, key)"
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                     </div>
 
                     <template v-if="rowFor(selectedCharId, key)">
@@ -286,18 +281,14 @@
                           class="btn-sm"
                           :disabled="busyKey === selectedCharId + ':' + key || uploadingKey === selectedCharId + ':' + key || isGenerating(selectedCharId, key)"
                           @click="openUpload(selectedCharId, key)"
-                        >
-上传
-</linshe-button>
+                        >上传</linshe-button>
                         <linshe-button
                           variant="secondary"
                           size="sm"
                           class="btn-sm"
                           :disabled="busyKey === selectedCharId + ':' + key || uploadingKey === selectedCharId + ':' + key || isGenerating(selectedCharId, key)"
                           @click="generateOneImage(selectedCharId, key)"
-                        >
-重新生成
-</linshe-button>
+                        >重新生成</linshe-button>
                       </div>
                       <div v-if="rowError(selectedCharId, key)" class="emoji-error">{{ rowError(selectedCharId, key) }}</div>
                     </template>
@@ -381,11 +372,18 @@
       </template>
     </linshe-modal>
     <!-- 全部生成弹窗 -->
-    <linshe-modal :model-value="showBatchDialog && !outfitConfirmation.open" :transition-ms="300" title="全部生成" @close="closeBatchDialog">
+    <linshe-modal :model-value="showBatchDialog && !outfitConfirmation.open" title="全部生成" @close="closeBatchDialog">
       <div class="advanced-body">
         <div class="advanced-content">
             <div class="advanced-section">
-              <StandingGenerationDirection v-model="batchStyle" v-model:outfit-scene="batchOutfitScene" input-id="emoji-batch-direction" :disabled="batchPreparing" batch />
+              <div class="advanced-label">自定义整体风格</div>
+              <StandingGenerationDirection
+                v-model="batchStyle"
+                v-model:outfit-scene="batchOutfitScene"
+                input-id="emoji-batch-direction"
+                :disabled="batchPreparing"
+                batch
+              />
               <div class="advanced-hint">将按角色列表顺序，为全部 {{ characters.length }} 个角色逐个生成表情包。</div>
             </div>
             </div>
@@ -393,11 +391,12 @@
 
       <template #footer>
         <linshe-button variant="secondary" @click="closeBatchDialog">取消</linshe-button>
-        <linshe-button variant="primary" :loading="batchPreparing" @click="startBatchGenerate">开始生成</linshe-button>
+        <linshe-button variant="primary" @click="startBatchGenerate">开始生成</linshe-button>
       </template>
     </linshe-modal>
-    <StandingOutfitConfirmation :state="outfitConfirmation" asset-label="表情包" @choose="chooseOutfitPolicy" />
     <input ref="uploadInputRef" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden @change="onUploadFileChange" />
+    <!-- 服装缺失确认：遮罩层，二选一后把结果回传给生成流程 -->
+    <StandingOutfitConfirmation :state="outfitConfirmation" asset-label="表情包" @choose="chooseOutfitPolicy" />
 </template>
 
 <script setup>
@@ -408,6 +407,7 @@ import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'
 import LinsheTabs from './ui/LinsheTabs.vue'
 import LinsheSwitch from './ui/LinsheSwitch.vue'
+// 上游 v3.10.0：表情包改用「生成方向 + 服装预检」组件（与表情立绘同一套口径）
 import StandingGenerationDirection from './standing/StandingGenerationDirection.vue'
 import StandingOutfitConfirmation from './standing/StandingOutfitConfirmation.vue'
 import { useStandingOutfitConfirmation } from '../composables/useStandingOutfitConfirmation.js'
@@ -431,6 +431,7 @@ const setBusy = ref(false)
 const isMobile = inject('isMobile', ref(false))
 const charPickerOpen = ref(false)
 const style = ref('')
+/** 本次生成用哪套服装（'work' = 工作/日常；后端按显式选装口径取，不从日程推导） */
 const outfitScene = ref('work')
 const { outfitConfirmation, confirmStandingOutfits, chooseOutfitPolicy } = useStandingOutfitConfirmation()
 const artist = ref('@ebora')
@@ -468,6 +469,7 @@ const styleModeHint = computed(() => {
 const showBatchDialog = ref(false)
 const batchStyle = ref('')
 const batchOutfitScene = ref('work')
+/** 预检/确认服装阶段：此时还没开始生成，但按钮要转圈 */
 const batchPreparing = ref(false)
 const batchRunning = ref(false)
 const batchIndex = ref(0)
@@ -480,14 +482,13 @@ const scanTipIndex = ref(0)
 let scanTipTimer = null
 
 function close() {
-  chooseOutfitPolicy()
   show.value = false
   charPickerOpen.value = false
   batchRunning.value = false
   batchPaused.value = false
   batchCompleted.value = 0
   stopPolling()
-  setTimeout(() => emit('close'), 300)
+  setTimeout(() => emit('close'), 180)
 }
 
 function charName(id) {
@@ -495,7 +496,6 @@ function charName(id) {
 }
 
 const selectedCharacter = computed(() => props.characters.find(c => c.id === selectedCharId.value) || null)
-
 const selectedCharacterName = computed(() => selectedCharacter.value?.display_name || selectedCharacter.value?.name || '请选择角色')
 /** 当前角色的全部配置单（保持创建顺序，勾选时不跳位） */
 const selectedSets = computed(() => emojiSets.value.filter(s => s.character_id === selectedCharId.value))
@@ -797,6 +797,8 @@ async function generateAll() {
   const styleText = style.value.trim()
   starting.value = true
   try {
+    // 上游 v3.10.0：先预检「该场景下角色是否配了服装」，缺就弹二选一
+    //（自动补全 / 用默认外观）；用户取消则整次生成中止
     const missingOutfitPolicy = await confirmStandingOutfits(() => api.preflightEmojiOutfits([charId], scene))
     if (missingOutfitPolicy === null) return
     promptPendingCharIds.value.push(charId)
@@ -804,6 +806,7 @@ async function generateAll() {
     const result = p?.results?.[0]
     if (!result?.ok) throw new Error(result?.error || p?.error || '提示词生成失败')
     // 角色原本没有配置单时，后端会自动建默认单并启用，这里同步编辑目标
+    // （只在用户没在中途切角色/切配置单时才改，避免把别人的目标抢过来）
     const newSetId = p?.results?.[0]?.set_id
     if (newSetId && selectedCharId.value === charId && selectedSetId.value === setId) selectedSetId.value = newSetId
     promptPendingCharIds.value = promptPendingCharIds.value.filter(id => id !== charId)
@@ -843,6 +846,7 @@ function openBatchDialog() {
 }
 
 function closeBatchDialog() {
+  // 关窗时把可能挂着的服装确认也收掉，避免遮罩残留
   chooseOutfitPolicy()
   showBatchDialog.value = false
 }
@@ -892,6 +896,7 @@ async function startBatchGenerate() {
   const scene = batchOutfitScene.value
   const styleText = batchStyle.value.trim()
   let missingOutfitPolicy
+  // 一次预检覆盖全部角色（只查缺哪几个，不生成）
   batchPreparing.value = true
   try {
     missingOutfitPolicy = await confirmStandingOutfits(() => api.preflightEmojiOutfits(chars.map(c => c.id), scene))
@@ -918,14 +923,13 @@ async function startBatchGenerate() {
       try {
         promptPendingCharIds.value.push(c.id)
         const p = await api.generateEmojiPrompts([c.id], styleText, null, { outfitScene: scene, missingOutfitPolicy })
-        const result = p?.results?.[0]
-        if (!result?.ok) throw new Error(result?.error || p?.error || '提示词生成失败')
+        if (p?.error) throw new Error(p.error)
         promptPendingCharIds.value = promptPendingCharIds.value.filter(id => id !== c.id)
         if (batchPaused.value) {
           await waitBatchResume()
           if (!batchRunning.value) return
         }
-        const g = await api.generateEmojiImages([c.id], [], artist.value, false, result.set_id)
+        const g = await api.generateEmojiImages([c.id], [], artist.value)
         if (g?.error) throw new Error(g.error)
         if (batchPaused.value) {
           await waitBatchResume()
@@ -1234,7 +1238,6 @@ onBeforeUnmount(() => {
 .emoji-char-picker { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .emoji-char-layer { flex: 1; min-width: 0; min-height: 0; display: flex; }
 .emoji-char-dropdown { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-
 .emoji-char-list {
   flex: 1;
   min-height: 0;
@@ -1246,7 +1249,8 @@ onBeforeUnmount(() => {
   scrollbar-width: thin;
   scrollbar-color: var(--bg-hover) transparent;
 }
-.emoji-char-list::-webkit-scrollbar { width: 4px; height: 4px; }.emoji-char-list::-webkit-scrollbar-track { background: transparent; }
+.emoji-char-list::-webkit-scrollbar { width: 4px; height: 4px; }
+.emoji-char-list::-webkit-scrollbar-track { background: transparent; }
 .emoji-char-list::-webkit-scrollbar-thumb {
   background: var(--bg-hover);
   border-radius: 4px;
@@ -1442,31 +1446,14 @@ onBeforeUnmount(() => {
   top: 0;
   z-index: 5;
   display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex-shrink: 0;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
   background: var(--bg-secondary);
-  padding: 16px;
+  padding: 10px 14px;
   border-radius: 12px;
   box-shadow: var(--shadow-xs);
 }
-.emoji-toolbar-row > .standing-generation-direction {
-  min-width: 0;
-}
-.emoji-generation-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.emoji-generation-options,
-.emoji-generation-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.emoji-generation-actions { margin-left: auto; }
 .emoji-gear {
   width: 30px; height: 30px;
   padding: 0;
@@ -1509,6 +1496,11 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-xs);
 }
 .emoji-mode-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.emoji-style-input {
+  flex: 1;
+  min-width: 240px;
+  padding: 9px 12px;
+}
 .emoji-progress-strip {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px;
@@ -2020,9 +2012,8 @@ onBeforeUnmount(() => {
   }
   .emoji-gear { width: 32px; height: 32px; }
   .emoji-mode-badge { padding: 8px 8px; font-size: 11px; }
-  .emoji-generation-footer { gap: 10px; }
-  .emoji-generation-options,
-  .emoji-generation-actions { gap: 8px; }
+  .emoji-style-input { flex: 1; min-width: 0; padding: 8px 10px; font-size: 12px; }
+  .emoji-toolbar-row .emoji-redo-btn { flex: 0 0 auto; }
   .emoji-progress-strip { padding: 6px 10px; font-size: 12px; }
   .emoji-char-section {
     flex: 0 0 auto;

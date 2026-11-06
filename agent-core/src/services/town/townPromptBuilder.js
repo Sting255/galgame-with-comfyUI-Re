@@ -80,7 +80,7 @@ export async function generatePortraitPrompt({ appearanceInfo, requirement = '' 
 const SPRITE_OUTPUT_STRUCTURE = `【输出结构】
 Describe the requested chibi pixel character sprite in natural English as one continuous paragraph.
 
-**MUST:** Describe the character's defining appearance in natural-language sentences, using accurate hair, eyes, clothing, accessories, and distinctive features from the supplied character information, then describe the standing pose. Do not wrap appearance descriptions in parentheses or invent details to meet a fixed feature count. State the facing direction explicitly (front view facing the viewer / back view seen from behind).
+**MUST:** Write the character's appearance with at least 6 accurate appearance anchors (hairstyle, hair color, eye color, signature outfit, accessories, build, distinctive features), then the standing pose. State the facing direction explicitly (front view facing the viewer / back view seen from behind).
 
 Hard Rules:
 - ALL text in English. No Chinese characters anywhere.

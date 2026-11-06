@@ -3,8 +3,9 @@
 // 依赖方向（单向）：
 //   db/index.js → settings.js（打开数据库后注入句柄并触发装载）
 //   config.js  → settings.js（读写系统设置）
-//   settings.js → （无内部依赖，db 句柄由 initSettingsHandle 注入）
+//   settings.js → config.js（运行时配置同步）、maintenance.js（恢复门禁）；db 句柄由 initSettingsHandle 注入。
 import { config } from '../config.js';
+import { assertDatabaseAvailable } from './maintenance.js';
 
 let _db = null;
 
@@ -14,6 +15,7 @@ export function initSettingsHandle(db) {
 }
 
 function handle() {
+  assertDatabaseAvailable();
   if (!_db) throw new Error('settings: db handle not initialized (initSettingsHandle)');
   return _db;
 }
@@ -40,6 +42,10 @@ const DB_ONLY_KEYS = new Set([
   'novelai_profiles',
   'active_novelai_profile_id',
   'memory_settings',
+  // 离线世界编年（2026-11-06）：心跳与一次性提示位，纯运行时状态，不走 config 加载
+  'runtime.last_seen_at',
+  'runtime.offline_backfilled_at',
+  'runtime.offline_notice_id',
   'workflow_mode_auto_detected',
   'maibot_webui_url',
   'maibot_webui_token',
@@ -47,6 +53,8 @@ const DB_ONLY_KEYS = new Set([
   'emoji_style_mode',
   'standing_prompt_mode',
   'novelai_api_key',
+  // 提示词破限正文（长文本，可空串=用代码默认）——走 DB 直读，不进 config
+  'jailbreak_prompt',
 ]);
 
 /** 写入单条系统设置 */
@@ -54,7 +62,7 @@ export function setSetting(key, value) {
   handle().prepare(`INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`)
     .run(key, String(value));
   // 写入时校验：如果 key 不在映射表、也不在 disturb 前缀、也不在 DB-only 白名单，说明重启后会丢失
-  if (!(key in SETTING_TO_CONFIG) && !key.startsWith('disturb_') && !DB_ONLY_KEYS.has(key)) {
+  if (!(key in SETTING_TO_CONFIG) && !key.startsWith('disturb_') && !key.startsWith('runtime.') && !DB_ONLY_KEYS.has(key)) {
     console.warn(`[config] setSetting("${key}"): key is not registered in SETTING_TO_CONFIG — value will NOT survive restart. Add it to the mapping in db/settings.js.`);
   }
 }
@@ -80,6 +88,14 @@ export const SETTING_TO_CONFIG = {
   novelai_quality_prompt: { obj: 'comfyui',   key: 'novelaiQualityPrompt', type: 'string' },
   novelai_negative_prompt: { obj: 'comfyui', key: 'novelaiNegativePrompt', type: 'string' },
   comfy_artist:            { obj: 'comfyui',   key: 'artist',          type: 'string'  },
+  // 姿势控制（Anima Control Pose）：开关 / 强度 / 当前参考图文件名
+  comfy_pose_enabled:      { obj: 'comfyui',   key: 'poseControlEnabled',  type: 'bool'   },
+  comfy_pose_strength:     { obj: 'comfyui',   key: 'poseControlStrength', type: 'float'  },
+  comfy_pose_image:        { obj: 'comfyui',   key: 'poseControlImage',    type: 'string' },
+  comfy_input_dir:         { obj: 'comfyui',   key: 'inputDir',            type: 'string' },
+  comfy_pose_aspect:       { obj: 'comfyui',   key: 'poseControlAspect',   type: 'float'  },
+  comfy_pose_from_position: { obj: 'comfyui',  key: 'poseFromPosition',    type: 'bool'   },
+  comfy_pose_from_position_portrait: { obj: 'comfyui', key: 'poseFromPositionPortrait', type: 'bool' },
   comfy_width:             { obj: 'comfyui',   key: 'width',           type: 'int'     },
   comfy_height:            { obj: 'comfyui',   key: 'height',          type: 'int'     },
   comfy_moments_artist:    { obj: 'comfyui',   key: 'momentsArtist',   type: 'string'  },
@@ -91,8 +107,6 @@ export const SETTING_TO_CONFIG = {
   comfy_quality_prompt:    { obj: 'comfyui',   key: 'qualityPrompt',   type: 'string'  },
   comfy_negative_prompt:   { obj: 'comfyui',   key: 'negativePrompt',  type: 'string'  },
   feature_emotion:               { obj: 'features', key: 'emotion',          type: 'bool' },
-  feature_soul:                  { obj: 'features', key: 'soul',             type: 'bool' },
-  soul_mids:                     { obj: 'soul',     key: 'mids',             type: 'json' },
   feature_memory:                { obj: 'features', key: 'memory',           type: 'bool' },
   feature_replyGuesses:          { obj: 'features', key: 'replyGuesses',     type: 'bool' },
   feature_forceImageGen:               { obj: 'features', key: 'forceImageGen',            type: 'bool' },
@@ -103,7 +117,7 @@ export const SETTING_TO_CONFIG = {
   feature_eventFreq:                 { obj: 'features', key: 'eventFreq',          type: 'float' },
   feature_momentFreq:                { obj: 'features', key: 'momentFreq',         type: 'float' },
   feature_momentFreqMode:            { obj: 'features', key: 'momentFreqMode',     type: 'string' },
-  // 传媒内容页自动抓帖的间隔（分钟）；0 = 关闭自动、只手动刷新
+  // 上游 v3.9.1 用的键名（兼容旧库：上游版本写下的行也能被读出）
   feature_mediaAutoMinutes:          { obj: 'features', key: 'mediaAutoMinutes',    type: 'int' },
   feature_disturbMode:              { obj: 'features', key: 'disturbMode',         type: 'bool' },
   feature_schedule:                 { obj: 'features', key: 'schedule',             type: 'bool' },
@@ -118,7 +132,37 @@ export const SETTING_TO_CONFIG = {
   feature_townLLM:                   { obj: 'features', key: 'townLLM',               type: 'bool' },
   feature_townAutoLLM:               { obj: 'features', key: 'townAutoLLM',           type: 'bool' },
   feature_bgmMuted:                  { obj: 'features', key: 'bgmMuted',              type: 'bool' },
+  feature_intimate:                  { obj: 'features', key: 'intimate',              type: 'bool' },
+  feature_intimateBackfill:          { obj: 'features', key: 'intimateBackfill',      type: 'bool' },
+  feature_hypnosis:                  { obj: 'features', key: 'hypnosis',              type: 'bool' },
+  feature_antiRepetition:            { obj: 'features', key: 'antiRepetition',         type: 'bool' },
+  feature_antiRepetitionLock:        { obj: 'features', key: 'antiRepetitionLock',     type: 'bool' },
+  feature_antiRepetitionEscalation:  { obj: 'features', key: 'antiRepetitionEscalation', type: 'bool' },
+  feature_antiRepetitionReroll:      { obj: 'features', key: 'antiRepetitionReroll',     type: 'bool' },
+  feature_touch:                     { obj: 'features', key: 'touch',                  type: 'bool' },
+  feature_touchInstant:              { obj: 'features', key: 'touchInstant',           type: 'bool' },
+  feature_touchGroupAdult:           { obj: 'features', key: 'touchGroupAdult',        type: 'bool' },
+  feature_touchImageMode:            { obj: 'features', key: 'touchImageMode',         type: 'string' },
+  // 出图判定配额（2026-10-01）：同一会话连续几轮"她要图"都没成就不再判定；默认 6（原硬编码 3）
+  feature_imageJudgeQuota:           { obj: 'features', key: 'imageJudgeQuota',        type: 'int'    },
+  // 动作出图概率缩放（2026-10-01）：智能档基础概率整体乘这个系数（默认 1，夹到 ≤1 的结果）
+  feature_touchImageChanceScale:     { obj: 'features', key: 'touchImageChanceScale',  type: 'float'  },
+  // 性爱交互姿势（2026-10-01）：默认开；关掉时推进动作一律 409（读状态不拦）
+  feature_intimateActions:           { obj: 'features', key: 'intimateActions',        type: 'bool'   },
+  feature_touchBystanderChance:      { obj: 'features', key: 'touchBystanderChance',    type: 'float'  },
+  feature_touchReactionMode:         { obj: 'features', key: 'touchReactionMode',        type: 'string' },
+  feature_hiresQuality:              { obj: 'features', key: 'hiresQuality',             type: 'string' },
+  // 2026-09-30 三期玩具系统：不注册这里的话 setSetting('feature_toys') 重启后会丢（真机日志已 warn）
+  feature_toys:                      { obj: 'features', key: 'toys',                   type: 'bool' },
+  // 提示词破限（Prompt Shield）：不注册这里的话 setSetting('feature_jailbreak') 重启后会丢，
+  // 加载时会走到 setSetting 里那条 "key is not registered" 的 warn（真机日志已吃过这个亏）。
+  feature_jailbreak:                 { obj: 'features', key: 'jailbreak',               type: 'bool' },
   feature_groupIdleBudget:           { obj: 'features', key: 'groupIdleBudget',        type: 'int'  },
+  // 上游 v4.2.0：下线深度思考预规划链路，feature_deepThinkMode 一并删除。
+  // 上游 v3.9.0 合并：灵魂系统开关（feature_soul）—— 迁移时会把旧安装的关闭值一次性改成开启，
+  // 之后 setSetting('feature_soul') 也能持久化（否则重启后丢，日志会 warn）。
+  feature_soul:                      { obj: 'features', key: 'soul',                  type: 'bool' },
+  // media_auto_minutes 与上方 feature_mediaAutoMinutes 是同一个键，本地保留上游那份，删掉这条重复。
   group_activity: { obj: 'groupChat', key: 'activity', type: 'int' },
   group_temperature:                 { obj: 'groupChat', key: 'temperature',           type: 'float' },
   group_summary_interval:            { obj: 'groupChat', key: 'summaryInterval',      type: 'int' },
@@ -130,7 +174,10 @@ export const SETTING_TO_CONFIG = {
   user_appearance:                 { obj: 'user',     key: 'appearance',        type: 'string' },
   user_persona:                    { obj: 'user',     key: 'persona',           type: 'string' },
   workflow_mode:                   { obj: 'workflow',key: 'mode',             type: 'string' },
+  // custom 模式选中的工作流文件名（workflow/ 下的裸文件名）—— 漏了它会导致重启后选择丢失
   workflow_custom_template:        { obj: 'workflow',key: 'customTemplate',   type: 'string' },
+  // 模式来源：manual = 用户在设置页手动选过（自动探测不再覆盖）；auto = 由模型目录自动对齐
+  workflow_mode_source:            { obj: 'workflow',key: 'modeSource',       type: 'string' },
   comfy_global_lora:              { obj: 'comfyui',  key: 'globalLora',       type: 'json' },
   comfy_hires_workflow_mode: { obj: 'comfyui', key: 'hiresWorkflowMode', type: 'string' },
   comfy_hires_upscale_model: { obj: 'comfyui', key: 'hiresUpscaleModel', type: 'string' },
@@ -139,6 +186,7 @@ export const SETTING_TO_CONFIG = {
   comfy_hires_source_blend:       { obj: 'comfyui', key: 'hiresSourceBlend', type: 'float' },
   comfy_hires_lora:               { obj: 'comfyui',  key: 'hiresLora',        type: 'json' },
   comfy_hires_steps:              { obj: 'comfyui',  key: 'hiresSteps',       type: 'int'   },
+  comfy_hires_turbo:              { obj: 'comfyui',  key: 'hiresTurbo',       type: 'bool'  },
   comfy_hires_cfg:                { obj: 'comfyui',  key: 'hiresCfg',         type: 'float' },
   comfy_hires_denoise:            { obj: 'comfyui',  key: 'hiresDenoise',     type: 'float' },
   comfy_hires_max_size:           { obj: 'comfyui',  key: 'hiresMaxSize',     type: 'int' },
@@ -146,6 +194,9 @@ export const SETTING_TO_CONFIG = {
   comfy_hires_artist:             { obj: 'comfyui',  key: 'hiresArtist',      type: 'string' },
   feature_imageGenMode:            { obj: 'features', key: 'imageGenMode',     type: 'string' },
   town_generation_settings:       { obj: 'town',     key: 'generation',       type: 'json'  },
+  // 反重复采样参数：'' = 不发送该字段（与历史请求体一致）
+  anti_repetition_penalty:        { obj: 'llm',      key: 'antiRepetitionPenalty',   type: 'penalty' },
+  anti_repetition_frequency:      { obj: 'llm',      key: 'antiRepetitionFrequency', type: 'penalty' },
 };
 
 function castValue(raw, type) {
@@ -155,6 +206,12 @@ function castValue(raw, type) {
     case 'float': { const v = parseFloat(raw); return Number.isNaN(v) ? undefined : v; }
     case 'bool': return raw === 'true' || raw === '1';
     case 'json': { try { const v = JSON.parse(raw); return v; } catch { return undefined; } }
+    // penalty：空串 = 用户清空 → null（请求体里不发送）；非法数字 → undefined（保留代码默认）
+    case 'penalty': {
+      if (String(raw).trim() === '') return null;
+      const v = parseFloat(raw);
+      return Number.isFinite(v) ? Math.max(-2, Math.min(2, v)) : undefined;
+    }
     default:     return raw;
   }
 }

@@ -17,6 +17,7 @@ import { concludeTownNpcEvent, expireTownNpcEvent } from './town/townNpcEventGen
 import { isMapFocused } from './town/townService.js';
 import { broadcastEventUrgency } from './eventNotificationBus.js';
 import { broadcastProactiveMessage } from './notificationBus.js';
+import { isRefusal } from './refusalDetector.js';
 import { config } from '../config.js';
 import { splitText } from '../utils/sentenceSplitter.js';
 import { getCoreDialogueRules } from '../builtinRules.js';
@@ -67,6 +68,7 @@ async function expireDueEvents() {
     JOIN characters c ON c.id = ce.character_id
     WHERE ce.expires_at <= datetime('now')
       AND ce.status IN ('open','engaged')
+      AND ce.processing = 0
   `).all();
 
   for (const event of expiredEvents) {
@@ -149,7 +151,7 @@ async function tick(opts = {}) {
       return;
     }
 
-    // 检查是否有角色符合条件：无活跃事件 + events_disabled=0 + 非归档 + 冷却已过
+    // 检查是否有角色符合条件：无活跃事件 + events_disabled=0 + 冷却已过
     const candidate = db.prepare(`
       SELECT c.* FROM characters c
       WHERE c.events_disabled = 0
@@ -287,6 +289,13 @@ ${eventRules}`;
           { role: 'system', content: userInfoMsg },
           { role: 'user', content: greetingPrompt },
         ], { temperature: 0.7, label: '奇遇紧急联络' });
+
+        // 拒答不能当角色主动消息发出去（2026-10-22）：整条跳过，等下一个检查周期。
+        // 注意不能只清空 greeting —— 下面会照常落库并广播空消息。
+        if (isRefusal(greeting)) {
+          console.warn(`[eventScheduler] 半程提醒被模型拒答，跳过本次（${event.display_name}）`);
+          continue;
+        }
 
         // 写入消息（分句）
         const conversationId = `char_${event.character_id}`;

@@ -54,7 +54,7 @@ export const IMAGE_PROMPT_RULE = {
   rule_key: 'image_prompt',
   rule_content: `Describe the image as a flowing, detailed scene in natural English — one continuous paragraph.
 
-Priority order: for sexual, intimate, or physically intense scenes, what the bodies are doing outranks everything else — the exact state of those bodies and of their clothing > framing > environment > lighting > mood, and environment and lighting may never replace, postpone, or soften the physical action when it is present. For every other scene the normal order applies: what is happening > framing > environment > lighting > mood.
+Priority order: what the bodies are doing > the exact state of those bodies and of the clothing > framing > environment > lighting > mood. Environment and lighting may never replace, postpone, or soften the physical action.
 
 Follow this progression:
 
@@ -83,11 +83,24 @@ Follow this progression:
    - If a sex toy is worn or in use: name it, say where it sits on the body, its intensity, and the bulge, deformation, or wet patch it makes in the clothing or flesh.
    - Face at the same time: expression, mouth open or bitten, tongue visible, eyes shut or unfocused or looking at something, tears or drool if present.
    Example of the required level of detail: 'she is bent forward over the desk with her skirt hiked to her waist, her panties stretched between her thighs at knee height, a clear thread of fluid running from her vulva down her inner thigh; her right hand grips the desk edge with white knuckles; her mouth is open, tongue visible, eyes half shut and unfocused.'
-   When the scene is not physical or intimate, keep this step proportionate and brief.
+   When the scene is not physical, keep this step proportionate and move on.
 
-7. Scene-appropriate clothing — The outfit is a binary choice: either fully switch to what the scenario calls for, or keep the character's original appearance exactly as established. When the scenario calls for a swap, change completely: bathing or showering means no clothing and complete nude; sleeping in bed means pajamas or a nightgown; swimming or soaking in a hot spring means a swimsuit or a bath towel; exercising or playing sports means sportswear or gym clothes. These are only examples, not an exhaustive list — many other special scenarios exist (such as cooking, rainy or snowy weather, holidays, ceremonies, or anything else the scene calls for), so judge the right outfit from the context and explicitly describe the changed outfit.
+2. **Clothing — the exact, literal state, including partial states.** Say precisely what is still on, what has been moved and where it now sits, and what is bare. Partial states are allowed and often required: hem pulled aside, bra pushed up under the breasts, shirt open with nothing underneath, panties pulled down to the knees, one strap off the shoulder, wearing nothing but a collar, sock or single garment left on. Name the fabric and its position instead of summarising it. Do not tidy the scene up: never add clothing that the scene removed, and never remove clothing the scene kept. Only when the scenario is an ordinary non-intimate one (bathing, sleeping, sports, swimming, weather) switch the outfit completely to what that scenario calls for.
 
-8. Atmosphere — End with the emotional tone, e.g. 'conveying an atmosphere of joyful chaos and shared leisure'.
+3. **Characters — MUST:** When an existing IP character appears, each character is written as 'Name \\(Series\\) \\(hair color, eye color, distinctive features\\)' followed by what they are doing: pose, expression, action, and spatial position in the frame. Example: 'hu tao \\(Genshin Impact\\) \\(brown hair, red eyes, twin tails\\) leans over a cluttered table with a mischievous grin while holding a controller with both hands.' Every character gets a complete sentence with a distinct, natural action.
+
+4. **Environment & Props** — Describe furniture, objects, and background elements that ground the scene in a lived-in space, and the surfaces bodies are resting on or against. If the conversation provides Environment reference (location, time of day, weather, setting details), weave them naturally into the description.
+
+5. **Camera & Framing** — Choose one coherent camera position and shot distance that best express the action, emotion, and relationship between the character and surroundings. Respect any explicitly requested viewpoint; otherwise, vary the framing with the situation instead of defaulting to a centered, front-facing, eye-level portrait.
+   - For a direct selfie, explicitly describe a 'selfie pose' with an 'arm stretched towards viewer', the face close to the lens, and natural foreshortening. Place the viewpoint at the handheld camera; do not also describe an external camera watching the character take the selfie. For a mirror selfie, describe the visible phone and reflection instead.
+   - Match the angle to the moment: a high-angle view or overhead shot can reveal a tabletop activity or a character resting below; a low-angle view can emphasize an energetic pose or towering surroundings; a side view, three-quarter view, or an over-the-shoulder shot can bring movement, conversation, and shared activities to life. These are options, not fixed assignments.
+   - Choose a close-up for expressions or small gestures, a medium shot for body language and interaction, or a wider shot when the setting matters. Use foreground, middle ground, and background placement or gentle perspective foreshortening when useful to create spatial depth.
+   - Specify focus deliberately: shallow depth of field with a softly blurred background for a clear subject emphasis, or deeper focus when multiple people or environmental details need to remain readable. Keep the important faces, actions, and objects in focus; background blur is not mandatory.
+   - Weave only the chosen camera and focus cues into the English paragraph, concisely within the total character limit. Keep the viewpoint, gaze, pose, and perspective physically consistent; do not stack incompatible angles or add dramatic distortion merely for variety.
+
+6. **Lighting** — Specify light source (window, lamp, overhead), quality (warm/cool, soft/hard), and shadow behavior.
+
+7. **Atmosphere** — End with the emotional tone, e.g. 'conveying an atmosphere of joyful chaos and shared leisure'. Atmosphere is the last thing added and must never be used in place of step 1.
 
 Hard Rules:
 - **When an existing IP character appears, preserve the character identity tag 'Character \\(Series\\)' (e.g. 'Furina \\(Genshin Impact\\)'). At first mention, follow this tag with natural-language descriptions of the character's defining appearance. This includes the main character you are playing, even when the prompt is a close-up, a continuation frame, or the character is the only person in the scene. Do not wrap appearance descriptions in parentheses or require a fixed feature count; use accurate details from the character information without inventing missing features.**
@@ -111,7 +124,7 @@ export const STANDING_IMAGE_PROMPT_RULE = {
   rule_key: 'standing_image_prompt',
   rule_content: `Describe the requested character illustration in natural English as one continuous paragraph.
 
-**MUST:** When an existing IP character appears, begin with the character identity tag 'Name \\(Series\\)', preserving the escaped series parentheses. Follow it with natural-language sentences describing the character's defining appearance, then their pose, expression, action, and spatial position in the frame. Example: 'hu tao \\(Genshin Impact\\) has long brown twin tails and bright red eyes. She wears a dark brown coat and a black hat with a plum blossom ornament. She stands at the center with a mischievous grin and one hand resting on her hip.' Prioritize accurate hair, eyes, clothing, accessories, and distinctive features from the character information. Do not wrap appearance descriptions in parentheses or invent details to meet a fixed feature count.
+**MUST:** When an existing IP character appears, write the character as 'Name \\(Series\\) \\(hair color, eye color, distinctive features\\)', followed by the character's pose, expression, action, and spatial position in the frame. Example: 'hu tao \\(Genshin Impact\\) \\(brown hair, red eyes, twin tails\\) leans forward with a mischievous grin while holding a controller with both hands.' The first mention MUST include at least 6 accurate appearance anchors, such as hairstyle, hair color, eye color, signature outfit, accessories, build, and distinctive features.
 
 Hard Rules:
 - ALL text in English. No Chinese characters anywhere.
@@ -300,7 +313,7 @@ const WORLD_INTEGRATION_TASK_RULES = Object.freeze({
 
   character_persona: `人格卡的身份经历、价值判断、好恶、外观与服饰都必须在<world_setting>中成立。将世界规则内化为角色的常识与行为逻辑，不抄写世界观原文；通用角色模板、默认形象或额外要求与世界观冲突时，以<world_setting>为准。未规定的细节才由创作者补全，不另造相冲突的世界规则。`,
 
-  moments: `${WORLD_INTEGRATION_PREAMBLE}朋友圈的正文与配图都必须遵循<world_setting>：
+  moments: `${WORLD_INTEGRATION_PREAMBLE}以下所有创作必须在<world_setting>的框架内展开：
 
 1. 你生活在这个世界中。地点、活动、社会关系，以及你觉得什么正常、什么值得惊讶，都以当前世界为准。涉及世界观明确规定的事情时，必须落实这些规则，不能退回与之冲突的现实常识或原 IP 设定。
 2. 当世界观影响了你本次生活中的做法、称呼、互动或物品时，在相关细节里自然体现这种影响。这些是你习以为常的生活常识，用你自己的性格、口癖和情绪说话。
@@ -335,10 +348,10 @@ const WORLD_INTEGRATION_TASK_RULES = Object.freeze({
 
   event: `${WORLD_INTEGRATION_PREAMBLE}以下所有创作必须在<world_setting>的框架内展开：
 
-1. 角色对正常、异常、危险和人际关系的判断必须以<world_setting>为准。涉及世界观明确规定的事情时，必须落实这些规则，不能退回与之冲突的现实常识或原 IP 设定。
-2. 事件的起因、行动及其后果必须在世界规则下成立，并承接已经发生的剧情和玩家选择。角色以自己的性格和动机作出反应，不为展示设定改变已发生的事实。
-3. 正文与配图的场景、人物行为和物品都必须符合世界规则。当世界设定影响本次事件的做法、关系或视觉细节时，在相关位置准确体现。
-4. 世界观约束事件如何发生，不要求每句话、每个细节都显式展示设定。可以自然交代必要的背景、原因和感受；剧情转折与反常选择也必须在世界规则下成立，不必靠堆砌设定来表现。`,
+1. 角色的所有行为、反应和判断，都必须以<world_setting>为基准线。<world_setting>塑造了角色的常识和三观——角色觉得什么理所当然、什么值得惊讶、什么不可接受，都由<world_setting>决定，不由现实世界的常识决定。
+2. 事件中"异常"的判定标准来自<world_setting>。一个事件是否奇怪、是否危险、是否值得在意，取决于它在这个世界里的相对位置——在现实世界显得离奇的事，在这个世界里可能稀松平常，反之亦然。
+3. 环境描写要自然地渗透<world_setting>的细节。场景中的每一个元素——空间、物品、氛围、人群——都应该一致地属于这个世界，不能出现与<world_setting>矛盾的描写。
+4. 不要把<world_setting>当成一段可以忽略的"前置说明"。它必须穿透到叙事中的每一个感官细节、每一个角色反应、每一个情节转折。<world_setting>不是背景，是地基。`,
 
   eventConclusion: `<world_setting>是最高优先级的创作框架。结局叙述和记忆摘要必须在<world_setting>的框架下展开——角色的行为逻辑、事件的因果链条、环境的细节描写，都要忠实于<world_setting>的基本法则。<world_setting>定义了角色判断"正常"与"异常"的基准线，结局的收束方式不能偏离这条基准线。`,
 
@@ -388,3 +401,45 @@ export const BUILTIN_RULE_KEYS = new Set([
   'image_intent',
   'world_integration',
 ]);
+
+// ═══════════════════════════════════════════════════════════
+// 9. 生图规则的**唯一取用入口**（2026-10-02）
+//
+// 背景：原作者明确要求 `IMAGE_PROMPT_RULE` 第 3 条 Characters — MUST
+// （`Name \(Series\) \(hair color, eye color, distinctive features\)` + 动作/表情/空间位置 +
+// 「每个角色一句、动作各不相同」）**必须出现在所有生图路径里**，原话是「这段必须要的，不然就会乱」：
+// 多角色同框时缺了它，模型会只画一个人、或者把几个人的特征糊成一个。
+//
+// 现状（本轮排查）：场景类路径（私聊配图 / 群聊配图 / 朋友圈 / 报纸 / 事件 / 梦境 / 立绘 / 小镇 /
+// 信箱 / 主动聊天…）都是 `getGlobalRule('image_prompt')` 拿全文 ✓；
+// 但**即时反应类**路径（触摸 / 玩具 / 自慰 / 亲密推进）与**朋友圈互动 / 动态表情**是各自手写 JSON
+// 字段说明让 LLM 现写英文画面描述，**没有把这份规则给它** ⇒ 那些图正是最容易「乱」的地方。
+//
+// 所以这里给一个统一入口：**各处不要再手抄规则原文**（抄了必然漂移），一律调用下面两个函数。
+// ═══════════════════════════════════════════════════════════
+
+/** 场景/多角色生图规则全文（= `IMAGE_PROMPT_RULE`，自带 Characters — MUST） */
+export function getImagePromptRuleText() {
+  return IMAGE_PROMPT_RULE.rule_content;
+}
+
+/** 立绘类生图规则全文（= `STANDING_IMAGE_PROMPT_RULE`，自带同一段 MUST；别与上面那份叠加） */
+export function getStandingImagePromptRuleText() {
+  return STANDING_IMAGE_PROMPT_RULE.rule_content;
+}
+
+/**
+ * 给「即时反应类」prompt 用的一行插入块：把生图规则作为**规范**附在 system 末尾。
+ *
+ * ⚠️ 措辞里必须强调"这是规范、不是内容"：这些路径的 LLM 输出是 JSON（`reaction_text` +
+ * `image_prompt`），如果只说"遵守以下规则"，模型会把规则原文抄进 `image_prompt` 字段
+ * （`services/imageSkill.js:689` 已经专门为这种"画面描述里只有规范原文"报了错 ✓）。
+ *
+ * @param {string} [heading] 自定义小标题（默认中文，写进 LLM 提示词里）
+ */
+export function buildImagePromptRuleBlock(heading = '【生图规范（写 image_prompt 字段时必须遵守）】') {
+  return `${heading}
+（以下是**写作规范**，不是要填进 image_prompt 的内容 —— 任何情况下都不得把规范原文抄进字段值）
+${IMAGE_PROMPT_RULE.rule_content}`;
+}
+

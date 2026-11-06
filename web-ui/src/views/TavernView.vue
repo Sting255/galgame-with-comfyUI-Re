@@ -13,9 +13,7 @@
           class="user-avatar clickable"
           :style="userAvatarStyle"
           @click="showUserAvatarPicker = true"
-        >
-{{ userAvatar ? '' : '我' }}
-</div>
+        >{{ userAvatar ? '' : '我' }}</div>
         <div class="user-info">
         <!-- 姓名 -->
         <div class="user-field-row">
@@ -93,17 +91,17 @@
       </div>
       <div v-if="!isMobile" class="mailbox-card card" @click="showMailbox = true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="4" width="20" height="16" rx="2" />
-          <path d="M2 4L12 13L22 4" />
+          <rect x="2" y="4" width="20" height="16" rx="2"/>
+          <path d="M2 4L12 13L22 4"/>
         </svg>
         <span class="mailbox-label">信箱</span>
         <span v-if="mailboxUnread > 0" class="mailbox-badge">{{ mailboxUnread > 99 ? '99+' : mailboxUnread }}</span>
       </div>
       <div v-if="!isMobile" class="backpack-card card" @click="showBackpack = true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z" />
-          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z" />
-          <path d="M10 13h4" />
+          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z"/>
+          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z"/>
+          <path d="M10 13h4"/>
         </svg>
         <span class="mailbox-label">背包</span>
         <span v-if="backpackChestReady" class="mailbox-badge backpack-dot" title="宝箱已就绪"></span>
@@ -111,24 +109,24 @@
     </div>
 
     <!-- ═══════════════════════════════════════════
-         关系图与宿舍安排并排；下方世界观 / SillyTavern 预设各占一半
-         《邻舍日报》已并入「传媒」页（见 NavBar 的传媒标签）
+         今日报纸 / 用户关系图入口卡片（同一行，各占一半）
          ═══════════════════════════════════════════ -->
     <div class="relation-entry-row">
-      <div class="relation-entry card" role="button" tabindex="0" @click="showUserRelationGraph = true" @keydown.enter.prevent="showUserRelationGraph = true" @keydown.space.prevent="showUserRelationGraph = true">
-        <div class="relation-entry-icon">
+      <div class="relation-entry card" @click="openNewspaper">
+        <div class="relation-entry-icon newspaper-icon">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="17" r="3" />
-            <line x1="9" y1="6" x2="11" y2="14" /><line x1="15" y1="6" x2="13" y2="14" />
+            <path d="M4 22h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/>
+            <path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>
           </svg>
         </div>
         <div class="relation-entry-text">
-          <span class="relation-entry-title">我的关系图</span>
-          <span class="relation-entry-hint">查看和管理你与所有角色的关系</span>
+          <span class="relation-entry-title">邻舍日报<span v-if="newspaperUnread" class="newspaper-dot cel-jelly" title="今天的报纸还没读"></span></span>
+          <span class="relation-entry-hint">{{ newspaperHint }}</span>
         </div>
         <span class="relation-entry-arrow">›</span>
       </div>
 
+      <!-- 上游 v4.2.0：宿舍安排（同居） -->
       <div class="relation-entry card" role="button" tabindex="0" @click="showCohabitation = true" @keydown.enter.prevent="showCohabitation = true" @keydown.space.prevent="showCohabitation = true">
         <div class="relation-entry-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7" /></svg></div>
         <div class="relation-entry-text">
@@ -137,30 +135,17 @@
         </div>
         <span class="relation-entry-arrow">›</span>
       </div>
-      <div class="relation-entry card" role="button" tabindex="0" @click="openWorldSetting" @keydown.enter.prevent="openWorldSetting" @keydown.space.prevent="openWorldSetting">
-        <div class="relation-entry-icon world-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <ellipse cx="12" cy="12" rx="4" ry="10" />
-            <line x1="2" y1="12" x2="22" y2="12" />
-            <line x1="12" y1="2" x2="12" y2="22" />
-          </svg>
-        </div>
-        <div class="relation-entry-text">
-          <span class="relation-entry-title">世界观设置</span>
-          <span class="relation-entry-hint">{{ activeWorldName || '定义所有角色共处的世界背景' }}</span>
-        </div>
-        <span class="relation-entry-arrow">›</span>
-      </div>
-      <div class="relation-entry card" role="button" tabindex="0" @click="showPromptPresets = true" @keydown.enter.prevent="showPromptPresets = true" @keydown.space.prevent="showPromptPresets = true">
+
+      <div class="relation-entry card" @click="showUserRelationGraph = true">
         <div class="relation-entry-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 4h16M4 12h16M4 20h16" /><circle cx="8" cy="4" r="2" /><circle cx="16" cy="12" r="2" /><circle cx="10" cy="20" r="2" />
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+            <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
           </svg>
         </div>
         <div class="relation-entry-text">
-          <span class="relation-entry-title">SillyTavern 预设</span>
-          <span class="relation-entry-hint">导入、编辑与管理全局提示词预设</span>
+          <span class="relation-entry-title">我的关系图</span>
+          <span class="relation-entry-hint">查看和管理你与所有角色的关系</span>
         </div>
         <span class="relation-entry-arrow">›</span>
       </div>
@@ -169,8 +154,22 @@
     <!-- ═══════════════════════════════════════════
          角色卡片网格
          ═══════════════════════════════════════════ -->
-    <div class="section-title">角色 ({{ folderScopedCharacters.length }})</div>
-    
+    <div class="char-toolbar">
+      <div class="section-title">角色 ({{ charCountLabel }})</div>
+      <div class="char-search" role="search" aria-label="查找酒馆角色">
+        <svg class="char-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" />
+        </svg>
+        <linshe-input
+          v-model="charSearch"
+          size="sm"
+          class="char-search-input"
+          placeholder="搜索角色名"
+          aria-label="搜索角色名"
+        />
+      </div>
+    </div>
+
     <!-- ═══════════════════════════════════════════
          文件夹筛选栏（单层分类：全部 / 未分类 / 各文件夹）
          ═══════════════════════════════════════════ -->
@@ -233,19 +232,64 @@
         分类管理
       </div>
     </div>
+    
+    <!-- ═══════════════════════════════════════════
+         世界观设置入口卡片
+         ═══════════════════════════════════════════ -->
+    <div class="relation-entry card" @click="openWorldSetting">
+      <div class="relation-entry-icon world-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <ellipse cx="12" cy="12" rx="4" ry="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <line x1="12" y1="2" x2="12" y2="22"/>
+        </svg>
+      </div>
+      <div class="relation-entry-text">
+        <span class="relation-entry-title">世界观设置</span>
+        <span class="relation-entry-hint">{{ activeWorldName || '定义所有角色共处的世界背景' }}</span>
+      </div>
+      <span class="relation-entry-arrow">›</span>
+    </div>
 
+    <!-- SillyTavern 预设（上游 v3.10.0 合并，2026-10-19）：全局提示词预设与世界观无关 -->
+    <div class="relation-entry card" role="button" tabindex="0" @click="showPromptPresets = true" @keydown.enter.prevent="showPromptPresets = true" @keydown.space.prevent="showPromptPresets = true">
+      <div class="relation-entry-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 4h16M4 12h16M4 20h16" /><circle cx="8" cy="4" r="2" /><circle cx="16" cy="12" r="2" /><circle cx="10" cy="20" r="2" />
+        </svg>
+      </div>
+      <div class="relation-entry-text">
+        <span class="relation-entry-title">SillyTavern 预设</span>
+        <span class="relation-entry-hint">导入、编辑与管理全局提示词预设</span>
+      </div>
+      <span class="relation-entry-arrow">›</span>
+    </div>
     <TransitionGroup name="char-pin" tag="div" class="char-grid" :class="{ stagger: gridStagger }">
         <!-- 表情包管理入口：永远在招募前 -->
         <div key="emoji-manage" class="char-card emoji-manage-card" @click="showEmojiManager = true">
           <div class="emoji-manage-icon">
             <svg viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
-              <path d="M334.711467 160.290133a413.013333 413.013333 0 0 1 239.547733-48.674133 37.614933 37.614933 0 0 1-7.509333 74.683733A338.056533 338.056533 0 0 0 197.973333 567.022933a337.92 337.92 0 0 0 672.9728-42.5984v-37.546666a37.546667 37.546667 0 1 1 75.093334 0v37.751466a413.013333 413.013333 0 1 1-611.328-364.3392z" />
-              <path d="M653.312 576.853333a37.546667 37.546667 0 0 1 59.938133 45.192534l-0.2048 0.273066-0.273066 0.341334-0.8192 1.024a141.585067 141.585067 0 0 1-11.946667 13.5168 261.12 261.12 0 0 1-34.679467 30.242133c-29.9008 21.777067-75.093333 44.714667-132.3008 44.714667-57.344 0-102.4-22.9376-132.437333-44.714667a261.256533 261.256533 0 0 1-43.895467-40.5504l-2.730666-3.208533-0.682667-1.024a19.0464 19.0464 0 0 0-0.341333-0.341334v-0.136533l-0.2048-0.136533a37.546667 37.546667 0 0 1 60.074666-45.056h0.068267l1.297067 1.6384a186.1632 186.1632 0 0 0 30.72 28.0576c21.572267 15.7696 51.541333 30.446933 88.064 30.446933 36.6592 0 66.628267-14.677333 88.2688-30.446933a186.026667 186.026667 0 0 0 30.583466-27.989334l1.297067-1.6384 0.2048-0.2048zM420.727467 374.237867a37.546667 37.546667 0 0 1 0 75.093333h-0.341334a37.546667 37.546667 0 0 1 0-75.093333h0.341334z m225.28 0a37.546667 37.546667 0 0 1 0 75.093333h-0.4096a37.546667 37.546667 0 0 1 0-75.093333h0.4096z m112.298666 0v-75.093334h-75.093333a37.546667 37.546667 0 0 1 0-75.093333h75.093333v-75.093333a37.546667 37.546667 0 0 1 75.093334 0v75.093333h75.093333a37.546667 37.546667 0 0 1 0 75.093333h-75.093333v75.093334a37.546667 37.546667 0 1 1-75.093334 0z" />
+              <path d="M334.711467 160.290133a413.013333 413.013333 0 0 1 239.547733-48.674133 37.614933 37.614933 0 0 1-7.509333 74.683733A338.056533 338.056533 0 0 0 197.973333 567.022933a337.92 337.92 0 0 0 672.9728-42.5984v-37.546666a37.546667 37.546667 0 1 1 75.093334 0v37.751466a413.013333 413.013333 0 1 1-611.328-364.3392z"/>
+              <path d="M653.312 576.853333a37.546667 37.546667 0 0 1 59.938133 45.192534l-0.2048 0.273066-0.273066 0.341334-0.8192 1.024a141.585067 141.585067 0 0 1-11.946667 13.5168 261.12 261.12 0 0 1-34.679467 30.242133c-29.9008 21.777067-75.093333 44.714667-132.3008 44.714667-57.344 0-102.4-22.9376-132.437333-44.714667a261.256533 261.256533 0 0 1-43.895467-40.5504l-2.730666-3.208533-0.682667-1.024a19.0464 19.0464 0 0 0-0.341333-0.341334v-0.136533l-0.2048-0.136533a37.546667 37.546667 0 0 1 60.074666-45.056h0.068267l1.297067 1.6384a186.1632 186.1632 0 0 0 30.72 28.0576c21.572267 15.7696 51.541333 30.446933 88.064 30.446933 36.6592 0 66.628267-14.677333 88.2688-30.446933a186.026667 186.026667 0 0 0 30.583466-27.989334l1.297067-1.6384 0.2048-0.2048zM420.727467 374.237867a37.546667 37.546667 0 0 1 0 75.093333h-0.341334a37.546667 37.546667 0 0 1 0-75.093333h0.341334z m225.28 0a37.546667 37.546667 0 0 1 0 75.093333h-0.4096a37.546667 37.546667 0 0 1 0-75.093333h0.4096z m112.298666 0v-75.093334h-75.093333a37.546667 37.546667 0 0 1 0-75.093333h75.093333v-75.093333a37.546667 37.546667 0 0 1 75.093334 0v75.093333h75.093333a37.546667 37.546667 0 0 1 0 75.093333h-75.093333v75.093334a37.546667 37.546667 0 1 1-75.093334 0z"/>
             </svg>
           </div>
           <span>表情包管理</span>
         </div>
 
+        <!-- 一键后台生成全部角色资产（2026-10-01 用户：「弄个按钮一键后台生成得了」）：
+             与表情包管理同款卡片、同一区域，点开是后台串行任务（关窗继续跑）。 -->
+        <div key="asset-gen" class="char-card emoji-manage-card" @click="showAssetGen = true">
+          <div class="emoji-manage-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+              <circle cx="12" cy="12" r="3.2" />
+            </svg>
+          </div>
+          <span>一键生成素材</span>
+        </div>
+
+      <!-- 立绘管理（上游 v3.10.0 合并，2026-10-19）：表情立绘批量生成 / 补缺 / 触摸台词 -->
       <div key="standing-manage" class="char-card emoji-manage-card standing-manage-card" role="button" tabindex="0" @click="showStandingManager = true" @keydown.enter.prevent="showStandingManager = true" @keydown.space.prevent="showStandingManager = true">
         <div class="emoji-manage-icon">
           <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -258,6 +302,7 @@
         <span>立绘管理</span>
       </div>
 
+      <!-- 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色，弹窗内收 -->
       <div key="voice-manage" class="char-card emoji-manage-card" role="button" tabindex="0" @click="showVoiceLibrary = true" @keydown.enter.prevent="showVoiceLibrary = true" @keydown.space.prevent="showVoiceLibrary = true">
         <div class="emoji-manage-icon">
           <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="12" y="3" width="8" height="16" rx="4"/><path d="M7 14v2a9 9 0 0 0 18 0v-2M16 25v4M11 29h10"/></svg>
@@ -290,7 +335,7 @@
           @keydown.space.prevent="onPinClick(c)"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" :fill="c.pinned ? 'currentColor' : 'none'" :stroke="c.pinned ? 'none' : 'currentColor'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
           </svg>
         </div>
         <div v-if="c.moments_disabled || c.proactive_disabled || c.events_disabled" class="char-card-badges">
@@ -301,9 +346,7 @@
         <div
           class="char-card-avatar"
           :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }"
-        >
-{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
-</div>
+        >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
         <div class="char-card-name">{{ c.display_name }}</div>
         <div class="char-card-foot">
           <span class="char-card-status" :class="c.message_count > 0 ? 'active' : 'idle'">
@@ -311,8 +354,8 @@
           </span>
           <span v-if="c.relationship_count > 0" class="char-rel-badge" title="已设置角色关系">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="17" r="3" />
-              <line x1="9" y1="6" x2="11" y2="14" /><line x1="15" y1="6" x2="13" y2="14" />
+              <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+              <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
             </svg>
             {{ c.relationship_count }}
           </span>
@@ -320,8 +363,8 @@
         <div v-if="!(c.relationship_count > 0)" class="char-card-edit-row">
           <span class="char-card-edit" title="设置角色关系网">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="17" r="3" />
-              <line x1="9" y1="6" x2="11" y2="14" /><line x1="15" y1="6" x2="13" y2="14" />
+              <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+              <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
             </svg>
             设置角色关系网
           </span>
@@ -329,7 +372,7 @@
       </div>
     </TransitionGroup>
 
-    <!-- 空状态：文件夹内无角色 -->
+    <!-- 空状态：文件夹内无角色 / 搜索无匹配（上游 v3.10.0 合并，2026-10-19） -->
     <div v-if="!visibleCharacters.length" class="char-empty empty">
       <div class="empty-title">{{ emptyTitle }}</div>
       <div class="empty-hint">{{ emptyDesc }}</div>
@@ -360,7 +403,7 @@
               />
               <div class="modal-actions">
                 <label class="import-card-btn" :class="{ disabled: recruit.loading }" title="导入酒馆ai角色卡">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   <span>导入酒馆ai角色卡</span>
                   <input ref="cardInputRef" type="file" accept=".png,.json,image/png,application/json" :disabled="recruit.loading" @change="onCardSelected" hidden />
                 </label>
@@ -386,12 +429,12 @@
       <div v-if="recruit.step === 'preview'" class="modal-content-section" style="position:relative">
               <div class="preview-card">
                 <div class="preview-name-row">
-                  <linshe-input
+                  <input
                     v-model="recruit.result.display_name"
                     class="preview-name-input"
                     placeholder="角色名"
                   />
-                  <linshe-input
+                  <input
                     v-model="recruit.result.name"
                     class="preview-name-input"
                     placeholder="英文名（英文/拼音，唯一）"
@@ -408,25 +451,19 @@
                     variant="secondary"
                     :disabled="recruit.loading"
                     @click="doGenerate"
-                  >
-{{ recruit.loading && recruit.task === 'search' ? '正在重新搜索...' : '重新搜索' }}
-</linshe-button>
+                  >{{ recruit.loading && recruit.task === 'search' ? '正在重新搜索...' : '重新搜索' }}</linshe-button>
                   <linshe-button
                     variant="secondary"
                     title="不重新联网，使用上次搜索资料重新归纳角色卡"
                     :disabled="!recruit.searchContext || recruit.loading"
                     @click="regenerateFromSearchResult"
-                  >
-{{ recruit.loading && recruit.task === 'regenerate' ? '正在重新归纳...' : '再次生成' }}
-</linshe-button>
+                  >{{ recruit.loading && recruit.task === 'regenerate' ? '正在重新归纳...' : '再次生成' }}</linshe-button>
                   <linshe-button
                     variant="secondary"
                     title="提供参考图，邻舍分析后重写角色卡里的「## 你的外观」"
                     :disabled="recruit.loading"
                     @click="showRecruitRefine = true"
-                  >
-修正外观
-</linshe-button>
+                  >修正外观</linshe-button>
                 </div>
                 <div class="modal-actions-right">
                   <linshe-button variant="secondary" @click="recruit.step = 'input'; recruit.error = ''">返回修改</linshe-button>
@@ -538,8 +575,8 @@
                       @click="openPolish"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.3z" />
-                        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
+                        <path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.3z"/>
+                        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>
                       </svg>
                       一键润色
                     </linshe-button>
@@ -562,20 +599,21 @@
                   <span v-if="worldSaved" class="world-saved-hint">✓ 已保存</span>
                 </div>
               </div>
-            </div>
-            <div class="modal-actions world-modal-actions">
-              <div class="world-lorebook-button world-rule-actions">
-                <linshe-button variant="secondary" :disabled="!selectedWorldId" @click="showLorebook = true">管理SillyTavern世界书</linshe-button>
-                <linshe-button variant="secondary" @click="showSystemRules = true">破限词修改</linshe-button>
+
+              <div class="modal-actions">
+                <div class="world-lorebook-button world-rule-actions">
+                  <linshe-button variant="secondary" :disabled="!selectedWorldId" @click="showLorebook = true">管理SillyTavern世界书</linshe-button>
+                  <linshe-button variant="secondary" @click="showSystemRules = true">破限词修改</linshe-button>
+                </div>
+                <linshe-button variant="secondary" @click="closeWorldSetting">取消</linshe-button>
+                <linshe-button
+                  variant="primary"
+                  :disabled="!worldDirty || worldSaving"
+                  @click="saveWorld"
+                >
+                  {{ worldSaving ? '保存中...' : '保存' }}
+                </linshe-button>
               </div>
-              <linshe-button variant="secondary" @click="closeWorldSetting">取消</linshe-button>
-              <linshe-button
-                variant="primary"
-                :disabled="!worldDirty || worldSaving"
-                @click="saveWorld"
-              >
-                {{ worldSaving ? '保存中...' : '保存' }}
-              </linshe-button>
             </div>
           </div>
         </div>
@@ -725,10 +763,13 @@
          ═══════════════════════════════════════════ -->
     <BackpackModal :visible="showBackpack" :characters="sortedCharacters" @close="showBackpack = false" />
 
-    <!-- 《邻舍日报》的阅读窗已随入口一起迁到「传媒」页（MediaView 里挂载） -->
+    <!-- ═══════════════════════════════════════════
+         《邻舍日报》报纸阅读窗
+         ═══════════════════════════════════════════ -->
+    <NewspaperModal v-model="showNewspaper" @read="onNewspaperRead" />
 
       <EmojiManagerModal v-if="showEmojiManager" :characters="sortedCharacters" @close="showEmojiManager = false" />
-      <StandingManagerModal :open="showStandingManager" :characters="sortedCharacters" @close="showStandingManager = false" />
+      <AssetGenerationModal v-if="showAssetGen" :characters="sortedCharacters" @close="showAssetGen = false" />
       <VoiceLibraryModal v-model="showVoiceLibrary" :characters="sortedCharacters" />
 
     <WorldLorebookModal v-model="showLorebook" :world-id="selectedWorldId" :world-name="worldItems.find(item => item.id === selectedWorldId)?.name || ''" />
@@ -740,12 +781,16 @@
       :language-style="selectedWorld?.language_style || ''"
       @saved="onLanguageStyleSaved"
     />
-    <PromptPresetModal v-model="showPromptPresets" />
     <CharacterFolderManager
       v-model="showFolderManager"
       :initial-folder-id="folderFilter"
       @deleted="id => { if (folderFilter === id) folderFilter = 'all' }"
     />
+
+    <!-- 立绘管理 / SillyTavern 世界书 / 预设（上游 v3.10.0 合并，2026-10-19） -->
+    <StandingManagerModal :open="showStandingManager" :characters="sortedCharacters" @close="showStandingManager = false" />
+    <WorldLorebookModal v-model="showLorebook" :world-id="selectedWorldId" :world-name="worldItems.find(item => item.id === selectedWorldId)?.name || ''" />
+    <PromptPresetModal v-model="showPromptPresets" />
   </div>
 </template>
 
@@ -759,7 +804,6 @@ import PromptPresetModal from '../components/PromptPresetModal.vue'
 import { ref, reactive, computed, onMounted, onUnmounted, watch, inject, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
-import { useCharacterFoldersStore } from '../stores/characterFolders.js'
 import { userAvatar, loadUserAvatar, uploadUserAvatar, userNickname, userGender, userAppearance, userPersona, loadUserConfig, saveUserConfig } from '../userConfig.js'
 import * as api from '../api/index.js'
 import AvatarCropper from '../components/AvatarCropper.vue'
@@ -770,18 +814,21 @@ import RelationshipDeductionModal from '../components/RelationshipDeductionModal
 import CharacterDetailModal from '../components/CharacterDetailModal.vue'
 import MailboxModal from '../components/MailboxModal.vue'
 import BackpackModal from '../components/BackpackModal.vue'
+import NewspaperModal from '../components/NewspaperModal.vue'
 import EmojiManagerModal from '../components/EmojiManagerModal.vue'
-import StandingManagerModal from '../components/StandingManagerModal.vue'
-import CharacterFolderManager from '../components/CharacterFolderManager.vue'
+import AssetGenerationModal from '../components/AssetGenerationModal.vue'
 import VoiceLibraryModal from '../components/VoiceLibraryModal.vue'
 import AppearanceRefineModal from '../components/AppearanceRefineModal.vue'
+// 上游 v3.10.0 合并（2026-10-19）：立绘管理 / SillyTavern 世界书 / SillyTavern 预设
+import StandingManagerModal from '../components/StandingManagerModal.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
-import { emitCharacterAvatarChanged, emitCharacterPinEnabled } from '../utils/characterReactionProducers.js'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import { useBurst } from '../composables/useBurst.js'
 import { useMailboxStore } from '../stores/mailbox.js'
 import { useBackpackStore } from '../stores/backpack.js'
 import { useNewspaperStore } from '../stores/newspaper.js'
+import { useCharacterFoldersStore } from '../stores/characterFolders.js'
+import CharacterFolderManager from '../components/CharacterFolderManager.vue'
 
 const router = useRouter()
 const chat = useChatStore()
@@ -790,17 +837,38 @@ const backpackStore = useBackpackStore()
 const newspaperStore = useNewspaperStore()
 
 const showMailbox = ref(false)
-const showPromptPresets = ref(false)
 const showBackpack = ref(false)
 const showEmojiManager = ref(false)
+/** 立绘管理（上游 v3.10.0 合并，2026-10-19）：表情立绘批量生成/补缺/触摸台词 */
 const showStandingManager = ref(false)
+/** SillyTavern 世界书（挂在世界观编辑弹窗里，按当前选中的世界观：worldId 为空时按钮禁用） */
+const showLorebook = ref(false)
+/** SillyTavern 预设（全局提示词预设，与具体世界观无关） */
+const showPromptPresets = ref(false)
+/** 一键后台生成全部角色资产（立绘/表情包/表情立绘） */
+const showAssetGen = ref(false)
+/** 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色库 */
 const showVoiceLibrary = ref(false)
 const mailboxUnread = computed(() => mailboxStore.unreadCount)
 const backpackChestReady = computed(() => backpackStore.chestReady)
 
-// 《邻舍日报》入口已迁到「传媒」页（MediaView）。
-// 这里只剩「让当天报纸先拉一次」—— NavBar 的酒馆项红点与它同源，
-// 而 NavBar 本身也会轮询，所以这个调用只是让首屏更快拿到状态。
+// 《邻舍日报》：未读状态由 newspaper store 统一持有（NavBar 酒馆项红点同源）
+const showNewspaper = ref(false)
+const todayPaper = computed(() => newspaperStore.todayPaper)
+const newspaperUnread = computed(() => newspaperStore.unread)
+const newspaperHint = computed(() => todayPaper.value
+  ? `第${todayPaper.value.edition}期已印好 · 今日事，早知道`
+  : '清晨 5 点后印出 · 今日事，早知道')
+
+function openNewspaper() {
+  showNewspaper.value = true
+}
+
+// 打开看过即消红点（今天之内不再提醒）
+function onNewspaperRead(paper) {
+  newspaperStore.markRead(paper)
+}
+
 function loadTodayPaper() {
   newspaperStore.fetchToday()
 }
@@ -813,10 +881,10 @@ const sortedCharacters = computed(() =>
     return (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')
   })
 )
-// ═══════════════════════════════════════
-// 角色文件夹（单层分类）
-// 文件夹数据由共享 store 持有，左侧会话栏的分组用的是同一份 —— 两边同屏，必须同步
-// ═══════════════════════════════════════
+
+// ═══════════════════════════════════════════
+// 角色文件夹（单层分类，上游 v3.9.0 合并）
+// ═══════════════════════════════════════════
 const folderStore = useCharacterFoldersStore()
 const folders = computed(() => folderStore.folders)
 
@@ -829,6 +897,59 @@ function folderCountOf(id) {
 const folderFeatureReady = computed(() => folderStore.ready)
 // 'all' | 'uncategorized' | 文件夹 id
 const folderFilter = ref('all')
+
+// 当前文件夹范围内的角色（未叠加搜索词）
+const folderScopedCharacters = computed(() => {
+  const list = chat.characters
+  if (folderFilter.value === 'uncategorized') return list.filter(c => !c.folder_id)
+  if (folderFilter.value === 'all') return list
+  return list.filter(c => c.folder_id === folderFilter.value)
+})
+
+// 实际渲染：文件夹筛选 + 名称搜索，再按「置顶优先、组内拼音」排序。
+// 弹窗（信箱/背包/表情包/素材）继续用全量 sortedCharacters，不受筛选影响。
+// 搜索框是上游 v3.10.0 合并补回的（2026-10-19，「本地优先」那次把它整块丢了）
+const charSearch = ref('')
+const visibleCharacters = computed(() => {
+  const kw = charSearch.value.trim().toLowerCase()
+  const list = kw
+    ? folderScopedCharacters.value.filter(c => (c.display_name || '').toLowerCase().includes(kw))
+    : folderScopedCharacters.value
+  return [...list].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1
+    if (!a.pinned && b.pinned) return 1
+    return (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')
+  })
+})
+
+// 标题计数：以当前筛选范围为分母（搜索命中一部分时显示「2 / 7」）
+const charCountLabel = computed(() => {
+  const scoped = folderScopedCharacters.value.length
+  const shown = visibleCharacters.value.length
+  return shown === scoped ? `${scoped}` : `${shown} / ${scoped}`
+})
+
+// 搜索词在全部角色里有命中、但当前文件夹内没有 —— 提示可以放宽到「全部」
+const canSearchEverywhere = computed(() => {
+  const kw = charSearch.value.trim().toLowerCase()
+  if (!kw || folderFilter.value === 'all') return false
+  return chat.characters.some(c => (c.display_name || '').toLowerCase().includes(kw))
+})
+
+const emptyTitle = computed(() => {
+  if (charSearch.value.trim()) return `没有找到「${charSearch.value.trim()}」`
+  if (!chat.characters.length) return '还没有角色'
+  if (folderFilter.value === 'uncategorized') return '「未分类」里没有角色'
+  return '这个文件夹还是空的'
+})
+const emptyDesc = computed(() => {
+  if (charSearch.value.trim()) {
+    return folderFilter.value === 'all' ? '换个关键词试试。' : '换个关键词，或者切到「全部」看看。'
+  }
+  if (!chat.characters.length) return '点上面的「招募」认识第一位邻居。'
+  if (folderFilter.value === 'uncategorized') return '所有角色都已经归好类了。'
+  return '打开「分类管理」，勾选角色加入这个分类。'
+})
 
 // ── 文件夹拖拽排序 ──
 // 用原生 HTML5 拖放：这一排就是个扁平的 chip 列表，没必要为此引入拖拽库。
@@ -897,35 +1018,6 @@ const showFolderManager = ref(false)
 
 // 角色增删后各文件夹的成员数会变，跟着刷新一次（首屏由 onMounted 负责）
 watch(() => chat.characters.length, () => folderStore.load())
-
-// 当前文件夹范围内的角色
-const folderScopedCharacters = computed(() => {
-  const list = chat.characters
-  if (folderFilter.value === 'uncategorized') return list.filter(c => !c.folder_id)
-  if (folderFilter.value === 'all') return list
-  return list.filter(c => c.folder_id === folderFilter.value)
-})
-
-// 实际渲染：文件夹筛选，置顶优先、组内按拼音排序
-const visibleCharacters = computed(() => {
-  return [...folderScopedCharacters.value].sort((a, b) => {
-    if (a.pinned && !b.pinned) return -1
-    if (!a.pinned && b.pinned) return 1
-    return (a.display_name || '').localeCompare(b.display_name || '', 'zh-CN')
-  })
-})
-
-const emptyTitle = computed(() => {
-  if (!chat.characters.length) return '还没有角色'
-  if (folderFilter.value === 'uncategorized') return '「未分类」里没有角色'
-  return '这个文件夹还是空的'
-})
-const emptyDesc = computed(() => {
-  if (!chat.characters.length) return '点上面的「招募」认识第一位邻居。'
-  if (folderFilter.value === 'uncategorized') return '所有角色都已经归好类了。'
-  return '打开「分类管理」，勾选角色加入这个分类。'
-})
-
 const isMobile = inject('isMobile')
 const toggleMobileSidebar = inject('toggleMobileSidebar')
 const confirmFn = inject('confirm')
@@ -1296,7 +1388,6 @@ watch(showRelationGraph, async (val) => {
 // ═══════════════════════════════════════
 const showWorldModal = ref(false)
 const showSystemRules = ref(false)
-const showLorebook = ref(false)
 const worldItems = ref([])
 const showLanguageStyle = ref(false)
 const selectedWorld = computed(() => worldItems.value.find(item => item.id === selectedWorldId.value))
@@ -1601,22 +1692,8 @@ function onPinClick(c) {
 
 async function toggleCharPin(c) {
   // sortedCharacters 是浅拷贝，元素与 store 同引用，改这里即改 store
-  const wasPinned = !!c.pinned
   c.pinned = c.pinned ? 0 : 1
-  try {
-    const res = await api.togglePin(c.id, c.pinned)
-    // 只有接口确认成功、且确实从未置顶变成置顶才产生角色通知（§2.2）
-    emitCharacterPinEnabled({
-      characterId: c.id,
-      characterName: c.display_name || c.name || '',
-      wasPinned,
-      pinned: !!c.pinned,
-      ok: res?.ok === true && res?.pinned === c.pinned,
-    })
-  } catch {
-    // 失败回滚本地状态，不发事件（§2.6）
-    c.pinned = wasPinned ? 1 : 0
-  }
+  try { await api.togglePin(c.id, c.pinned) } catch {}
 }
 
 function closeCharDetail() {
@@ -1684,13 +1761,11 @@ async function switchToRecent() {
 
 async function onCharAvatarSave(base64) {
   if (!detailChar.value) return
-  const id = detailChar.value.id
-  const before = detailChar.value.avatar_path || ''
-  await api.uploadAvatar(id, base64 || '')
+  await api.uploadAvatar(detailChar.value.id, base64 || '')
   await chat.loadCharacters()
-  const updated = chat.characters.find(x => x.id === id)
+  const updated = chat.characters.find(x => x.id === detailChar.value.id)
   if (updated) detailChar.value = updated
-  emitCharacterAvatarChanged({ characterId: id, previousVersion: before, nextVersion: updated?.avatar_path || '', ok: true })
+  showCharAvatarPicker.value = false
 }
 
 async function removeCharAvatar() {
@@ -1718,12 +1793,12 @@ onMounted(async () => {
   userAppearanceInput.value = userAppearance.value
   userPersonaInput.value = userPersona.value
   if (chat.characters.length === 0) await chat.loadCharacters()
-  // 文件夹列表（含各组成员数）与角色一起在首屏拉取
-  folderStore.load()
   // 拉一次宝箱状态，驱动入口卡上的「可开启」小圆点
   backpackStore.fetchItems()
   // 拉今天的《邻舍日报》，驱动报纸入口卡的未读红点
   loadTodayPaper()
+  // 拉一次角色文件夹（接口就绪后才显示筛选栏；后端未更新时静默退化为平铺）
+  folderStore.load()
 })
 </script>
 
@@ -1884,7 +1959,6 @@ onMounted(async () => {
 .relation-entry-row .relation-entry {
   margin-bottom: 0;
 }
-
 .relation-entry {
   display: flex;
   align-items: center;
@@ -1893,8 +1967,6 @@ onMounted(async () => {
   margin-bottom: 20px;
   border-radius: 16px;
   cursor: pointer;
-  text-align: left;
-  min-width: 0;
   transition: all 0.2s;
 }
 .relation-entry:hover {
@@ -1987,7 +2059,7 @@ onMounted(async () => {
 }
 .world-tag-selected {
   background: linear-gradient(180deg, #fffdf8 0%, #fdfaf3 100%);
-  color: var(--accent-hover);
+  color: var(--accent-text);
   font-weight: 700;
   border-color: rgba(120, 90, 60, 0.16);
   border-bottom-color: #fdfaf3;
@@ -2020,7 +2092,7 @@ onMounted(async () => {
 
 .world-tag-edit:hover {
   background: rgba(var(--accent-rgb), 0.12);
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 
 .world-tag-del:hover {
@@ -2032,7 +2104,7 @@ onMounted(async () => {
   width: 90px;
   padding: 3px 6px;
   font-size: 13px;
-  color: var(--town-paper-ink);
+  color: var(--text-bright);
   background: #fffdf8;
   border: 1px solid rgba(var(--accent-rgb), 0.4);
   border-radius: 6px;
@@ -2059,7 +2131,7 @@ onMounted(async () => {
 .world-tag-add:hover {
   opacity: 1;
   background: rgba(var(--accent-rgb), 0.1);
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 
 /* ── 新建名称行 ── */
@@ -2389,7 +2461,7 @@ onMounted(async () => {
 }
 
 .inline-input {
-  background: var(--bg-secondary);
+  background: rgba(255,255,255,0.9);
   border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 4px 10px;
@@ -2399,6 +2471,46 @@ onMounted(async () => {
   font-family: inherit;
 }
 /* ── 角色网格 ── */
+.section-title {
+  font-size: 15px; font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 14px;
+}
+
+/* 角色工具栏：标题 + 搜索框（上游 v3.10.0 合并，2026-10-19） */
+.char-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.char-toolbar .section-title { margin-bottom: 0; }
+
+.char-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(300px, 100%);
+}
+.char-search-input { flex: 1; min-width: 0; width: 100%; padding-left: 34px; }
+.char-search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.char-search:focus-within .char-search-icon { color: var(--accent); }
+@media (max-width: 480px) {
+  .char-search { width: 100%; }
+}
+
+/* 空状态：文件夹内无角色 / 搜索无匹配 */
+.char-empty {
+  margin-top: 8px;
+}
+
 /* ── 文件夹筛选栏 ── */
 .folder-bar {
   display: flex;
@@ -2446,16 +2558,6 @@ onMounted(async () => {
 }
 .folder-manage-entry,
 .folder-manage-entry:active { cursor: pointer; text-align: center; }
-
-/* 空状态（文件夹为空），皮肤走全局 .empty */
-.char-empty {
-  margin-top: 8px;
-}
-
-.section-title {
-  font-size: 15px; font-weight: 600; color: var(--text-secondary);
-  margin-bottom: 14px;
-}
 
 .char-grid {
   display: grid;
@@ -2543,15 +2645,6 @@ onMounted(async () => {
 .char-card.char-pin-move {
   transition: transform var(--dur-slow) var(--ease-out);
 }
-.char-pin-enter-active,
-.char-pin-leave-active {
-  transition: opacity 0.3s var(--ease-standard), transform 0.3s var(--ease-standard);
-}
-.char-pin-enter-from,
-.char-pin-leave-to {
-  opacity: 0;
-  transform: translateY(6px);
-}
 
 .char-card-avatar {
   width: 64px; height: 64px;
@@ -2570,8 +2663,6 @@ onMounted(async () => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-
-
 
 .char-card-foot {
   display: flex;
@@ -2658,7 +2749,6 @@ onMounted(async () => {
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.06);
 }
-.standing-manage-card { border-color: var(--border-strong); text-align: center; cursor: pointer; }
 .emoji-manage-icon {
   width: 34px; height: 34px;
   color: var(--accent);
@@ -2673,6 +2763,12 @@ onMounted(async () => {
   color: var(--accent);
   font-weight: 500;
 }
+
+/* 立绘管理卡片（上游 v3.10.0 合并）：与表情包/一键生成同款卡片，只强化描边 */
+.standing-manage-card { border-color: var(--border-strong); text-align: center; cursor: pointer; }
+
+/* 世界观弹窗里的「管理SillyTavern世界书」：靠左，与取消/保存分开 */
+.world-lorebook-button { margin-right: auto; }
 
 /* ── 弹窗骨架已迁移至全局 .modal-*（styles/components.css）── */
 .modal-wide { width: min(1100px, 97vw); }
@@ -2800,9 +2896,16 @@ onMounted(async () => {
   display: flex; gap: 10px;
 }
 .preview-name-input {
-  font-size: 20px; font-weight: 700;
-  flex: 1; min-width: 0;
+  font-size: 20px; font-weight: 700; color: var(--text-bright);
+  background: #f0ece8;
+  border: 1px dashed rgba(var(--accent-rgb), 0.25);
+  border-radius: 8px; padding: 4px 10px;
+  flex: 1; min-width: 0; outline: none; font-family: inherit;
+  transition: border-color 0.2s, background 0.2s;
+  cursor: text;
 }
+.preview-name-input:hover  { border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.07); }
+.preview-name-input:focus  { border-color: var(--accent); background: rgba(255,255,255,0.5); }
 
 /* ── 预览卡片 ── */
 .preview-card {

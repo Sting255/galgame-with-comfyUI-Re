@@ -1,13 +1,11 @@
-import { validateNovelaiUrl } from '../services/novelaiClient.js';
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { load as yamlLoad } from 'js-yaml';
-import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, getActiveNovelaiProfileId, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays } from '../config.js';
+import { readLauncherConfig, resolveComfyRoot, resolveComfySubdir } from '../utils/comfyPaths.js';
+import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, getActiveNovelaiProfileId, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays, updateAntiRepetitionPenalty } from '../config.js';
 import { resetClient, chatSync, resetFreeEggFailureCount, testLlmConnection } from '../llm/llm-client.js';
-import { normalizeModelCapabilities } from '../llm/modelCapabilities.js';
-import { parseServiceAccount, getVertexAccessToken, listVertexModels } from '../llm/vertex-client.js';
 import { getDb, getSystemRules } from '../db/index.js';
 import { listWorldSettings, getActiveWorldSetting, getWorldSettingById, createWorldSetting, updateWorldSetting, deleteWorldSetting, activateWorldSetting } from '../db/index.js';
 import { DEFAULT_GLOBAL_RULES } from '../db/seedData.js';
@@ -16,12 +14,23 @@ import { restartEventScheduler } from '../services/eventScheduler.js';
 import { refreshMomentFrequency } from '../services/momentScheduler.js';
 import { restartComfyClient } from '../services/comfyClient.js';
 import { triggerDisturbCheck } from '../services/disturbModeScheduler.js';
+import { shieldStatus, setShieldPrompt, DEFAULT_PROMPT as SHIELD_DEFAULT_PROMPT, shieldRulesStatus, setActiveShieldRule, getShieldTargets, setShieldTargets } from '../services/promptShield.js';
+import { listRules as listJailbreakRules, getRule as getJailbreakRule, createRule as createJailbreakRule, updateRule as updateJailbreakRule, deleteRule as deleteJailbreakRule, RULE_TARGETS as JAILBREAK_TARGETS, RULE_TARGET_LABELS as JAILBREAK_TARGET_LABELS } from '../services/jailbreakRules.js';
 import { restartWeatherScheduler, triggerUpdate as triggerWeatherUpdate } from '../services/weatherService.js';
 import { applyFromConfig } from '../services/llmConcurrency.js';
 import { BUILTIN_RULE_KEYS } from '../builtinRules.js';
 import { getMemorySettings, saveMemorySettings, normalizeMemorySettings } from '../services/memory/memoryConfig.js';
 import { getPreferredMemoryEmbeddingProfile, testEmbeddingProvider, testRerankerProvider } from '../services/memory/memoryProviders.js';
 import { reindexAllMemories } from '../services/memory/memoryRepository.js';
+import { resolveDeclaredOrProviderWindow } from '../services/contextUsage.js';
+import {
+  getAiJudgeQuotaPayload,
+  setAiJudgeDailyLimit,
+} from '../services/intimateAiJudge.js';
+import {
+  getIntimateActionQuotaPayload,
+  setIntimateActionDailyLimit,
+} from '../services/intimateActionQuota.js';
 import { buildLanguageStylePolishRequest } from '../services/worldLanguageStylePolish.js';
 import { chatSync as chatSyncWithLorebook } from '../services/lorebook/runtime.js';
 
@@ -121,7 +130,6 @@ router.get('/', (req, res) => {
       novelaiApiFormat: config.comfyui.novelaiApiFormat || 'relay',
       url: config.comfyui.url,
       novelaiUrl: config.comfyui.novelaiUrl,
-      novelaiProxyUrl: config.comfyui.novelaiProxyUrl,
       novelaiModel: config.comfyui.novelaiModel,
       novelaiArtist: config.comfyui.novelaiArtist ?? '',
       novelaiWidth: config.comfyui.novelaiWidth,
@@ -155,6 +163,8 @@ router.get('/', (req, res) => {
       hiresSteps: config.comfyui.hiresSteps ?? 35,
       hiresCfg: config.comfyui.hiresCfg ?? 5.0,
       hiresDenoise: config.comfyui.hiresDenoise ?? 0.2,
+      // 细化是否按 turbo 参数走（默认 true）；「随时开关」，无需重启
+      hiresTurbo: config.comfyui.hiresTurbo !== false,
       hiresMaxSize: config.comfyui.hiresMaxSize ?? 2000,
       hiresArtistMode: config.comfyui.hiresArtistMode ?? 'empty',
       hiresArtist: config.comfyui.hiresArtist ?? '',
@@ -179,6 +189,59 @@ router.get('/', (req, res) => {
       temperature: config.groupChat?.temperature ?? 0.7,
       summaryInterval: config.groupChat?.summaryInterval ?? 4,
     },
+    // 「AI 判断行为」的每日配额（usedToday 按本地日期，跨天自动归零；unlimited=true 时 remaining 为 null）
+    aiJudge: getAiJudgeQuotaPayload(),
+    // 亲密推进动作的独立每日配额（2026-10-15 补，与 aiJudge 同形状）
+    intimateActionQuota: getIntimateActionQuotaPayload(),
+  });
+});
+
+// PUT /api/config/ai-judge — 「AI 判断行为」每日配额：0 = 不限制，正整数 = 次/天；非法 400
+//
+// 返回与 GET /api/config 里的 aiJudge 同一形状（{ dailyLimit, usedToday, remaining, unlimited }）：
+// 既嵌在 aiJudge 下（与 GET 一致），也平铺一份，前端两种取法都能用。
+router.put('/ai-judge', (req, res) => {
+  const { dailyLimit } = req.body ?? {};
+  // 只认整数：负数 / 小数 / 字符串 / 布尔 / 缺失都算非法（0 是合法值，代表不限制）
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 0) {
+    return res.status(400).json({ error: 'dailyLimit must be 0 (不限制) or a positive integer (次/天)' });
+  }
+  const saved = setAiJudgeDailyLimit(dailyLimit);
+  if (!saved.ok) {
+    return res.status(500).json({ ok: false, error: saved.error });
+  }
+  const aiJudge = getAiJudgeQuotaPayload();
+  res.json({
+    ok: true,
+    aiJudge,
+    dailyLimit: aiJudge.dailyLimit,
+    usedToday: aiJudge.usedToday,
+    remaining: aiJudge.remaining,
+    unlimited: aiJudge.unlimited,
+  });
+});
+
+// PUT /api/config/intimate-action-quota — 亲密推进的独立每日配额：0 = 不限制，正整数 = 次/天；非法 400
+//
+// 与 /ai-judge 完全同口径（返回同一形状，既嵌在 intimateActionQuota 下也平铺一份）：
+// 这个配额只影响"要不要真的调模型"，**不哑玩法** —— 用完之后状态照常推进、反应留到下一轮补演。
+router.put('/intimate-action-quota', (req, res) => {
+  const { dailyLimit } = req.body ?? {};
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 0) {
+    return res.status(400).json({ error: 'dailyLimit must be 0 (不限制) or a positive integer (次/天)' });
+  }
+  const saved = setIntimateActionDailyLimit(dailyLimit);
+  if (!saved.ok) {
+    return res.status(500).json({ ok: false, error: saved.error });
+  }
+  const intimateActionQuota = getIntimateActionQuotaPayload();
+  res.json({
+    ok: true,
+    intimateActionQuota,
+    dailyLimit: intimateActionQuota.dailyLimit,
+    usedToday: intimateActionQuota.usedToday,
+    remaining: intimateActionQuota.remaining,
+    unlimited: intimateActionQuota.unlimited,
   });
 });
 
@@ -201,11 +264,11 @@ router.put('/group-temperature', (req, res) => {
   res.json({ ok: true, temperature: config.groupChat.temperature });
 });
 
-// PUT /api/config/group-summary-interval — 更新群聊记忆总结/滑动窗口推进轮次 2~6（所有群共享）
+// PUT /api/config/group-summary-interval — 更新群聊记忆总结/滑动窗口推进轮次 2~30（所有群共享）
 router.put('/group-summary-interval', (req, res) => {
   const { value } = req.body;
-  if (value == null || typeof value !== 'number' || value < 2 || value > 6) {
-    return res.status(400).json({ error: 'value must be 2~6' });
+  if (value == null || typeof value !== 'number' || value < 2 || value > 30) {
+    return res.status(400).json({ error: 'value must be 2~30' });
   }
   updateGroupSummaryInterval(value);
   res.json({ ok: true, summaryInterval: config.groupChat.summaryInterval });
@@ -213,13 +276,16 @@ router.put('/group-summary-interval', (req, res) => {
 
 // PUT /api/config/comfy — 更新 ComfyUI 参数
 router.put('/comfy', (req, res) => {
-  const { artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiProxyUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey } = req.body;
-  try {
-    if (novelaiApiFormat !== undefined && !['official', 'native', 'relay'].includes(novelaiApiFormat)) throw new Error('NovelAI 接口协议无效');
-    if (novelaiUrl !== undefined && String(novelaiUrl).trim()) validateNovelaiUrl(novelaiUrl);
-    if (novelaiProxyUrl !== undefined && String(novelaiProxyUrl).trim()) validateNovelaiUrl(novelaiProxyUrl, '代理地址');
-  } catch (error) { return res.status(400).json({ error: error.message }); }
-  updateComfyConfig({ artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiProxyUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey });
+  const { artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey } = req.body;
+  if (novelaiApiFormat !== 'official' && novelaiUrl !== undefined && String(novelaiUrl).trim()) {
+    try {
+      const parsed = new URL(String(novelaiUrl));
+      if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('invalid protocol');
+    } catch {
+      return res.status(400).json({ error: 'NovelAI 地址必须是有效的 HTTP 或 HTTPS URL' });
+    }
+  }
+  updateComfyConfig({ artist, width, height, url, momentsArtist, momentsWidth, momentsHeight, eventArtist, eventWidth, eventHeight, tlsVerify, qualityPrompt, negativePrompt, imageProvider, novelaiApiFormat, novelaiUrl, novelaiModel, novelaiArtist, novelaiWidth, novelaiHeight, novelaiSteps, novelaiSampler, novelaiNoiseSchedule, novelaiGuidance, novelaiQualityPrompt, novelaiNegativePrompt, novelaiApiKey, clearNovelaiApiKey });
   // URL 或 TLS 设置变更后立即重启 ComfyUI 客户端连接（使新地址/证书策略立即生效）
   if (url !== undefined || tlsVerify !== undefined) {
     restartComfyClient();
@@ -277,11 +343,11 @@ router.put('/hires-lora', (req, res) => {
 
 // PUT /api/config/hires — 更新 HiresFix 细化完整设置（LoRA + 步数/重绘幅度/CFG/最长边/画师串）
 router.put('/hires', (req, res) => {
-  const { loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode } = req.body || {};
-  if (loras === undefined && steps === undefined && cfg === undefined && denoise === undefined && maxSize === undefined && artistMode === undefined && artist === undefined && samplingMode === undefined && globalLoraScale === undefined && sourceBlend === undefined && upscaleModel === undefined && workflowMode === undefined) {
+  const { loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode } = req.body || {};
+  if (loras === undefined && steps === undefined && cfg === undefined && denoise === undefined && maxSize === undefined && artistMode === undefined && artist === undefined && samplingMode === undefined && globalLoraScale === undefined && sourceBlend === undefined && upscaleModel === undefined && workflowMode === undefined && turboMode === undefined) {
     return res.status(400).json({ error: 'at least one hires setting is required' });
   }
-  updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode });
+  updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode, turboMode });
   res.json({
     ok: true,
     hiresLora: config.comfyui.hiresLora,
@@ -293,6 +359,7 @@ router.put('/hires', (req, res) => {
     hiresSteps: config.comfyui.hiresSteps,
     hiresCfg: config.comfyui.hiresCfg,
     hiresDenoise: config.comfyui.hiresDenoise,
+    hiresTurbo: config.comfyui.hiresTurbo !== false,
     hiresMaxSize: config.comfyui.hiresMaxSize,
     hiresArtistMode: config.comfyui.hiresArtistMode,
     hiresArtist: config.comfyui.hiresArtist,
@@ -315,6 +382,176 @@ router.put('/features', (req, res) => {
     restartWeatherScheduler();
   }
   res.json({ ok: true, features: config.features });
+});
+
+// ── 提示词破限（Prompt Shield）──────────────────────────────────────────────
+// 功能：往每一次 LLM 调用最前面注入一段「不拒答」system 提示词，避免模型
+// 拿"世界观涉及成人/校园内容"为由拒答，把奇遇/日程/朋友圈/亲密链路整条打断。
+// 开关走通用布尔分支（feature_jailbreak），正文单独一个 DB-only 长文本键。
+
+// GET /api/config/jailbreak — 读开关 + 当前生效正文 + 代码默认正文
+router.get('/jailbreak', (req, res) => {
+  const st = shieldStatus();
+  res.json({
+    ok: true,
+    enabled: st.enabled,
+    source: st.source,
+    bytes: st.bytes,
+    content: st.content,
+    defaultContent: SHIELD_DEFAULT_PROMPT,
+  });
+});
+
+// PUT /api/config/jailbreak — 改开关 / 改正文 / 恢复默认
+// body: { enabled?: boolean, content?: string, reset?: true }
+router.put('/jailbreak', (req, res) => {
+  const { enabled, content, reset } = req.body ?? {};
+  if (enabled === undefined && content === undefined && reset !== true) {
+    return res.status(400).json({ error: 'at least one of enabled / content / reset is required' });
+  }
+  if (enabled !== undefined) {
+    updateFeatureFlag('jailbreak', enabled === true || enabled === 'true');
+  }
+  if (reset === true) {
+    // 空串 = 删掉 DB 里的正文 ⇒ 读的时候回落 DEFAULT_PROMPT
+    setShieldPrompt('');
+  } else if (content !== undefined) {
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'content must be a string' });
+    }
+    setShieldPrompt(content);
+  }
+  const st = shieldStatus();
+  res.json({
+    ok: true,
+    enabled: st.enabled,
+    source: st.source,
+    bytes: st.bytes,
+    content: st.content,
+    defaultContent: SHIELD_DEFAULT_PROMPT,
+  });
+});
+
+// ── 破限规则集（多提示词切换 + 按调用链投递）─────────────────────────────────
+// 2026-10-15：把原来"只有一份正文"升级成规则集。旧的 GET/PUT /jailbreak 保留不动
+// （前端老版本、以及只想改那唯一一份正文的用户继续用），新增下面这组规则集端点。
+//
+// ⚠️ 路由顺序：`/jailbreak/rules/active` 必须排在 `/jailbreak/rules/:id` 之前，
+//    否则 "active" 会被当成 id 吃掉（本仓在 outfits/scene 上踩过同一个坑）。
+
+// GET /api/config/jailbreak/rules — 规则集列表 + 激活项 + 投递范围（一次拉齐）
+router.get('/jailbreak/rules', (_req, res) => {
+  res.json({ ok: true, ...shieldRulesStatus() });
+});
+
+// GET /api/config/jailbreak/rules/active — 当前激活的规则集
+router.get('/jailbreak/rules/active', (_req, res) => {
+  const st = shieldStatus();
+  res.json({
+    ok: true, id: st.ruleId, name: st.ruleName, source: st.source, bytes: st.bytes, content: st.content,
+  });
+});
+
+// POST /api/config/jailbreak/rules — 新建规则集
+router.post('/jailbreak/rules', (req, res) => {
+  const { name, content, targets } = req.body ?? {};
+  if (name !== undefined && typeof name !== 'string') {
+    return res.status(400).json({ error: 'name must be a string' });
+  }
+  if (content !== undefined && typeof content !== 'string') {
+    return res.status(400).json({ error: 'content must be a string' });
+  }
+  if (targets !== undefined && !Array.isArray(targets)) {
+    return res.status(400).json({ error: 'targets must be an array' });
+  }
+  try {
+    res.json({ ok: true, rule: createJailbreakRule({ name, content, targets }) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// GET /api/config/jailbreak/rules/:id — 单个读取
+router.get('/jailbreak/rules/:id', (req, res) => {
+  const rule = getJailbreakRule(req.params.id);
+  if (!rule) return res.status(404).json({ error: '规则集不存在' });
+  res.json({ ok: true, rule });
+});
+
+// PUT /api/config/jailbreak/rules/:id — 更新（内置项只允许改名称/targets）
+router.put('/jailbreak/rules/:id', (req, res) => {
+  const { name, content, targets } = req.body ?? {};
+  if (name === undefined && content === undefined && targets === undefined) {
+    return res.status(400).json({ error: 'at least one of name / content / targets is required' });
+  }
+  if (name !== undefined && typeof name !== 'string') return res.status(400).json({ error: 'name must be a string' });
+  if (content !== undefined && typeof content !== 'string') return res.status(400).json({ error: 'content must be a string' });
+  if (targets !== undefined && !Array.isArray(targets)) return res.status(400).json({ error: 'targets must be an array' });
+  let rule;
+  try {
+    rule = updateJailbreakRule(req.params.id, { name, content, targets });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (!rule) return res.status(404).json({ error: '规则集不存在' });
+  res.json({ ok: true, rule });
+});
+
+// DELETE /api/config/jailbreak/rules/:id — 删除（内置项与最后一个自定义项拒绝）
+router.delete('/jailbreak/rules/:id', (req, res) => {
+  let removed;
+  try {
+    removed = deleteJailbreakRule(req.params.id);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (!removed) return res.status(404).json({ error: '规则集不存在' });
+  res.json({ ok: true, ...shieldRulesStatus() });
+});
+
+// POST /api/config/jailbreak/rules/:id/activate — 切换激活（id 传空串 = 清掉激活标记）
+router.post('/jailbreak/rules/:id/activate', (req, res) => {
+  try {
+    const active = setActiveShieldRule(req.params.id);
+    res.json({ ok: true, activeId: active.id, active });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// GET /api/config/jailbreak/targets — 投递范围（含可选项与中文标签）
+router.get('/jailbreak/targets', (_req, res) => {
+  res.json({ ok: true, targets: getShieldTargets(), available: JAILBREAK_TARGETS, labels: JAILBREAK_TARGET_LABELS });
+});
+
+// PUT /api/config/jailbreak/targets — 改写投递范围
+router.put('/jailbreak/targets', (req, res) => {
+  const { targets } = req.body ?? {};
+  if (!Array.isArray(targets)) return res.status(400).json({ error: 'targets must be an array' });
+  res.json({ ok: true, targets: setShieldTargets(targets), available: JAILBREAK_TARGETS, labels: JAILBREAK_TARGET_LABELS });
+});
+
+// GET /api/config/jailbreak/rules/catalog — 可选项清单（前端渲染开关列表用）
+router.get('/jailbreak/catalog', (_req, res) => {
+  res.json({ ok: true, available: JAILBREAK_TARGETS, labels: JAILBREAK_TARGET_LABELS });
+});
+
+// PUT /api/config/anti-repetition — 反重复采样参数（presence_penalty / frequency_penalty）
+// 默认两者都不发送（与加参数前的请求体逐字节一致）；设置页只在用户显式填了值时才透传。
+// 专题（阶段一）要求先拿真网关探针确认参数被接受再上 UI —— 未探明前这里保持"空=不发送"。
+router.put('/anti-repetition', (req, res) => {
+  const { presence, frequency } = req.body ?? {};
+  if (presence === undefined && frequency === undefined) {
+    return res.status(400).json({ error: 'presence or frequency is required' });
+  }
+  const saved = updateAntiRepetitionPenalty({ presence, frequency });
+  if (!saved.ok) return res.status(400).json({ error: saved.error });
+  res.json({
+    ok: true,
+    antiRepetitionPenalty: saved.presence ?? null,
+    antiRepetitionFrequency: saved.frequency ?? null,
+    llm: getLlmConfig(),
+  });
 });
 
 // PUT /api/config/proactive-freq — 更新主动聊天频率 0~1
@@ -381,16 +618,42 @@ router.put('/background-llm-concurrency', (req, res) => {
 });
 
 // PUT /api/config/llm — 更新 LLM 配置
-router.put('/llm', (req, res) => {
-  const result = updateLlmConfig(req.body);
+// contextWindow 留空（null/''）= 用户没声明 → 走三级回退的上游探测（provider），
+// 取不到用保守默认 128000（default）；探测预算压到 5s，保存动作不能被上游拖住
+const LLM_SAVE_PROBE_TIMEOUT_MS = 5000;
+router.put('/llm', async (req, res) => {
+  const { apiKey, baseURL, model, thinkingMode, reasoningEffort, headers, extraBody, contextWindow, contextWindowSource,
+    // 接入方式 / Vertex / 输出额度（上游 v3.10.0 合并，2026-10-19）
+    connectionType, vertexRegion, vertexServiceAccount, maxTokens } = req.body;
+
+  const effectiveConnectionType = connectionType ?? config.llm.connectionType;
+  let resolvedWindow = contextWindow;
+  let resolvedSource = contextWindowSource;
+  if ((contextWindow === null || contextWindow === '') && effectiveConnectionType !== 'vertexai') {
+    // Vertex 的窗口由 google 模型清单给，不要拿 OpenAI 的 /models 去探
+    const probe = await resolveDeclaredOrProviderWindow({
+      baseURL: baseURL || config.llm.baseURL,
+      apiKey: apiKey || config.llm.apiKey,
+      headers: headers || config.llm.headers,
+      model: model || config.llm.model,
+      timeoutMs: LLM_SAVE_PROBE_TIMEOUT_MS,
+    });
+    resolvedWindow = probe.contextWindow;
+    resolvedSource = probe.contextWindowSource;
+  }
+
+  const result = updateLlmConfig({ apiKey, baseURL, model, thinkingMode, reasoningEffort, headers, extraBody,
+    connectionType, vertexRegion, vertexServiceAccount, maxTokens,
+    contextWindow: resolvedWindow, contextWindowSource: resolvedSource });
   if (!result.ok) {
     return res.status(400).json(result);
   }
   resetClient();
 
-  const effectiveUrl = config.llm.baseURL;
+  const effectiveUrl = baseURL || config.llm.baseURL;
   if (effectiveUrl && PRESET_LLM_URLS.includes(effectiveUrl) && config.features.serializeBackgroundLLM) {
     updateFeatureFlag('serializeBackgroundLLM', false);
+    applyFromConfig(config);
     console.log('[config] serializeBackgroundLLM auto-disabled (preset LLM selected)');
   }
 
@@ -426,8 +689,8 @@ router.get('/llm/key', (req, res) => {
   res.json({ ok: true, apiKey });
 });
 
-// POST /api/config/llm/models — 从 OpenAI-compatible 接口获取可用模型
-// POST /api/config/llm/test — 使用当前或表单 LLM 配置测试一次最小对话请求
+// POST /api/config/llm/vertex/validate — 校验 Vertex 服务账号（上游 v3.10.0 合并，2026-10-19）
+// 只做"拿一次 access token"，通过即返回 projectId / clientEmail；15s 超时
 router.post('/llm/vertex/validate', async (req, res) => {
   try {
     const account = parseServiceAccount(req.body?.vertexServiceAccount || config.llm.vertexServiceAccount);
@@ -438,9 +701,12 @@ router.post('/llm/vertex/validate', async (req, res) => {
   }
 });
 
+// POST /api/config/llm/models — 从 OpenAI-compatible 接口获取可用模型
+// POST /api/config/llm/test — 使用当前或表单 LLM 配置测试一次最小对话请求
 router.post('/llm/test', async (req, res) => {
   try {
     const result = await testLlmConnection({
+      // Vertex 路由与输出额度（上游 v3.10.0 合并）：不传就回落配置，行为与旧版一致
       connectionType: req.body?.connectionType ?? config.llm.connectionType,
       vertexRegion: req.body?.vertexRegion ?? config.llm.vertexRegion,
       vertexServiceAccount: req.body?.vertexServiceAccount || config.llm.vertexServiceAccount,
@@ -465,6 +731,7 @@ router.post('/llm/test', async (req, res) => {
 });
 
 router.post('/llm/models', async (req, res) => {
+  // Vertex AI 走 Google 的模型列表接口，不复用 OpenAI 的 /models（上游 v3.10.0 合并）
   if ((req.body?.connectionType ?? config.llm.connectionType) === 'vertexai') {
     try {
       return res.json(await listVertexModels({
@@ -522,7 +789,7 @@ router.post('/llm/models', async (req, res) => {
     if (!models.length) {
       return res.status(502).json({ error: '接口未返回可识别的模型列表' });
     }
-    res.json({ ok: true, models, capabilities: normalizeModelCapabilities(rows), endpoint: modelsURL.toString() });
+    res.json({ ok: true, models, endpoint: modelsURL.toString() });
   } catch (error) {
     const message = error?.name === 'TimeoutError' ? '请求超时' : error.message;
     res.status(502).json({ error: `获取模型失败：${message}` });
@@ -537,13 +804,34 @@ router.get('/llm/profiles', (req, res) => {
 });
 
 // POST /api/config/llm/profiles — 新增 profile（默认快照当前 LLM 配置，可传字段覆盖）
-router.post('/llm/profiles', (req, res) => {
+// contextWindow 可选：填了按用户声明（declared）；没填则尝试上游 GET /v1/models 的
+// context_length（provider），取不到用保守默认 128000（default）——三级回退见 services/contextUsage.js
+router.post('/llm/profiles', async (req, res) => {
   const { name, ...overrides } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'name is required' });
   }
-  const result = addLlmProfile(name, overrides);
-  res.json({ ok: true, profiles: getLlmProfiles(), activeProfileId: getActiveProfileId() });
+
+  const baseURL = overrides.baseURL !== undefined ? overrides.baseURL : (config.llm.baseURL || '');
+  const model = overrides.model !== undefined ? overrides.model : (config.llm.model || '');
+  const apiKey = overrides.apiKey !== undefined ? overrides.apiKey : (config.llm.apiKey || '');
+  const headers = overrides.headers !== undefined ? overrides.headers : (config.llm.headers || {});
+  const resolved = await resolveDeclaredOrProviderWindow({
+    declared: overrides.contextWindow,
+    baseURL,
+    apiKey,
+    headers,
+    model,
+  });
+
+  addLlmProfile(name, { ...overrides, contextWindow: resolved.contextWindow, contextWindowSource: resolved.contextWindowSource });
+  res.json({
+    ok: true,
+    profiles: getLlmProfiles(),
+    activeProfileId: getActiveProfileId(),
+    contextWindow: resolved.contextWindow,
+    contextWindowSource: resolved.contextWindowSource,
+  });
 });
 
 // DELETE /api/config/llm/profiles/:id — 删除 profile
@@ -563,6 +851,7 @@ router.post('/llm/profiles/:id/activate', (req, res) => {
   // preset 检测：与 PUT /api/config/llm 一致
   if (PRESET_LLM_URLS.includes(config.llm.baseURL) && config.features.serializeBackgroundLLM) {
     updateFeatureFlag('serializeBackgroundLLM', false);
+    applyFromConfig(config);
   }
 
   res.json({ ok: true, llmConfig: getLlmConfig(), profiles: getLlmProfiles(), activeProfileId: getActiveProfileId() });
@@ -665,22 +954,22 @@ router.post('/user-avatar', (req, res) => {
 // GET /api/config/loras-files — 从 launcher_config.json 读取 comfyui_exe，推导 loras 文件夹，并解析 extra_model_paths.yaml 获取外部路径
 router.get('/loras-files', (req, res) => {
   try {
-    const __filename = fileURLToPath(import.meta.url);
-    const projectRoot = path.dirname(path.dirname(path.dirname(__filename)));
-    const launcherConfigPath = path.join(projectRoot, '..', 'launcher_config.json');
-
-    if (!fs.existsSync(launcherConfigPath)) {
+    // 路径推导统一走 utils/comfyPaths.js：兼容「绘世 exe / main.py / ComfyUI 目录」三种填法，
+    // 以及 launcher_config.json 在项目根或上一级两种包结构（原来这里只认绘世那一种）
+    const launcher = readLauncherConfig();
+    if (!launcher) {
       return res.json({ files: [], lorasDir: null, error: 'launcher_config.json 不存在，请先在启动器中配置 ComfyUI 路径' });
     }
-
-    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf-8'));
-    const comfyuiExe = launcherConfig.comfyui_exe;
+    const launcherConfig = launcher.config || {};
+    const comfyuiExe = String(launcherConfig.comfyui_exe || '').trim();
     if (!comfyuiExe) {
       return res.json({ files: [], lorasDir: null, error: 'comfyui_exe 未配置，请先在启动器中设置 ComfyUI 启动器路径' });
     }
 
-    const rootDir = path.dirname(comfyuiExe);
-    const defaultLoraDir = path.join(rootDir, 'ComfyUI', 'models', 'loras');
+    const comfyRoot = resolveComfyRoot();
+    // yaml 与额外目录的锚点：优先用真正的 ComfyUI 根，推导不出来时退回 exe 所在目录
+    const rootDir = comfyRoot ? path.dirname(comfyRoot) : path.dirname(comfyuiExe);
+    const defaultLoraDir = resolveComfySubdir('models', 'loras');
 
     // 收集所有待扫描目录
     const scanDirs = new Set();
@@ -702,12 +991,13 @@ router.get('/loras-files', (req, res) => {
       });
     }
 
-    // 解析 extra_model_paths.yaml（可能在 rootDir 或 rootDir/ComfyUI 下）
-    let yamlPath = path.join(rootDir, 'extra_model_paths.yaml');
-    if (!fs.existsSync(yamlPath)) {
-      yamlPath = path.join(rootDir, 'ComfyUI', 'extra_model_paths.yaml');
-    }
-    if (fs.existsSync(yamlPath)) {
+    // 解析 extra_model_paths.yaml（可能在 ComfyUI 根、启动器目录、或 exe 旁的 ComfyUI/ 下）
+    const yamlCandidates = [];
+    if (comfyRoot) yamlCandidates.push(path.join(comfyRoot, 'extra_model_paths.yaml'));
+    yamlCandidates.push(path.join(rootDir, 'extra_model_paths.yaml'));
+    yamlCandidates.push(path.join(rootDir, 'ComfyUI', 'extra_model_paths.yaml'));
+    const yamlPath = yamlCandidates.find(p => fs.existsSync(p));
+    if (yamlPath) {
       const yamlDir = path.dirname(yamlPath);
       try {
         const yamlContent = yamlLoad(fs.readFileSync(yamlPath, 'utf-8'));
@@ -870,7 +1160,7 @@ router.put('/disturb-mode', (req, res) => {
 });
 
 // PUT /api/config/workflow-mode — 更新工作流模式 (base|turbo|hybrid|custom)
-// mode === 'custom' 时可同时传 customTemplate（workflow/ 目录下的文件名）
+// mode === 'custom' 时可同时传 customTemplate（workflow/ 目录下的文件名）—— 上游 v3.10.0 合并
 router.put('/workflow-mode', (req, res) => {
   const { mode, customTemplate } = req.body;
   if (!mode || !['base', 'turbo', 'hybrid', 'custom'].includes(mode)) {
@@ -1096,7 +1386,7 @@ const systemPrompt = `你是一名资深的世界观设定师，擅长撰写「�
     msgs.push({ role: 'system', content: systemPrompt });
     msgs.push({ role: 'user', content: userPrompt });
 
-    const result = await chatSync(msgs, { model, temperature: 0.7, label: '世界观润色' });
+    const result = await chatSync(msgs, { model, temperature: 0.7, max_tokens: 4096, label: '世界观润色' });
 
     // 防御：剥离可能包裹输出的 Markdown 代码块
     let polished = (result || '').trim();

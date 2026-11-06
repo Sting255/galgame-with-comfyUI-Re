@@ -241,6 +241,12 @@ export function triggerDisturbCheck() {
 
 /**
  * 停止调度器
+ *
+ * ⚠️ 死导出（2026-10-15 标注，**只标注不删**）：全仓只有这一处定义，src / test 都没有调用点。
+ * 保留原因：调度器的 stop 是"停服务"这类运维动作的既有入口形态，删掉会让脚本作者少一个抓手；
+ * 真要清理时**同一批**处理（`stopItemScheduler` / `stopMailboxScheduler` / `stopMomentScheduler` /
+ * `stopProactiveChatScheduler` / `stopReplyQueueScheduler` / `stopSpecialMomentScheduler` 六个同形态），
+ * 别只删一个。见 `git show HEAD:目标/接手必读.md` §6.3-18 与 `git show HEAD:目标/规划/规划-全项目盘点与遗留路线-20261015.md`。
  */
 export function stopDisturbScheduler() {
   if (timer) {

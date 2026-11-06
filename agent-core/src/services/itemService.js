@@ -78,6 +78,10 @@ const DROP_POOL_FILTERS = {
 /** 外观卡家族（服饰/变身/世界观服装/发型），共享外观描述调味，与功能道具相对 */
 const isClothesKind = (kind) => kind === 'outfit' || kind === 'transform' || kind === 'world_outfit' || kind === 'hairstyle';
 
+/** 催眠手机的效果键与"永久道具"集合：使用时不消耗（手机不消失），但允许用户主动丢弃 */
+export const HYPNOSIS_PHONE_EFFECT_KEY = 'hypnosis_phone';
+const PERMANENT_EFFECT_KEYS = new Set([HYPNOSIS_PHONE_EFFECT_KEY]);
+
 /**
  * 道具池：kind 决定使用时的落地逻辑；theme 是喂给 LLM 的调味种子；
  * effectText 是 buff 类注入聊天人格的固定状态描述。
@@ -112,6 +116,9 @@ export const ITEM_EFFECTS = {
                    effectText: '处于微醺状态：脸颊微红，语气黏糊放松，话变多、更容易坦白真心话和小秘密，但意识仍清醒，不会失态。' },
   mood_fix:      { kind: 'mood',  name: '心情修复贴' },
   favor_candy:   { kind: 'favor', name: '好感糖果' },
+  // 催眠手机：**永久道具**（使用时不被消耗）。效果由 services/hypnosisService.js 落地，
+  // kind 刻意不用 'buff' —— 否则 getActiveBuffBlock 会把它当普通临时状态注入人格。
+  hypnosis_phone: { kind: 'special', name: '催眠手机', theme: '一台造型老旧的翻盖手机，屏幕里泛着催眠漩涡般的微光' },
   // 仅供神说 inject_character_state 使用；injectionOnly 让它永远不进宝箱/报纸掉落池
   god_inject_outfit:    { kind: 'outfit', name: '神谕服饰', injectionOnly: true },
   god_inject_hairstyle: { kind: 'hairstyle', name: '神谕发型', injectionOnly: true },
@@ -139,37 +146,12 @@ export function sqliteLater(hours) {
   return new Date(Date.now() + hours * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
 }
 
-function repairJson(text) {
-  return String(text || '').replace(/\\([^"\\\/bfnrtu])/g, '$1');
-}
-
-/** 从 LLM 原始输出中截取第一个完整 JSON 对象（括号计数 + 非法转义修复），失败返回 null */
-export function extractFirstJson(text) {
-  const str = String(text || '');
-  const start = str.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < str.length; i++) {
-    const ch = str[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') inString = true;
-    else if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        try { return JSON.parse(repairJson(str.slice(start, i + 1))); } catch { return null; }
-      }
-    }
-  }
-  return null;
-}
+// 2026-10-15 收口：`extractFirstJson` 的实现搬去 `jsonExtract.js`（全仓唯一正源）。
+// ⚠️ 本文件旧版这个名字**返回的是已解析对象**（不是 JSON 字符串）—— 别把它接回字符串语义，
+// 那会让下面的 `extractFirstJson(raw) || {}` 变成"拿到一个字符串却当对象用"。
+// 语义等价的是 `jsonExtract.parseFirstJson`（扫出第一个完整对象 → 原样 parse → 失败用 repairJson 修一次）。
+// 转义修复也一并收口（原来这里有一份本地 repairJson，已删）。
+import { parseFirstJson as extractFirstJson } from './jsonExtract.js';
 
 // ── 宝箱 ──
 
@@ -266,10 +248,16 @@ export function buildFlavorFormatPrompt(needsOutfit, needsWorldOutfit = false) {
 
   return `请严格按照以下 JSON 格式输出，不要输出任何解释或 JSON 以外的文字：
 
+【image_prompt 的写作规范】（**这是规范，不是内容：不要照抄进 JSON**）
+英文 SDXL tag 串，12-24 个英文 tag，英文逗号分隔，全部小写。画面为单一道具主体漂浮在纯净浅色背景上的游戏物品图标构图，
+图片包括一个华丽的边框，必须包含 no humans, simple background, game item icon；
+服饰类必须先写明确的服装本体，再写主题中的关键部件与材质，避免会改变主体含义的歧义词；
+道具本体要与主题一致（如药剂=玻璃瓶、卡牌=华丽卡面、糖果=包装糖果、发型=发型展示），禁止出现任何人物${outfitFields}
+
 {
   "name": "${itemNameHint}",
   "description": "道具描述（40-80字：先一句道具外观描写，再点明使用效果——服饰类写「使用后可以让一位角色换上这套服装，持续一天」，世界观服装卡写「使用后可以让一位角色换上这套XXX服装，持续一天」，发型卡写「使用后可以让一位角色换上这个发型，持续一天」，药剂/糖果/符咒类写「使用后会让一位角色陷入XX状态，持续六小时」，心情/亲密度类写「使用后立即生效」；语气温柔可爱）",
-  "image_prompt": "英文SDXL tag串（12-24个英文tag，英文逗号分隔，全部小写）：画面为单一道具主体漂浮在纯净浅色背景上的游戏物品图标构图，图片包括一个华丽的边框，必须包含 no humans, simple background, game item icon；服饰类必须先写明确的服装本体，再写主题中的关键部件与材质，避免会改变主体含义的歧义词；道具本体要与主题一致（如药剂=玻璃瓶、卡牌=华丽卡面、糖果=包装糖果、发型=发型展示），禁止出现任何人物"${outfitFields}
+  "image_prompt": "（按上面的规范自己写的那串英文 tag，不要照抄规范原文。示例：a glass potion bottle with glowing amber liquid and a gold cap, floating in the center of a pastel background, ornate golden frame, soft rim light, game item icon, no humans, simple background）"
 }
 
 字段约束：name 不得使用英文；description 中的效果说明必须与道具类型一致；image_prompt 全英文。${worldOutfitRules}`;
@@ -422,6 +410,10 @@ async function generateItemImageAsync(itemId, imagePrompt) {
 /**
  * 修复丢失的道具图标：逐件按「名称 + 描述 + 效果主题」重新生成，写回原路径（image_url 不变）。
  * 只在文件确实不存在时才会生成，可安全重复执行。
+ *
+ * ⚠️ 死导出（2026-10-15 标注，**只标注不删**）：零调用点 —— 既没有 HTTP 端点、也没有调度器调它。
+ * 它是"道具图标批量补缺"的**手动运维入口**（原设计要给一个管理接口，后来没做）。
+ * 真要用：在临时脚本里 `import` 它、传 `{ limit, onProgress }` 手动跑一次即可（它自己会跳过存在的文件）。
  */
 export async function repairMissingItemImages({ limit = 100, onProgress } = {}) {
   const db = getDb();
@@ -641,6 +633,18 @@ function useItemInTransaction(itemId, characterId, options) {
   const char = db.prepare('SELECT id, display_name FROM characters WHERE id = ?').get(characterId);
   if (!char) return { ok: false, error: '目标角色不存在' };
 
+  // 永久道具（催眠手机）：使用不等于消耗 —— 直接返回提示，**不走下面的 status='used' 分支**。
+  // 真正的效果由 hypnosisService 的状态机落地（催眠/唤醒/指令都走它自己的接口）。
+  if (!isGift && PERMANENT_EFFECT_KEYS.has(item.effect_key)) {
+    return {
+      ok: true,
+      permanent: true,
+      summary: `「${item.name}」已就绪：可以随时催眠或唤醒，道具不会消耗`,
+      effect: { kind: effect.kind, effect_key: item.effect_key },
+      activeEffect: null,
+    };
+  }
+
   const payload = safeParseJson(item.payload_json) || {};
   let summary = '';
   let effectId = null;
@@ -710,6 +714,27 @@ function useItemInTransaction(itemId, characterId, options) {
       item: { id: item.id, name: item.name, description: item.description, imageUrl: item.image_url, effectKey: item.effect_key } };
   }
   return { ok: true, summary, effect: { kind: effect.kind, effect_key: item.effect_key }, activeEffect };
+}
+
+/**
+ * 背包直接领取催眠手机（幂等：已有一台未使用、未丢弃的就复用）。
+ * 刻意不走开箱流程：状态直接 ready + 已收下，立即出现在背包列表里，不调 LLM、不生图。
+ */
+export function grantHypnosisPhone() {
+  const db = getDb();
+  const existing = db.prepare(
+    `SELECT * FROM backpack_items
+      WHERE ${PLAYER_ITEM_SQL} AND effect_key = ? AND status IN ('ready', 'generating')
+      ORDER BY id DESC LIMIT 1`
+  ).get(HYPNOSIS_PHONE_EFFECT_KEY);
+  if (existing) return serializeItem(existing);
+
+  const effect = ITEM_EFFECTS[HYPNOSIS_PHONE_EFFECT_KEY];
+  const inserted = db.prepare(
+    `INSERT INTO backpack_items (effect_key, name, description, status, payload_json, owner_key, source_type, collected_at)
+     VALUES (?, ?, ?, 'ready', NULL, 'me', 'grant', datetime('now'))`
+  ).run(HYPNOSIS_PHONE_EFFECT_KEY, effect.name, `${effect.theme}。可以催眠她，也可以随时唤醒。`);
+  return serializeItem(db.prepare('SELECT * FROM backpack_items WHERE id = ?').get(inserted.lastInsertRowid));
 }
 
 export function discardItem(itemId, options = {}) {

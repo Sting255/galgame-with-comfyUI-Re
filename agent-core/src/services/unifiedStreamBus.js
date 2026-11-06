@@ -41,7 +41,13 @@ export function broadcast(eventType, data) {
   }
 }
 
-/** 活跃客户端数（调试用） */
+/**
+ * 活跃客户端数（调试用）
+ *
+ * ⚠️ 死导出（2026-10-15 标注，**只标注不删**）：零调用点。
+ * 它自己的注释就写了"调试用" —— 真机排查 SSE 是否健在时会手动调一下，
+ * 所以刻意保留（不是漏删的残留）。同批清单见 `scripts/scan-dead-code.mjs`。
+ */
 export function clientCount() {
   return clients.size;
 }

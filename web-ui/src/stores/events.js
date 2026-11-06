@@ -9,6 +9,8 @@ export const useEventsStore = defineStore('events', () => {
   const activeEvents = ref([])        // 活跃事件列表
   const history = ref([])             // 事件历史（全量）
   const loading = ref(false)
+  // 加载失败通道：区分「请求失败」与「真的没有奇遇」
+  const loadError = ref(null)
   const historyPage = ref(1)          // 往期奇遇当前渲染页数
   const filterCharacterId = ref(null) // null = 全部
   const filterEngaged = ref(false)      // 只看参与过的
@@ -81,8 +83,23 @@ export const useEventsStore = defineStore('events', () => {
   })
 
   // 加载全部事件（对标朋友圈 loadPosts：一次性全量，前端切片渲染）
-  async function loadEvents() {
-    if (loading.value) return
+  let loadPromise = null
+  let reloadRequested = false
+  function loadEvents() {
+    if (loadPromise) {
+      reloadRequested = true
+      return loadPromise
+    }
+    loadPromise = (async () => {
+      do {
+        reloadRequested = false
+        await fetchEvents()
+      } while (reloadRequested)
+    })().finally(() => { loadPromise = null })
+    return loadPromise
+  }
+
+  async function fetchEvents() {
     loading.value = true
     try {
       const data = await api.listEvents()
@@ -93,7 +110,7 @@ export const useEventsStore = defineStore('events', () => {
       // 直接用后端数据覆盖会导致切换页面后 loading 消失
       const localMeta = new Map()
       for (const e of activeEvents.value) {
-        if (e.processing || _chooseQueue.some(q => q.eventId === e.id)) {
+        if (_pendingIds.has(e.id) || _chooseQueue.some(q => q.eventId === e.id)) {
           localMeta.set(e.id, { processing: true, _queued: _chooseQueue.some(q => q.eventId === e.id) })
         }
       }
@@ -102,13 +119,16 @@ export const useEventsStore = defineStore('events', () => {
         if (!e.expires_at) return true
         if (new Date(e.expires_at).getTime() > now) return true
         // 过期但正在本地处理/排队中 → 保留（后端调度器可能还没结算）
-        if (localMeta.has(e.id)) return true
+        if (e.processing || localMeta.has(e.id)) return true
         expired.push(e)
         return false
       }).map(e => {
         const local = localMeta.get(e.id)
         return local ? { ...e, processing: local.processing, _queued: local._queued } : e
       })
+      for (const q of [..._chooseQueue]) {
+        if (!activeEvents.value.some(e => e.id === q.eventId)) cancelQueuedChoice(q.eventId)
+      }
       // 过期事件在调度器处理前先并入前端 history，避免消失
       history.value = [
         ...expired.map(e => ({
@@ -122,9 +142,11 @@ export const useEventsStore = defineStore('events', () => {
         ...(data.history || []),
       ]
       historyPage.value = 1
-      await markSeen()
+      loadError.value = null
+      if (isViewingEvents.value) await markSeen()
     } catch (err) {
       console.error('[events] loadEvents error:', err)
+      loadError.value = err?.message || '加载失败'
     } finally {
       loading.value = false
     }
@@ -141,169 +163,109 @@ export const useEventsStore = defineStore('events', () => {
   // UI 立刻显示"推进中"（processing=true），无需等待 HTTP 响应。
   const MAX_CONCURRENT_CHOOSES = 2
   const BRANCH_TIME_EXTENSION_MS = 5 * 60 * 1000
+  // 只有"还剩 15 分钟以内"才预览这次延长（与后端同口径）
   const BRANCH_TIME_EXTENSION_WINDOW_MS = 15 * 60 * 1000
   let _choosingCount = 0
-  const _chooseQueue = []  // { eventId, choice, customText }
+  const _chooseQueue = []
+  // 请求归属独立于 SSE 数据，服务端推送不能提前解锁仍未完成的本地操作。
+  const _pendingIds = new Set()
 
-  /** 实际执行 HTTP 请求 + 结果处理 */
+  function patchEvent(eventId, patch) {
+    const idx = activeEvents.value.findIndex(e => e.id === eventId)
+    if (idx !== -1) activeEvents.value[idx] = { ...activeEvents.value[idx], ...patch }
+  }
+
   async function _executeChoice(eventId, choice, customText) {
     _choosingCount++
-    console.log(`[store] makeChoice EXEC event=${eventId} (concurrent: ${_choosingCount}/${MAX_CONCURRENT_CHOOSES})`)
-
-    // 与后端一致：仅剩余 15 分钟以内且尚未过期时，乐观延长 5 分钟。
-    const eventIdx = activeEvents.value.findIndex(e => e.id === eventId)
-    if (eventIdx !== -1 && activeEvents.value[eventIdx].expires_at) {
-      const currentExpiresAt = new Date(activeEvents.value[eventIdx].expires_at)
-      const remainingMs = currentExpiresAt.getTime() - Date.now()
-      if (remainingMs > 0 && remainingMs <= BRANCH_TIME_EXTENSION_WINDOW_MS) {
-        activeEvents.value[eventIdx] = {
-          ...activeEvents.value[eventIdx],
-          expires_at: new Date(currentExpiresAt.getTime() + BRANCH_TIME_EXTENSION_MS).toISOString(),
-        }
-      }
+    _pendingIds.add(eventId)
+    const originalExpiry = activeEvents.value.find(e => e.id === eventId)?.expires_at
+    let previewExpiry = null
+    const remaining = new Date(originalExpiry).getTime() - Date.now()
+    if (remaining > 0 && remaining <= BRANCH_TIME_EXTENSION_WINDOW_MS) {
+      previewExpiry = new Date(new Date(originalExpiry).getTime() + BRANCH_TIME_EXTENSION_MS).toISOString()
+      patchEvent(eventId, { expires_at: previewExpiry })
     }
-
     try {
       const result = await api.chooseEventOption(eventId, choice, customText)
-      console.log(`[store] makeChoice API_OK event=${eventId} concluded=${result.concluded}`)
       if (result.concluded) {
         activeEvents.value = activeEvents.value.filter(e => e.id !== eventId)
         await loadEvents()
       } else if (result.event) {
-        const idx = activeEvents.value.findIndex(e => e.id === eventId)
-        if (idx !== -1) {
-          activeEvents.value[idx] = result.event
-        }
-        // 不在此处 markSeen()：分支更新后 last_interaction_at 已刷新，
-        // 如果立即 markSeen() 会导致 last_events_seen_at >= last_interaction_at，
-        // 使该事件在 DB 层面也变成"已读"，后续 SSE event_update 和离开页面
-        // 时都再也无法触发红点。红点由 loadEvents()（访问页面时）统一管理。
+        patchEvent(eventId, result.event)
       }
       return result
     } catch (err) {
-      console.error(`[store] makeChoice ERROR event=${eventId}:`, err?.message)
-      const idx = activeEvents.value.findIndex(e => e.id === eventId)
-      if (idx !== -1) {
-        activeEvents.value[idx] = { ...activeEvents.value[idx], processing: false }
+      // 只回滚尚未被服务端新数据覆盖的本地预估。
+      if (previewExpiry && activeEvents.value.find(e => e.id === eventId)?.expires_at === previewExpiry) {
+        patchEvent(eventId, { expires_at: originalExpiry })
       }
       throw err
     } finally {
+      _pendingIds.delete(eventId)
+      patchEvent(eventId, { processing: false, _queued: false })
       _choosingCount--
-      // 有空闲槽位 → 处理队列中的下一个
       _drainQueue()
     }
   }
 
-  /** 从队列取出下一个待处理的选择 */
   function _drainQueue() {
-    if (_chooseQueue.length === 0) return
-    if (_choosingCount >= MAX_CONCURRENT_CHOOSES) return
-
-    const next = _chooseQueue.shift()
-    const idx = activeEvents.value.findIndex(e => e.id === next.eventId)
-
-    // 事件已不在活跃列表中（被删除/过期/结束），跳过
-    if (idx === -1) {
-      console.log(`[store] makeChoice SKIP_QUEUED event=${next.eventId}: no longer active`)
-      _drainQueue() // 尝试下一个
-      return
+    while (_chooseQueue.length && _choosingCount < MAX_CONCURRENT_CHOOSES) {
+      const next = _chooseQueue.shift()
+      if (!activeEvents.value.some(e => e.id === next.eventId)) {
+        next.resolve({ cancelled: true })
+        continue
+      }
+      patchEvent(next.eventId, { _queued: false })
+      _executeChoice(next.eventId, next.choice, next.customText).then(next.resolve, next.reject)
     }
-
-    console.log(`[store] makeChoice DEQUEUE event=${next.eventId} (${_chooseQueue.length} left in queue)`)
-    // 清除 _queued 标记：HTTP 请求即将发出，不可再取消
-    if (idx !== -1) {
-      activeEvents.value[idx] = { ...activeEvents.value[idx], _queued: false }
-    }
-    // 不 await —— 让队列异步消化，不阻塞当前调用栈
-    _executeChoice(next.eventId, next.choice, next.customText)
   }
 
-  /** 取消排队中的选择，恢复可点击状态 */
   function cancelQueuedChoice(eventId) {
-    // 从队列移除
-    const qIdx = _chooseQueue.findIndex(q => q.eventId === eventId)
-    if (qIdx !== -1) {
-      _chooseQueue.splice(qIdx, 1)
-      console.log(`[store] cancelQueuedChoice REMOVED event=${eventId} from queue`)
-    }
-    // 恢复本地状态
-    const idx = activeEvents.value.findIndex(e => e.id === eventId)
-    if (idx !== -1) {
-      activeEvents.value[idx] = { ...activeEvents.value[idx], processing: false, _queued: false }
-    }
+    const idx = _chooseQueue.findIndex(q => q.eventId === eventId)
+    if (idx === -1) return false
+    const [queued] = _chooseQueue.splice(idx, 1)
+    patchEvent(eventId, { processing: false, _queued: false })
+    queued.resolve({ cancelled: true })
+    return true
   }
 
-  /** 撤回上一次分支选择，回到上一步 */
   async function undoChoice(eventId) {
-    const idx = activeEvents.value.findIndex(e => e.id === eventId)
-    if (idx === -1) return
-
-    // 标记 processing 防止重复操作
-    activeEvents.value[idx] = { ...activeEvents.value[idx], processing: true }
-
+    const event = activeEvents.value.find(e => e.id === eventId)
+    if (!event || event.processing || _pendingIds.has(eventId)) return null
+    _pendingIds.add(eventId)
+    patchEvent(eventId, { processing: true })
     try {
       const result = await api.undoEventOption(eventId)
-      if (result.event) {
-        activeEvents.value[idx] = result.event
-      }
+      if (result.event) patchEvent(eventId, result.event)
       return result
-    } catch (err) {
-      console.error(`[store] undoChoice ERROR event=${eventId}:`, err?.message)
-      if (idx !== -1) {
-        activeEvents.value[idx] = { ...activeEvents.value[idx], processing: false }
-      }
-      throw err
+    } finally {
+      _pendingIds.delete(eventId)
+      patchEvent(eventId, { processing: false })
     }
   }
 
-  /** 选择事件选项（可排队） */
   async function makeChoice(eventId, choice, customText) {
-    const idx = activeEvents.value.findIndex(e => e.id === eventId)
-
-    // 守卫 1：同一事件已有请求在处理或排队中
-    if (idx !== -1 && activeEvents.value[idx].processing) {
-      console.warn(`[store] makeChoice IGNORED event=${eventId}: already processing`)
-      return null
-    }
-    if (_chooseQueue.some(q => q.eventId === eventId)) {
-      console.warn(`[store] makeChoice IGNORED event=${eventId}: already in queue`)
-      return null
-    }
-
-    // 立即标记 processing，UI 显示"推进中"
-    if (idx !== -1) {
-      activeEvents.value[idx] = { ...activeEvents.value[idx], processing: true }
-    }
-
-    // 有可用槽位 → 立即执行
-    if (_choosingCount < MAX_CONCURRENT_CHOOSES) {
-      return _executeChoice(eventId, choice, customText)
-    }
-
-    // 槽位满 → 入队等待
-    console.log(`[store] makeChoice QUEUED event=${eventId} (queue depth: ${_chooseQueue.length + 1})`)
-    _chooseQueue.push({ eventId, choice, customText })
-    return null
+    const event = activeEvents.value.find(e => e.id === eventId)
+    if (!event || event.processing || _pendingIds.has(eventId) || _chooseQueue.some(q => q.eventId === eventId)) return null
+    patchEvent(eventId, { processing: true, _queued: _choosingCount >= MAX_CONCURRENT_CHOOSES })
+    if (_choosingCount < MAX_CONCURRENT_CHOOSES) return _executeChoice(eventId, choice, customText)
+    return new Promise((resolve, reject) => {
+      _chooseQueue.push({ eventId, choice, customText, resolve, reject })
+    })
   }
 
-  // 取消事件
   async function dismissEvent(eventId) {
-    try {
-      await api.dismissEvent(eventId)
-      activeEvents.value = activeEvents.value.filter(e => e.id !== eventId)
-    } catch (err) {
-      console.error('[events] dismissEvent error:', err)
-    }
+    await api.dismissEvent(eventId)
+    cancelQueuedChoice(eventId)
+    activeEvents.value = activeEvents.value.filter(e => e.id !== eventId)
+    await loadEvents()
   }
 
   async function deleteEvent(eventId) {
-    try {
-      await api.deleteEvent(eventId)
-      activeEvents.value = activeEvents.value.filter(e => e.id !== eventId)
-      history.value = history.value.filter(e => e.id !== eventId)
-    } catch (err) {
-      console.error('[events] deleteEvent error:', err)
-    }
+    await api.deleteEvent(eventId)
+    cancelQueuedChoice(eventId)
+    activeEvents.value = activeEvents.value.filter(e => e.id !== eventId)
+    history.value = history.value.filter(e => e.id !== eventId)
   }
 
   // ── 未读计数 ──
@@ -344,7 +306,11 @@ export const useEventsStore = defineStore('events', () => {
       onEvent('event_update', (data) => {
         const idx = activeEvents.value.findIndex(e => e.id === data.id)
         if (idx !== -1) {
-          activeEvents.value[idx] = { ...activeEvents.value[idx], ...data }
+          const queued = _chooseQueue.some(q => q.eventId === data.id)
+          activeEvents.value[idx] = {
+            ...activeEvents.value[idx], ...data,
+            ...(_pendingIds.has(data.id) || queued ? { processing: true, _queued: queued } : {}),
+          }
         } else {
           // 事件不在本地列表中（如用户刷新后未重新加载），直接插入
           activeEvents.value.unshift(data)
@@ -352,11 +318,14 @@ export const useEventsStore = defineStore('events', () => {
         _bumpUnreadLocal()
       }),
       onEvent('event_concluded', (data) => {
-        // 镇民奇遇（town: 前缀）带 event_id，按 id 精确匹配；角色事件沿用 character_id+title 口径
+        // 优先按 id 匹配；兼容旧服务端未携带 event_id 的广播。
         activeEvents.value = activeEvents.value.filter(e =>
           data.event_id ? String(e.id) !== String(data.event_id)
             : !(e.character_id === data.character_id && e.title === data.event_title)
         )
+        for (const q of [..._chooseQueue]) {
+          if (!activeEvents.value.some(e => e.id === q.eventId)) cancelQueuedChoice(q.eventId)
+        }
         _bumpUnreadLocal()
         if (isViewingEvents.value) loadEvents()
       }),
@@ -365,7 +334,11 @@ export const useEventsStore = defineStore('events', () => {
           data.event_id ? String(e.id) !== String(data.event_id)
             : !(e.character_id === data.character_id && e.title === data.event_title)
         )
+        for (const q of [..._chooseQueue]) {
+          if (!activeEvents.value.some(e => e.id === q.eventId)) cancelQueuedChoice(q.eventId)
+        }
         _bumpUnreadLocal()
+        if (isViewingEvents.value) loadEvents()
       }),
       onEvent('event_urgency', (data) => {
         // 半程强制联络：更新事件紧急标记 + 红点
@@ -406,6 +379,7 @@ export const useEventsStore = defineStore('events', () => {
     filterCharacterId, filterEngaged, newEventCount, isViewingEvents,
     scrollToTopSignal,
     filteredActive, filteredHistory, charactersWithEvents,
+    loadError,
     loadEvents, loadMoreHistory, makeChoice, cancelQueuedChoice, undoChoice, dismissEvent, deleteEvent,
     setFilter, toggleFilterEngaged,
     refreshUnreadCount, markSeen,

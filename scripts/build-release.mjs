@@ -10,6 +10,25 @@
  *   4. PyInstaller 打包启动器
  *   5. 构建安卓 APK 壳（android-shell/，工具链自动下载到 build_cache，失败不阻塞）
  *   6. shallow clone 保留 .git → 覆盖预构建产物 → 压缩 zip
+ *
+ * ── 打包排除（审查缺口 4：交付包里的非产品内容，本机实测合计 ≈127 MB）──
+ *   这三项是开发 / 运行期产物，**不属于交付内容**，打包时必须排除：
+ *     · .mimosa/          —— 代码扫描缓存（本机实测 ≈110 MB，最大头）
+ *     · e2e/node_modules/ —— e2e 的依赖（≈17 MB）
+ *     · logs/             —— 运行日志（≈0.1 MB）
+ *
+ *   正常路径走 git clone：这三个目录都在 .gitignore 里（.gitignore:48/1/63），
+ *   **0 个 tracked 文件** ⇒ clone 天然带不进来（.gitignore 只对 untracked 生效，而它们正是 untracked）。
+ *   只有 **clone 失败走 robocopy 兜底** 时才有风险 ⇒ 两条防线：
+ *     ① robocopyExclude 显式加 .mimosa / logs（node_modules 这个目录名已被整体排除，覆盖 e2e 那份）；
+ *     ② 压缩 zip 之前再清一次（见下面「打包前清掉非产品内容」那一段；双保险，也防将来复制口径被改）。
+ *
+ *   **.git 不进排除** —— 交付包保留 .git（审查 §六 第 1 条，Lead 已采纳）。
+ *
+ *   若改用 **7z 手工打包**（本脚本用的是 PowerShell Compress-Archive，不是 7z），等价参数是：
+ *     -xr'!*.mimosa' -xr'!e2e\node_modules' -xr'!logs'
+ *   ⚠️ 别动 -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -mqs=on -ms=on -mmt=on -mf=off，
+ *     尤其 -mf=off 丢了会破坏「方法集合只有 LZMA2」这条历史验收口径。
  */
 
 import { spawn, execSync } from "node:child_process";
@@ -18,6 +37,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import https from "node:https";
 import http from "node:http";
+// 使用说明.txt 的正文正源（2026-10-17 从本文件抽出，见 scripts/usage-guide.mjs 的文件头说明）
+import { buildUsageGuideText } from "./usage-guide.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -208,6 +229,17 @@ async function robocopy(src, dest, excludeDirs = [], excludeFiles = []) {
   const result = await exec("robocopy", args);
   return result.code < 8;
 }
+
+// ── 使用说明.txt 正文 ──
+//
+// 2026-10-17：正文已抽到 `scripts/usage-guide.mjs`（**唯一正源**），见文件顶部的 import。
+// 抽出的原因：这份正文原来只住在本文件里，而本文件是「整包发布」脚本（下载 runtime /
+// PyInstaller / APK / zip），跑一次成本极高；真正的交付链 `scripts/发布-校验并打包.mjs`
+// 过去完全没有生成这一步 ⇒ 生成源改了以后没人再生成，交付包一路带着 2026-10-01 旧手册。
+// 现在两份脚本共用同一份正文，发布链每次打包前重新生成 + 关键词断言。
+//
+// 单独生成：`node scripts/build-release.mjs --usage-guide-only [输出路径]`
+
 
 // ── 主流程 ──
 
@@ -557,46 +589,15 @@ async function main() {
         "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
         "--trusted-host", "pypi.tuna.tsinghua.edu.cn"], { print: true, timeout: 300000 });
       if (!r.ok) {
-        warn("构建 venv 安装失败，尝试系统 pip...");
-        const r2 = await exec("pip", ["install", "PySide6", "psutil", "pyinstaller"], { print: true });
-        if (!r2.ok) { fail("PyInstaller 依赖安装失败!"); process.exit(1); }
+        fail("构建 venv 依赖安装失败，请修复该环境后重试；不回退系统 pip。");
+        process.exit(1);
       }
     }
 
-    // 优先使用构建 venv 运行 PyInstaller，失败则回退系统 pyinstaller
-    let r = await exec(BUILD_VENV_PY, ["-m", "PyInstaller",
-      "--onefile", "--windowed",
-      "--name", "邻舍.EXE",
-      "--icon", "assets/icon.ico",
-      "--add-data", "assets/launchHeader.jpg;assets",
-      "--add-data", "assets/icon.ico;assets",
-      "--add-data", "assets/MiSans-Regular.ttf;assets",
-      "--add-data", "assets/navbar-title.png;assets",
-      "--hidden-import", "PySide6.QtCore",
-      "--hidden-import", "PySide6.QtGui",
-      "--hidden-import", "PySide6.QtWidgets",
-      "--hidden-import", "PySide6.QtNetwork",
-      "--clean", "--noconfirm",
-      "main.py",
-    ], { cwd: launcherDir, print: true, timeout: 300000 });
-    if (!r.ok) {
-      warn("捆绑 Python PyInstaller 失败，尝试系统 pyinstaller...");
-      r = await exec("pyinstaller", [
-        "--onefile", "--windowed",
-        "--name", "邻舍.EXE",
-        "--icon", "assets/icon.ico",
-        "--add-data", "assets/launchHeader.jpg;assets",
-        "--add-data", "assets/icon.ico;assets",
-        "--add-data", "assets/MiSans-Regular.ttf;assets",
-        "--add-data", "assets/navbar-title.png;assets",
-        "--hidden-import", "PySide6.QtCore",
-        "--hidden-import", "PySide6.QtGui",
-        "--hidden-import", "PySide6.QtWidgets",
-        "--hidden-import", "PySide6.QtNetwork",
-        "--clean", "--noconfirm",
-        "main.py",
-      ], { cwd: launcherDir, print: true });
-    }
+    // 所有入口共用隔离 DLL 搜索路径与实际窗口自检，禁止回退到污染的系统环境。
+    const r = await exec(BUILD_VENV_PY, ["build_launcher.py"], {
+      cwd: launcherDir, print: true, timeout: 300000,
+    });
     if (!r.ok) { fail("PyInstaller 打包失败!"); process.exit(1); }
     ok("PyInstaller 打包完成");
   }
@@ -633,7 +634,7 @@ async function main() {
 
   // shallow clone 保留 .git/
   log("创建 shallow clone (保留 .git 用于版本更新)...");
-  const GITHUB_REPO_URL = "https://github.com/icecranberry/galgame-with-comfyUI.git";
+  const GITHUB_REPO_URL = "https://github.com/Sting255/linshe-gai.git";
   // depth=50 覆盖足够历史，确保用户端 git describe / checkout tag 不出问题
   const cloneResult = await exec("git", ["clone", "--depth", "50", ROOT, RELEASE_DIR]);
   let hasGit = cloneResult.ok;
@@ -644,9 +645,11 @@ async function main() {
     ensureDir(RELEASE_DIR);
 
     // robocopy 排除目录
-    const robocopyExclude = [".git", "node_modules", "release", "__pycache__", ".cache"];
+    // （.mimosa / logs 见文件头「打包排除」：兜底路径是唯一会把它们带进包的地方；
+    //   e2e\node_modules 由 node_modules 这个目录名整体覆盖）
+    const robocopyExclude = [".git", "node_modules", "release", "__pycache__", ".cache", ".mimosa", "logs"];
     // 运行时临时快照（如 agent-core/townstate.tmp.json）不属于发布内容，别带进用户包里
-    const robocopyExcludeFiles = ["*.tmp.json"];
+    const robocopyExcludeFiles = ["*.tmp.json", ".access-token"];
     const rcOk = await robocopy(ROOT, RELEASE_DIR, robocopyExclude, robocopyExcludeFiles);
     if (!rcOk) { fail("文件复制失败!"); process.exit(1); }
   } else {
@@ -741,31 +744,7 @@ async function main() {
 
   // 使用说明
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(resolve(RELEASE_DIR, "使用说明.txt"), [
-    "邻舍.EXE",
-    "",
-    "【首次使用，非常重要】",
-    "！！！<<<ComfyUI内核版本需要更新到v0.23.0以上，否则不支持Anima>>>！！！",
-    "anima_baseV10、qwen_image_vae、anima_baseV10_txt需要都在ComfyUI的models目录下的子文件夹内",
-    "",
-    "【使用步骤】",
-    "1. 双击运行 邻舍.EXE.exe",
-    "2. 在「设置」中配置 ComfyUI 启动器路径",
-    "3. 返回「首页」点击「启动」",
-    "4. 浏览器访问 http://localhost:3099 支持手机端网页访问，网页地址在日志中显示",
-    "",
-    "【手机端（安卓）】",
-    `压缩包内附带 ${APK_NAME}，安装后输入电脑端显示的局域网地址即可使用`,
-    "（相比手机浏览器：按返回键会返回上一页，而不是退出到桌面）",
-    "",
-    "【版本更新】",
-    "切换到「版本」页签 → 点击「检查更新」",
-    "如有新版本，选择后点击「切换到此版本」，会自动构建",
-    "",
-    "【常见问题】",
-    "- 确保 ComfyUI 已正确安装并能正常运行",
-    "- 本程序自带运行环境（Node.js/Python/Git），无需额外安装",
-  ].join("\n"), "utf-8");
+  writeFileSync(resolve(RELEASE_DIR, "使用说明.txt"), buildUsageGuideText({ apkName: APK_NAME }), "utf-8");
   ok("使用说明.txt");
 
   // VERSION 文件（供启动器运行时读取版本号）
@@ -782,6 +761,22 @@ async function main() {
     ok("默认头像 → agent-core\\data\\avatars\\");
   } else {
     warn("默认头像不存在: agent-core/assets/default_assistant_header.png");
+  }
+
+  // ── 打包前清掉非产品内容（审查缺口 4，≈127 MB）──
+  // 正常路径（git clone）本就带不上它们（.gitignore 覆盖、0 tracked 文件）；
+  // 这里再清一次，是为了守住 **clone 失败时的 robocopy 兜底路径**，也防将来复制口径被改。
+  // 三项分别对应 7z 的 -xr'!*.mimosa' / -xr'!e2e\node_modules' / -xr'!logs'。
+  // **不含 .git** —— 交付包要保留 .git（审查 §六 第 1 条）。
+  for (const stray of [
+    resolve(RELEASE_DIR, "agent-core", "data", ".access-token"),
+    resolve(RELEASE_DIR, ".mimosa"),
+    resolve(RELEASE_DIR, "logs"),
+    resolve(RELEASE_DIR, "e2e", "node_modules"),
+  ]) {
+    if (!existsSync(stray)) continue;
+    rmSync(stray, { recursive: true, force: true });
+    ok(`打包前剔除非产品内容: ${stray.slice(RELEASE_DIR.length + 1)}`);
   }
 
   // ═══════════════════════════════════════════
@@ -832,6 +827,21 @@ async function main() {
 
   // 提示清理
   log(`${C.dim}提示: runtime/ 和 launcher/build_cache/ 为缓存，可保留用于下次打包加速${C.reset}`);
+}
+
+// ── 单独生成「使用说明.txt」 ──
+//
+//   $ node scripts/build-release.mjs --usage-guide-only [输出路径]
+//
+// 不碰 clone / robocopy / PyInstaller / APK，只把同一个函数生成的正文写盘，
+// 因此单独跑出来的内容与正式发布包里那份逐字节一致。默认写到仓库根目录（gitignored）。
+if (process.argv.includes("--usage-guide-only")) {
+  const outArg = process.argv.slice(2).find(arg => arg !== "--usage-guide-only");
+  const outPath = outArg ? resolve(process.cwd(), outArg) : resolve(ROOT, "使用说明.txt");
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(outPath, buildUsageGuideText({ version: VERSION }), "utf-8");
+  console.log(`  ${C.green}[OK]${C.reset} 使用说明.txt -> ${outPath}`);
+  process.exit(0);
 }
 
 main().catch((err) => {

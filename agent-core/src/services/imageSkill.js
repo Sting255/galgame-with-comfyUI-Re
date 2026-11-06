@@ -18,10 +18,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { submitWorkflow, apiToGui } from './comfyClient.js';
+import { POSE_LORA_FILE } from './poseControl.js';
 import { config, getNovelaiApiKey } from '../config.js';
 import { generateNovelaiImage } from './novelaiClient.js';
 import { acquireSlot, releaseSlot } from './llmConcurrency.js';
 import { prepareImagePrompt } from './imagePromptPreparer.js';
+import { createSoftState } from './softStateStore.js';
+import { stripImagePromptRuleEcho } from '../utils/groupImagePrompt.js';
+import { resolveComfySubdir } from '../utils/comfyPaths.js';
 
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, checkWorkflowHealth, resolveCustomWorkflowPath } from './workflowTemplates.js';
@@ -67,11 +71,11 @@ function resolveWorkflowPath(scene) {
   if (mode === 'turbo') return BASE_WORKFLOW_PATH;
   if (mode === 'base') return PRO_WORKFLOW_PATH;
 
-  // custom: 全局自定义工作流；文件缺失时回退 turbo，保证生图不中断
+  // custom: 全局自定义工作流（workflow/ 下的文件）；模板被删/改名时回退 turbo，生图不中断
   if (mode === 'custom') {
     const custom = resolveCustomWorkflowPath(config.workflow?.customTemplate);
     if (custom) return custom;
-    console.warn(`[imageSkill] Custom workflow "${config.workflow?.customTemplate || ''}" not found, falling back to turbo`);
+    console.warn(`[imageSkill] 自定义工作流 "${config.workflow?.customTemplate || ''}" 不存在，回退 turbo`);
     return BASE_WORKFLOW_PATH;
   }
 
@@ -85,6 +89,28 @@ function resolveWorkflowPath(scene) {
 }
 
 const PROMPT_PLACEHOLDER = '请输入画面描述';
+
+/**
+ * 角色级负面提示词的长度上限（字符）。负面词过长会挤占 CLIP 的 77-token 窗口，
+ * 把真正该排除的特征挤掉，等于越写越差；200 字符足够写 15~20 个 tag。
+ */
+const MAX_CHARACTER_NEGATIVE = 200;
+
+/**
+ * 合并最终负面提示词：角色级在前，全局在后。
+ * 顺序有意义 —— 靠前的 tag 更容易被模型当主体约束读到；角色级更具体，理应优先。
+ * 两者都空时返回空串（调用方据此不覆盖工作流里的默认负面词，保持旧行为）。
+ * @param {string} characterNegative 角色级负面词
+ * @param {string} globalNegative 全局负面词
+ * @returns {string}
+ */
+export function composeNegativePrompt(characterNegative, globalNegative) {
+  const role = typeof characterNegative === 'string'
+    ? characterNegative.trim().slice(0, MAX_CHARACTER_NEGATIVE)
+    : '';
+  const base = typeof globalNegative === 'string' ? globalNegative.trim() : '';
+  return [role, base].filter(Boolean).join(', ');
+}
 
 // 按节点 title 注入参数（而非硬编码节点 ID）
 export const NODE_TITLES = {
@@ -178,6 +204,37 @@ export function filterGlobalLoras(loras, currentScene) {
  * @param {string|null} [overrides.workflowScene] - hybrid 模式下单独用于选择工作流；
  *        显式传 null 表示不按场景选择（沿用上次模式），与 scene 解耦
  */
+// ── 同场景种子（2026-11-06）──
+// 真机问题：同一次亲密 / 同一轮群聊连出三张图，人物像换了个人。
+// 扩散模型的随机性有一半来自 seed，固定它能让"同一个场景的连续几张图"保持同一张脸与同一套光影；
+// 每张 +1 而不是完全相同，避免构图完全重复。
+const SCENE_SEED_WINDOW_MS = 30 * 60 * 1000;
+const sceneSeedState = new Map();   // sceneKey -> { base, used, at }
+
+/**
+ * 取同一个场景窗口内的稳定种子。
+ * 连续的出图会滑动续期：只要间隔不超过 30 分钟，就一直沿用同一个 base。
+ * @param {string} sceneKey 场景标识（如 `intimate:12:345`、`group:2:678`）；空值返回 null（保持原随机行为）
+ * @returns {number|null}
+ */
+export function resolveSceneSeed(sceneKey) {
+  const key = String(sceneKey || '').trim();
+  if (!key) return null;
+  const now = Date.now();
+  let entry = sceneSeedState.get(key);
+  if (!entry || now - entry.at > SCENE_SEED_WINDOW_MS) {
+    entry = { base: Math.floor(Math.random() * 1_000_000_000), used: 0, at: now };
+    sceneSeedState.set(key, entry);
+    if (sceneSeedState.size > 300) {
+      for (const [k, v] of sceneSeedState) if (now - v.at > SCENE_SEED_WINDOW_MS) sceneSeedState.delete(k);
+    }
+  }
+  entry.at = now;   // 续期：场景还在继续
+  const seed = entry.base + entry.used;
+  entry.used += 1;
+  return seed;
+}
+
 function buildWorkflow(promptText, overrides = {}) {
   // 用 undefined 区分"没传"与"显式不按场景选工作流"：后者传 null
   const workflowScene = overrides.workflowScene !== undefined ? overrides.workflowScene : overrides.scene;
@@ -231,15 +288,17 @@ function buildWorkflow(promptText, overrides = {}) {
   if (qualityPrompt) defaults[NODE_TITLES.quality] = qualityPrompt;
   // 负面提示词：非空才覆盖工作流节点里的默认值，留空不注入
   const negativeValue = overrides.negativePrompt ?? config.comfyui.negativePrompt;
-  const negativePrompt = typeof negativeValue === 'string' ? negativeValue.trim() : '';
+  const negativePrompt = composeNegativePrompt(overrides.characterNegative, negativeValue);
   if (negativePrompt) defaults[NODE_TITLES.negative] = negativePrompt;
 
   for (const node of wf.nodes || []) {
     if (!Array.isArray(node.widgets_values)) continue;
 
-    // KSampler seed 随机化
+    // KSampler seed：同一场景窗口用稳定种子（sceneSeed），否则维持随机
     if (node.type === 'KSampler' && node.widgets_values.length > 1 && node.widgets_values[1] === 'randomize') {
-      node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+      node.widgets_values[0] = Number.isSafeInteger(overrides.sceneSeed)
+        ? overrides.sceneSeed
+        : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
     }
 
     // lora触发词节点：注入所有 lora 的 triggerWord 拼接
@@ -442,6 +501,7 @@ const MAX_SUBMIT_RETRIES = 2;
  * @param {object}   [opts]
  * @param {Array}    [opts.loras]              - [{path, weight, triggerWord}]
  * @param {string}   [opts.customWorkflow]       - 自定义工作流文件名（单人兼容）
+ * @param {string}   [opts.characterNegative]    - 角色级负面提示词（排在全局负面词前，截 200 字符）
  * @param {string}   [opts.scene]                - 全局 LoRA 的场景过滤；默认也用于工作流选择
  * @param {string}   [opts.workflowScene]        - hybrid 模式下单独用于工作流选择
  * @param {string}   [opts.artist]
@@ -449,14 +509,15 @@ const MAX_SUBMIT_RETRIES = 2;
  * @param {number}   [opts.height]
  * @param {function} [opts.onProgress]
  * @param {number}   [opts.submitRetries=2]
+ * @param {string|object} [opts.poseJson]        - 体位骨架 JSON（{canvas, points}）；传了就跳过姿势检测直接喂坐标
  * @returns {Promise<{success, images, source, promptId}>}
  */
 async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
   loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
-  imageProvider = config.comfyui.imageProvider,
+  characterNegative, poseJson, sceneKey,
 } = {}) {
-  if (imageProvider === 'novelai') {
+  if (config.comfyui.imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
     // but does not use either character or global LoRA data.
     return submitNovelaiImage(rawPrompt, { artist, onProgress });
@@ -469,27 +530,47 @@ async function submitWithRetry(rawPrompt, {
   // 2. 构建 workflow
   const { wf, wfMode } = buildWorkflow(finalPrompt, {
     artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
+    characterNegative,
+    // 同场景稳定种子：调用方传 sceneKey 时，连续几张图共用一套 base（每张 +1）
+    // ⚠️ 2026-11-06 修：这一行第一版写成了 opts.sceneKey，但本函数是解构参数、没有 opts
+    // ⇒ 所有生图入口（聊天/群聊/朋友圈/事件/触摸/玩具/独立生图）全部 `opts is not defined`。
+    sceneSeed: resolveSceneSeed(sceneKey),
   });
   if (onProgress) onProgress({ stage: 'submitting' });
 
   // 3. 提交 ComfyUI，带重试循环
+  //
+  // 2026-10-01 修（现场：logs/backend-2026-10-01.log:156-167）：
+  //   `[error] [imageSkill] ComfyUI attempt 1/2/3 failed: fetch failed`
+  //   → `All ComfyUI submit attempts exhausted, generation failed`
+  //   三次各隔 2s / 3s，**总共约 5 秒**就放弃。用户「邻舍先起、ComfyUI 后起（还在加载模型）」
+  //   时必然全灭，而且日志里只有一行 fetch failed，看不出是「没启动」还是「这段 prompt 被拒」。
+  // 现在分两类对待：
+  //   · 连不上（fetch failed / ECONNREFUSED / 超时）⇒ ComfyUI 正在启动也说不定，多给几次机会、拉长间隔；
+  //   · 其它（节点/模型缺失、prompt 校验失败）⇒ 等再久也没用，维持快速失败。
   let lastResult = null;
+  const baseRetries = submitRetries;
+  const unreachableRetries = Math.max(submitRetries, 3);
+  let warnedUnreachable = false;
+  // 服务端没有姿态适配器时会校验失败（错误文本里带文件名）：此时去掉骨架再提一次，
+  // 保证「没装骨架也能出图」，而不是整条配图跟着失败。
+  let activePoseJson = poseJson;
 
-  for (let attempt = 0; attempt <= submitRetries; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     if (attempt > 0) {
-      console.log(`[imageSkill] ComfyUI submit retry ${attempt}/${submitRetries} — re-randomizing seed`);
+      console.log(`[imageSkill] ComfyUI submit retry ${attempt} — re-randomizing seed`);
       for (const node of wf.nodes || []) {
         if (node.type === 'KSampler' && node.widgets_values.length > 1 && node.widgets_values[1] === 'randomize') {
           node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
         }
       }
-      if (onProgress) onProgress({ stage: 'retrying', attempt, maxRetries: submitRetries });
+      if (onProgress) onProgress({ stage: 'retrying', attempt, maxRetries: unreachableRetries });
     }
 
     try {
       const result = await submitWorkflow(wf, (p) => {
         if (onProgress) onProgress({ stage: 'generating', ...p });
-      });
+      }, { poseJson: activePoseJson });
       if (result.images.length > 0) {
         console.log(`\n🎨 [imageSkill] 图片生成完成: ${result.images.length} 张 (workflow: ${wfMode}, promptId: ${result.promptId})`);
         return { success: true, images: result.images, source: 'api', promptId: result.promptId, wfMode };
@@ -498,31 +579,149 @@ async function submitWithRetry(rawPrompt, {
     } catch (err) {
       console.error(`[imageSkill] ComfyUI attempt ${attempt + 1} failed:`, err.message);
       lastResult = { success: false, images: [], source: null, error: err.message };
+      if (activePoseJson && String(err.message).includes(POSE_LORA_FILE)) {
+        console.warn(`[imageSkill] ComfyUI 没有姿态适配器 ${POSE_LORA_FILE}，去掉体位骨架重试`);
+        activePoseJson = undefined;
+      }
+      // 2026-11-03 第二道保底：目标机器没装 AnimaPoseControl 自定义节点时，
+      // ComfyUI 会回 `missing_node_type: Node 'AnimaPoseControl' not found`。
+      // 正常情况下 comfyClient 会先查节点清单跳过注入；这条兜住"清单还没取到就提交"的窗口期，
+      // 保证**任何情况下都不会因为姿势增强而生不出图**。
+      if (activePoseJson && /missing_node_type|AnimaPoseControl|AnimaControlApply/i.test(String(err.message))) {
+        console.warn('[imageSkill] 目标 ComfyUI 没有姿势控制节点，去掉体位骨架重试（出图不受影响）');
+        activePoseJson = undefined;
+      }
     }
 
-    if (attempt < submitRetries) {
-      const waitMs = 2000 + attempt * 1000;
-      console.log(`[imageSkill] Waiting ${waitMs}ms before retry...`);
-      await new Promise(r => setTimeout(r, waitMs));
+    const unreachable = isComfyUnreachable(lastResult?.error);
+    // 生成超时：ComfyUI 没在时限内画完，重试只是再堵一个完整时限 —— 直接放弃这一张
+    if (!unreachable && /execution timeout/i.test(String(lastResult?.error || ''))) {
+      console.warn('[imageSkill] 生成超时（ComfyUI 未在时限内返回），本张标记失败、不再重试');
+      break;
     }
+    if (unreachable && !warnedUnreachable) {
+      warnedUnreachable = true;
+      console.warn('[imageSkill] ComfyUI 连不上（多半是还没启动 / 正在加载模型）—— 本次会多等几轮再放弃');
+    }
+    const budget = unreachable ? unreachableRetries : baseRetries;
+    if (attempt >= budget) break;
+
+    const waitMs = unreachable ? 3000 + attempt * 6000 : 2000 + attempt * 1000;
+    console.log(`[imageSkill] Waiting ${waitMs}ms before retry...`);
+    await new Promise(r => setTimeout(r, waitMs));
   }
 
-  console.log('[imageSkill] All ComfyUI submit attempts exhausted, generation failed');
-  return { success: false, images: [], source: null, error: lastResult?.error || 'All ComfyUI attempts exhausted', wfMode };
+  const errText = lastResult?.error || 'All ComfyUI attempts exhausted';
+  const unreachable = isComfyUnreachable(errText);
+  console.log(`[imageSkill] All ComfyUI submit attempts exhausted, generation failed${unreachable ? '（ComfyUI 不可达）' : ''}`);
+  return {
+    success: false, images: [], source: null, wfMode,
+    // 给调用方/界面一句能看懂的原因：连不上 vs 被拒（后者通常是缺节点或缺模型）
+    error: unreachable ? `ComfyUI 连不上（没启动或还在加载），最后一次错误：${errText}` : errText,
+  };
+}
+
+/**
+ * 「ComfyUI 根本连不上」类错误的判定（对比「它收到了但拒绝了」）。
+ * 只有这一类才值得拉长重试；节点/模型缺失、prompt 校验失败等重试再多次也一样。
+ * 导出给单测（test/imagePromptRuleEcho.test.js）用。
+ */
+export function isComfyUnreachable(message) {
+  const text = String(message || '').toLowerCase();
+  if (!text) return false;
+  // 2026-11-06：**生成超时**不算"连不上"。ComfyUI 收到了请求但没在时限内画完，
+  // 重试只会再堵一个完整时限（120s × 重试次数），比不重试更糟。
+  if (/execution timeout/.test(text)) return false;
+  return /fetch failed|econnrefused|econnreset|econnaborted|etimedout|socket hang up|network error|timed? ?out|aborted/.test(text);
 }
 
 // ── 优先级队列 ──
 let activeTaskCount = 0;
-let lowQueue = [];           // { rawPrompt, opts, resolve, reject }
+let lowQueue = [];           // { rawPrompt, opts, resolve, reject, enqueuedAt }
 let processingLow = false;
-let lastHighTime = 0;
+// 2026-10-15 软状态落库：`lastHighTime` 原来是纯进程内变量（重启归零 ⇒ 静默期判定被绕过）。
+// 现在挂一份 `softStateStore`（懒加载、写入去抖 1s、读失败回空），语义与纯内存版完全一致。
+const lastHighState = createSoftState('image_skill_last_high');
+function readLastHighTime() {
+  const v = Number(lastHighState.get('lastHighTime'));
+  return Number.isFinite(v) ? v : 0;
+}
+function markLastHighTime() {
+  lastHighState.set('lastHighTime', Date.now());
+}
+let lowRetryTimer = null;
 const QUIET = 180_000;        // 高优任务后 180s 内不派发低优
+/**
+ * 低优任务的**防饿死上限**（2026-10-01，用户真机日志里那场 52 分钟冻结）。
+ *
+ * 日志实证：朋友圈配文 5 秒就写好了，但它的**配图**任务在同一时刻被排进低优队列，
+ * 直到 **52 分钟后**才被派发 —— 这 52 分钟里用户一直在聊/摸（高优任务不断刷新 `lastHighTime`），
+ * 而低优只在「距上一个高优 ≥180s」时才开始 ⇒ **只要用户在玩，后台图永远排不上**。
+ * 受害的不只是那张图：朋友圈 / 奇遇 / 主动聊天三个调度器都在 `await` 它，
+ * 于是三个玩法**同时卡死**（日志里 05:05–05:47 三个调度器连续跳过 5~8 个 tick）。
+ *
+ * 现在：低优任务最多等 `LOW_QUEUE_MAX_WAIT`，超过就不再遵守静默期（**仍然只在没有任务在跑时**派发，
+ * 不去抢正在生成的那一张），并打一条 warn 让这件事在日志里可见。
+ */
+const LOW_QUEUE_MAX_WAIT = 60_000;   // 2026-11-06 真机日志：10 次低优派发里 8 次等满上限（180s）才放行，
+                                     // 说明 3 分钟是「用户在玩时的常态等待」，不是罕见兜底。降到 1 分钟。
+                                     // 低优仍然只在**没有任务在跑**的空闲窗口派发，不抢正在生成的那张。
+
+/**
+ * 是否该派发队首的低优任务。抽成**纯函数**是为了能单测这条策略：
+ * 静默期没到 + 还没等够 → 继续等；静默期没到但已经等太久 → 放行（防饿死）；静默期到了 → 放行。
+ *
+ * @param {number} now
+ * @param {number} lastHigh      上次高优任务时刻
+ * @param {number} enqueuedAt    队首任务入队时刻
+ * @param {number} [quietMs]
+ * @param {number} [maxWaitMs]
+ * @returns {{dispatch: boolean, waitMs: number, starved: boolean}}
+ */
+export function decideLowDispatch(now, lastHigh, enqueuedAt, quietMs = QUIET, maxWaitMs = LOW_QUEUE_MAX_WAIT) {
+  const remaining = quietMs - (now - Number(lastHigh || 0));
+  if (remaining <= 0) return { dispatch: true, waitMs: 0, starved: false };
+  const waited = now - Number(enqueuedAt || now);
+  if (waited >= maxWaitMs) return { dispatch: true, waitMs: 0, starved: true };
+  return { dispatch: false, waitMs: remaining + 100, starved: false };
+}
+
+/** 排一次复查。**必须能重复排**：以前 `activeTaskCount>0` 时直接 return 且不排复查，
+ *  若此后没有高优任务再触发 `processLowQueue`，低优队列就永久停摆了。 */
+function scheduleLowRetry(ms) {
+  if (lowRetryTimer) return;
+  lowRetryTimer = setTimeout(() => { lowRetryTimer = null; processLowQueue(); }, Math.max(500, ms));
+  if (typeof lowRetryTimer.unref === 'function') lowRetryTimer.unref();
+}
 
 async function _execute(rawPrompt, opts) {
   activeTaskCount++;
   let slotAcquired = false;
   try {
-    const preparation = await prepareImagePrompt(rawPrompt, {
+    // 0. 送进 CLIP 之前先剥掉模型回显的生图规范原文（2026-10-01 修，见 groupImagePrompt.js 长注释）。
+    //    放在这里而不是各调用点，是为了让 event / newspaper / moments / schedule / group / chat /
+    //    touch / toy / portrait / standalone / maibot **所有**生图入口一次生效。
+    //    规范特征词都没有时是零开销快路径。
+    const sanitized = stripImagePromptRuleEcho(rawPrompt);
+    if (sanitized.changed) {
+      console.log(`[imageSkill] 画面描述剥离规范回显：${String(rawPrompt).length} → ${sanitized.prompt.length} 字`);
+    }
+    if (sanitized.isEmpty) {
+      // 整条都是规范原文 ⇒ 送进去只会得到一张和剧情毫无关系的图，不如明确失败。
+      throw Object.assign(new Error('画面描述里只有生图规范原文，没有可用的场景内容'), { code: 'image_prompt_rule_echo_only' });
+    }
+    const prompt = sanitized.prompt;
+
+    // 0b. 连一个英文字母都没有 ⇒ 这是「模型把中文要求当成了画面描述」那类退化
+    //     （全仓有多处 `text.length >= 5` 的弱校验：schedule.js / proactiveChatScheduler.js /
+    //      characters.js / imagePromptResponse.js）。中文喂给 CLIP 只会得到一张与剧情无关的图，
+    //     与其出一张错的，不如明确失败。**例外**：标准生图页（`promptScene: 'standalone'`）是
+    //     用户自己在输入框里写什么就画什么，不拦。
+    if (!/[A-Za-z]/.test(prompt) && opts.promptScene !== 'standalone') {
+      throw Object.assign(new Error('画面描述里没有任何英文内容（多半是模型把中文写作要求当成了画面描述）'), { code: 'image_prompt_not_english' });
+    }
+
+    const preparation = await prepareImagePrompt(prompt, {
       ragQuery: opts.ragQuery,
       disableRAG: opts.disableRAG === true,
       scene: opts.promptScene || opts.scene || 'chat',
@@ -530,10 +729,8 @@ async function _execute(rawPrompt, opts) {
       skipOptimization: opts.skipOptimization === true,
       ragTimeoutMs: opts.ragTimeoutMs,
     });
-    opts.onPromptPrepared?.(preparation.promptRefined);
     if (_limitEnabled()) {
-      await acquireSlot();
-      slotAcquired = true;
+      slotAcquired = await acquireSlot();
     }
     const result = await submitWithRetry(preparation.promptRefined, opts);
     return {
@@ -549,18 +746,21 @@ async function _execute(rawPrompt, opts) {
   } finally {
     activeTaskCount--;
     if (activeTaskCount === 0) processLowQueue();
-    if (slotAcquired) releaseSlot();
+    releaseSlot(slotAcquired);
   }
 }
 
 function processLowQueue() {
   if (processingLow || lowQueue.length === 0) return;
-  if (activeTaskCount > 0) return;
+  // 有任务在跑：不插队，但**一定要排复查**（否则没有后续高优任务时队列永久停摆）
+  if (activeTaskCount > 0) { scheduleLowRetry(5_000); return; }
 
-  const remaining = QUIET - (Date.now() - lastHighTime);
-  if (remaining > 0) {
-    setTimeout(processLowQueue, remaining + 100);
-    return;
+  const head = lowQueue[0];
+  const verdict = decideLowDispatch(Date.now(), readLastHighTime(), head.enqueuedAt);
+  if (!verdict.dispatch) { scheduleLowRetry(verdict.waitMs); return; }
+  if (verdict.starved) {
+    console.warn(`[imageSkill] 低优生图已等 ${Math.round((Date.now() - Number(head.enqueuedAt || Date.now())) / 1000)}s`
+      + `（上限 ${Math.round(LOW_QUEUE_MAX_WAIT / 1000)}s），跳过静默期直接派发，避免后台玩法被饿死；队列还剩 ${lowQueue.length} 张`);
   }
 
   processingLow = true;
@@ -572,42 +772,49 @@ function processLowQueue() {
 }
 
 export function isUserQuiet(quietMs = QUIET) {
-  return Date.now() - lastHighTime >= quietMs;
+  return Date.now() - readLastHighTime() >= quietMs;
+}
+
+/**
+ * 生图队列水位（设置页「运行状态」用）。
+ * active = 正在生成；low = 低优队列里排队的张数；waitingMs = 队首已等多久。
+ */
+export function getImageQueueStatus() {
+  const head = lowQueue[0];
+  return {
+    active: activeTaskCount,
+    low: lowQueue.length,
+    headWaitedMs: head ? Date.now() - Number(head.enqueuedAt || Date.now()) : 0,
+    quietMs: QUIET,
+    lowMaxWaitMs: LOW_QUEUE_MAX_WAIT,
+  };
 }
 
 export async function generateImage(rawPrompt, opts = {}) {
   if (opts.priority === 'low') {
     return new Promise((resolve, reject) => {
-      lowQueue.push({ rawPrompt, opts, resolve, reject });
+      lowQueue.push({ rawPrompt, opts, resolve, reject, enqueuedAt: Date.now() });
       processLowQueue();
     });
   }
-  lastHighTime = Date.now();
+  markLastHighTime();
   return _execute(rawPrompt, opts);
 }
 
 export async function generateImageRaw(rawPrompt, opts = {}) {
   if (opts.priority === 'low') {
     return new Promise((resolve, reject) => {
-      lowQueue.push({ rawPrompt, opts, resolve, reject });
+      lowQueue.push({ rawPrompt, opts, resolve, reject, enqueuedAt: Date.now() });
       processLowQueue();
     });
   }
-  lastHighTime = Date.now();
+  markLastHighTime();
   return _execute(rawPrompt, opts);
 }
-function getComfyLorasRoot() {
-  try {
-    const projectRoot = path.resolve(__dirname, '..', '..', '..');
-    const launcherConfigPath = path.resolve(projectRoot, '..', 'launcher_config.json');
-    const launcherConfig = JSON.parse(fs.readFileSync(launcherConfigPath, 'utf8'));
-    if (!launcherConfig.comfyui_exe) return null;
-    const rootDir = path.dirname(launcherConfig.comfyui_exe);
-    const lorasRoot = path.join(rootDir, 'ComfyUI', 'models', 'loras');
-    return fs.existsSync(lorasRoot) ? lorasRoot : null;
-  } catch {
-    return null;
-  }
+export function getComfyLorasRoot() {
+  // 路径推导统一走 utils/comfyPaths.js（原来这里读的 launcher_config.json 比项目根多退了一级，
+  // 于是永远返回 null —— 用户明明在启动器里填了 ComfyUI 路径，姿势控制资产却一直装不上）
+  return resolveComfySubdir('models', 'loras');
 }
 
 // 兼容历史数据：ComfyUI 只接受模型根目录相对名，不接受本机绝对路径。

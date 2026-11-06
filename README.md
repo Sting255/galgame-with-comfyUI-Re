@@ -1,30 +1,98 @@
-<div align="center">
-  <img src="https://github.com/user-attachments/assets/2a01f4f4-6a15-4978-b01a-44b0a3c2c935" width="144" alt="邻舍.EXE Logo" />
-  <h1>邻舍.EXE</h1>
-  <p><strong>让 AI 角色拥有自己的生活</strong></p>
-  <p>受 Galgame 启发的 AI 角色陪伴应用，让对话、记忆与画面在同一个小镇里延续。</p>
-  <p>
-    <a href="https://github.com/icecranberry/galgame-with-comfyUI/releases"><img src="https://img.shields.io/badge/下载邻舍-Windows_整合包-e9826e?style=for-the-badge" alt="下载邻舍 Windows 整合包" /></a>
-  </p>
-  <p>
-    <a href="#主要功能">主要功能</a>
-    · <a href="#快速开始">快速开始</a>
-    · <a href="#项目截图">项目截图</a>
-    · <a href="#开发">开发</a>
-    · <a href="./README_EN.md">English</a>
-  </p>
-  <p>
-    <img src="https://img.shields.io/badge/License-MIT-786b63" alt="License: MIT" />
-    <img src="https://img.shields.io/badge/客户端-Web_%7C_Android-e9826e" alt="客户端：Web / Android" />
-    <img src="https://img.shields.io/badge/生图-ComfyUI_%7C_NovelAI-c3a477" alt="生图：ComfyUI / NovelAI" />
-  </p>
-</div>
+# 邻舍.EXE
 
-## 项目简介
+[English](./README_EN.md) · [下载](https://github.com/Sting255/galgame-with-comfyUI-Re/releases)
+
+项目维护入口：[当前状态](docs/项目现状.md) · [文档导航](docs/README.md) · [代码结构与开发命令](docs/operations/project-structure.md) · [测试](docs/testing.md)
 
 邻舍.EXE 是一款受 Galgame 启发的 AI 角色陪伴应用。用户可以创建具有独立人格、情绪、记忆和生活节奏的角色，与她们聊天，并在朋友圈、信箱、日程、群聊和随机事件中持续互动。角色还能够根据对话和当前场景主动调用 ComfyUI 生成图片，让文字交流自然延伸成视觉体验。
 
 它想解决的问题很简单：普通 AI 聊天机器人往往只是在“回答问题”，而邻舍.EXE 希望让角色表现得更像一个持续生活着的人。
+
+> [!NOTE]
+> **本仓库是 [邻舍.EXE](https://github.com/icecranberry/galgame-with-comfyUI) 的个人增强 fork**：上游基线 v4.1.1，当前版本 **v4.1.1**。
+> 除上游功能外，本 fork 重做了外观与体型系统、新增「地图」页（世界地理骨架）、把 84 个体位数据融进对话与生图链路、全站修了一轮文字对比度，并针对本地 LLM 网关的几处缺陷加了兜底；上游原有的「世界 / 小镇」页已在本 fork 移除。
+> **本版已完整跟进上游 v4.1.1**：语音合成（本地 IndexTTS 2.0 / API 音色克隆）、朋友圈频率与文风优化、NovelAI 多配置、手机端表情包适配等，均已并入。
+> 下面先列本 fork 的改动，再是上游原有功能介绍（内容与上游保持同步，仅下载与克隆地址指向本仓库）。
+
+## 🧩 本 Fork 新增功能
+
+以下为本 fork 新增的功能（截至 v4.0.0），上游原有功能见后文各章节：
+
+### 📱 催眠手机与睡眠控制
+
+- 聊天页内置「催眠手机」：深度催眠（意志压制、按指定优先级反应）、只唤醒意志（意识清醒但身体受限）、遗忘与遗忘记录；群聊里可单选一人进入完整面板，或多人同时下达指令、逐个回执。
+- 睡眠控制：随时让角色入睡或唤醒，实时显示睡眠状态与预计醒来时间；睡着时发消息会照常收下、排队等她醒来（可能先收到一句梦话）。
+- 睡梦唤醒：她睡着时触发特殊指令，会先进入 5 分钟临时唤醒窗口，呈现「从深睡里被硬拉起来」的专属反应。
+
+### ⏰ 程序时间
+
+在设置中拨动游戏世界的「现在」：「+N 天」快进（1~3650 天）、切白天/黑夜、直接设定具体日期时刻、一键回到真实时间。角色日程、睡眠判定和提示词时间随之更新；朋友圈、信箱和事件后台仍按真实时间排期。
+
+### 🔊 语音合成（上游 v4.0.0 功能，本 fork 已并入）
+
+- 私聊、群聊与立绘触摸台词都能念出来，可选自动播放；不想用可在设置里整体关掉，默认就是关的。
+- 两种接法互斥：
+  - **API 接入**：填一个 OpenAI 兼容的 `/v1/audio/speech` 地址与密钥即可，支持参考音频克隆音色，不占显存、不下载模型。走本地参考音频克隆时要用 ffprobe 读音频时长，装过本地语音运行时自带；没装则需要系统 PATH 里有 ffprobe（用服务商自带的音色 ID 则不需要）。
+  - **本地 IndexTTS 2.0**：离线可用，需另装模型与运行时（约 15 GB 磁盘、6~8 GB 显存）。入口在「设置 → 语音」或角色「音色管理」，网络条件好时可在界面里自动下载；网络不稳时按 `tts-service/README.md` 的离线包流程（`setup.ps1` / `package.ps1`）导入。模型包不进整合包，需要时再装。
+- 本地模式与生图共用显卡：合成前会先把 ComfyUI 模型从显存卸载，语音进程空闲十分钟后自动退出，因此语音和生图不会同时跑——这是刻意的，避免 12 GB 显存被两边挤爆。
+
+### ✋ 触摸动作系统
+
+- 四档共 25 个动作（日常/亲密/敏感/私密）的浮动小窗：可拖动、支持角标提醒（还有 N 个动作等她回应）、连点不会误关。
+- 她有自己的耐受度与偏好：同一动作短时间连点会越来越不耐烦，动作卡片上直接标出「喜欢/讨厌」；好感不够时她会用一句剧情化的对话拒绝你，而不是报错。
+- 「即时反应」开启时点一下她立刻单独回一条；关闭则进入省额度模式，反应并入下一轮回复。
+- 群聊支持围观插话（可调概率）与敏感档开关；动作可按「总是/智能/从不」策略自动配图；角色详情页有完整统计面板（次数、等级分布、偏好与耐受度、配图数）。
+- 立绘触摸互动：在角色立绘小窗上直接触摸互动，带涟漪动效与专属台词，台词可在立绘管理中自定义。
+
+### 💞 亲密推进与亲密看板
+
+- **可连续推进的互动**，不是一次性单发：进入她 → 继续抽插 → 加速 / 慢下来（缓、正常、快、冲刺四档节奏）→ 换姿势 → 一起到，也可以让她「自己动」（被束着时只能照做）。每一下都按当下状态实时回应，节奏和她的反应会随推进变化。
+- **独立每日配额**：这套动作用单独的成本刹车，不会把聊天额度吃光；配额按本地日期翻篇，重启不重置。
+- **体位随时切换**：内置 84 条体位数据（逐条标注了插入判定与冲突位，避免点不动或描述打架），换姿势时从当前可选体位里挑，体位会同时影响身体细节描述与配图。
+- **亲密看板**：角色详情里持续记录亲密行为与等级，支持「AI 判断行为」自动判定每轮互动、手动补判最近轮次、每日判定上限、AI 润色与自动记录，形成可演进的档案。
+
+### 🧸 玩具系统
+
+每件玩具需要「钥匙」解锁，穿戴后按强度持续影响角色状态，反应写进聊天记录，与动作系统共用同一套好感度/耐受度数据；私聊与群聊各自独立。
+
+### 🎨 表情包与立绘
+
+- 表情立绘可按「全部重新生成 / 只补齐缺失」两种模式批量出图，也能单独重生成某一槽；任务可断点续做，重启后失败的槽会标出来重试。
+- 每张立绘可单独配一套「空手触摸」台词，在立绘小窗上直接点她就有反应（带涟漪动效）。
+- 立绘与当前世界观绑定：换过世界观后，旧图会被标成「不吻合当前世界观」，提醒你重出而不是混着用。
+
+### 💾 数据备份
+
+电脑本机设置页导出数据库、图片和音频为 `tar.gz`（可选包含含 API Key 的模型配置）。恢复前校验完整性并生成备份，失败自动回滚，成功后必须重启。手机首次访问需在「设备连接」输入本机配对码；详见 [备份与恢复](docs/operations/data-backup.md) 和 [设备访问](docs/operations/device-access.md)。
+
+### 📊 上下文余量面板
+
+左上角胶囊实时显示当前会话 token 用量与剩余（环形进度 + 百分比），点开可看分项明细与窗口来源；快满时可手动触发「压缩上下文」（滚动摘要 + 记忆整理）。添加/编辑模型时可声明上下文窗口，留空则由程序向上游探测。
+
+### 💬 群聊与对话质量增强
+
+- **群聊 ↔ 私聊记忆互通**：双向同步（每人/每节/合计均有硬性字数预算，避免撑爆上下文）。
+- **反重复与话题推进**：反车轱辘话、反钻牛角尖、连续复述时自动升级约束，可选 presence/frequency penalty，全部在提示词层实现、不额外调用模型。
+- 群聊相册、群聊图片流水线、脚本协议与插话等群聊体验增强。
+- 朋友圈记忆回想：角色发动态时会想起与该话题相关的共同经历。
+
+### 🗺️ 地图页（世界地理骨架）
+
+与游戏化小镇刻意分开的「叙事地理」：一句话描述你的世界，AI 先出大地区 → 子地区大纲，点开某个子地区再逐层展开场景与生活地点（POI）。层级不设上限、任意层可增删改、支持复制已有地图当模板、导出 Markdown 贴回知识库。骨架是纯文本、秒级生成，不消耗生图额度；地点带准入/分区/开放时间等结构化属性，供日程生成时按「谁能去哪」过滤。
+
+### 🧬 外观与体型
+
+- 五态场景服装（常服/私服/居家/睡衣/裸体），**身体描述是五套共用的单一真源**，换衣服不改身体特征；居家强制室内拖鞋、睡衣强制赤脚，写库与读取两处都过一遍，存量脏数据零迁移即刻修好。
+- 体型按「人工填的身高 > AI 预填 > 卡面文本推断」三态取值；多人同屏时自动生成身高对照块，避免把全场角色画成同一高度。
+- 84 个体位数据（含逐条标注的插入判定与冲突位）融进亲密动作与生图提示词，与本地精选的 17 条并存。
+
+### 🛡️ 网关兜底
+
+针对本地 OpenAI 兼容网关的实测缺陷做的防御：网关丢弃 system 消息、思考型模型把 `max_tokens` 吃光导致正文为空、`response_format` 被忽略而返回 Markdown —— 分别用「格式纠正重试（回灌上一版、只要求改写成 JSON）」「思考饥饿时放大额度重发」「拒答话术追加纠正指令重发」兜住；用量异常时打告警而不是静默采信。
+
+### 🧪 工程化
+
+浏览器验收在 `e2e/` 与 `web-ui/test/`；专题文档按聊天、角色、生图、运行维护分类，从 [文档导航](docs/README.md) 查找。`npm run check` 检查文档链接与源码规模，`npm test` 串行运行前后端回归；GitHub Actions 执行同样的检查并构建前端。
 
 ## 项目演示视频
 
@@ -90,9 +158,9 @@ macOS / Linux 使用 `python3 -m venv vector-service/venv` 创建环境，激活
 
 ![Galgame 沉浸聊天](https://github.com/user-attachments/assets/f5e7183c-f385-4e8b-b415-f6738b05b6e5)
 
-### 小镇互动
+### 上游小镇互动（历史截图）
 
-在地图上与居民相遇，通过人物对话了解近况、接受奇遇邀请，或进行打工与交易。
+此截图展示上游历史功能；本 fork 已移除小镇世界页，当前保留聊天、地图和奇遇入口。
 
 ![小镇居民互动](https://github.com/user-attachments/assets/5cd70530-a961-4770-84c7-bcc9d9aa7a09)
 
@@ -120,11 +188,52 @@ macOS / Linux 使用 `python3 -m venv vector-service/venv` 创建环境，激活
 
 **手机端**
 
-通过手机浏览器或 Android 网页壳连接服务，继续与角色互动。
+<img src="https://github.com/user-attachments/assets/c8d86580-94a5-4822-96bf-4dc9e459f201" alt="手机端界面" width="260" />
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/c8d86580-94a5-4822-96bf-4dc9e459f201" alt="手机端界面" width="260" />
-</p>
+## 主要功能
+
+- **角色陪伴**：私聊、群聊、人物关系、情绪与好感度，结合近期对话、滚动摘要和长期记忆生成回复。
+- **日常互动**：主动聊天、日程、朋友圈、信件、礼物与背包，让角色在对话之外也有自己的生活。
+- **奇遇**：在事件页通过选项推进角色故事。此 fork 已移除小镇世界页。
+- **场景生图**：根据对话与角色外观生成配图，支持 ComfyUI 与 NovelAI，配套相册、立绘和放大细化功能。
+- **个性化与多端**：自定义人格、世界观和模型配置；暖色 / 暗夜主题，可按时间切换；支持浏览器与 Android 网页壳。
+
+聊天、角色和图片保存在本地；使用云端模型或在线生图、嵌入、重排服务时，相应内容会发送给所配置的服务商。
+
+## 快速开始
+
+### Windows 整合包
+
+1. 从 [GitHub Releases](https://github.com/Sting255/galgame-with-comfyUI-Re/releases) 下载 `EXE-vX.Y.Z.zip`，解压后运行 `邻舍.EXE.exe`。
+2. 在启动器首页点击「启动邻舍」，浏览器会自动打开。
+3. 在网页「设置」中配置 LLM 的 API 地址、密钥和模型，支持 OpenAI 兼容接口。
+4. 按需配置生图服务：ComfyUI 需另行准备工作流所需模型与节点（默认地址 `http://localhost:8188`）；使用 NovelAI 时配置对应接口与密钥。
+5. 需要语音时再单独配置（可选，默认关闭）：在「设置 → 语音」选 API 接入（填地址与密钥），或安装本地 IndexTTS 2.0 模型；不装不影响其它功能。
+6. 在「酒馆」创建或导入角色，开始聊天。
+
+整合包包含便携运行时、依赖和前端产物。Android 端连接电脑上的服务，需保持电脑运行并处于同一局域网；APK 以对应版本的发布附件为准，详见 [Android 说明](./android-shell/README.md)。
+
+### 源码运行
+
+以下为 **Windows PowerShell** 步骤。环境建议与打包脚本对齐：**Node.js 22.18+（22.x）**、**Python 3.12（含 venv）**、**Git**。
+
+```powershell
+git clone https://github.com/Sting255/galgame-with-comfyUI-Re.git
+cd galgame-with-comfyUI-Re
+
+npm --prefix agent-core install
+npm --prefix web-ui install
+
+python -m venv vector-service/venv
+./vector-service/venv/Scripts/python.exe -m pip install -r vector-service/requirements.txt
+./vector-service/venv/Scripts/python.exe vector-service/download_model.py
+
+npm run dev
+```
+
+访问 [localhost:5173](http://localhost:5173)，按上面的步骤完成配置。开发脚本启动前端 `5173`、后端 `3099` 和向量服务 `8765`，ComfyUI 需单独启动。首次下载向量模型需要网络；缺失时开发脚本也会尝试下载。
+
+macOS / Linux 使用 `python3 -m venv vector-service/venv` 创建环境，激活 `source vector-service/venv/bin/activate` 后，以 `python` 执行安装依赖、下载模型，再运行 `npm run dev`。桌面 EXE 与整合包构建面向 Windows。
 
 ## 配置与数据
 
@@ -155,13 +264,13 @@ Remove-Item Env:DB_PATH
 
 | 目录 | 职责 |
 | --- | --- |
-| `web-ui/` | Vue 3 + Pinia + Vite 前端，Three.js 小镇渲染 |
+| `web-ui/` | Vue 3 + Pinia + Vite 前端，页面按路由加载 |
 | `agent-core/` | Node.js + Express 后端，SQLite / FTS5、LLM 调用与任务调度 |
 | `vector-service/` | FastAPI + ChromaDB + ONNX 语义记忆检索 |
 | `launcher/` / `android-shell/` | PySide6 启动器 / Android WebView 客户端 |
 | `scripts/` | 开发、构建与发布脚本 |
 
-开发前阅读 [协作约定](./AGENTS.md)；UI 修改遵循 [设计系统](./docs/design-system.md)。其他说明：[测试](./docs/testing.md) · [小镇互动](./docs/town-interactions.md) · [小镇经济](./docs/town-economy.md) · [放大细化](./docs/hires-workflow.md)。
+开发前阅读 [协作约定](./AGENTS.md)；接手第一站是 [项目现状](./docs/项目现状.md)，UI 修改遵循 [设计系统](./docs/design-system.md)。其他说明：[测试](./docs/testing.md) · [放大细化](./docs/images/hiresfix.md)。
 
 ## License
 

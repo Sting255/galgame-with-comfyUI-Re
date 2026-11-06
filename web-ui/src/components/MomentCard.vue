@@ -320,7 +320,6 @@ import LinsheInput from './ui/LinsheInput.vue'
 import MomentCommentItem from './MomentCommentItem.vue'
 import { groupMomentComments } from '../utils/momentComments.js'
 import { extractMomentImageRequest, stripMomentImageRequest, appendMomentImageRequest } from '../utils/momentImageRequest.js'
-import { emitMomentLikeEnabled } from '../utils/characterReactionProducers.js'
 
 const props = defineProps({
   post: { type: Object, required: true },
@@ -764,8 +763,6 @@ async function onLike() {
   await moments.toggleLike(props.post.id)
   // 点赞成功：爱心爆心动画（粒子环扩散），600ms 后复位
   if (props.post.liked) {
-    // 业务成功分支才发事件：用户自己的动态、镇民动态由生产者侧直接忽略（§4.1）
-    emitMomentLikeEnabled({ post: props.post, liked: true })
     likeBursting.value = false
     requestAnimationFrame(() => {
       likeBursting.value = true
@@ -874,8 +871,7 @@ function formatTime(iso) {
   position: absolute; top: 100%; right: 0;
   margin-top: 4px;
   min-width: 120px;
-  /* 浮层背景走主题变量：硬编码白色会让暗夜主题下变成白板 + 浅字 */
-  background: var(--popover-bg);
+  background: rgba(255,255,255,0.95);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
@@ -1042,8 +1038,9 @@ function formatTime(iso) {
   z-index: 40;
   padding: 2px 10px;
   border-radius: 999px;
-  /* 压在照片上的小标签，沿用灯箱遮罩的黑底白字口径，任何画面上都看得清 */
-  background: rgba(0, 0, 0, 0.45);
+  /* 压在照片上的小标签：黑底白字。原来 0.45 的遮罩压不住浅色照片，
+     白字合成后对比只有 2.6:1，加深到 0.72（2026-10-30 对比度审计） */
+  background: rgba(0, 0, 0, 0.72);
   color: #fff;
   font-size: 12px;
   font-weight: 600;
@@ -1157,7 +1154,7 @@ function formatTime(iso) {
   border-radius: 999px;
   background: rgba(var(--accent-rgb), 0.08);
   font-size: 12px;
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 .reply-target-chip .chip-label {
   max-width: 200px;

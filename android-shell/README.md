@@ -10,27 +10,6 @@
   任何机器构建的包签名一致、可互相覆盖升级；keystore 缺失时回退 debug 签名。
   从 v1.7 及更早（debug 签名）升级到 v1.8+ 需卸载重装一次
 
-## 立绘重力感应（v2.2 起）
-
-- APK 内通过 `AndroidBridge.hasStandingGravity/startStandingGravity/stopStandingGravity` 读取原生传感器，内网 HTTP 可直接使用，无需 HTTPS 或额外传感器权限。普通浏览器仍走 HTTPS 的设备方向接口。
-- 优先使用重力传感器，缺失时回退加速度计低通滤波，最多约 30 次/秒传递倾斜数据；前端负责握持姿势校准、位移限幅与平滑。
-- 仅配置服务器的 `/#/standing-display` 页面接收数据；环境支持时自动开启，无需开关；离开页面、打开地址设置、进入后台或销毁 Activity 时停止采集。前台恢复重新校准。
-- 需覆盖安装 v2.2 或更新版本 APK 并更新服务器前端资源。旧 APK 在 HTTP 下不显示重力感应入口；无硬件或无有效数据时保留静态展示与原有动效。
-
-## Galgame 横屏沉浸
-
-- 配置服务器的 `/#/chat/:id?mode=galgame` 在横屏时隐藏状态栏与导航栏，边缘滑动仍可临时唤出。
-- 横屏同时关闭窗口内容的系统区域缩进，Android 9 及以上允许舞台延伸到短边摄像头／刘海区域；必须一起设置内容布局与开孔策略，否则窗口背景会形成白边。按钮与文字通过网页安全区域留白避让开孔。
-- 转回竖屏、退出 Galgame、打开壳设置时恢复系统栏；切换方向不重载 WebView，不丢失当前对话进度。
-- 需要更新 APK；普通浏览器与旧版 APK 只能应用网页的尺寸适配。
-
-## 保存图片到相册
-
-- 网页图片预览中的下载按钮通过 `AndroidBridge.saveImage` 保存到公共 `Pictures/邻舍/`，相册中显示为「邻舍」，首次保存时自动创建。
-- 点击保存时请求系统权限：Android 8–9 请求存储读写权限，Android 10–12 请求存储读取权限，Android 13+ 请求照片权限；Android 14+ 也接受「仅允许部分照片」。
-- 授权后自动完成本次保存；拒绝后不保存，并提示前往系统应用权限设置授权后重试。已授权时直接保存。
-- Android 10+ 使用 MediaStore 发布图片，系统本身不要求保存自有图片的权限；这里按产品要求增加保存前的相册授权。Android 8–9 写公共目录后触发媒体扫描。
-
 ## 通知推送（仅局域网内生效）
 
 前台服务（SseNotificationService）保持一条到 `/api/stream` 的原生 SSE 长连接，
@@ -41,7 +20,7 @@ App 退到后台/锁屏后仍能收事件并弹系统通知，点击通知跳转
 | 聊天消息 | proactive_message, delayed_reply | /chat/:id |
 | 朋友圈 | new_post, new_comment | /moments |
 | 群聊 | group_message, group_created | /group/:id |
-| 信箱 | reply_ready | /mailbox |
+| 信箱 | reply_ready, reply_failed | /mailbox |
 | 事件 | new_event, event_concluded, event_expired | /events |
 
 - 分类开关：App 内设置页（地址输入页）有 5 个复选框；系统设置的通知渠道里也能按类关闭

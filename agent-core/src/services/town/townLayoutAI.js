@@ -6,17 +6,17 @@
  */
 
 import { chatSync } from '../lorebook/runtime.js';
+// 2026-10-17：本地 `extractFirstJson` 收口到 `services/jsonExtract.js`（全仓最后一份本地实现）。
+// 旧实现是"第一个 { 到**最后**一个 }"的朴素切法，会把尾部垃圾一起切进来
+// （jsonExtract.js 文件头把这条列为反例：真机日志逐字
+//  `Unexpected non-whitespace character after JSON at position 169`）。
+// 收口后改为**括号配对扫描**，在第一个配平处收手 ⇒ 尾垃圾自然被丢掉。
+// 用法逐字兼容：仍是"给字符串、返回字符串或 null"，调用点一行没改。
+import { extractFirstJson } from '../jsonExtract.js';
 
 function clampInt(value, min, max) {
   const n = parseInt(value, 10);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : min;
-}
-
-function extractFirstJson(text) {
-  if (typeof text !== 'string') return null;
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  return start >= 0 && end > start ? text.slice(start, end + 1) : null;
 }
 
 export async function refineTownDraftWithLLM({
@@ -82,6 +82,7 @@ export async function refineTownDraftWithLLM({
     ],
     {
       temperature: 0.75,
+      max_tokens: 1600,
       response_format: { type: 'json_object' },
       label: '小镇 AI 布局优化',
       timeout: 30000,

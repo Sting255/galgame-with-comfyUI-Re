@@ -34,7 +34,18 @@ async function buildBuildingPromptViaLlm(p) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// 测试可把素材隔离到临时目录；正式运行仍使用默认素材库。
+// 素材落盘目录。默认 `agent-core/data/town/assets`（真实用户素材，**不是**测试垃圾场）。
+//
+// 2026-10-18 修：这个常量原来**没有环境变量出口**，于是任何 import 到本模块的测试
+// （`townWizardAssetClaim(.Route)`、`townAssetImageLimit`、`townBuildingFeatureSource` …）
+// 一旦走到 createAsset / cropTile / hires 这些落盘路径，就**直接往真实用户的素材目录里写文件**
+// （实测每次跑那 2 个文件净增 2 个 `asset_N_<key>_<uuid>.png`，文件名里带的正是测试用的
+//  `shared_dwelling` / `inn`）。长期后果是用户素材库混进一堆永远不被 DB 引用的孤儿图，
+// 而收工纪律「清掉测试孤儿 PNG」是在**事后手工兜底**这个本该在设计上避免的问题。
+//
+// 同文件族的既有惯例早就这么做（`townInitService` 的 `TOWN_INIT_STATE_PATH`、
+// `imagePaths` 的 `IMAGES_DIR`、`experiment*` 的 env 出口）——本处属于漏做，补齐即可。
+// 测试侧由 `test/setup.mjs` 统一指到临时目录；离线脚本同理。
 export const TOWN_ASSETS_DIR = process.env.TOWN_ASSETS_DIR
   ? path.resolve(process.env.TOWN_ASSETS_DIR)
   : path.resolve(__dirname, '..', '..', '..', 'data', 'town', 'assets');

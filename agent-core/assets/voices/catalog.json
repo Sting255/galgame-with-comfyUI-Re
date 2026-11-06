@@ -3,7 +3,7 @@
     "id": "female",
     "name": "基础女声",
     "file": "female.wav",
-    "description": "",
+    "description": "IndexTTS 2.0 官方示例 voice_11.wav 的中文女声参考片段（试听对比 B），不额外生成或设计声线。",
     "duration": 7.862395833333333,
     "sha256": "fe15c446c7fee3a34ba96ec80196bfecfadd60df4a859175acf4cc628de6c888",
     "sample_rate": 48000,

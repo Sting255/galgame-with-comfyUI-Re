@@ -195,7 +195,7 @@ function captureNpcAppearance(npcId, mode, styleTags = '') {
 
 export async function generateNpcSprites(npcId, overrides = {}) {
   const npcRow = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(npcId);
-  if (!npcRow) throw new Error(`npc #${npcId} not found`);
+  if (!npcRow) throw Object.assign(new Error(`npc #${npcId} not found`), { status: 404 });
   const guard = imageGenerationGuard(overrides.expectedWorld, { table: 'town_npcs', row: npcRow,
     fields: ['created_at', 'character_id', 'persona', 'display_name'] });
   const styleTags = overrides.styleTags !== undefined ? overrides.styleTags : getWorldStyleTags();
@@ -258,7 +258,7 @@ export async function generateNpcSprites(npcId, overrides = {}) {
 /** 生成 NPC 正式立绘（900×1600 白底插画 → 抠白），交互时跳出展示 */
 export async function generateNpcPortrait(npcId, overrides = {}) {
   const npcRow = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(npcId);
-  if (!npcRow) throw new Error(`npc #${npcId} not found`);
+  if (!npcRow) throw Object.assign(new Error(`npc #${npcId} not found`), { status: 404 });
   const guard = imageGenerationGuard(overrides.expectedWorld, { table: 'town_npcs', row: npcRow,
     fields: ['created_at', 'character_id', 'persona', 'display_name'] });
   const key = `npc_${npcId}_portrait`;
@@ -291,7 +291,7 @@ export async function generateNpcPortrait(npcId, overrides = {}) {
  */
 export async function generateNpcAssetSet(npcId, overrides = {}) {
   const npcRow = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(npcId);
-  if (!npcRow) throw new Error(`npc #${npcId} not found`);
+  if (!npcRow) throw Object.assign(new Error(`npc #${npcId} not found`), { status: 404 });
   const styleTags = overrides.styleTags !== undefined ? overrides.styleTags : getWorldStyleTags();
   // 正/背与立绘的外观签名 mode 不同，但 NPC 两种 mode 的 appearanceInfo 完全一致，取一次即可
   const appearanceGuard = captureNpcAppearance(npcId, 'sprite', styleTags);
@@ -304,7 +304,7 @@ export async function generateNpcAssetSet(npcId, overrides = {}) {
 /** 只重生成一位居民的完整人格卡，不改名字与职业；一句话人设 brief 沿用库里的，可被 overrides.brief 覆盖并回写 */
 export async function regenerateNpcPersonaCard(npcId, overrides = {}) {
   const row = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(npcId);
-  if (!row) throw new Error('NPC 不存在');
+  if (!row) throw Object.assign(new Error('NPC 不存在'), { status: 404 });
   const brief = overrides.brief !== undefined
     ? String(overrides.brief || '').trim().slice(0, 300)
     : String(row.brief || '');
@@ -332,7 +332,7 @@ export async function regenerateNpcPersonaCard(npcId, overrides = {}) {
 export async function runNpcOnboarding(npcId) {
   const db = getDb();
   let row = db.prepare('SELECT * FROM town_npcs WHERE id = ?').get(npcId);
-  if (!row) throw new Error(`npc #${npcId} not found`);
+  if (!row) throw Object.assign(new Error(`npc #${npcId} not found`), { status: 404 });
   console.log(`[townNpcs] onboarding start for npc #${npcId} (${row.display_name})`);
 
   // 1. 完整人格卡
@@ -450,7 +450,7 @@ export function getPlayerKit() {
 /** 重新生成玩家套装（LLM 出 prompt；串行队列内逐张完成，await 返回即全部 ready） */
 export async function regeneratePlayerSprite(direction, overrides = {}) {
   const guard = imageGenerationGuard(overrides.expectedWorld);
-  if (!SPRITE_DIRECTIONS.includes(direction)) throw new Error('无效的小人方向');
+  if (!SPRITE_DIRECTIONS.includes(direction)) throw Object.assign(new Error('无效的小人方向'), { status: 400 });
   const key = `player_${direction}`;
   const existing = getAssetsByKey([key])[0];
   const prompt = await generateSpritePrompt({
@@ -618,7 +618,7 @@ export async function inviteNpcAsCharacter(npcId) {
   const registry = createTownActorRegistry(db);
   const result = db.transaction(() => {
     const npc = getNpc(npcId);
-    if (!npc) throw new Error('NPC 不存在');
+    if (!npc) throw Object.assign(new Error('NPC 不存在'), { status: 404 });
     if (npc.characterId) {
       const exists = db.prepare('SELECT id, name FROM characters WHERE id = ?').get(npc.characterId);
       if (exists) {
@@ -738,7 +738,7 @@ export async function generateRoutine(npc, locationKeys) {
 /** 重掷一个 NPC 的身份与完整人格卡，并重生成作息；返回更新后的 DTO */
 export async function rerollNpc(npcId) {
   const row = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(npcId);
-  if (!row) throw new Error('NPC 不存在');
+  if (!row) throw Object.assign(new Error('NPC 不存在'), { status: 404 });
   const db = getDb();
   const locations = db.prepare('SELECT key, name FROM town_locations ORDER BY id').all();
 

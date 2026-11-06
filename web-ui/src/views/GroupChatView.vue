@@ -24,11 +24,14 @@
           v-for="m in (store.activeGroup?.members || []).slice(0, 4)"
           :key="m.id"
           class="group-avatar-cell avatar-clickable"
+          :class="{ 'is-asleep': isMemberSleeping(m.id) }"
           :style="m.avatar_path ? {} : { background: 'var(--accent)' }"
           @click.stop="openAvatarMenu(m, $event)"
         >
           <img v-if="m.avatar_path" :src="m.avatar_path" class="group-avatar-img" alt="" />
           <span v-else>{{ m.display_name.charAt(0) }}</span>
+          <!-- 睡眠标记（2026-11-06）：群里谁在睡，一眼能看见，不用去读那行汇总文字 -->
+          <span v-if="isMemberSleeping(m.id)" class="group-avatar-sleep" aria-label="睡眠中">💤</span>
         </div>
       </div>
       <div class="chat-header-center">
@@ -36,8 +39,13 @@
           <div class="chat-title">{{ store.activeGroup?.name || '群聊' }}</div>
         </div>
         <div class="chat-header-schedule">{{ store.activeGroup?.members?.length || 0 }} 位成员{{ store.activeGroup?.topic ? ' · ' + store.activeGroup.topic : '' }}</div>
+        <ChatSleepStatus group :states="memberSleepStates" :loaded="scheduleStore.overviewLoaded" :error="scheduleStore.overviewError" @retry="scheduleStore.fetchOverview(true)" />
       </div>
       <div class="chat-header-right">
+        <!-- 催眠手机：群里对成员用手机（可单人可多人，见 HypnosisPhoneGroupPanel） -->
+        <div class="btn-header-settings" title="催眠手机" aria-label="催眠手机" @click="showHypnosisPhone = true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5" /><path d="M11 5.5h2" /><circle cx="12" cy="13" r="3.2" /><path d="M12 10.2v5.6M9.4 13h5.2" /></svg>
+        </div>
         <div class="btn-header-settings" title="群设置" @click="showSettings = true">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg>
         </div>
@@ -139,6 +147,56 @@
       </Transition>
     </div>
 
+    <!-- SLG 动作快捷条（阶段二·群聊）：动作对象在面板顶部直接点头像切换（2026-11-06 去掉二级弹层）。 -->
+    <div class="touch-group-wrap">
+      <!-- SLG 动作系统（交互改版）：与私聊同一颗 ✋（输入区最右），点开底部弹层大卡片面板。 -->
+      <TouchActionPanel
+        :open="showTouchPanel"
+        :server-groups="touchServerGroups"
+        :busy-actions="touchBusyActions"
+        :hypnosis-badge="touchHypnosisBadge"
+        :pending-count="touchPendingCount"
+        :pending-by-mode="touchPendingByMode"
+        :states="touchStates"
+        :target-name="touchTarget ? touchTarget.display_name : ''"
+        :targets="store.activeGroup?.members || []"
+        :target-value="touchTargetId"
+        :requires-target="true"
+        @select-target="selectTouchTarget"
+        @action="onTouchAction"
+        @open="onTouchPanelOpen"
+        @close="showTouchPanel = false"
+      />
+      <!-- 🧸 / ❤ 两个面板（2026-10-02）：**只做挂载 + 传 id**，面板自己取数、自己轮询、自己 POST。
+           - `:character-id` 是"打开那一刻选定的那个群成员"（panelCharacterId）；
+           - 不传 worn-toys / toy-options：面板有默认值并会自己去取（私聊那份只是回落）；
+           - 门控不可用时的人话（玩具未解锁 / 「性爱推进」功能当前已关闭 / 还没进入亲密场景）
+             由面板自己渲染 —— 群聊里照样能看到；
+           - 换目标时 watch(touchTargetId) 会把两个面板关掉，避免继续作用在上一个人身上。 -->
+      <ToyPanel
+        :open="showToyPanel"
+        :target-name="touchTarget?.display_name || ''"
+        :character-id="panelCharacterId"
+        :worn-toys="groupWornToys"
+        :toy-options="groupToyOptions"
+        scene="group"
+        :group-id="store.activeGroupId"
+        @close="showToyPanel = false"
+        @toy-equip="onGroupToyEquip"
+        @toy-intensity="onGroupToyIntensity"
+        @toy-remove="onGroupToyRemove"
+      />
+      <IntimateActionPanel
+        :open="showIntimatePanel"
+        :target-name="touchTarget?.display_name || ''"
+        :character-id="panelCharacterId"
+        scene="group"
+        :group-id="store.activeGroupId"
+        @close="showIntimatePanel = false"
+      />
+    </div>
+
+
     <!-- 输入区（与私聊 input-area 同款） -->
     <div class="input-area">
       <Transition name="mention-fade">
@@ -186,6 +244,12 @@
         @keydown.down="onMentionArrow(1, $event)"
         @keydown.esc="onMentionEscape"
       ></textarea>
+    <ChatActionToolbar
+      group :target-name="touchTarget?.display_name || ''"
+      :touch-open="showTouchPanel" :toy-open="showToyPanel" :intimate-open="showIntimatePanel"
+      :pending-count="touchPendingCount" :pending-hint="touchPendingHint" :toy-count="groupWornToys.length"
+      @toggle="openGroupPanel" @pick-target="cycleTouchTarget"
+    />
       <div
         role="button"
         tabindex="0"
@@ -231,137 +295,132 @@
       />
     </Teleport>
 
-    <!-- 群设置抽屉：头部标题 / 中部滚动表项 / 底部操作区三段式。
-         表项再多也只撑中部滚动区，功能键永远留在屏幕内（PC 与手机同款）。 -->
+    <!-- 群设置抽屉 -->
     <Transition name="drawer">
       <div v-if="showSettings" class="gc-drawer-overlay" @click.self="showSettings = false">
-        <div class="gc-drawer" role="dialog" aria-modal="true" aria-label="群设置">
-          <div class="gc-drawer-head">
-            <h3>群设置</h3>
-            <linshe-close-button class="gc-drawer-close" label="关闭群设置" @click="showSettings = false" />
-          </div>
-
-          <div class="gc-drawer-body">
-            <label class="gc-field">
-              <span>群名称</span>
-              <linshe-input v-model="editName" type="text" maxlength="24" />
-            </label>
-            <label class="gc-field">
-              <span>群主题</span>
-              <linshe-input v-model="editTopic" type="text" maxlength="60" placeholder="（可选）大家围绕什么话题聊" />
-            </label>
-            <div class="gc-field">
-              <div class="gc-member-title"><span>群头像</span></div>
-              <div class="gc-avatar-row">
-                <div class="gc-avatar-preview" :style="groupAvatarUrl ? {} : { background: 'var(--accent)' }">
-                  <img v-if="groupAvatarUrl" :src="groupAvatarUrl" alt="" />
-                  <span v-else>{{ (store.activeGroup?.name || '群').charAt(0) }}</span>
-                </div>
-                <linshe-button size="sm" @click="openGroupAvatarPicker">设置群头像</linshe-button>
-                <linshe-button
-                  v-if="groupAvatarUrl"
-                  variant="ghost"
-                  size="sm"
-                  :disabled="groupAvatarSaving"
-                  @click="clearGroupAvatar"
-                >
-                  恢复默认
-                </linshe-button>
+        <div class="gc-drawer">
+          <h3>群设置</h3>
+          <label class="gc-field">
+            <span>群名称</span>
+            <linshe-input v-model="editName" type="text" maxlength="24" />
+          </label>
+          <label class="gc-field">
+            <span>群主题</span>
+            <linshe-input v-model="editTopic" type="text" maxlength="60" placeholder="（可选）大家围绕什么话题聊" />
+          </label>
+          <div class="gc-field">
+            <div class="gc-member-title"><span>群头像</span></div>
+            <div class="gc-avatar-row">
+              <div class="gc-avatar-preview" :style="groupAvatarUrl ? {} : { background: 'var(--accent)' }">
+                <img v-if="groupAvatarUrl" :src="groupAvatarUrl" alt="" />
+                <span v-else>{{ (store.activeGroup?.name || '群').charAt(0) }}</span>
               </div>
-              <span class="gc-member-hint">上传图片、直接粘贴，或从相册最近图片中选取；不设置就显示成员拼图。</span>
-            </div>
-            <div class="gc-field">
-              <div class="gc-member-title">
-                <span>群相册</span>
-                <span class="gc-temp-val">{{ groupImageCount }} 张</span>
-              </div>
-              <div class="gc-avatar-row">
-                <linshe-button size="sm" @click="showGroupAlbum = true">查看群相册</linshe-button>
-              </div>
-              <span class="gc-member-hint">汇总本群里出现过的图片，可点开大图，或按成员筛选。</span>
-            </div>
-            <div class="gc-field">
-              <div class="gc-member-title">
-                <span>温度设置</span>
-                <span class="gc-temp-val">{{ Number(editTemperature).toFixed(1) }}</span>
-              </div>
-              <linshe-slider
-                aria-label="温度设置"
-                :min="0.5" :max="1" :step="0.1"
-                v-model="editTemperature"
-                @change="onTemperatureChange"
-              />
-              <span class="gc-member-hint">群聊生成温度（所有群共享），越低越稳定、越高越有创意，默认 0.7。</span>
-            </div>
-            <div class="gc-field">
-              <div class="gc-member-title">
-                <span>携带上下文消息记忆轮数</span>
-                <span class="gc-temp-val">{{ editSummaryInterval }} 轮</span>
-              </div>
-              <linshe-slider
-                aria-label="携带上下文消息记忆轮数"
-                :min="2" :max="6" :step="1"
-                v-model="editSummaryInterval"
-                @change="onSummaryIntervalChange"
-              />
-              <span class="gc-member-hint">达到设置轮数之后将上下文压缩成总结，默认 4 轮。</span>
-            </div>
-            <div class="gc-field">
-              <div class="gc-member-title">
-                <label for="group-activity">群聊活跃度</label>
-                <span class="gc-temp-val">{{ editActivity }}</span>
-              </div>
-              <linshe-slider
-                id="group-activity" v-model="editActivity"
-                :min="1" :max="5" :step="1" :disabled="activitySaving"
-                @change="onActivityChange"
-              />
-              <span class="gc-member-hint">所有群共享，默认 2。</span>
-            </div>
-            <div class="gc-field gc-member-field">
-              <div class="gc-member-title">
-                <span>群成员</span>
-                <span>{{ editMemberIds.length }} / {{ sortedCharacters.length }}</span>
-              </div>
-              <div class="gc-member-edit">
-                <div
-                  v-for="c in sortedCharacters"
-                  :key="c.id"
-                  role="button"
-                  tabindex="0"
-                  class="gc-member-check"
-                  :class="{ picked: editMemberIds.includes(c.id) }"
-                  :aria-pressed="editMemberIds.includes(c.id)"
-                  @keydown.enter.prevent="toggleMember(c.id)"
-                  @keydown.space.prevent="toggleMember(c.id)"
-                  @click="toggleMember(c.id)"
-                >
-                  <div class="gc-member-avatar" :style="c.avatar_path ? {} : { background: 'var(--accent)' }">
-                    <img v-if="c.avatar_path" :src="c.avatar_path" class="avatar-img" alt="" />
-                    <span v-else>{{ c.display_name.charAt(0) }}</span>
-                  </div>
-                  <span>{{ c.display_name }}</span>
-                </div>
-              </div>
-              <span class="gc-member-hint">至少选择 2 位角色</span>
-            </div>
-          </div>
-
-          <div class="gc-drawer-foot">
-            <div class="gc-record-actions">
               <linshe-button
-                class="gc-btn gc-btn-undo"
-                variant="secondary"
-                :disabled="!canUndo"
-                @click="requestUndoLastRound"
+                size="sm"
+                @click="openGroupAvatarPicker"
               >
-                撤回上一轮对话
-              </linshe-button>
+设置群头像
+</linshe-button>
+              <linshe-button
+                v-if="groupAvatarUrl"
+                variant="ghost"
+                size="sm"
+                :disabled="groupAvatarSaving"
+                @click="clearGroupAvatar"
+              >
+恢复默认
+</linshe-button>
             </div>
-            <div class="gc-drawer-actions">
-              <linshe-button class="gc-btn" variant="danger" @click="onDissolve">解散群聊</linshe-button>
-              <linshe-button class="gc-btn" variant="primary" :disabled="editMemberIds.length < 2" @click="onSaveSettings">保存</linshe-button>
+            <span class="gc-member-hint">上传图片、直接粘贴，或从相册最近图片中选取；不设置就显示成员拼图。</span>
+          </div>
+          <div class="gc-field">
+            <div class="gc-member-title">
+              <span>群相册</span>
+              <span class="gc-temp-val">{{ groupImageCount }} 张</span>
             </div>
+            <div class="gc-avatar-row">
+              <linshe-button size="sm" @click="showGroupAlbum = true">查看群相册</linshe-button>
+            </div>
+            <span class="gc-member-hint">汇总本群里出现过的图片，可点开大图，或按成员筛选。</span>
+          </div>
+          <div class="gc-field">
+            <div class="gc-member-title">
+              <span>温度设置</span>
+              <span class="gc-temp-val">{{ Number(editTemperature).toFixed(1) }}</span>
+            </div>
+            <linshe-slider
+              aria-label="温度设置"
+              :min="0.5" :max="1" :step="0.1"
+              v-model="editTemperature"
+              @change="onTemperatureChange"
+            />
+            <span class="gc-member-hint">群聊生成温度（所有群共享），越低越稳定、越高越有创意，默认 0.7。</span>
+          </div>
+          <div class="gc-field">
+            <div class="gc-member-title">
+              <span>携带上下文消息记忆轮数</span>
+              <span class="gc-temp-val">{{ editSummaryInterval }} 轮</span>
+            </div>
+            <linshe-slider
+              aria-label="携带上下文消息记忆轮数"
+              :min="2" :max="6" :step="1"
+              v-model="editSummaryInterval"
+              @change="onSummaryIntervalChange"
+            />
+            <span class="gc-member-hint">达到设置轮数之后将上下文压缩成总结，默认 4 轮。</span>
+          </div>
+          <div class="gc-field">
+            <div class="gc-member-title">
+              <label for="group-activity">群聊活跃度</label>
+              <span class="gc-temp-val">{{ editActivity }}</span>
+            </div>
+            <linshe-slider
+              id="group-activity" v-model="editActivity"
+              :min="1" :max="5" :step="1" :disabled="activitySaving"
+              @change="onActivityChange"
+            />
+            <span class="gc-member-hint">所有群共享，默认 2。</span>
+          </div>
+          <div class="gc-field gc-member-field">
+            <div class="gc-member-title">
+              <span>群成员</span>
+              <span>{{ editMemberIds.length }} / {{ sortedCharacters.length }}</span>
+            </div>
+            <div class="gc-member-edit">
+              <div
+                v-for="c in sortedCharacters"
+                :key="c.id"
+                role="button"
+                tabindex="0"
+                class="gc-member-check"
+                :class="{ picked: editMemberIds.includes(c.id) }"
+                :aria-pressed="editMemberIds.includes(c.id)"
+                @keydown.enter.prevent="toggleMember(c.id)"
+                @keydown.space.prevent="toggleMember(c.id)"
+                @click="toggleMember(c.id)"
+              >
+                <div class="gc-member-avatar" :style="c.avatar_path ? {} : { background: 'var(--accent)' }">
+                  <img v-if="c.avatar_path" :src="c.avatar_path" class="avatar-img" alt="" />
+                  <span v-else>{{ c.display_name.charAt(0) }}</span>
+                </div>
+                <span>{{ c.display_name }}</span>
+              </div>
+            </div>
+            <span class="gc-member-hint">至少选择 2 位角色</span>
+          </div>
+          <div class="gc-record-actions">
+            <linshe-button
+              class="gc-btn gc-btn-undo"
+              variant="secondary"
+              :disabled="!canUndo"
+              @click="requestUndoLastRound"
+            >
+撤回上一轮对话
+</linshe-button>
+          </div>
+          <div class="gc-drawer-actions">
+            <linshe-button class="gc-btn" variant="danger" @click="onDissolve">解散群聊</linshe-button>
+            <linshe-button class="gc-btn" variant="primary" :disabled="editMemberIds.length < 2" @click="onSaveSettings">保存</linshe-button>
           </div>
         </div>
       </div>
@@ -404,23 +463,43 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 催眠手机（群聊版）：选人 → 单人=完整面板 / 多人=批量 -->
+    <linshe-modal v-model="showHypnosisPhone" title="催眠手机" panel-class="gc-hypno-modal">
+      <HypnosisPhoneGroupPanel :members="store.activeGroup?.members || []" />
+    </linshe-modal>
   </div>
 </template>
 
 <script setup>
-import LinsheCloseButton from "../components/ui/LinsheCloseButton.vue"
-
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroupsStore } from '../stores/groups.js'
+import { useChatSchedule } from '../composables/useChatSchedule.js'
+import ChatSleepStatus from '../components/chat/ChatSleepStatus.vue'
 import { useChatStore } from '../stores/chat.js'
+import { useProgramClock } from '../composables/useProgramClock.js'
 import { useMomentsStore } from '../stores/moments.js'
-import { getConfig, updateGroupActivity, updateGroupSummaryInterval, updateGroupTemperature, listGalleryImages } from '../api/index.js'
+import { getConfig, updateGroupActivity, updateGroupSummaryInterval, updateGroupTemperature, listGalleryImages, fetchTouchActions, fetchTouchState, performTouchAction } from '../api/index.js'
+// 玩具面板的"父组件那一半"要用到这几个接口（戴上/调强度/摘下/取状态）；
+// 与 ChatView 同一写法：再引一个命名空间（api.xxx），这样与私聊的口径逐字对得上。
+import * as api from '../api/index.js'
+import ChatActionToolbar from '../components/chat/ChatActionToolbar.vue'
+import { useChatActionPanels } from '../composables/useChatActionPanels.js'
+import TouchActionPanel from '../components/TouchActionPanel.vue'
+// 群聊面板必须绑定选中的成员；玩具穿戴状态和操作事件由本页接入。
+import ToyPanel from '../components/ToyPanel.vue'
+import IntimateActionPanel from '../components/IntimateActionPanel.vue'
+import { resolveGroupPanelTarget, panelStateOnTargetChange } from '../components/groupPanelLogic.js'
+import { buildGroupsFromServer, createCoalescer, hypnosisBadgeOf, pendingHintByMode } from '../components/touchActionLogic.js'
+import { getHypnosisState } from '../api/hypnosis.js'
 import { userAvatar, loadUserAvatar } from '../userConfig.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import ImageGenBubble from '../components/ImageGenBubble.vue'
 import GroupAlbumModal from '../components/GroupAlbumModal.vue'
 import AvatarCropper from '../components/AvatarCropper.vue'
+import HypnosisPhoneGroupPanel from '../components/HypnosisPhoneGroupPanel.vue'
+import LinsheModal from '../components/ui/LinsheModal.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheSlider from '../components/ui/LinsheSlider.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
@@ -436,6 +515,17 @@ const route = useRoute()
 useSpeechAutoPlay(() => route.path.startsWith('/group/') ? `group:${route.params.id}` : null)
 const router = useRouter()
 const store = useGroupsStore()
+const scheduleStore = useChatSchedule(() => store.activeGroupId, () => store.sending || store.playing, () => store.messages.length)
+const memberSleepStates = computed(() => (store.activeGroup?.members || []).map(member =>
+  scheduleStore.characters.find(state => String(state.id) === String(member.id)) || null))
+/** 该成员此刻真的在睡（临时叫醒不算）—— 头像上的 💤 标记用 */
+function isMemberSleeping(characterId) {
+  const state = memberSleepStates.value.find(item => String(item?.id) === String(characterId))
+  return Boolean(state && state.is_sleeping && !state.is_temp_woken)
+}
+// 程序时间：群聊时间分隔符与私聊同口径
+const clock = useProgramClock()
+clock.ensureLoaded()
 const chat = useChatStore()
 const momentsStore = useMomentsStore()
 const confirmFn = inject('confirm', null)
@@ -457,8 +547,286 @@ const {
   options: mentionOptions,
   activeId: activeMentionId,
 } = mention
+
+// ── SLG 动作系统（阶段二·群聊）：对指定成员做动作 ──
+// 门控吃服务端（GET .../touch/actions?scene=group 的逐条 gate），镜像只兜底；
+// 反应由后端写进群会话并 broadcast('group_message')，本页 groups store 既有监听负责渲染 ——
+// 前端**不自己插消息**（不伪造、不重复插）。
+const touchTargetId = ref(null)
+const touchTarget = computed(() =>
+  (store.activeGroup?.members || []).find(m => m.id === touchTargetId.value) || null)
+const touchServerGroups = ref([])
+// §4.2 连点：**同动作在飞时忽略重复点击、不同动作可并发** ⇒ 单个 key 换成 Set
+const touchBusyActions = ref(new Set())
+
+/**
+ * 选动作对象（2026-11-06 用户要求去掉二级菜单）：面板顶部那排头像点一下就是这一步，
+ * 顺手重拉她这一侧的动作门控。不再有"先弹列表选人、再进面板"的第二层。
+ */
+async function selectTouchTarget(id) {
+  if (!id || String(id) === String(touchTargetId.value)) return
+  touchTargetId.value = Number(id) || id
+  await loadTouchActions()
+}
+
+/** 输入区的「对 XX」按钮：一步一步循环换人，不再弹菜单 */
+function cycleTouchTarget() {
+  const members = store.activeGroup?.members || []
+  if (!members.length) { toast?.('这个群里还没有成员', 'info'); return }
+  const index = members.findIndex(m => String(m.id) === String(touchTargetId.value))
+  const next = members[(index + 1) % members.length]
+  selectTouchTarget(next.id)
+}
+
+/** 拉目标成员的动作清单 + 服务端逐条门控（群聊口径：scene=group） */
+async function loadTouchActions() {
+  const targetId = touchTargetId.value
+  if (!targetId || !store.activeGroupId) { touchServerGroups.value = []; return }
+  try {
+    // allowGroupAdult 保持 false：专题 §2.2「群聊 Lv3 默认拦截」，服务端据此给 group_adult_blocked
+    const payload = await fetchTouchActions(targetId, { scene: 'group' })
+    if (touchTargetId.value !== targetId) return   // 期间换了对象：丢弃过期响应
+    touchServerGroups.value = buildGroupsFromServer(payload)
+  } catch (err) {
+    console.warn('[touch] 群聊动作清单拉取失败，回落镜像门控:', err?.message || err)
+    touchServerGroups.value = []
+  }
+}
+
+// ── 待回应条数（task-29 问题 2/3）：群聊口径 ──
+// 数据：GET .../touch/state?scene=group&groupId=<n> 的 pendingCount（不传参数 = 旧行为 / 私聊口径）。
+// ⚠️ 口径（docs/characters/touch-system.md §3.8）：群聊口径统计的是**整个群**还没被注入的动作，
+//    **不按 character 过滤**（群聊页要的是「这个群还有几件事」）——路径里的角色 id 只用来定位会话。
+//    响应同时带 pendingCounts.chat / pendingCounts.group，前端统一读 pendingCount 即可。
+// ── 催眠状态徽标（复审遗留 2）──
+// **状态一律服务端说了算**：读 GET /characters/:id/hypnosis 的 { active, mindAwake }，前端零推断；
+// 取不到 / 形状不对 ⇒ null（面板不渲染，绝不默认「完全控制」）。
+const touchHypnosisBadge = ref(null)
+async function loadTouchHypnosis() {
+  const charId = touchPathId()
+  if (!charId) { touchHypnosisBadge.value = null; return }
+  try {
+    const st = await getHypnosisState(charId)
+    if (charId !== touchPathId()) return   // 过期响应丢弃（切了目标 / 会话）
+    touchHypnosisBadge.value = hypnosisBadgeOf(st)
+  } catch {
+    touchHypnosisBadge.value = null   // 取不到就不显示，绝不猜
+  }
+}
+function onTouchPanelOpen() { loadTouchActions(); loadTouchHypnosis() }
+
+const touchPendingCount = ref(0)
+/** 分模式待回应数（专题 §七 问题 3；后端未落地时为空对象 → 文案回落） */
+const touchPendingByMode = ref({})
+/** 入口角标标题 / 面板提示行同源文案 */
+const touchPendingHint = computed(() => pendingHintByMode({ count: touchPendingCount.value, byMode: touchPendingByMode.value }))
+/** 动作面板显隐（✋ 入口点开） */
+const { showTouchPanel, showToyPanel, showIntimatePanel } = useChatActionPanels(() => store.activeGroupId)
+
+// ── 群聊里的「🧸 玩具 / ❤ 推进」入口（2026-10-02 用户：「群聊里也没有动作系统和玩具 性爱系统的按钮」）──
+/** 面板作用的群成员 id：在**打开那一刻**从 touchTargetId 锁定（换人时下面的 watch 会把面板关掉） */
+const panelCharacterId = ref(null)
+watch(() => store.activeGroupId, () => {
+  touchTargetId.value = null
+  panelCharacterId.value = null
+})
+
+/**
+ * 点 🧸 / ❤ 的统一入口。
+ *
+ * 群里有很多人，这两个面板一次只能作用于一个人。2026-11-06 起**默认取群里第一位**、
+ * 直接开面板：面板顶部有头像行、输入区也有「对 XX」可循环换人 —— 不再先弹一层选人列表。
+ */
+function openGroupPanel (kind) {
+  if (!touchTargetId.value) {
+    const first = (store.activeGroup?.members || [])[0]
+    if (!first) { toast?.('这个群里还没有成员', 'info'); return }
+    touchTargetId.value = first.id
+  }
+  const r = resolveGroupPanelTarget({
+    targetId: touchTargetId.value,
+    members: store.activeGroup?.members || [],
+  })
+  if (!r.ok) { toast?.(r.message, 'info'); return }
+  panelCharacterId.value = r.characterId
+  // 2026-11-06 修：原来 touch 只在"已经有对象"时才 toggle；对象为空时走完默认选人会落到
+  // 下面的 else 分支 ⇒ 点「动作」打开的是**亲密面板**（实测发现）。这里显式分流。
+  if (kind === 'touch') {
+    showTouchPanel.value = !showTouchPanel.value
+  } else if (kind === 'toy') {
+    showToyPanel.value = !showToyPanel.value
+    if (showToyPanel.value) loadGroupToys()   // 打开时按选中成员取一次穿戴状态（与私聊同口径）
+  } else {
+    showIntimatePanel.value = !showIntimatePanel.value
+  }
+}
+
+// 换目标（或换群导致目标被清空）时把面板收起来：面板里的 id 是打开那一刻锁定的，继续开着会作用错人。
+//
+// 口径抽在 `groupPanelLogic.panelStateOnTargetChange` 里（2026-10-18）：原来这段内联逻辑
+// **浏览器 E2E 驱动不到**（开面板 ⇒ 遮罩压住换人按钮），所以 check-group-panels 的 ⑦ 只能挂 SKIP；
+// 抽成纯函数后由单测钉住（web-ui/test/groupPanelTargetSwitch.test.js），这里只负责铺值。
+// `watch` 给了新旧值，直接传给纯函数判"是否真的换了人"——返回值 null 表示没变，跳过写入。
+watch(touchTargetId, (next, prev) => {
+  const state = panelStateOnTargetChange({ prevTargetId: prev, nextTargetId: next })
+  if (!state) return
+  showToyPanel.value = state.showToyPanel
+  showIntimatePanel.value = state.showIntimatePanel
+  groupWornToys.value = state.groupWornToys
+  groupToyOptions.value = state.groupToyOptions
+})
+
+// ── 玩具面板的"父组件那一半" ──────────────────────────────────────────────
+// ⚠️ 实测结论（2026-10-02，别被"面板是自包含的"误导）：
+//   `IntimateActionPanel` 是**完全自包含**的（自己 GET 状态、自己 POST 动作）⇒ 群聊只要给 characterId；
+//   而 `ToyPanel` **只有一半自包含**：模式 / 曲线 / "她自己玩" 由它自己 POST，
+//   但**戴上 / 调强度 / 摘下**三件事是 `emit` 给父组件去做的（见 ToyPanel.vue 的 emit('toy-equip' | 'toy-intensity' | 'toy-remove')）。
+//   私聊由 ChatView.onToyEquip / onToyIntensity / onToyRemove + loadToys 承担 ⇒ 群聊必须按**同一口径**补齐，
+//   否则那三个按钮在群里点了没反应（正是用户抱怨的"按钮点不出来"）。
+//   同理 `worn-toys` / `toy-options` 也要喂（私聊就是这么喂的），这样戴上之后角标与列表会立刻更新。
+/** 选中成员当前戴着的玩具（喂给面板 + 用于 🧸 入口角标） */
+const groupWornToys = ref([])
+/** 选中成员的背包可选项（喂给面板；不喂也能用，面板会回落前端镜像） */
+const groupToyOptions = ref([])
+
+/**
+ * 玩具接口的场景参数（2026-10-03 群聊 bug）：
+ * 群聊里**每一次**玩具请求都要带 `scene:'group'` + `groupId`，否则她的反应与配图会被写到私聊
+ * （群里什么都看不到），群聊成人开关也形同虚设。判定只写这一处，三个 handler + 取状态共用。
+ * ⚠️ 群 id 万一还没拿到也**照样声明 scene:'group'**（只是不带 groupId）：服务端会回 400 + 人话，
+ * 而不会像"什么都不传"那样悄悄按私聊写进 `char_<id>`（那正是这次 bug 的形态）。
+ */
+function groupToyScene () {
+  const groupId = store.activeGroupId
+  return groupId ? { scene: 'group', groupId } : { scene: 'group' }
+}
+
+/** 取选中成员的玩具状态（与 ChatView.loadToys 同一口径，只是角色换成"群里选中的那个人"） */
+async function loadGroupToys () {
+  const charId = panelCharacterId.value
+  if (!charId || !showToyPanel.value) {
+    if (!showToyPanel.value) { groupWornToys.value = []; groupToyOptions.value = [] }
+    return
+  }
+  try {
+    // 群聊口径：服务端据此给出**群里**的逐件门控（群聊成人开关关着 = 每件 allowed:false）
+    const res = await api.fetchToys(charId, groupToyScene())
+    groupWornToys.value = Array.isArray(res?.worn) ? res.worn : []
+    groupToyOptions.value = Array.isArray(res?.available) ? res.available : []
+  } catch {
+    // 门控被拒 / 网络问题：留空即可，面板自己还会再取一次并显示它自己的人话
+    groupWornToys.value = []
+    groupToyOptions.value = []
+  }
+}
+
+async function onGroupToyEquip (toyKey) {
+  const charId = panelCharacterId.value
+  if (!charId || !toyKey) return
+  try {
+    const res = await api.equipToy(charId, toyKey, { intensity: 1 }, groupToyScene())
+    toast?.(res?.toy?.label ? `已给她戴上：${res.toy.label}` : '已经戴上了', 'info')
+    await loadGroupToys()
+  } catch (err) {
+    toast?.(err?.message || '没戴上', 'error')   // 门控被拒时后端会带人话文案
+  }
+}
+
+async function onGroupToyIntensity ({ toyKey, intensity } = {}) {
+  const charId = panelCharacterId.value
+  if (!charId || !toyKey) return
+  try {
+    await api.setToyIntensity(charId, toyKey, intensity, groupToyScene())
+    await loadGroupToys()
+  } catch (err) {
+    toast?.(err?.message || '强度没调成', 'error')
+  }
+}
+
+async function onGroupToyRemove (toyKey) {
+  const charId = panelCharacterId.value
+  if (!charId || !toyKey) return
+  try {
+    await api.removeToy(charId, toyKey, groupToyScene())
+    await loadGroupToys()
+  } catch (err) {
+    toast?.(err?.message || '没摘下来', 'error')
+  }
+}
+/** 每动作的耐受 / 偏好（GET /touch/state 的 states）→ 面板卡片状态行与偏好角标 */
+const touchStates = ref({})
+
+/** 群聊口径的路径角色：优先当前选中的对象，没选就用群里第一个成员（计数与谁无关，只用来定位） */
+function touchPathId() {
+  return touchTargetId.value || (store.activeGroup?.members || [])[0]?.id || null
+}
+
+async function loadTouchState() {
+  const groupId = store.activeGroupId
+  const pathId = touchPathId()
+  if (!groupId || !pathId) { touchPendingCount.value = 0; touchStates.value = {}; touchPendingByMode.value = {}; return }
+  try {
+    const payload = await fetchTouchState(pathId, { scene: 'group', groupId })
+    // 换群 / 换路径角色：丢弃过期响应
+    if (store.activeGroupId !== groupId || touchPathId() !== pathId) return
+    const raw = Number(payload && payload.pendingCount) || 0
+    touchPendingCount.value = raw > 0 ? Math.floor(raw) : 0
+    // 卡片状态行（耐受档 / 偏好角标）吃 states；缺字段就空着，不影响可用性
+    touchStates.value = payload && payload.states && typeof payload.states === 'object' ? payload.states : {}
+    touchPendingByMode.value = payload && payload.pendingByMode && typeof payload.pendingByMode === 'object' ? payload.pendingByMode : {}
+    touchPendingByMode.value = payload && payload.pendingByMode && typeof payload.pendingByMode === 'object' ? payload.pendingByMode : {}
+  } catch (err) {
+    // 端点不可用 / 字段缺失：静默归零，别打断主流程
+    touchPendingCount.value = 0
+    touchStates.value = {}
+  }
+}
+
+// 她回应那一轮会连续插好几条群消息 —— 合并成一次刷新，别把请求打爆
+const touchStateCoalescer = createCoalescer({ run: () => { loadTouchState() } })
+function scheduleTouchStateRefresh() { touchStateCoalescer.schedule() }
+
+// 换群 / 换对象时重拉；成员被移出群导致对象失效时清掉选择
+watch([() => store.activeGroupId, touchTargetId], () => {
+  const members = store.activeGroup?.members || []
+  if (touchTargetId.value && !members.some(m => m.id === touchTargetId.value)) touchTargetId.value = null
+  touchStateCoalescer.cancel()   // 换对象 / 换群：别让上一轮待合并的刷新落到新对象头上
+  loadTouchActions()
+  loadTouchState()
+}, { immediate: true })
+
+async function onTouchAction(actionId) {
+  const targetId = touchTargetId.value
+  const groupId = store.activeGroupId
+  if (!targetId || !groupId || !actionId || touchBusyActions.value.has(actionId)) return
+  touchBusyActions.value = new Set(touchBusyActions.value).add(actionId)
+  try {
+    const res = await performTouchAction(targetId, actionId, { scene: 'group', groupId })
+    // 门控拒绝 = 200 + { allowed:false, code, message }（叙事结果，不是请求失败）→ 直接 toast 服务端那句
+    if (!res || res.allowed !== true) {
+      if (res?.message) toast?.(res.message, 'info')
+      return
+    }
+    // 真机反馈问题 2：她开始说话了，面板让位（隐式这轮没反应 ⇒ 留着让用户接着来）
+    // §4.2：「成功后自动收起」作废（面板常驻，可连着摸 / 连点不同动作并发）。
+    // 注：占位气泡只在私聊实现（群聊走 group_message 另一条流），这里不涉及。
+    if (res.notice) toast?.(res.notice, 'info')
+    else if (res.mode === 'implicit') toast?.('她的反应会在下次发言时出现', 'info')
+    // 即时反应由后端写进群会话并广播 group_message —— 本页 groups store 会渲染成该成员的气泡，
+    // 所以这里**不手动渲染、不重复插入**。
+  } catch (err) {
+    toast?.(err?.message || '动作失败', 'error')
+  } finally {
+    touchBusyActions.value.delete(actionId)
+    loadTouchActions()
+    loadTouchState()   // 待回应条数也变了（task-29）
+  }
+}
+
 const showGroupAlbum = ref(false)
 const showSettings = ref(false)
+/** 催眠手机（群聊版）弹窗 */
+const showHypnosisPhone = ref(false)
 const previewUrl = ref(null)
 const isFollowingLatest = ref(true)
 const hasNewMessages = ref(false)
@@ -619,7 +987,10 @@ function showTimeDivider(idx) {
 
 function timeLabel(iso) {
   if (!iso) return ''
-  const d = new Date(iso); const now = new Date(); const diff = now - d
+  // 与私聊一致：按程序时间显示（角色住在调过的时间线里）
+  const d = clock.toProgram(iso); const now = clock.now()
+  if (!d) return ''
+  const diff = now - d
   const hh = d.getHours().toString().padStart(2,'0'); const mm = d.getMinutes().toString().padStart(2,'0')
   const time = hh + ':' + mm
   if (d.toDateString() === now.toDateString()) return time
@@ -652,6 +1023,14 @@ async function enterGroup(id) {
 let observedMessageCount = 0
 
 watch(() => route.params.id, (id) => { if (route.path.startsWith('/group/')) enterGroup(id) })
+
+// 发送失败必须让用户看见：用户气泡是乐观上屏的，后端失败时如果不提示，
+// 那条气泡会一直挂着、用户以为发出去了在等回复（2026-10-22 修）。
+watch(() => store.sendError, (err) => {
+  if (!err) return
+  toast?.(`消息发送失败：${err.message}`, 'error')
+  store.sendError = null
+})
 watch(() => store.scrollSignal, () => {
   const messageCount = store.messages.length
   const receivedNewMessage = messageCount > observedMessageCount
@@ -659,6 +1038,8 @@ watch(() => store.scrollSignal, () => {
   if (isFollowingLatest.value) scrollToBottom()
   else if (receivedNewMessage) hasNewMessages.value = true
   armLullTimer()
+  // task-29 问题 3：新消息往往就是「她回应了」⇒ 刷新「还有 N 个动作」（合并，同一轮多条只刷一次）
+  scheduleTouchStateRefresh()
 })
 
 // 切换群时收起群相册，避免停留时看到上一个群的图片
@@ -674,15 +1055,6 @@ watch(showSettings, (open) => {
     loadGroupSummaryInterval()
   }
 })
-
-// Esc 关闭群设置（手机端铺满整宽、点不到遮罩时靠头部关闭键与 Esc 兜底）
-function onSettingsKeydown(e) {
-  if (e.key === 'Escape') showSettings.value = false
-}
-watch(showSettings, (open) => {
-  if (open) window.addEventListener('keydown', onSettingsKeydown)
-  else window.removeEventListener('keydown', onSettingsKeydown)
-}, { immediate: true })
 
 // ── 温度设置（全局共享，写入 system_settings） ──
 
@@ -752,7 +1124,6 @@ onUnmounted(() => {
   clearTimeout(autoScrollTimer)
   teardownResizeObserver()
   document.removeEventListener('visibilitychange', onVisibilityChange)
-  window.removeEventListener('keydown', onSettingsKeydown)
   store.leaveGroup()
 })
 
@@ -1166,10 +1537,22 @@ async function clearGroupAvatar() {
   background: var(--bg-tertiary);
 }
 .group-avatar-cell {
+  position: relative;
   background-size: cover; background-position: center;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-size: 10px; font-weight: 600;
   min-height: 20px;
+}
+/* 睡眠标记：头像压暗 + 右上角 💤，一眼看清谁在睡 */
+.group-avatar-cell.is-asleep .group-avatar-img { filter: grayscale(0.6) brightness(0.7); }
+.group-avatar-sleep {
+  position: absolute; right: -3px; top: -3px;
+  font-size: 9px; line-height: 1;
+  padding: 1px 2px;
+  border-radius: var(--radius-full);
+  background: var(--bg-secondary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
 }
 .group-avatar-img {
   width: 100%;
@@ -1335,7 +1718,7 @@ async function clearGroupAvatar() {
   -webkit-backdrop-filter: blur(18px);
 }
 .chat-input {
-  flex:1; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
+  flex:1; min-width:0; min-height:40px; max-height:120px; padding:10px 14px; font-size:14px;
   background: var(--bg-secondary);
   border-radius: 14px; color:var(--text-bright); outline:none; resize:none;
   overflow: hidden; caret-color: var(--accent);
@@ -1382,6 +1765,9 @@ async function clearGroupAvatar() {
 .send-btn:not(.is-disabled):active { transform: scale(0.94); }
 .send-btn.is-disabled { opacity: 0.35; box-shadow: none; cursor: default; }
 
+/* 动作条的槽位：position:relative 让复用的 .mention-panel 仍按「贴在本块上方」定位 */
+.touch-group-wrap { position: relative; }
+
 /* @点名面板 */
 .mention-panel {
   position: absolute; bottom: calc(100% + 4px); left: 24px;
@@ -1416,63 +1802,46 @@ async function clearGroupAvatar() {
   flex-shrink: 0;
 }
 
-/* ── 群设置抽屉 ──
-   三段式布局：头部标题 / 中部滚动表项 / 底部操作区。
-   中部是唯一滚动容器，表项再往里塞也只加长它自己的滚动区，
-   底部的「撤回上一轮 / 解散群聊 / 保存」永远留在屏幕内（PC 与手机同款）。 */
+/* ── 群设置抽屉 ── */
 .gc-drawer-overlay {
-  position: fixed; inset: 0; z-index: var(--z-drawer);
-  background: rgba(0, 0, 0, 0.45);
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,0.35);
   display: flex; justify-content: flex-end;
 }
 .gc-drawer {
-  width: min(480px, 94vw);
-  height: 100%; height: 100dvh;
+  width: min(480px, 94vw); height: 100%;
   background: var(--bg-secondary);
-  border-left: 1px solid var(--border);
-  box-shadow: -6px 0 28px rgba(0, 0, 0, 0.1);
-  display: flex; flex-direction: column;
-  overflow: hidden;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 24px 20px;
+  padding-top: calc(24px + env(safe-area-inset-top, 0px));
+  /* 2026-10-01 真机 bug 修复（两块一起报的同一个根因）：
+     · 桌面端「只有群成员那里能划」——窗口不够高时，抽屉本体 overflow:hidden，
+       底部的「撤回上一轮 / 解散群聊 / 保存」被裁到视口外，点不到；能滚的只剩群成员网格；
+     · 手机端「群设置不能滚动」——同上，且内层网格之外没有任何滚动容器。
+     口径：**抽屉自己就是整块滚动容器**（y 轴可滚 + 触屏手势），别再改回 overflow:hidden。 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 16px;
   transition: transform 0.22s ease;
 }
-/* 头部：标题与关闭键常驻，不跟着表项滚走 */
-.gc-drawer-head {
-  flex-shrink: 0;
-  display: flex; align-items: center; gap: 10px;
-  padding: 18px 18px 12px;
-  padding-top: calc(18px + env(safe-area-inset-top, 0px));
-  border-bottom: 1px solid var(--border);
-}
-.gc-drawer-head h3 { margin: 0; font-size: 17px; color: var(--text-bright); }
-.gc-drawer-close { margin-left: auto; flex-shrink: 0; }
-/* 中部：全抽屉唯一的滚动区，滚到边界不把滚动传给底下的消息列表 */
-.gc-drawer-body {
-  flex: 1; min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 16px;
-  padding: 16px 18px 18px;
-  scrollbar-width: thin; scrollbar-color: rgba(var(--accent-rgb),0.35) transparent;
-}
-/* 底部：操作区常驻，并让出手势条安全区 */
-.gc-drawer-foot {
-  flex-shrink: 0;
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 12px 18px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--border);
-}
+.gc-drawer h3 { margin: 0 0 4px; font-size: 17px; color: var(--text-bright); }
 .gc-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-secondary); }
 .gc-member-title {
   display: flex; align-items: center; justify-content: space-between;
   font-size: 13px; color: var(--text-secondary);
 }
-/* 成员区不再抢剩余高度：跟着表项一起滚，底部操作区才压得住 */
-.gc-member-field { flex-shrink: 0; }
+/* 群成员区不再「吃掉全部剩余高度」：改成定高区间，让抽屉本体在有溢出时真的能滚 */
+.gc-member-field { flex: 0 0 auto; min-height: 0; }
 .gc-member-edit {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px;
-  min-height: 92px;
+  flex: 1 1 auto; min-height: 124px; max-height: min(46dvh, 420px); overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(var(--accent-rgb),0.14); border-radius: 12px; padding: 8px;
+  scrollbar-width: thin; scrollbar-color: rgba(var(--accent-rgb),0.35) transparent;
 }
 .gc-member-check {
   min-width: 0; min-height: 92px; padding: 9px 5px 8px;
@@ -1521,17 +1890,6 @@ async function clearGroupAvatar() {
   .new-message-bubble { right:14px; bottom:12px; }
   .input-area { padding: 8px 16px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   .mention-panel { left: 16px; }
-
-  /* 群设置抽屉在手机上铺满整宽：表项更宽、成员格子更好按；
-     遮罩被盖满后关闭改走头部关闭键与 Esc */
-  .gc-drawer {
-    width: 100%; max-width: 100%;
-    border-left: none; box-shadow: none;
-  }
-  .gc-drawer-head { padding-left: 14px; padding-right: 14px; }
-  .gc-drawer-body { padding: 14px 14px 16px; gap: 14px; }
-  .gc-drawer-foot { padding-left: 14px; padding-right: 14px; }
-  .gc-member-edit { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1539,4 +1897,11 @@ async function clearGroupAvatar() {
   .new-message-enter-active,
   .new-message-leave-active { transition:none; }
 }
+
+/* 与私聊一致：输入在上，工具与发送在输入区底部。 */
+.input-area { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.input-area > .chat-input { grid-column: 1 / -1; grid-row: 1; width: 100%; box-sizing: border-box; }
+.input-area > .chat-action-toolbar { grid-column: 1; grid-row: 2; }
+.input-area > .send-btn { grid-column: 2; grid-row: 2; }
+
 </style>

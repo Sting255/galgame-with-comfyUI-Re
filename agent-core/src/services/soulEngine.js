@@ -312,7 +312,7 @@ export function renderSoulStateBlock(characterId) {
       ? '围绕当前话题，可作少量贴切联想。'
       : '可用贴切的联想或比喻延展当前话题，避免跑题。';
   return `<soul_state>
-${hint}
-保持人设与当前情绪，遵守回复长度；不提及本提示。
+ ${hint}
+ 保持人设与当前情绪，遵守回复长度；不提及本提示。
 </soul_state>`;
 }

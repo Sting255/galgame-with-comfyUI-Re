@@ -3,6 +3,9 @@
 """
 import sys
 import os
+import json
+import tempfile
+from pathlib import Path
 
 # 确保 launcher 包可导入（支持开发模式和 PyInstaller 模式）
 if getattr(sys, "frozen", False):
@@ -11,10 +14,18 @@ else:
     _base = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _base)
 
-from PySide6.QtWidgets import QApplication, QProxyStyle, QStyleFactory
-from PySide6.QtGui import QIcon, QFontDatabase, QFont
-from PySide6.QtCore import QTimer
-from launcher.app import MainWindow
+_self_test = '--self-test' in sys.argv
+_result_path = os.environ.get('LINSHE_LAUNCHER_TEST_RESULT') if _self_test else None
+try:
+    from PySide6.QtWidgets import QApplication, QProxyStyle, QStyleFactory
+    from PySide6.QtGui import QIcon, QFontDatabase, QFont
+    from PySide6.QtCore import QTimer, Qt
+    from launcher.app import MainWindow
+except Exception as exc:
+    if _result_path:
+        Path(_result_path).write_text(json.dumps({'ok': False, 'error': str(exc)}), encoding='utf-8')
+        sys.exit(1)
+    raise
 
 
 # ==================================================================
@@ -75,7 +86,17 @@ def main():
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
 
+    # Frozen-artifact acceptance uses an empty temporary project and never starts
+    # services, fetches Git or opens the player's configuration/database.
+    test_project = None
+    if _self_test:
+        import launcher.app as app_module
+        test_project = tempfile.TemporaryDirectory(prefix='linshe-launcher-selftest-')
+        app_module._exe_dir = lambda: test_project.name
+        MainWindow._lazy_git_init = lambda self: None
     window = MainWindow()
+    if _self_test:
+        window.setAttribute(Qt.WA_DontShowOnScreen, True)
     window.show()
 
     # 控件树递归注入 + 延迟兜底（覆盖窗口构建期的时序窗口）
@@ -84,7 +105,20 @@ def main():
         QTimer.singleShot(50, lambda: _inject_tree(window, family))
         QTimer.singleShot(200, lambda: _inject_tree(window, family))
 
-    sys.exit(app.exec())
+    if _self_test:
+        def finish_test():
+            pixmap = window.grab()
+            result = {'ok': not pixmap.isNull(), 'width': window.width(), 'height': window.height(),
+                      'pages': window._stack.count()}
+            if _result_path:
+                Path(_result_path).write_text(json.dumps(result), encoding='utf-8')
+                pixmap.save(str(Path(_result_path).with_suffix('.png')))
+            app.exit(0 if result['ok'] else 1)
+        QTimer.singleShot(500, finish_test)
+    code = app.exec()
+    if test_project:
+        test_project.cleanup()
+    sys.exit(code)
 
 
 # ==================================================================

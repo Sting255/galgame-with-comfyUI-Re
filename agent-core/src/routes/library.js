@@ -4,14 +4,6 @@ import { generateEventTypes, generateTopics, describeLibraryImage } from '../ser
 
 const router = Router();
 
-router.post('/describe-image', async (req, res) => {
-  try {
-    res.json({ direction: await describeLibraryImage(req.body || {}) });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message || '图片场景识别失败' });
-  }
-});
-
 // ── 工具函数 ──
 
 function toSnakeKey(raw) {
@@ -85,13 +77,53 @@ function topicToApi(row) {
     name: row.name,
     desc: row.desc,
     source: row.source,
+    // checked = 是否参与「自动抽取」（手动点题不受它限制）。老行没有该列时按 1（参与）兜底。
+    checked: row.checked === undefined ? 1 : row.checked,
     isActive: row.is_active,
-    // 老库还没跑迁移时为 undefined，按「已勾选」处理，行为与升级前一致
-    checked: row.checked === undefined || row.checked === null ? 1 : (row.checked ? 1 : 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
+
+/**
+ * 话题判重是**按来源**的：同一个 name 允许在 default 与 custom 里各存在一条
+ * （用户自定义话题可以与系统话题同名；表上的唯一索引是 `(name, source)`）。
+ *
+ * 2026-10-15 从「全表 name 唯一」改过来：原来的 `name TEXT NOT NULL UNIQUE`
+ * 让"自定义话题与系统话题同名"直接插不进去（真机表现是建话题返回 409）。
+ *
+ * @param {object} db
+ * @param {string} name
+ * @param {string} source  'default' | 'custom'
+ * @param {number} [excludeId]  编辑场景下要排除自己
+ */
+function findTopicDuplicate(db, name, source, excludeId = null) {
+  return db.prepare(
+    `SELECT id FROM moment_topics WHERE name = ? AND source = ? AND (? IS NULL OR id != ?)`
+  ).get(name, source, excludeId, excludeId);
+}
+
+/** 克制的布尔归一：只有显式 false/'false'/0/'0' 才是关 */
+function toBoolInt(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (value === false || value === 0 || value === '0' || value === 'false') return 0;
+  if (value === true || value === 1 || value === '1' || value === 'true') return 1;
+  return fallback;
+}
+
+// POST /api/library/describe-image — 参考图 → 场景方向（2026-10-13 合并上游 v3.9.0）
+// Body: { image: dataURL, type: 'event-types'|'topics', direction?: string }
+// 产出中文场景方向文本，供前端塞进 event-types/topics 的 generate 方向框
+router.post('/describe-image', async (req, res) => {
+  try {
+    const direction = await describeLibraryImage(req.body || {});
+    res.json({ direction });
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[library] describe-image failed:', err.message);
+    res.status(status).json({ error: 'describe_failed', message: err.message });
+  }
+});
 
 // ──────────────── 奇遇事件类型库 ────────────────
 
@@ -223,6 +255,7 @@ router.get('/topics', (req, res) => {
 
 // POST /api/library/topics/set-checked — 批量勾选 / 取消勾选（{ ids: [...] } 或 { all: true }）
 // 勾选只决定这条话题参不参与抽题，条目本身保留，随时能再勾回来（区别于 DELETE 的软删除）。
+// 上游 v3.10.0 有、本地 2026-10-19 前整块缺失；本地 UI 目前走 PUT /topics/:id，两者并存不冲突。
 router.post('/topics/set-checked', (req, res) => {
   const db = getDb();
   const checked = req.body?.checked ? 1 : 0;
@@ -243,24 +276,27 @@ router.post('/topics/set-checked', (req, res) => {
 });
 
 // POST /api/library/topics — 新建一条自定义话题
+// 判重按来源：与系统话题同名是允许的（同来源内重复才 409）
 router.post('/topics', (req, res) => {
   const name = toStringVal(req.body?.name);
   if (!name) return res.status(400).json({ error: 'invalid_name', message: 'name 不能为空' });
 
   const db = getDb();
-  const exists = db.prepare(`SELECT id FROM moment_topics WHERE source = 'custom' AND name = ?`).get(name);
-  if (exists) return res.status(409).json({ error: 'duplicate_name', message: `话题「${name}」已存在` });
+  if (findTopicDuplicate(db, name, 'custom')) {
+    return res.status(409).json({ error: 'duplicate_name', message: `话题「${name}」已存在` });
+  }
 
   const desc = toStringVal(req.body?.desc);
   const result = db.prepare(
-    `INSERT INTO moment_topics (name, desc, source, is_active) VALUES (?, ?, 'custom', 1)`
-  ).run(name, desc);
+    `INSERT INTO moment_topics (name, desc, source, checked, is_active) VALUES (?, ?, 'custom', ?, 1)`
+  ).run(name, desc, toBoolInt(req.body?.checked, 1));
 
   const row = db.prepare(`SELECT * FROM moment_topics WHERE id = ?`).get(result.lastInsertRowid);
   res.json(topicToApi(row));
 });
 
 // PUT /api/library/topics/:id — 更新（系统/自定义均可）
+// 判重按**该行原本的 source**：`source` 是只读字段，请求体里传了也不认
 router.put('/topics/:id', (req, res) => {
   const db = getDb();
   const row = db.prepare(`SELECT * FROM moment_topics WHERE id = ? AND is_active = 1`).get(req.params.id);
@@ -269,15 +305,13 @@ router.put('/topics/:id', (req, res) => {
   const body = req.body || {};
   const name = body.name !== undefined ? toStringVal(body.name, row.name) : row.name;
   const desc = body.desc !== undefined ? toStringVal(body.desc, row.desc) : row.desc;
-  // 勾选状态：不传则保持原值（老库 undefined → 视为已勾选）
-  const checked = body.checked !== undefined
-    ? (body.checked ? 1 : 0)
-    : (row.checked === undefined || row.checked === null ? 1 : (row.checked ? 1 : 0));
+  const checked = toBoolInt(body.checked, row.checked === undefined ? 1 : row.checked);
 
   if (!name) return res.status(400).json({ error: 'invalid_name', message: 'name 不能为空' });
 
-  const dup = db.prepare(`SELECT id FROM moment_topics WHERE source = ? AND name = ? AND id != ?`).get(row.source, name, row.id);
-  if (dup) return res.status(409).json({ error: 'duplicate_name', message: `话题「${name}」已被其他条目使用` });
+  if (findTopicDuplicate(db, name, row.source, row.id)) {
+    return res.status(409).json({ error: 'duplicate_name', message: `话题「${name}」已被同来源的其他条目使用` });
+  }
 
   db.prepare(
     `UPDATE moment_topics SET name = ?, desc = ?, checked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
@@ -309,32 +343,35 @@ router.post('/topics/generate', async (req, res) => {
 });
 
 // POST /api/library/topics/save-batch — 批量保存预览编辑后的条目（source=custom）
+//
+// 判重口径（2026-10-15 改）：**只在该条目要落进的来源（custom）内部判重**。
+// 以前用「全表已用名」当集合，于是「与系统话题同名」也被算成重名，加后缀从 `_1` 起跳；
+// 新口径下同批两个同名条目应得到 `名字` + `名字_1`（第二批再得到 `_2`）。
+// 数据库侧的唯一索引是 `(name, source)`，下面用 `存在就试下一个后缀` 的写法
+// 与索引逐字对齐（不靠内存集合推进，避免集合与库里实际状态漂移）。
 router.post('/topics/save-batch', (req, res) => {
   const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
   if (rawItems.length === 0) return res.status(400).json({ error: 'empty_items', message: '没有要保存的条目' });
 
   const db = getDb();
   const insert = db.prepare(
-    `INSERT INTO moment_topics (name, desc, source, is_active) VALUES (?, ?, 'custom', 1)`
+    `INSERT INTO moment_topics (name, desc, source, checked, is_active) VALUES (?, ?, 'custom', 1, 1)`
   );
+  const nameTaken = db.prepare(`SELECT 1 FROM moment_topics WHERE name = ? AND source = 'custom'`);
 
-  const used = new Set(
-    db.prepare(`SELECT name FROM moment_topics WHERE source = 'custom'`).all().map(r => r.name)
-  );
   const saved = [];
   const errors = [];
 
   for (const it of rawItems) {
-    let name = toStringVal(it.name);
+    const name = toStringVal(it.name);
     if (!name) { errors.push({ index: saved.length, error: 'invalid_name' }); continue; }
+    // 同名被占 → 依次试 `name_1`、`name_2`… 直到空位（只在 custom 来源内判）
     let candidate = name;
-    let n = 1;
-    while (used.has(candidate)) candidate = `${name}_${n++}`;
-    name = candidate;
-    used.add(name);
+    let n = 0;
+    while (nameTaken.get(candidate)) candidate = `${name}_${++n}`;
 
     const desc = toStringVal(it.desc);
-    const result = insert.run(name, desc);
+    const result = insert.run(candidate, desc);
     const row = db.prepare(`SELECT * FROM moment_topics WHERE id = ?`).get(result.lastInsertRowid);
     saved.push(topicToApi(row));
   }

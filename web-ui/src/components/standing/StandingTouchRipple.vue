@@ -2,7 +2,7 @@
   <div class="touch-ripple" aria-hidden="true"><span ref="first" /><span ref="second" /></div>
 </template>
 <script setup>
-import {ref,onMounted,onBeforeUnmount} from 'vue'
+import {ref,onMounted,onBeforeUnmount}from 'vue'
 const first=ref(null),second=ref(null)
 const animations=[]
 onMounted(()=>{

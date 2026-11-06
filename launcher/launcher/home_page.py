@@ -14,6 +14,7 @@ from PySide6.QtGui import QPixmap, QColor, QPainter, QPen, QBrush, QPainterPath
 from PySide6.QtCore import Qt, Signal, QRectF
 
 from .network import get_local_ip
+from .service_config import service_port
 from . import __version__
 
 
@@ -324,7 +325,7 @@ class HomePage(QWidget):
         if self._cached_ip:
             self._banner_text.setText(
                 f'手机网页访问 '
-                f'<span style="color:#E07B6C;font-weight:bold;">http://{self._cached_ip}:3099</span>'
+                f'<span style="color:#E07B6C;font-weight:bold;">http://{self._cached_ip}:{service_port(self._project_dir)}</span>'
                 f' 打开邻舍'
             )
             self._mobile_banner.show()

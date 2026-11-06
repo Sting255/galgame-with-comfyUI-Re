@@ -132,7 +132,9 @@ export function formatZonedIso(utcMs, timeZone) {
 /** 应用本地日（YYYY-MM-DD） */
 export function zonedDayKey(utcMs, timeZone) {
   return formatZonedIso(utcMs, timeZone).slice(0, 10);
-}// ── 事实校验 ──
+}
+
+// ── 事实校验 ──
 
 export function normalizeActorKey(actorKey) {
   const m = /^character:(\d+)$/.exec(String(actorKey || ''));

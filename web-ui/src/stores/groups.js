@@ -24,6 +24,8 @@ export const useGroupsStore = defineStore('groups', () => {
   const playing = ref(false)        // 播放队列是否正在逐条上屏
   const sending = ref(false)
   const undoing = ref(false)
+  // 发送失败的可见反馈（视图监听到就 toast 并清空）
+  const sendError = ref(null)
   const scrollSignal = ref(0)       // 消息上屏后通知视图滚动到底
   const lullCount = ref(0)          // 前台冷场自动触发计数：跨群/跨路由不重置，跨天或用户发言归零
   let lullDate = new Date().toDateString()
@@ -424,6 +426,9 @@ export const useGroupsStore = defineStore('groups', () => {
       // 此处不立即重载 DB 最后一句，否则会越过播放队列抢跑。
     } catch (e) {
       console.warn('[groups] sendMessage failed:', e.message)
+      // 用户气泡已经乐观上屏了。失败后如果不告诉用户，那条气泡会永远留在列表里，
+      // 用户以为发出去了、一直在等一条不会到来的回复（2026-10-22 修）。
+      sendError.value = { message: e?.message || '发送失败', groupId, at: Date.now() }
     } finally {
       sending.value = false
     }
@@ -618,7 +623,7 @@ export const useGroupsStore = defineStore('groups', () => {
 
   return {
     groups, activeGroupId, activeGroup, messages, visibleMessages, hasMoreOlder, lastSeenDividerId,
-    playing, sending, undoing, scrollSignal, totalUnread, lullCount, resetLullOnNewDay,
+    playing, sending, undoing, sendError, scrollSignal, totalUnread, lullCount, resetLullOnNewDay,
     loadGroups, createGroup, updateGroup, deleteGroup,
     setGroupAvatar,
     selectGroup, leaveGroup, expandWindow, sendMessage, nudge, undoLastRound,
