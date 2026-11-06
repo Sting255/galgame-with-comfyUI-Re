@@ -21,7 +21,7 @@
  */
 
 import { getDb } from '../db/index.js';
-import { OUTFIT_SCENES } from './outfitScene.js';
+import { OUTFIT_SCENES, isValidSceneKey, listSceneOutfits } from './outfitScene.js';
 
 const SCENE_KEYS = OUTFIT_SCENES.map(s => s.key);
 const LABEL_BY_KEY = Object.fromEntries(OUTFIT_SCENES.map(s => [s.key, s.label]));
@@ -42,7 +42,7 @@ export function listSceneStandings(characterId) {
   const char = db.prepare('SELECT standing_url FROM characters WHERE id = ?').get(characterId);
   const fallback = String(char?.standing_url || '') || null;
 
-  return OUTFIT_SCENES.map(s => {
+  const builtin = OUTFIT_SCENES.map(s => {
     const hit = byScene.get(s.key);
     const explicit = String(hit?.image_url || '') || null;
     const useFallback = !explicit && s.key === 'work' && !!fallback;
@@ -54,11 +54,25 @@ export function listSceneStandings(characterId) {
       is_fallback: useFallback,
     };
   });
+  // 自定义类型：每个角色各不相同，标签取服装行的 name
+  const custom = listSceneOutfits(characterId)
+    .filter(o => String(o.scene).startsWith('custom_'))
+    .map(o => {
+      const hit = byScene.get(o.scene);
+      return {
+        scene: o.scene,
+        sceneLabel: o.name || o.sceneLabel,
+        image_url: String(hit?.image_url || '') || null,
+        prompt_text: hit?.prompt_text || '',
+        is_fallback: false,
+      };
+    });
+  return [...builtin, ...custom];
 }
 
 /** 取某场景立绘的**原始行**（不含兜底），路由层据此决定要不要删旧文件 */
 export function getSceneStandingRow(characterId, scene) {
-  if (!characterId || !SCENE_KEYS.includes(scene)) return null;
+  if (!characterId || !isValidSceneKey(scene)) return null;
   return getDb()
     .prepare('SELECT * FROM character_standings WHERE character_id = ? AND scene = ?')
     .get(characterId, scene) || null;
@@ -66,7 +80,7 @@ export function getSceneStandingRow(characterId, scene) {
 
 /** 写一套场景立绘（同场景覆盖）。imageUrl 传空表示清空该槽（保留行，便于记 prompt） */
 export function upsertSceneStanding(characterId, scene, { imageUrl, promptText } = {}) {
-  if (!characterId || !SCENE_KEYS.includes(scene)) return null;
+  if (!characterId || !isValidSceneKey(scene)) return null;
   getDb()
     .prepare(
       `INSERT INTO character_standings (character_id, scene, image_url, prompt_text, updated_at)
@@ -82,7 +96,7 @@ export function upsertSceneStanding(characterId, scene, { imageUrl, promptText }
 
 /** 删掉某场景立绘那一行（文件由调用方负责删） */
 export function deleteSceneStanding(characterId, scene) {
-  if (!characterId || !SCENE_KEYS.includes(scene)) return false;
+  if (!characterId || !isValidSceneKey(scene)) return false;
   const r = getDb()
     .prepare('DELETE FROM character_standings WHERE character_id = ? AND scene = ?')
     .run(characterId, scene);

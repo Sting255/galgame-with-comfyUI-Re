@@ -11,7 +11,10 @@
  */
 
 /** 可设计的场景（不含 work —— 常服是角色的招牌/默认形象，不许重新生成） */
-export const GENERATED_OUTFIT_SCENES = ['nude', 'work', 'casual', 'home', 'sleep'];
+// 与 outfitScene.js 的 OUTFIT_SCENES 保持同步（2026-11-07 删掉 casual/home）
+export const GENERATED_OUTFIT_SCENES = ['nude', 'work', 'sleep'];
+// 自定义类型的 scene 前缀（同一份约定见 outfitScene.js）
+const CUSTOM_SCENE_PREFIX = 'custom_';
 
 const NUDE_DECLARATION = 'completely nude, wearing no clothing at all, bare skin visible';
 
@@ -27,17 +30,13 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
 一律用**英文生图提示词风格**（逗号分隔的短语），因为这两个字段最终会直接喂给生图模型。
 不要中文、不要完整句子、不要「她穿着一件」这类叙述。
 
-【五套场景定义（scene 字段照抄英文 key；本次具体要哪几套以用户消息为准，别多给）】
+【场景定义（scene 字段照抄英文 key；本次具体要哪几套以用户消息为准，别多给）】
 - nude（裸体）：**不穿任何衣物**的私密状态（洗浴、在自己家里/酒店客房这类私密空间里的性场景）。
   这一套的 \`description\` 固定写 \`${NUDE_DECLARATION}\`；
   \`body\` 要写得比平时**更完整**（既然是裸体，身体就是画面主体）：
   除发型瞳色外，补上肤色、体型、胸/腰/腿的形态、以及显著身体特征（痣、伤痕、纹身、兽耳兽尾等）。
 - work（常服）：这个角色在**其职业/身份场合**日常穿的那身。制式职业（警察、护士、学生等）
   就是对应制服；自由职业者则是工作时常穿的那身。
-- casual（私服）：休息日上街、见朋友、逛街时穿的便装。
-- home（居家）：在家里做家务、放松、看书时穿的宽松舒适衣物。
-  **脚下穿室内拖鞋（slippers）或赤脚**：description 里要交代 slippers / barefoot 之一，
-  不要写皮鞋、靴子、运动鞋这类能穿出门的鞋（生图模型会照着画）。
 - sleep（睡衣）：**睡觉时穿的睡衣或内衣**（睡裙 / 睡衣睡裤 / 吊带内衣 + 短裤 / 内裤等），
   不要设计成能穿出门的服装。
   **★ 必须赤脚**：description 里必须明确写出 barefoot。
@@ -46,7 +45,7 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
   （生图模型看到 slippers 就会把它画出来）。只交代脚本身是裸的。
 
 【要求】
-1. 各套服装必须**彼此区分明显** —— 一眼能看出是上班、出门、在家还是睡觉。
+1. 各套服装必须**彼此区分明显** —— 一眼能看出是上班、睡觉，还是这个角色自己的某种场合。
 2. 必须**贴合这个角色的人设与世界观**：颜色、风格、职业特征要呼应 ta 的身份。
 3. 只输出 JSON，不要解释、不要 Markdown 代码块。
 
@@ -93,11 +92,13 @@ ${bodySource}
 }
 
 /** 场景 key → 中文标签（本文件自含一份，避免与 outfitScene 循环依赖） */
-const SCENE_LABELS = { nude: '裸体', work: '常服', casual: '私服', home: '居家', sleep: '睡衣' };
+const SCENE_LABELS = { nude: '裸体', work: '常服', sleep: '睡衣' };
 
 export function normalizeDesignScenes(scenes = GENERATED_OUTFIT_SCENES) {
-  if (!Array.isArray(scenes) || !scenes.length || scenes.some(scene => !GENERATED_OUTFIT_SCENES.includes(scene))) {
-    throw new Error('只支持设计裸体、常服、私服、居家、睡衣');
+  // 内置三套 + 角色自定义的类型（custom_*，标签存在 character_outfits.name）
+  const ok = scene => GENERATED_OUTFIT_SCENES.includes(scene) || String(scene || '').startsWith(CUSTOM_SCENE_PREFIX);
+  if (!Array.isArray(scenes) || !scenes.length || scenes.some(scene => !ok(scene))) {
+    throw new Error('只支持设计裸体、常服、睡衣，以及角色自己添加的服装类型');
   }
   return [...new Set(scenes)];
 }
@@ -114,8 +115,14 @@ export function normalizeDesignScenes(scenes = GENERATED_OUTFIT_SCENES) {
  * @param {Array<{scene,name,body,description}>} [o.seeds] 已填分项（反推锚点）
  * @param {string} [o.bodySource] 身体真源（由调用方按锚点优先级挑好）
  */
-export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '' }) {
+export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {} }) {
   const targets = normalizeDesignScenes(scenes);
+  // 自定义类型（custom_*）模型不认识 key，必须把用户起的名字告诉它，否则只能瞎编
+  const labelOf = scene => sceneLabels[scene] || SCENE_LABELS[scene] || scene;
+  const customLines = targets
+    .filter(scene => String(scene).startsWith(CUSTOM_SCENE_PREFIX))
+    .map(scene => `- ${scene}（${labelOf(scene)}）：角色自己添加的服装类型，按这个名字的语义设计，贴合其职业、人设与世界观；不要设计成常服或睡衣的重复。`)
+    .join('\n');
   const summary = String(shortPrompt || '').trim();
   const seedList = (Array.isArray(seeds) ? seeds : []).filter(s => s?.body || s?.description);
   // 默认外观是**必需**的（见上方参数说明）：它是"没有任何 seed 时的身体来源兜底"。
@@ -138,7 +145,8 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
   }
   msgs.push({
     role: 'user',
-    content: `请设计 ${targets.join('、')}，严格按规定 JSON 输出，仅包含这些场景。`
+    content: `请设计 ${targets.map(labelOf).join('、')}，严格按规定 JSON 输出，仅包含这些场景。`
+      + (customLines ? `\n\n【角色自定义的服装类型（scene 字段照抄左边的 key）】\n${customLines}` : '')
       + (bodySource ? '\n\n⚠ 每套的 body 字段都必须逐字照抄「身体描述的唯一真源」，不得改写。' : ''),
   });
   return msgs;
@@ -148,8 +156,6 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
 export const FALLBACK_OUTFITS = {
   nude: { name: '裸体', description: NUDE_DECLARATION },
   work: { name: '日常装', description: 'a simple practical daily outfit, neat and comfortable, suitable for everyday life' },
-  casual: { name: '便装', description: 'casual everyday clothes, a simple top with matching bottoms, relaxed style' },
-  home: { name: '居家服', description: 'comfortable loose loungewear, soft fabric, relaxed fit for staying at home' },
   sleep: { name: '睡衣', description: 'a soft cotton nightdress or pajama set, loose and comfortable, barefoot' },
 };
 

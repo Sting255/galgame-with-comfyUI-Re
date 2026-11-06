@@ -39,6 +39,9 @@ import { config } from '../config.js';
 /**
  * 场景枚举。key 会落到 character_outfits.scene，改这里必须同步迁移注释。
  *
+ * 2026-11-07 用户定：「私服」「居家」删掉（和常服没区别），只留 默认 / 睡衣 / 裸体；
+ * 另外每个角色可以自己加类型（`custom_*`），由 LLM 按该类型的名字结合世界观生成。
+ *
  * defaultName：界面**不再让用户填服装名**（名称对生图毫无用处，描述才是交给 ComfyUI 的东西），
  * 名称仅剩一个用途 —— 日程的 `outfit` 字段按**名称**标注「这一刻换了哪套」，
  * `getSceneOutfitForNow` 也按名称回查。所以留一组稳定的默认名，界面自动写入、用户不用管。
@@ -46,10 +49,26 @@ import { config } from '../config.js';
 export const OUTFIT_SCENES = [
   { key: 'nude', label: '裸体', defaultName: '裸体', desc: '不穿任何衣物。**只用于私密场景**：洗浴、泡澡，以及在自己家里/酒店客房等私密空间里的性场景。**睡眠时段不用它**（睡觉一律穿睡衣）' },
   { key: 'work', label: '常服', defaultName: '日常装', desc: '上班、出勤、执行职务时穿（角色的招牌/常态形象）' },
-  { key: 'casual', label: '私服', defaultName: '便装', desc: '上街、社交、休闲外出时穿的便装' },
-  { key: 'home', label: '居家', defaultName: '居家服', desc: '在家中休息、做家务时穿的宽松舒适衣物；**脚下穿室内拖鞋（slippers）或赤脚，不写户外鞋**' },
   { key: 'sleep', label: '睡衣', defaultName: '睡衣', desc: '睡觉时穿的睡衣或内衣，**赤脚、不穿鞋袜**。**睡眠时段强制使用这一套**' },
 ];
+
+/** 自定义类型的 scene 前缀。库里存 `custom_<id>`，标签取该行的 name */
+export const CUSTOM_SCENE_PREFIX = 'custom_';
+
+/** 是不是自定义类型（自定义类型没有睡眠/私密这类硬规则，只参与日程按名字选装） */
+export function isCustomScene(scene) {
+  return String(scene || '').startsWith(CUSTOM_SCENE_PREFIX);
+}
+
+/** 合法的场景 key：内置三套 + 自定义前缀 */
+export function isValidSceneKey(scene) {
+  return SCENE_KEYS.includes(scene) || isCustomScene(scene);
+}
+
+/** 生成一个新的自定义类型 key（时间戳足够区分，且同角色内不会撞） */
+export function makeCustomSceneKey(seed = Date.now()) {
+  return `${CUSTOM_SCENE_PREFIX}${Number(seed) || Date.now()}`;
+}
 
 /**
  * 只用于私密场景的那一套（裸体）。
@@ -167,19 +186,20 @@ export function enforceSceneFootwear(scene, description) {
   return `${cleaned(out)}, barefoot`.replace(/^,\s*/, '').trim();
 }
 
-/** 该角色的全部场景服装（按场景顺序，便于界面展示与匹配） */
+/** 该角色的全部场景服装（内置三套在前、自定义按创建顺序在后，便于界面展示与匹配） */
 export function listSceneOutfits(characterId) {
   if (!characterId) return [];
   const rows = getDb().prepare(
     `SELECT id, name, description, scene, body FROM character_outfits
      WHERE character_id = ? AND scene IS NOT NULL AND scene != ''
-     ORDER BY CASE scene WHEN 'nude' THEN 0 WHEN 'work' THEN 1 WHEN 'casual' THEN 2 WHEN 'home' THEN 3 WHEN 'sleep' THEN 4 ELSE 9 END, id ASC`
-  ).all(characterId);
+     ORDER BY CASE scene WHEN 'nude' THEN 0 WHEN 'work' THEN 1 WHEN 'sleep' THEN 2 ELSE 9 END, id ASC`
+  ).all(characterId).filter(r => isValidSceneKey(r.scene));
   return rows.map(r => ({
     ...r,
-    // 出口层兜底：存量数据里居家裸脚/睡衣穿鞋的脏值，读出来就修好（不改库，避免迁移脚本）
+    // 出口层兜底：存量数据里睡衣穿鞋的脏值，读出来就修好（不改库，避免迁移脚本）
     description: enforceSceneFootwear(r.scene, r.description),
-    sceneLabel: LABEL_BY_KEY[r.scene] || r.scene,
+    // 自定义类型没有固定标签，直接用用户起的名字
+    sceneLabel: LABEL_BY_KEY[r.scene] || r.name || r.scene,
     // 注入用文本（自包含：身体 + 服装）
     text: composeOutfitText(r.body, enforceSceneFootwear(r.scene, r.description)),
   }));
@@ -214,7 +234,7 @@ export function upsertSceneOutfits(characterId, outfits) {
   const tx = db.transaction(() => {
     for (const o of outfits) {
       // `nude` 那套允许 description 为空（纯身体），所以这里只卡 scene/name
-      if (!o?.scene || !SCENE_KEYS.includes(o.scene) || !o.name) continue;
+      if (!o?.scene || !isValidSceneKey(o.scene) || !o.name) continue;
       const body = o.body != null ? String(o.body).trim().slice(0, 2000) : null;
       // 写库前过一遍脚部口径：居家→拖鞋、睡衣→赤脚（见 enforceSceneFootwear 注释）
       const desc = enforceSceneFootwear(o.scene, String(o.description || '').trim()).slice(0, 2400);
@@ -270,7 +290,7 @@ export async function generateSceneOutfits(character, opts = {}) {
    */
   const pickBody = () => {
     const byScene = new Map(seeds.map(s => [s.scene, s]));
-    for (const k of [PRIVATE_SCENE, 'work', 'casual']) {
+    for (const k of [PRIVATE_SCENE, 'work']) {
       const b = byScene.get(k)?.body;
       if (b) return b;
     }
@@ -287,6 +307,8 @@ export async function generateSceneOutfits(character, opts = {}) {
     scenes: targetScenes,
     seeds,
     bodySource,
+    // 自定义类型的标签存在 character_outfits.name —— 生成时必须把名字给到模型，否则它不认识 custom_xxx
+    sceneLabels: Object.fromEntries(listSceneOutfits(character.id).map(o => [o.scene, o.sceneLabel])),
   });
   // 上游 v4.2.0：神说/用户对服装提出修改要求时，要求必须作为独立 user 消息投递，
   // 否则模型只看到「反推未填分项」的指令、收不到本次要改什么（真机上表现为「说了但没改」）。
@@ -508,7 +530,7 @@ export function buildOutfitAnnotation(outfits) {
   // 清单里给的是「组合后的自包含文本」—— 模型要照着这个判断"哪一套像什么场合"，
   // 也给模型一个身体描述可抄（反推时照抄这一份，五套才一致）
   const list = outfits.map(o =>
-    `- "${o.name}"（${LABEL_BY_KEY[o.scene] || o.scene}）：${(o.text || composeOutfitText(o.body, o.description)).slice(0, 90)}`
+    `- "${o.name}"（${o.sceneLabel || LABEL_BY_KEY[o.scene] || o.scene}）：${(o.text || composeOutfitText(o.body, o.description)).slice(0, 90)}`
   ).join('\n');
   const hasSleep = outfits.some(o => o.scene === 'sleep');
   const sleepName = outfits.find(o => o.scene === 'sleep')?.name;
@@ -709,10 +731,10 @@ export function backfillBodyFromExisting(characterId, { baseAppearance = '' } = 
   if (rows.some(r => String(r.body || '').trim())) return { updated: 0, source: 'already' };
 
   const byScene = new Map(rows.map(r => [r.scene, r]));
-  // 锚点：nude 最纯（只有身体）；其次 work/casual；最后角色卡外观段
+  // 锚点：nude 最纯（只有身体）；其次 work；最后角色卡外观段
   let source = 'none';
   let body = '';
-  for (const k of [PRIVATE_SCENE, 'work', 'casual']) {
+  for (const k of [PRIVATE_SCENE, 'work']) {
     const d = String(byScene.get(k)?.description || '').trim();
     if (d) { body = d; source = k; break; }
   }

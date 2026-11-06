@@ -176,6 +176,11 @@ export function getCurrentSceneOutfit(characterId) {
   return request(`/characters/${characterId}/outfit-now`)
 }
 
+/** 删除角色自定义的服装类型（内置三套不给删，后端会拒） */
+export function deleteSceneOutfitType(characterId, scene) {
+  return request(`/characters/${characterId}/outfit-scenes/${encodeURIComponent(scene)}`, { method: 'DELETE' })
+}
+
 /**
  * 手动指定「现在穿这套」：scene 传空串 = 清除指定、回到日程换装。
  * 睡眠时段仍是硬规则 —— 指定了也不覆盖睡衣，返回的 current 会显示实际生效的那套。

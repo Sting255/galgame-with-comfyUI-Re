@@ -173,6 +173,22 @@
                           </linshe-button>
                         </div>
                         <linshe-tabs v-model="detail.sceneTab" :options="sceneTabOptions" size="sm" aria-label="外观服装分类" />
+                        <!-- 自定义服装类型（2026-11-07）：每个角色各加各的，类型名交给 LLM 结合世界观生成 -->
+                        <div class="scene-type-actions">
+                          <template v-if="showAddType">
+                            <linshe-input
+                              v-model="newTypeName" size="sm" class="scene-type-input"
+                              placeholder="如：工作服 / 泳装 / 礼服" aria-label="新服装类型名称"
+                              @keyup.enter="confirmAddType"
+                            />
+                            <linshe-button size="sm" variant="primary" :disabled="!newTypeName.trim() || addingType" :loading="addingType" @click="confirmAddType">添加</linshe-button>
+                            <linshe-button size="sm" variant="ghost" :disabled="addingType" @click="cancelAddType">取消</linshe-button>
+                          </template>
+                          <template v-else>
+                            <linshe-button size="sm" variant="secondary" @click="showAddType = true">＋ 添加服装类型</linshe-button>
+                            <linshe-button v-if="isCustomSceneTab" size="sm" variant="ghost" @click="removeCustomType">删除「{{ activeSceneOutfit?.sceneLabel }}」</linshe-button>
+                          </template>
+                        </div>
                         <Transition name="persona-fold" mode="out-in">
                           <div v-if="activeSceneOutfit" :key="activeSceneOutfit.scene" class="scene-edit">
                             <p class="split-hint">{{ activeSceneOutfit.scene === 'sleep' ? '睡眠时段优先使用睡衣；未配置时沿用其他有效服装。' : activeSceneOutfit.scene === 'work' ? '保留角色的常态形象，作为其他服装的生成基准。' : '只调整这套服装，保留角色的身体特征。' }}</p>
@@ -786,8 +802,60 @@ const fullPrompt = computed(() => composePersona(detail.editPersona, effectiveAp
 /** 工装（常态外观）当前文本：作「按工装生成其余三套」的基准，也用于判断按钮是否可用 */
 const workOutfitText = computed(() => effectiveAppearance())
 
-// ── 手动指定当前服装（2026-11-06）──
-// 「现在穿这套」把某一套钉住，优先于日程换装；睡眠时段仍是硬规则，指定了也穿睡衣。
+// ── 自定义服装类型（2026-11-07）──
+// 每个角色各加各的：scene = custom_<时间戳>，标签就是用户起的名字。
+// 日程换装按名称匹配，所以加完就会自然进入「角色自己选穿哪套」的候选。
+const showAddType = ref(false)
+const newTypeName = ref('')
+const addingType = ref(false)
+const isCustomSceneTab = computed(() => String(detail.sceneTab || '').startsWith('custom_'))
+
+function cancelAddType() {
+  showAddType.value = false
+  newTypeName.value = ''
+}
+
+async function confirmAddType() {
+  const c = props.character
+  const name = newTypeName.value.trim().slice(0, 20)
+  if (!c || !name || addingType.value) return
+  addingType.value = true
+  try {
+    const scene = `custom_${Date.now()}`
+    await api.saveSceneOutfits(c.id, [{ scene, name, description: '' }])
+    await loadSceneOutfits(c.id, workOutfitText.value)
+    detail.sceneTab = scene
+    cancelAddType()
+    toastFn(`已添加「${name}」，填好描述后可以单独生成这套立绘`, 'success')
+  } catch (err) {
+    toastFn('添加失败：' + (err?.message || '未知错误'), 'error')
+  } finally {
+    addingType.value = false
+  }
+}
+
+async function removeCustomType() {
+  const c = props.character
+  const scene = detail.sceneTab
+  if (!c || !isCustomSceneTab.value) return
+  const label = detail.sceneOutfits.find(o => o.scene === scene)?.sceneLabel || '这个类型'
+  const ok = await confirmFn({
+    title: `删除「${label}」？`,
+    message: '会连同这套的描述和它的立绘一起删掉，常服 / 睡衣 / 裸体不受影响。',
+    okText: '删除',
+  })
+  if (!ok) return
+  try {
+    await api.deleteSceneOutfitType(c.id, scene)
+    await loadSceneOutfits(c.id, workOutfitText.value)
+    detail.sceneTab = 'work'
+    toastFn(`已删除「${label}」`, 'success')
+  } catch (err) {
+    toastFn('删除失败：' + (err?.message || '未知错误'), 'error')
+  }
+}
+
+// ── 手动指定当前服装（2026-11-06）──// 「现在穿这套」把某一套钉住，优先于日程换装；睡眠时段仍是硬规则，指定了也穿睡衣。
 const outfitOverrideSaving = ref(false)
 const currentOutfitScene = computed(() => detail.currentOutfit?.scene || '')
 const currentOutfitIsOverride = computed(() => detail.currentOutfit?.source === 'override')
@@ -2318,6 +2386,9 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .scene-stand-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .scene-stand-upload { display: inline-flex; }
 .scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* 自定义服装类型：页签下方的添加/删除行 */
+.scene-type-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.scene-type-input { max-width: 220px; }
 .outfit-enabled-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; flex-shrink: 0; padding-bottom: 6px; }
 .outfit-enabled-label input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 .outfit-enabled-label span { font-weight: 600; }

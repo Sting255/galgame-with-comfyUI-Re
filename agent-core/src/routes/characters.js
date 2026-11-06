@@ -27,7 +27,7 @@ import { refresh as refreshCharSearch } from '../services/characterSearch.js';
 import { listCharacterOutfits, createCharacterOutfit, updateCharacterOutfit, deleteCharacterOutfit } from '../services/outfitService.js';
 // 场景服装（五态，2026-10-13 合并上游 v3.9.0 + PR #24）
 import {
-  OUTFIT_SCENES, listSceneOutfits, upsertSceneOutfits, generateSceneOutfits,
+  OUTFIT_SCENES, listSceneOutfits, upsertSceneOutfits, generateSceneOutfits, isCustomScene, isValidSceneKey,
   getSceneOutfitForNow, setCharacterBody, backfillBodyFromExisting,
   readOutfitOverride, setOutfitOverride,
 } from '../services/outfitScene.js';
@@ -1634,8 +1634,9 @@ router.post('/:id/standings/generate', async (req, res) => {
   if (!char) return res.status(404).json({ error: 'Character not found' });
 
   const scene = String(req.body?.scene || '').trim();
-  if (!STANDING_SCENE_KEYS.includes(scene)) {
-    return res.status(400).json({ error: '无效的场景，可选：' + STANDING_SCENE_KEYS.join(' / ') });
+  // 内置三套 + 角色自定义类型（custom_*）都允许
+  if (!isValidSceneKey(scene)) {
+    return res.status(400).json({ error: '无效的场景' });
   }
   const requirement = typeof req.body?.requirement === 'string' ? req.body.requirement.trim().slice(0, 500) : '';
   const mode = getSetting(STANDING_MODE_KEY) === 'dynamic' ? 'dynamic' : 'normal';
@@ -1662,8 +1663,9 @@ router.post('/:id/standings/upload', (req, res) => {
   if (!char) return res.status(404).json({ error: 'Character not found' });
 
   const scene = String(req.body?.scene || '').trim();
-  if (!STANDING_SCENE_KEYS.includes(scene)) {
-    return res.status(400).json({ error: '无效的场景，可选：' + STANDING_SCENE_KEYS.join(' / ') });
+  // 内置三套 + 角色自定义类型（custom_*）都允许
+  if (!isValidSceneKey(scene)) {
+    return res.status(400).json({ error: '无效的场景' });
   }
   const { base64 } = req.body || {};
   const mimeMatch = typeof base64 === 'string' && base64.match(/^data:image\/(png|jpeg|webp);base64,/i);
@@ -1694,7 +1696,8 @@ router.delete('/:id/standings/:scene', (req, res) => {
   const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
   const scene = String(req.params.scene || '').trim();
-  if (!STANDING_SCENE_KEYS.includes(scene)) {
+  // 内置三套 + 角色自定义类型（custom_*）都允许
+  if (!isValidSceneKey(scene)) {
     return res.status(400).json({ error: '无效的场景' });
   }
   const row = getSceneStandingRow(char.id, scene);
@@ -1938,9 +1941,30 @@ router.get('/:id/outfit-scenes', (req, res) => {
   const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
   const outfits = listSceneOutfits(char.id);
-  // body 单一真源：五套共用一份，取任意一条非空的即可（写入时同步到所有行）
+  // body 单一真源：各套共用一份，取任意一条非空的即可（写入时同步到所有行）
   const body = String(outfits.find(o => String(o.body || '').trim())?.body || '');
-  res.json({ ok: true, scenes: OUTFIT_SCENES, body, outfits });
+  // 场景列表 = 内置三套 + 这个角色自己加的类型（标签取 name），前端据此生成页签
+  const scenes = [
+    ...OUTFIT_SCENES,
+    ...outfits
+      .filter(o => isCustomScene(o.scene))
+      .map(o => ({ key: o.scene, label: o.name || o.sceneLabel, defaultName: o.name || '', custom: true })),
+  ];
+  res.json({ ok: true, scenes, body, outfits });
+});
+
+// DELETE /api/characters/:id/outfit-scenes/:scene — 删除角色自定义的服装类型
+// 只允许删 custom_*：内置三套牵着日程与睡眠/私密规则，不给删
+router.delete('/:id/outfit-scenes/:scene', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const scene = String(req.params.scene || '').trim();
+  if (!isCustomScene(scene)) return res.status(400).json({ error: '内置服装类型不能删除' });
+  const r = db.prepare('DELETE FROM character_outfits WHERE character_id = ? AND scene = ?').run(char.id, scene);
+  // 立绘按 scene 存，跟着一起清掉这一槽（文件由前端确认后再删，这里只删行）
+  try { db.prepare('DELETE FROM character_standings WHERE character_id = ? AND scene = ?').run(char.id, scene); } catch { /* 表不存在时忽略 */ }
+  res.json({ ok: true, removed: r.changes });
 });
 
 // GET /api/characters/:id/outfit-now — 此刻该穿哪套（调试/排查用：source 标 sleep/schedule/fallback）
@@ -2025,7 +2049,7 @@ router.put('/:id/outfits/scene', (req, res) => {
 /** 场景名归一化：不合法返回 ''（调用方统一回 400） */
 function normalizeStandingScene(raw) {
   const scene = String(raw || '').trim();
-  return STANDING_SCENE_KEYS.includes(scene) ? scene : '';
+  return isValidSceneKey(scene) ? scene : '';
 }
 
 function respondStandingList(res, charId) {
