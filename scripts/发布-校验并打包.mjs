@@ -58,7 +58,15 @@ const SEVENZIP = process.env.SEVENZIP_EXE || 'C:\\Program Files\\7-Zip\\7z.exe'
 const LEVEL = Number(process.env.SEVENZIP_LEVEL || 3) || 3
 const HIGH = LEVEL >= 7
 // 包名标签：原来是写死的 '3.6.2-r' + 写死日期 20261002，交付包名字会一直停在旧版本上。
-const PACK_LABEL = process.env.PACK_LABEL || '3.6.2-r'
+const PACK_LABEL = process.env.PACK_LABEL || (() => {
+  // 2026-11-06：原来硬编码 '3.6.2-r'，打出来的包名跟 VERSION（4.2.0）对不上，用户分不清是哪个版本
+  try {
+    const version = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim()
+    return version || '3.6.2-r'
+  } catch {
+    return '3.6.2-r'
+  }
+})()
 // 是否把玩家数据（agent-core/data/agent.db）打进交付包。
 // 2026-11-03 用户口径：「以后不要把玩家数据一起打包 打包程序就行」⇒ **默认 false**。
 // 需要"含数据"的备份包时显式 PACK_WITH_DATA=1（那种包只能自用，里面有全部聊天记录）。
@@ -403,7 +411,7 @@ function syncDir(from, to) {
       // `opentelemetry/proto/collector/logs` 一起跳掉了 ⇒ 换机启动向量服务直接
       // `ModuleNotFoundError: No module named 'opentelemetry.proto.collector.logs'`。
       // 只有**仓库自己的日志目录**该跳过，第三方包里的同名目录是代码。
-      const isThirdParty = absDir.includes('site-packages')
+      const isThirdParty = s.includes('site-packages')
       if (!isThirdParty && ['node_modules', '.git', '目标', 'logs', '.claude',
         // `.pai/` 是项目级临时资产目录（计划/报告/工作树/临时副本），
         // 里面还留着上游合并时的 node_modules junction —— 被当文件复制会 EPERM，且绝不该进包。
