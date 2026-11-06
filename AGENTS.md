@@ -141,6 +141,64 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 2. 查询生效外观只走 `outfitService.getActiveOutfits(characterId)`；注入文本格式与着装优先级说明（两者都有 / 只有限时 / 只有专属三种）只改 `buildOutfitInjectionBlocks`，不要在调用点拼
 3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`；改完在真机上换一次衣服确认五套身体没漂
 
+## 分支结构与上游同步
+
+上游仓库 `icecranberry/galgame-with-comfyUI`（remote 名 `origin`）会持续发版，本地 fork 在 `Sting255/galgame-with-comfyUI-Re`（remote 名 `mine`）。
+
+本仓历史曾在 2026-11-06 重建为三层，**从此与上游有共同祖先，可以直接 merge**（在此之前只能 `git diff 旧tag..新tag` 打补丁，14 文件 24 处冲突全靠手工挑边）：
+
+| 分支 | 角色 | 规则 |
+|---|---|---|
+| `upstream` | 上游纯净镜像，永远等于某个 `vX.Y.Z` 标签 | 只读：只做 `reset --hard <tag>`，永不 commit |
+| `local` | 本地全部改动，父提交链挂在上游标签之上 | 日常开发都在这里 |
+| `archive/pre-421` | 改成三层结构之前的完整历史 | 只读存档，查历史用 |
+
+### 跟上游更新（日常流程）
+
+```bash
+node scripts/上游-同步.mjs            # fetch + upstream 对齐最新标签 + 合进 local
+node scripts/上游-同步.mjs --dry-run  # 只看会做什么
+node scripts/上游-同步.mjs --tag v4.2.2
+```
+
+脚本会在冲突时停下并列出冲突文件。手工解决后 `git add` + `git commit` 收尾。
+
+手动等价命令：
+
+```bash
+git fetch origin --tags
+git checkout upstream && git reset --hard v4.2.2
+git checkout local && git merge upstream
+```
+
+### 冲突解决口径
+
+1. **本地特性优先保留**：世界观优先前缀、世界钟（`toProgramTime`）、角色级负面提示词、服装手动指定、运行状态面板、离线编年等，都是本仓刻意加的，不能因为上游没写就丢
+2. **上游新增能力必须吸收**：新参数、新模块、新提示词规则要接进来（例如 `forceThinkingMode`、`ensureImagePromptIdentity`、`hasActiveWorldLanguageStyle`）
+3. **两边都改同一段时**：先看 `git diff v4.2.0..v4.2.1 -- <文件>` 弄清上游到底改了什么，再决定合，不要直接选一边
+4. **冲突解决完必须验证**：frontend `npx vite build`、后端临时库启动 `/api/health` 返回 200。历史上出现过补丁"报 cleanly 应用"但导出缺失、启动即崩的情况
+
+### 首次初始化（分支丢了或换机器）
+
+```bash
+git fetch origin --tags
+git branch upstream v4.2.1                      # 换成当时的标签
+PARENT=$(git rev-parse v4.2.1^{commit})
+TREE=$(git rev-parse HEAD^{tree})
+git branch local $(git commit-tree "$TREE" -p "$PARENT" -m "本地改动基线")
+git checkout local
+```
+
+关键点：`local` 的父提交必须指向上游标签的 **commit**（用 `^{commit}`，标签是 annotated tag 时直接引用会报 not a valid commit）。
+
+### 推到自己的 fork
+
+```bash
+git push mine local:main --force-with-lease
+```
+
+历史被重建过，第一次推新结构必须 force；用 `--force-with-lease` 而不是 `--force`，避免覆盖掉别处新推的提交。
+
 ## git commit 提交
 
 commit提交必须按照大功能划分，大功能里如果还有小功能点，划分到一起写进注释里的要点，不要把其他功能的改动混在同一个commit中，每个commit中文注释作用或功能
