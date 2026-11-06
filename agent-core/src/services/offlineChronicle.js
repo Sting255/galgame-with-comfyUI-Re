@@ -17,6 +17,7 @@ import { extractFirstJson } from './jsonExtract.js';
 import { recordWorldTimeline, recentWorldTimeline } from './worldTimeline.js';
 import { applyMemoryActions } from './memory/memoryRepository.js';
 import { config } from '../config.js';
+import { toSqlUtc } from './programTime.js';
 
 const HEARTBEAT_KEY = 'runtime.last_seen_at';
 const CURSOR_KEY = 'runtime.offline_cursor';   // 补算进行到哪一刻（断点续跑）
@@ -261,7 +262,15 @@ function publishOfflineMoment(character, { chunk, events = [], mood = null }) {
     const id = db.prepare(`
       INSERT INTO moment_posts (character_id, content, prompt, style, resolution, status, god_delivery_key, created_at)
       VALUES (?, ?, '', '', ?, 'done', ?, ?)
-    `).run(Number(character.id), text, resolution, key, chunk.to.toISOString()).lastInsertRowid;
+    `).run(
+      Number(character.id),
+      text,
+      resolution,
+      key,
+      // ⚠️ 必须是 SQLite 的无时区 UTC 串（YYYY-MM-DD HH:MM:SS）：朋友圈前端按这个格式解析，
+      // 写成 ISO（带 T 和 Z）会渲染成「NaNaN月NaN日」——真机截图实测发现。
+      toSqlUtc(chunk.to),
+    ).lastInsertRowid;
     console.log(`[offline] moment published: ${character.display_name}「${text.slice(0, 20)}」`);
     return Number(id);
   } catch (err) {

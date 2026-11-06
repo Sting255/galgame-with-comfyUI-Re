@@ -14,7 +14,7 @@
       </linshe-button>
     </div>
     <linshe-button touch-target v-if="group" variant="ghost" size="sm" aria-label="选择互动对象" :title="targetName || '选择互动对象'" @click="$emit('pick-target')">
-      <span class="action-target">{{ targetName || '选择对象' }}</span><span aria-hidden="true">⌄</span>
+      <span class="action-target">{{ targetName || '选人' }}</span><span aria-hidden="true">⌄</span>
     </linshe-button>
   </div>
 </template>
@@ -36,7 +36,8 @@ defineEmits(['toggle', 'pick-target'])
 @media (max-width: 767px) {
   .chat-action-toolbar { gap: 4px; flex-wrap: nowrap; }
   .chat-action-items { gap: 4px; }
-  .action-target { max-width: 44px; }
+  /* 2026-11-06 实测：44px 会把「选择对象」截成「选择...」，文案改成「选人」并放宽一点 */
+  .action-target { max-width: 64px; }
 }
 
 </style>
