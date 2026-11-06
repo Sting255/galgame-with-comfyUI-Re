@@ -12,6 +12,8 @@
 import { getDb } from '../agent-core/src/db/index.js';
 import { recordInterCharacterEvents, buildRecentInteractionsBlock } from '../agent-core/src/services/groupInterCharacterEvents.js';
 import { createWorldEventService } from '../agent-core/src/services/godSays/worldEvents.js';
+import { recordWorldTimeline, buildWorldTimelineBlock } from '../agent-core/src/services/worldTimeline.js';
+import { resolveSceneSeed } from '../agent-core/src/services/imageSkill.js';
 
 let pass = 0, fail = 0;
 const check = (name, actual, expected) => {
@@ -63,6 +65,21 @@ const readyNow = db.prepare("SELECT COUNT(*) AS n FROM god_world_deliveries WHER
 check('到点前不可执行', readyNow, 0);
 const readyLater = db.prepare("SELECT COUNT(*) AS n FROM god_world_deliveries WHERE next_attempt_at<=? AND event_id=?").get(new Date(now.getTime() + 91 * 60000).toISOString(), event.id).n;
 check('到点后可执行', readyLater, 1);
+
+// 4) 世界时间轴：写入幂等 + 注入块
+const t1 = recordWorldTimeline({ kind: 'event', title: '教学楼停电了', summary: '整栋楼黑了十分钟', characterIds: [a], sourceId: 'verify-event-1' });
+const t2 = recordWorldTimeline({ kind: 'event', title: '教学楼停电了', summary: '重复写一次', characterIds: [a], sourceId: 'verify-event-1' });
+check('时间轴写入成功', Boolean(t1), true);
+check('同 sourceId 第二次不写', t2, null);
+check('时间轴块包含标题', buildWorldTimelineBlock(3).includes('教学楼停电了'), true);
+
+// 5) 同场景种子：同 key 递增、不同 key 不同基、空 key 走随机
+const s1 = resolveSceneSeed('verify:scene');
+const s2 = resolveSceneSeed('verify:scene');
+const s3 = resolveSceneSeed('verify:other');
+check('同场景第二张 seed +1', s2, s1 + 1);
+check('不同场景不共用基', s3 === s1, false);
+check('空 sceneKey 返回 null', resolveSceneSeed(''), null);
 
 console.log(`\n合计 ${pass} pass / ${fail} fail`);
 process.exit(fail ? 1 : 0);
