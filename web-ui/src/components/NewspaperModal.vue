@@ -63,6 +63,16 @@
       <!-- 版面：三栏（左 = 异闻+前半新闻 / 中 = 人物特稿 / 右 = 后半新闻） -->
       <div class="np-sheet" :class="{ 'np-sheet--nolead': !paper.character_event }">
         <div class="np-col">
+          <!-- 昨夜邻里（2026-11-06）：你不在的时候世界没停，这里列最近 24 小时补记的事 -->
+          <section v-if="offlineNotes.length && !viewDate" class="np-offline" aria-label="昨夜邻里">
+            <span class="np-offline-stamp">昨夜邻里</span>
+            <ul class="np-offline-list">
+              <li v-for="note in offlineNotes" :key="note.title + note.at">
+                <strong class="np-offline-title">{{ note.title }}</strong>
+                <span class="np-offline-text">{{ note.summary }}</span>
+              </li>
+            </ul>
+          </section>
           <section
             v-if="paper.world_state"
             class="np-world np-clickable"
@@ -325,6 +335,8 @@ const visible = computed({
 
 const todayPaper = ref(null)
 const pastPaper = ref(null)
+/** 昨夜邻里：离线编年补记的动态（只在看今天时展示） */
+const offlineNotes = ref([])
 const viewDate = ref('')          // '' = 看今天；否则为历史日期（YYYY-MM-DD）
 const editions = ref([])          // 历史期简目，最新在前
 const navLoading = ref(false)
@@ -559,6 +571,8 @@ function hasMissingImage(p) {
 async function fetchPaper() {
   const data = await api.getTodayNewspaper()
   const paper = data?.newspaper || null
+  // 昨夜邻里（2026-11-06）：离线期间补记的世界动态，只在今天这一版右上角露一段
+  offlineNotes.value = Array.isArray(data?.offlineNotes) ? data.offlineNotes.slice(0, 4) : []
   // 开窗期间报纸才印出来（手动补发 / 生成完成）：首见即算看过，别把红点留在导航栏
   const firstArrival = Boolean(paper) && !todayPaper.value
   todayPaper.value = paper
@@ -980,6 +994,26 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 8px;
 }
+/* 昨夜邻里：报纸左栏最上面一小段，说明"你不在时世界也没停" */
+.np-offline {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed rgba(60, 40, 20, 0.28);
+}
+.np-offline-stamp {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  color: #6b4b2a;
+  border: 1px solid rgba(60, 40, 20, 0.35);
+  padding: 2px 7px 2px 10px;
+  margin-bottom: 8px;
+}
+.np-offline-list { margin: 0; padding: 0; list-style: none; }
+.np-offline-list li { margin-bottom: 7px; line-height: 1.65; }
+.np-offline-title { display: block; font-size: 13px; color: #33241a; }
+.np-offline-text { font-size: 12px; color: #5b4632; }
+
 .np-world-stamp {
   flex-shrink: 0;
   font-size: 12px;

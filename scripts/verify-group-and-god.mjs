@@ -14,6 +14,8 @@ import { recordInterCharacterEvents, buildRecentInteractionsBlock } from '../age
 import { createWorldEventService } from '../agent-core/src/services/godSays/worldEvents.js';
 import { recordWorldTimeline, buildWorldTimelineBlock } from '../agent-core/src/services/worldTimeline.js';
 import { resolveSceneSeed } from '../agent-core/src/services/imageSkill.js';
+import { planOfflineChunks } from '../agent-core/src/services/offlineChronicle.js';
+import { nudgeBond, readBond, describeBond } from '../agent-core/src/services/groupBonds.js';
 
 let pass = 0, fail = 0;
 const check = (name, actual, expected) => {
@@ -80,6 +82,34 @@ const s3 = resolveSceneSeed('verify:other');
 check('同场景第二张 seed +1', s2, s1 + 1);
 check('不同场景不共用基', s3 === s1, false);
 check('空 sceneKey 返回 null', resolveSceneSeed(''), null);
+
+// 6) 离线编年分片
+const base = new Date('2026-11-06T12:00:00Z');
+const p2 = planOfflineChunks(base, new Date(base.getTime() - 2 * 3600_000));
+check('离线 2 小时不补', p2.shouldRun, false);
+const p8 = planOfflineChunks(base, new Date(base.getTime() - 8 * 3600_000));
+check('离线 8 小时补 2 片', p8.chunks.length, 2);
+check('8 小时无尾段', Boolean(p8.tail), false);
+const p72 = planOfflineChunks(base, new Date(base.getTime() - 72 * 3600_000));
+check('离线 72 小时补 4 片', p72.chunks.length, 4);
+check('72 小时带尾段概况', Boolean(p72.tail), true);
+check('分片首尾相接', p72.chunks[0].to.getTime(), p72.chunks[1].from.getTime());
+
+// 7) 关系温度（前面的群聊测试可能已经调过一次，所以全部用相对值断言）
+const round1 = (n) => Math.round(Number(n) * 10) / 10;
+const bondStart = readBond(a, b);
+nudgeBond(a, b, { text: '闭嘴，别烦我' });
+check('负面一句扣 0.3', round1(readBond(a, b) - bondStart), -0.3);
+const afterNegative = readBond(a, b);
+nudgeBond(a, b, { text: '今天的天气不错' });
+check('正面向加 0.1', round1(readBond(a, b) - afterNegative), 0.1);
+// 一直扣到日预算耗尽，必须出现一次"拒绝变动"
+let rejected = false;
+for (let i = 0; i < 6; i++) {
+  if (!nudgeBond(a, b, { text: '闭嘴' })) { rejected = true; break; }
+}
+check('日预算耗尽后拒绝继续变动', rejected, true);
+check('温度有可读描述', typeof describeBond(readBond(a, b)), 'string');
 
 console.log(`\n合计 ${pass} pass / ${fail} fail`);
 process.exit(fail ? 1 : 0);
