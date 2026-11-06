@@ -18,6 +18,8 @@ import {
   getIntimatePanel,
   upsertBodyProfile,
   setInjectEnabled,
+  getInjectAllStatus,
+  setAllInjectEnabled,
   setAiJudgeEnabled,
   listIntimateLogs,
   recordIntimateActs,
@@ -79,6 +81,26 @@ function handle(res, err) {
   console.error('[intimate] route error:', message);
   return res.status(500).json({ error: message });
 }
+
+// GET /api/characters/intimate/inject-all — 全部角色「知晓身体档案」状态 { total, enabled }
+// 路径是三段（intimate/inject-all），与 /:id/intimate（两段）和 /:id/intimate/xxx（第二段必须是
+// 字面 intimate）都不重叠，所以不会被通配吃掉。
+router.get('/intimate/inject-all', (req, res) => {
+  try {
+    res.json(getInjectAllStatus());
+  } catch (err) {
+    handle(res, err);
+  }
+});
+
+// PUT /api/characters/intimate/inject-all — 批量设置全部角色的注入开关（设置页总开关）
+router.put('/intimate/inject-all', (req, res) => {
+  try {
+    res.json(setAllInjectEnabled(req.body?.enabled === true));
+  } catch (err) {
+    handle(res, err);
+  }
+});
 
 // GET /api/characters/:id/intimate — 面板一次读取（档案 + 里程碑 + 统计 + 计数 + 回填进度）
 router.get('/:id/intimate', (req, res) => {

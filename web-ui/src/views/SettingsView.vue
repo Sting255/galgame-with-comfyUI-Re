@@ -847,6 +847,22 @@ type="range" min="0" max="1" step="0.1"
           </div>
           <linshe-switch v-model="features.intimateBackfill" aria-label="历史对话回填" title="历史对话回填" @change="saveIntimateFeature('intimateBackfill', features.intimateBackfill)" />
         </div>
+
+        <!-- 全部角色知晓身体档案（一键批量开关：不用逐个角色打开看板顶部的知晓开关。
+             空档案在注入时被判为空内容、零注入，所以对没填档案的角色打开它不产生 token 成本） -->
+        <div class="toggle-row">
+          <div>
+            <div class="tl">全部角色知晓身体档案</div>
+            <div class="td">{{ injectAllHint }}。档案为空时不会注入任何内容，也不消耗 token</div>
+          </div>
+          <linshe-switch
+            v-model="injectAllOn"
+            :disabled="injectAll.saving"
+            aria-label="全部角色知晓身体档案"
+            title="全部角色知晓身体档案"
+            @change="saveInjectAll"
+          />
+        </div>
       </div>
 
       <!-- 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）
@@ -1693,6 +1709,7 @@ import MemoryHealthPanel from '../components/MemoryHealthPanel.vue'
 import TimeControlPanel from '../components/TimeControlPanel.vue'
 import UpdateTag from '../components/UpdateTag.vue'
 import { CHANGELOG_ENTRIES } from '../data/changelog.js'
+import { getIntimateInjectAll, setIntimateInjectAll } from '../api/intimate.js'
 
 
 const settingsStore = useSettingsStore()
@@ -2034,6 +2051,46 @@ function normalizeIntimateFlags(source) {
   if (!source || typeof source !== 'object') return
   features.intimate = source.intimate === true
   features.intimateBackfill = source.intimateBackfill === true
+}
+
+/**
+ * 「全部角色知晓身体档案」总开关（2026-11-06）：状态口径来自后端统计，不用本地记忆。
+ * 开关打开 = 所有角色都已开启；部分开启时显示为关，副标题写明已开启数量，
+ * 因为开关本身表达不了"3/12"这种中间态。
+ */
+const injectAll = reactive({ total: 0, enabled: 0, saving: false })
+const injectAllOn = ref(false)
+const injectAllHint = computed(() => {
+  if (injectAll.total === 0) return '还没有角色'
+  if (injectAll.enabled >= injectAll.total) return `全部 ${injectAll.total} 个角色已开启`
+  return `${injectAll.enabled} / ${injectAll.total} 个角色已开启`
+})
+
+async function loadInjectAllStatus() {
+  try {
+    const d = await getIntimateInjectAll()
+    injectAll.total = Number(d?.total) || 0
+    injectAll.enabled = Number(d?.enabled) || 0
+    injectAllOn.value = injectAll.total > 0 && injectAll.enabled >= injectAll.total
+  } catch {
+    // 读失败保持"关"，不阻塞设置页其它配置
+  }
+}
+
+async function saveInjectAll(val) {
+  injectAll.saving = true
+  try {
+    const d = await setIntimateInjectAll(val === true)
+    injectAll.total = Number(d?.total) || 0
+    injectAll.enabled = Number(d?.enabled) || 0
+    injectAllOn.value = injectAll.total > 0 && injectAll.enabled >= injectAll.total
+    toastFn?.(val ? `已为 ${injectAll.enabled} 个角色开启「知晓身体档案」` : '已关闭所有角色的「知晓身体档案」', 'success')
+  } catch (err) {
+    injectAllOn.value = !val
+    toastFn?.(`全部角色知晓保存失败：${err.message || '未知错误'}`, 'error')
+  } finally {
+    injectAll.saving = false
+  }
 }
 const freqSlider = ref(0.5)
 const eventFreqSlider = ref(1)
@@ -2786,6 +2843,7 @@ onMounted(async () => {
     settingsStore.setComfySize(data.comfy.width, data.comfy.height)
     Object.assign(features, data.features)
     normalizeIntimateFlags(data.features)
+    loadInjectAllStatus()
     freqSlider.value = features.proactiveChatFreq ?? 0.5
     eventFreqSlider.value = features.eventFreq ?? 1
     momentFreqStepIdx.value = momentStepFromValue(features.momentFreq, features.momentFreqMode)

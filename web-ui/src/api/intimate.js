@@ -73,6 +73,19 @@ export function setIntimateInject(characterId, enabled) {
 }
 
 /**
+ * 全部角色的注入开关状态（设置页总开关）：{ total, enabled }。
+ * 独立路径 /characters/intimate/inject-all，不经过 :id，因此不打乱上面 charPath 的契约。
+ */
+export function getIntimateInjectAll() {
+  return request('/characters/intimate/inject-all')
+}
+
+/** 一键设置全部角色的注入开关，返回最新 { total, enabled } */
+export function setIntimateInjectAll(enabled) {
+  return request('/characters/intimate/inject-all', { method: 'PUT', body: { enabled: enabled === true } })
+}
+
+/**
  * AI 判断开关（面板设置「默认开启 AI 判断」）
  * 开关本身只是默认值：关闭时不阻断下面手动补判的按钮。
  */

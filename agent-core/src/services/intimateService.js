@@ -868,6 +868,44 @@ export function setInjectEnabled(characterId, enabled) {
   return upsertBodyProfile(characterId, { injectEnabled: !!enabled });
 }
 
+/**
+ * 全部角色注入开关的状态：{ total, enabled }。
+ * total 统计 characters 全表；enabled 只统计还能对上角色的档案行（孤儿行不计）。
+ */
+export function getInjectAllStatus() {
+  const db = getDb();
+  const total = db.prepare('SELECT COUNT(*) AS n FROM characters').get()?.n || 0;
+  const enabled = db.prepare(
+    `SELECT COUNT(*) AS n FROM character_body_profile p
+     JOIN characters c ON c.id = p.character_id
+     WHERE p.inject_enabled = 1`
+  ).get()?.n || 0;
+  return { total, enabled };
+}
+
+/**
+ * 批量设置全部角色的注入开关（设置页「全部角色知晓身体档案」）。
+ * 没有档案行的角色会补一行空档案——空档案在 buildIntimateProfileBlock 里会被判为空内容、零注入，
+ * 所以这里补行只是让开关状态可回读，不会产生 token 成本。
+ * @param {boolean} enabled
+ * @returns {{total:number, enabled:number}}
+ */
+export function setAllInjectEnabled(enabled) {
+  const db = getDb();
+  const flag = enabled ? 1 : 0;
+  const ts = nowIso();
+  db.transaction(() => {
+    db.prepare('UPDATE character_body_profile SET inject_enabled = ?, updated_at = ?').run(flag, ts);
+    if (!enabled) return;
+    db.prepare(
+      `INSERT INTO character_body_profile (character_id, inject_enabled, updated_at)
+       SELECT c.id, 1, ? FROM characters c
+       WHERE NOT EXISTS (SELECT 1 FROM character_body_profile p WHERE p.character_id = c.id)`
+    ).run(ts);
+  })();
+  return getInjectAllStatus();
+}
+
 /** AI 判断行为开关（面板上的"是否默认开启 AI 判断"，task-32） */
 export function setAiJudgeEnabled(characterId, enabled) {
   return upsertBodyProfile(characterId, { aiJudgeEnabled: !!enabled });
