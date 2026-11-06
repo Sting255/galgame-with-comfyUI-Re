@@ -234,6 +234,8 @@ async function generateGroupImage(group, speaker, prompt, targetMsgId, emit, opt
       promptScene: 'chat',
       ragTimeoutMs: options.ragTimeoutMs,
       priority: options.priority,
+      // 同一轮群聊的多张图共用一个种子基准：人物一致，又不至于构图完全重复
+      sceneKey: options.sceneKey,
       onProgress: (p) => {
         if (p.stage === 'retrying') emit('generate_retrying', { taskId, msg_id: targetMsgId, attempt: p.attempt, maxRetries: p.maxRetries });
         else emit('generate_progress', { taskId, msg_id: targetMsgId, ...p });

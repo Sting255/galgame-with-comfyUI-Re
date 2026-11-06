@@ -1408,6 +1408,8 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
           priority: (trigger === 'idle' || trigger === 'opening') ? 'low' : undefined,
           ragQuery: parsed.text || [...written].reverse().find(w => w.speaker_character_id === speaker.id && w.content)?.content || '',
           useMomentsResolution: trigger === 'idle' || trigger === 'opening',
+          // 同一轮群聊的多张图共用一个种子基准（人物一致、构图不重复）
+          sceneKey: `group:${groupId}:${rawId}`,
           ...imageDeps,
         },
       });

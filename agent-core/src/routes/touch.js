@@ -176,7 +176,12 @@ async function defaultTouchImageGenerator(character, prompt, { scene = 'chat' } 
   } catch (err) {
     console.warn('[touch] 体位骨架跳过:', err?.message || err);
   }
-  const result = await generateImage(prompt, { scene, ...opts });
+  const result = await generateImage(prompt, {
+    scene,
+    // 同一次亲密/触摸过程的连续几张图共用种子基准（30 分钟窗口，与 resolveSceneSeed 对齐）
+    sceneKey: `touch:${character.id}:${Math.floor(Date.now() / (30 * 60 * 1000))}`,
+    ...opts,
+  });
   if (!result?.success || !result.images?.length) {
     return { urls: [], promptRefined: result?.promptRefined || prompt, error: result?.error || 'no images' };
   }

@@ -806,8 +806,10 @@ router.post('/:id/:action', async (req, res) => {
         rawId: written.rawId,
       };
       const imagePrompt = String(parsed.imagePrompt);
+      // 同一次亲密过程的连续几张图共用一个种子基准（30 分钟窗口，与 imageSkill.resolveSceneSeed 对齐）
+      const sceneKey = `intimate:${id}:${Math.floor(Date.now() / (30 * 60 * 1000))}`;
       Promise.resolve()
-        .then(() => generateToyImageForReaction({ character, imagePrompt }))
+        .then(() => generateToyImageForReaction({ character, imagePrompt, options: { sceneKey } }))
         .then((shot) => {
           if (!shot?.urls?.length) return;
           const attached = attachToyImagesToMessage(target.lastMsgId, shot.urls);

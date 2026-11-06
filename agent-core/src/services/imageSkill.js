@@ -181,6 +181,37 @@ export function filterGlobalLoras(loras, currentScene) {
  * @param {string|null} [overrides.workflowScene] - hybrid 模式下单独用于选择工作流；
  *        显式传 null 表示不按场景选择（沿用上次模式），与 scene 解耦
  */
+// ── 同场景种子（2026-11-06）──
+// 真机问题：同一次亲密 / 同一轮群聊连出三张图，人物像换了个人。
+// 扩散模型的随机性有一半来自 seed，固定它能让"同一个场景的连续几张图"保持同一张脸与同一套光影；
+// 每张 +1 而不是完全相同，避免构图完全重复。
+const SCENE_SEED_WINDOW_MS = 30 * 60 * 1000;
+const sceneSeedState = new Map();   // sceneKey -> { base, used, at }
+
+/**
+ * 取同一个场景窗口内的稳定种子。
+ * 连续的出图会滑动续期：只要间隔不超过 30 分钟，就一直沿用同一个 base。
+ * @param {string} sceneKey 场景标识（如 `intimate:12:345`、`group:2:678`）；空值返回 null（保持原随机行为）
+ * @returns {number|null}
+ */
+export function resolveSceneSeed(sceneKey) {
+  const key = String(sceneKey || '').trim();
+  if (!key) return null;
+  const now = Date.now();
+  let entry = sceneSeedState.get(key);
+  if (!entry || now - entry.at > SCENE_SEED_WINDOW_MS) {
+    entry = { base: Math.floor(Math.random() * 1_000_000_000), used: 0, at: now };
+    sceneSeedState.set(key, entry);
+    if (sceneSeedState.size > 300) {
+      for (const [k, v] of sceneSeedState) if (now - v.at > SCENE_SEED_WINDOW_MS) sceneSeedState.delete(k);
+    }
+  }
+  entry.at = now;   // 续期：场景还在继续
+  const seed = entry.base + entry.used;
+  entry.used += 1;
+  return seed;
+}
+
 function buildWorkflow(promptText, overrides = {}) {
   // 用 undefined 区分"没传"与"显式不按场景选工作流"：后者传 null
   const workflowScene = overrides.workflowScene !== undefined ? overrides.workflowScene : overrides.scene;
@@ -240,9 +271,11 @@ function buildWorkflow(promptText, overrides = {}) {
   for (const node of wf.nodes || []) {
     if (!Array.isArray(node.widgets_values)) continue;
 
-    // KSampler seed 随机化
+    // KSampler seed：同一场景窗口用稳定种子（sceneSeed），否则维持随机
     if (node.type === 'KSampler' && node.widgets_values.length > 1 && node.widgets_values[1] === 'randomize') {
-      node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+      node.widgets_values[0] = Number.isSafeInteger(overrides.sceneSeed)
+        ? overrides.sceneSeed
+        : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
     }
 
     // lora触发词节点：注入所有 lora 的 triggerWord 拼接
@@ -473,6 +506,8 @@ async function submitWithRetry(rawPrompt, {
   // 2. 构建 workflow
   const { wf, wfMode } = buildWorkflow(finalPrompt, {
     artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
+    // 同场景稳定种子：调用方传 sceneKey 时，连续几张图共用一套 base（每张 +1）
+    sceneSeed: resolveSceneSeed(opts.sceneKey),
   });
   if (onProgress) onProgress({ stage: 'submitting' });
 
