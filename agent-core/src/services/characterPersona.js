@@ -70,6 +70,20 @@ export function extractAppearanceSection(basePrompt) {
 }
 
 /**
+ * 提取「## 你的外观」段的**正文**（不含标题行）。无该段返回 ''。
+ *
+ * 上游 4.2.1 的 godSays/angelImageReference.js 直接 import 这个名字；本地重构时
+ * 只保留了含标题的 extractAppearanceSection，于是合并后启动即
+ * `does not provide an export named 'extractEditableAppearanceBody'`。
+ * 两者是同一段内容的两种取法，这里按上游口径补回。
+ */
+export function extractEditableAppearanceBody(basePrompt) {
+  const section = extractAppearanceSection(basePrompt);
+  if (!section) return '';
+  return section.replace(/^##[ \t]*你的外观[ \t]*\r?\n?/, '').trim();
+}
+
+/**
  * 由生效外观生成注入文本块（纯函数，便于测试）。
  * 返回三段，由 injectOutfitsIntoAppearance 组装：
  *   - lead：特殊外观清单，安插在「## 你的外观」标题之后、原正文之前；
@@ -364,6 +378,53 @@ export function buildCharacterPersona(character, opts = {}) {
   let appearancePart = injectOutfitsIntoAppearance(appearance, buildOutfitInjectionBlocks(outfits, { owner: person }), { owner: person }).trim();
   appearancePart = toThirdPerson(appearancePart, person);
   return [short, appearancePart].filter(Boolean).join(joiner);
+}
+
+// 角色身份标签：外观段通常以 "Name (Series) has ..." 开头；限时服饰会把它包在
+// 「1. 日常装：...」之后，因此在外观段整段里搜，而不是只认第一行。
+const CHARACTER_IDENTITY_TAG_RE = /([A-Za-z][A-Za-z0-9 .'\-:]{1,50}?)\s*\\?\(([^()]{2,60})\\?\)\s+has\b/;
+
+/**
+ * 提取角色在生图 prompt 中应使用的 'Name (Series)' 身份标签。
+ * 优先从「## 你的外观」段提取；没有外观段时回退整卡。原创角色/无身份行返回 ''。
+ * @param {object} character - characters 表行（至少含 base_prompt）
+ * @returns {string}
+ */
+export function extractCharacterIdentityTag(character) {
+  const base = String(character?.base_prompt || character?.short_prompt || '');
+  if (!base) return '';
+  const appearance = extractAppearanceSection(base);
+  const corpora = appearance ? [appearance, base] : [base];
+  for (const text of corpora) {
+    const match = text.match(CHARACTER_IDENTITY_TAG_RE);
+    if (!match) continue;
+    const name = match[1].replace(/\s+/g, ' ').trim();
+    const series = match[2].replace(/\s+/g, ' ').trim();
+    if (name && series) return `${name} (${series})`;
+  }
+  return '';
+}
+
+/**
+ * 生图 prompt 兜底：确认主角色身份标签已经出现，缺失时补在开头。
+ * 梦境配图要求以 "A surreal dreamscape scene:" 开头，此时把标签插在冒号后，
+ * 不破坏梦境前缀。原创角色/无标签时原样返回。
+ * @param {string} prompt
+ * @param {object} character
+ * @returns {string}
+ */
+export function ensureImagePromptIdentity(prompt, character) {
+  const text = String(prompt || '').trim();
+  const tag = extractCharacterIdentityTag(character);
+  if (!text || !tag) return text;
+  const bareName = tag.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const lower = text.toLowerCase();
+  if (lower.includes(tag.toLowerCase()) || (bareName && lower.includes(bareName.toLowerCase()))) return text;
+  const dreamPrefix = 'A surreal dreamscape scene:';
+  if (text.startsWith(dreamPrefix)) {
+    return `${dreamPrefix} ${tag}.${text.slice(dreamPrefix.length)}`;
+  }
+  return `${tag}. ${text}`;
 }
 
 /**

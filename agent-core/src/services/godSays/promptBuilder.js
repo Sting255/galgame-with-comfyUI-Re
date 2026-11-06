@@ -32,13 +32,14 @@ function workContext(work) {
     const state = event.kind === 'world' ? (event.active ? '世界事实正在生效' : '世界事实已结束') : '已建立投递任务';
     return `- 事件/任务${event.id}「${event.title}」：${state}。${deliveries.length ? deliveries.join('；') : '没有主动投递安排。'}`;
   });
-  return `<god_work>\n最近神谕的实际状态，优先于旧摘要中的推测；详情和最新结果用 inspect_work 核对：\n${lines.join('\n')}\n</god_work>`;
+  return `<god_work>\n最近神谕的实际状态，以实际执行结果为准；详情和最新结果用 inspect_work 核对：\n${lines.join('\n')}\n</god_work>`;
 }
 
 // 日程、着装、世界事件与任务状态由 promptState 按已发送快照去重；每条 user 保留自己的发送时刻。
 // 工具调用历史不能压成 active_chat_history 文本，否则会丢失工具关联和 thoughtSignature。
 export function buildGodChatContext({ systemRules, worldSetting = '', worldIntegrationRule = '', agentRules,
-  angel, user = {}, history = { messages: [] }, recall = {}, schedule = [], scheduleEnabled = true,
+  chatRhythmRules = getChatRhythmRules(), hasLanguageStyle = false,
+  angel, user = {}, history = { messages: [] }, schedule = [], scheduleEnabled = true,
   now = new Date(), timeZone = 'Asia/Shanghai', worldContext = '', work = [], images = [],
 }) {
   const stableBlocks = [[systemRules, LANGUAGE_RULE, worldSetting].filter(Boolean).join('\n\n')];
@@ -47,17 +48,21 @@ export function buildGodChatContext({ systemRules, worldSetting = '', worldInteg
   const wardrobe = angel.outfits?.some(item => item.scene !== 'work' && item.description)
     ? `<angel_wardrobe>可用服装：${angel.outfits.filter(item => item.description).map(item => `${item.sceneLabel}（${item.name}）`).join('、')}。\n当前${scheduleEnabled ? '按日程' : ''}穿着：${outfit.name}；${outfit.scene === 'work' ? '沿用天使人设中的默认外观。' : outfit.description}</angel_wardrobe>` : '';
   if (worldSetting && worldIntegrationRule) stableBlocks.push(worldIntegrationRule);
-  stableBlocks.push(`${agentRules}\n\n<dialogue_format_rules>\n${getCoreDialogueRules({ userName: '吾神' })}\n日常交流遵循天使本人的语气；问到外貌时依据下方人设自然回答，不读取或编造角色资料。汇报神谕时可用简短列表清楚说明实际结果与未完成部分。\n</dialogue_format_rules>`);
+  stableBlocks.push(`${agentRules}\n\n<dialogue_format_rules>\n${getCoreDialogueRules({ userName: '吾神', allowNarration: hasLanguageStyle })}\n日常交流遵循天使本人的语气；问到外貌时依据下方人设自然回答，不读取或编造角色资料。汇报神谕时可用简短列表清楚说明实际结果与未完成部分。\n</dialogue_format_rules>`);
   stableBlocks.push(angel.persona);
   const info = [user.nickname && `称呼：${user.nickname}`, user.gender && `性别：${user.gender}`,
     user.appearance && `外观特征：${user.appearance}`, user.persona && `其他说明：${user.persona}`].filter(Boolean);
   stableBlocks.push([RELATION_RULE, info.length ? `<user_info>\n${info.join('\n')}\n</user_info>` : ''].filter(Boolean).join('\n\n'));
-  const rhythm = `${getChatRhythmRules()}\n以上节奏适用于日常交流；执行神谕时仍需清楚汇报结果、失败与待办，可以按需使用列表，不为了聊天语气省略重要状态。\n${TIME_RULE}`;
-  const summaryBlock = recall.summary && `[往日对话摘要 — 按日期标明，属于过去的交流，不代表今日状态]\n${recall.summary}`;
+  // 语言风格生效时，只放开“叙述性正文”这一条格式限制；
+  // 字数、篇幅与短句节奏仍按上面的原规则执行。
+  const rhythmStyleNote = hasLanguageStyle
+    ? '；<additional_writing_style> 要求的角色第一人称叙述性正文可以直接写，但字数、篇幅与上方的短句节奏限制保持原样'
+    : '';
+  const rhythm = `${chatRhythmRules}\n以上节奏适用于日常交流${rhythmStyleNote}；执行神谕时仍需清楚汇报结果、失败与待办，可以按需使用列表，不为了聊天语气省略重要状态。\n${TIME_RULE}`;
   const scheduleBlock = scheduleContext(schedule, scheduleEnabled, angel.schedule_error);
   const workBlock = workContext(work);
   const { messages, metadata } = buildChatContext({
-    stableBlocks, preSummarySystem: rhythm, summaryBlock, history: history.messages,
+    stableBlocks, preSummarySystem: rhythm, history: history.messages,
     preserveStructuredHistory: true,
     dynamicBlocks: [
       scheduleBlock,

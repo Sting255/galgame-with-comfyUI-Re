@@ -13,7 +13,7 @@ router.get('/state', (req, res) => {
   const sessionId = req.query.session ? Number(req.query.session) : null;
   if (sessionId !== null && (!Number.isSafeInteger(sessionId) || sessionId < 1)) return res.status(400).json({ error: '日期标识无效' });
   const state = r.repo.snapshot(sessionId);
-  const schedule = state.session.day === r.repo.day() ? state.angel.schedule : parseJson(state.session.schedule_json, []);
+  const schedule = state.angel.schedule;
   state.scheduleEnabled = config.features.schedule !== false;
   state.activity = state.scheduleEnabled ? angelActivity(schedule, r.repo.now(), r.repo.timeZone) : null;
   state.worldEvents = state.session.id ? r.world.list(null, state.session.id) : [];
@@ -23,8 +23,7 @@ router.get('/state', (req, res) => {
   state.angelPersonalities = ANGEL_PERSONALITIES;
   res.json(state);
   // 尚未召唤天使时，先由前端引导选性格；不自动生成默认人格与日程。
-  if (!sessionId && state.angel.summoned) void r.ensureSchedule(state.session).catch(err => console.warn('[天使日程]', err.message));
-  void r.memory.archive().catch(err => console.warn('[神说归档]', err.message));
+  if (state.writable && state.angel.summoned) void r.ensureSchedule(state.session).catch(err => console.warn('[天使日程]', err.message));
 });
 router.get('/work', (req, res) => {
   const r = getGodRuntime();
@@ -40,19 +39,30 @@ router.post('/changes/:id/decision', async (req, res, next) => {
 router.get('/sessions', (req, res) => {
   const { repo } = getGodRuntime();
   const before = typeof req.query.before === 'string' ? req.query.before : '9999-12-31';
-  res.json(repo.listSessions(before));
+  const beforeId = req.query.before_id ? Number(req.query.before_id) : null;
+  if (beforeId !== null && (!Number.isSafeInteger(beforeId) || beforeId < 1)) return res.status(400).json({ error: '会话标识无效' });
+  res.json(repo.listSessions(before, beforeId));
 });
-router.get('/memories', (req, res) => {
+router.post('/sessions', (req, res) => res.json(getGodRuntime().repo.newSession()));
+router.delete('/sessions/:id', (req, res) => {
   const { repo } = getGodRuntime();
-  res.json(repo.listMemories());
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: '会话编号无效' });
+  const result = repo.db.transaction(() => {
+    const active = repo.db.prepare(`SELECT 1 FROM god_changes c JOIN god_runs r ON r.id=c.run_id
+      WHERE r.session_id=? AND c.status='applying'
+      UNION ALL SELECT 1 FROM god_batches b JOIN god_runs r ON r.id=b.run_id
+      WHERE r.session_id=? AND b.status='running' LIMIT 1`).get(id, id);
+    if (active) throw Object.assign(new Error('这段对话仍有工作正在执行，请先停止批量任务或等待提交结束'), { status: 409 });
+    const deleted = repo.deleteSession(id);
+    repo.db.prepare("UPDATE god_changes SET status='rejected' WHERE status='pending' AND run_id IN (SELECT id FROM god_runs WHERE session_id=?)").run(id);
+    return deleted;
+  })();
+  res.json(result);
 });
-router.post('/sessions/:id/summarize', (req, res) => {
-  const r = getGodRuntime();
-  const result = r.repo.db.prepare("UPDATE god_sessions SET summary_status='pending',summary_attempts=0,summary_attempt_at=NULL WHERE id=? AND day<? AND summary_status='failed'").run(req.params.id, r.repo.day());
-  if (!result.changes) return res.status(409).json({ error: '只有往日总结失败的对话可以重试' });
-  res.json({ ok: true });
-  void r.memory.archive().catch(err => console.warn('[神说归档]', err.message));
-});
+// 旧客户端不再读取记忆或启动总结请求。
+router.get('/memories', (req, res) => res.json([]));
+router.post('/sessions/:id/summarize', (req, res) => res.status(410).json({ error: '神说已停用记忆总结' }));
 const IMAGE_DATA_URI = /^data:image\/(png|jpeg|jpg|webp|gif|avif);base64,/i;
 const MAX_IMAGE_COUNT = 4;
 const MAX_IMAGE_BASE64 = 10 * 1024 * 1024;
@@ -62,7 +72,8 @@ function imageExtension(mime) {
   return value === 'jpeg' || value === 'jpg' ? 'jpg' : value;
 }
 router.post('/runs', (req, res) => {
-  const { client_id, text, images } = req.body || {};
+  const { client_id, text, images, session_id = null } = req.body || {};
+  if (session_id !== null && (!Number.isSafeInteger(session_id) || session_id < 1)) return res.status(400).json({ error: '会话编号无效' });
   if (typeof client_id !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(client_id) || typeof text !== 'string' || !text.trim() || text.length > 20000) return res.status(400).json({ error: '请填写有效消息（最多两万字）' });
   let imageUrls = [];
   const imageDataUris = [];
@@ -80,7 +91,7 @@ router.post('/runs', (req, res) => {
       imageDataUris.push(dataUri);
     }
   }
-  res.json(getGodRuntime().start(client_id, text.trim(), { urls: imageUrls, dataUris: imageDataUris }));
+  res.json(getGodRuntime().start(client_id, text.trim(), { urls: imageUrls, dataUris: imageDataUris, sessionId: session_id }));
 });
 router.post('/runs/:id/stop', (req, res) => res.json(getGodRuntime().cancel(req.params.id)));
 router.delete('/runs/:id', (req, res) => {

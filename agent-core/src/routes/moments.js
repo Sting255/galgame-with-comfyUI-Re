@@ -1,4 +1,4 @@
-import { appendWorldLanguageStyle } from '../services/worldLanguageStyle.js';
+import { appendWorldLanguageStyle, hasActiveWorldLanguageStyle } from '../services/worldLanguageStyle.js';
 import { scheduleMomentCompanions } from '../services/scheduleParticipants.js';
 import { Router } from 'express';
 import { saveBase64Image } from '../services/imagePaths.js';
@@ -10,7 +10,7 @@ import { config } from '../config.js';
 import { getMomentDelay } from '../services/momentTiming.js';
 import { generateImageRaw } from '../services/imageSkill.js';
 import { charArtistOverrideWithFallback } from '../services/characterImageOpts.js';
-import { buildCharacterPersona } from '../services/characterPersona.js';
+import { buildCharacterPersona, ensureImagePromptIdentity } from '../services/characterPersona.js';
 import { getGodWorldContext } from '../services/godSays/worldContext.js';
 import { createCharacterTownLifeContext } from '../services/characterTownLifeContext.js';
 import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
@@ -516,7 +516,13 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
     // 多图模式串行出图：单张失败只丢那一张，不影响其他张和发帖
     for (let i = 0; i < imagePrompts.length; i++) {
       try {
-        const genResult = await generateImageRaw(imagePrompts[i], {
+        // 兜底身份锚定：规则要求模型写 'Name (Series)'，但偶发只写外观/身份代称；
+        // 出图前统一校验并补全，保证 IP 角色名一定进入最终 prompt。
+        const promptWithIdentity = ensureImagePromptIdentity(imagePrompts[i], character);
+        if (promptWithIdentity !== imagePrompts[i]) {
+          console.log(`[moments] restored character identity tag for image ${i + 1}/${imagePrompts.length}: ${promptWithIdentity.slice(0, 80)}`);
+        }
+        const genResult = await generateImageRaw(promptWithIdentity, {
           ragQuery: text,
           artist: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
           width,
@@ -546,7 +552,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
           continue;
         }
 
-        const usedPrompt = genResult.promptRefined || imagePrompts[i];
+        const usedPrompt = genResult.promptRefined || promptWithIdentity;
         usedPrompts.push(usedPrompt);
 
         const batchUrls = [];
@@ -559,7 +565,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
         }
         recordCompletedImageTask({
           conversationId: `char_${character.id}_moments`,
-          promptOriginal: imagePrompts[i],
+          promptOriginal: promptWithIdentity,
           promptRefined: usedPrompt,
           outputPaths: batchUrls,
           style: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
@@ -913,7 +919,7 @@ async function generateMomentPostImpl(character, opts = {}) {
   });
   const focusDirective = buildMomentFocusDirective(momentFocus);
   const scheduleContext = currentActivity
-    ? buildMomentScheduleContext(character.display_name, currentActivity, { includeDescription: momentFocus !== 'motive' })
+    ? buildMomentScheduleContext('你', currentActivity, { includeDescription: momentFocus !== 'motive' })
     : '';
   const nickname = (config.user.nickname || '').trim();
   const schedulePeopleText = currentActivity
@@ -943,19 +949,20 @@ async function generateMomentPostImpl(character, opts = {}) {
   // 生图格式是全局静态规则，必须留在静态前缀内：它原本排在「每张数不同」的
   // 输出格式之后，于是每次张数变化都会让这段规则及其后内容重新计费。
   const imageFormatRule = imagePromptGuide || '一段完整的自然英文，描述具体画面，避免标签堆砌。';
+  // 是否配置语言风格：只用于末条 user 的短指针，稳定前缀里只保留一份完整风格。
+  const hasLanguageStyle = hasActiveWorldLanguageStyle();
 
   const postingStablePrefix = `${postingTaskIntro}
 
 通用规则：
 - 只输出 JSON，不要解释
 ${MOMENT_SINGLE_FOCUS_RULE}
-${appendWorldLanguageStyle(MOMENT_TONE_RULES)}
-${MOMENT_IMAGE_RULES}
+${appendWorldLanguageStyle(`${MOMENT_TONE_RULES}
+${MOMENT_IMAGE_RULES}`)}
 - text 中的事符合当前时间和天气，但不用报时或报天气；只有它直接触发了这次反应才自然提及。
 
 生图格式（每个 imagePrompt 均适用）：
 ${imageFormatRule}
-
 `;
   const postingTask = (() => {
     const textShape = isSpecialMode
@@ -1000,9 +1007,16 @@ ${dynamicRules}`;
           : pickedTopic.desc || pickedTopic.name
       );
 
-  const userMsg = multiPersons.length > 0
-    ? `${timeTag}${scheduleContext}${styleDirective}${focusDirective} ${multiPersons.map(p => p.relDesc).join('，')}——和${multiPersons.map(p => p.otherName).join('、')}在一起。同行者只作为同一场景里的互动对象，不要另写人物介绍或关系感想。现在，你是当前世界里的${character.display_name}本人。思考中的“我”和发帖者都是你自己，从“我此刻的感受和分享欲”开始斟酌；把你想发的原话和画面按上述字数要求与 JSON 格式提交。`
-    : `${timeTag}${scheduleContext}${styleDirective}${focusDirective} 现在，你是当前世界里的${character.display_name}本人。思考中的“我”和发帖者都是你自己，从“我此刻的感受和分享欲”开始斟酌；把你想发的原话和画面按上述字数要求与 JSON 格式提交。`;
+  const companionContext = multiPersons.length > 0
+    ? `\n${multiPersons.map(p => p.relDesc).join('，')}。你此刻和${multiPersons.map(p => p.otherName).join('、')}在一起，分享的是你们眼前同一个场景里的互动。`
+    : '';
+  const topicContext = selectedTopic ? '\n你这次准备围绕上方指定话题分享，具体的感受和想说的话由你自己决定。' : '';
+  const styleTail = hasLanguageStyle
+    ? '\n最后：本轮正文按 <additional_writing_style> 的规则写作。'
+    : '';
+  const userMsg = `${timeTag}${scheduleContext}${styleDirective}${focusDirective}${companionContext}${topicContext}
+你打开自己的朋友圈，准备把此刻想分享的东西发给熟人。哪些想说、哪些留给自己，由你决定。写下你准备发出的原话——只写你真正会发出去的那句话，不要写成说明、总结、第三人称介绍或对指令的复述；配上你想分享的画面。
+按约定的 JSON 格式返回。${styleTail}`;
 
   // msgs[0] 舞台 → [世界观] → msgs[1] 任务 → msgs[2] 角色 → msgs[3] 交互(多人) → user
   const msgs = [{ role: 'system', content: permissionPrompt }];
@@ -1235,13 +1249,15 @@ async function generateSpecialScheduleMoment({ characterId, activity }) {
     .filter(Boolean).join('；');
 
   // 静态规则（含生图格式）在前，随本次变化的字段（同框人物、誓约、天气）压到后面。
+  // 语言风格只在 <additional_writing_style> 中完整出现一次，这里只决定末条 user 是否带短指针。
+  const hasLanguageStyle = hasActiveWorldLanguageStyle();
   const postingTask = `你正在发朋友圈。你就是下方人格在当前世界中的本人，现在正打开自己的账号，把此刻想分享的生活片段发给熟人。以下从你的生活处境出发，用你自己的所见、所感和说话习惯完成这条动态。
 
 通用规则：
 - 只输出 JSON，不要解释
 ${MOMENT_SINGLE_FOCUS_RULE}
-${appendWorldLanguageStyle(MOMENT_TONE_RULES)}
-${MOMENT_IMAGE_RULES}
+${appendWorldLanguageStyle(`${MOMENT_TONE_RULES}
+${MOMENT_IMAGE_RULES}`)}
 ${worldSetting ? '- **世界观驱动**：你的朋友圈发生在<world_setting>中，不是在真空或现实世界中。' : ''}
 - text 中的事符合当前时间，不用特意报时。
 
@@ -1249,7 +1265,6 @@ ${worldSetting ? '- **世界观驱动**：你的朋友圈发生在<world_setting
 ${imagePromptGuide || '一段完整的自然英文，描述具体画面，避免标签堆砌。'}
 
 ${buildMomentOutputFormat({ textRequirement: `中文口语，第一人称，写你和${userName}赴约时的一个细节或互动` })}
-
 本次要求（随本次情况变化，与上方通用规则同时生效）：
 - **这条朋友圈是履约现场**：只突出你们约好的这件事本身，不要扯别的话题。
 - **画面必须同框**：imagePrompt 中必须同时出现你和${userName}两个人，分别描述各自外观、动作与互动，贴合你们的关系，用句号分隔两人描述。${oathImageNote}
@@ -1258,10 +1273,14 @@ ${weatherHint}`;
   const timeTag = getTimeTag(now, false);
   const doing = `${activity.location || ''}${activity.activity || ''}`;
   const descPart = activity.description ? `（${activity.description}）` : '';
+  const styleTail = hasLanguageStyle
+    ? '\n最后：本轮正文按 <additional_writing_style> 的短文本底线写：至少 1 个具体身体部位或衣物状态、1 个身体触觉细节、1 个可见结果，禁止只写一句概括或单形容词。'
+    : '';
   const userMsg = `${timeTag}
-**【此刻正在做】${character.display_name}此刻正在${doing}${descPart}**
-**【本次发朋友圈动因】这是你与${userName}约好的事情——就是上面【此刻正在做】的内容，只围绕它发一条朋友圈。**
-现在，你是当前世界里的${character.display_name}本人。思考中的“我”和发帖者都是你自己，从“我此刻的感受和分享欲”开始斟酌；把你想发的原话和画面按上述字数要求与 JSON 格式提交。`;
+**【此刻正在做】你此刻正在${doing}${descPart}**
+**【本次发朋友圈动因】你正与${userName}一起赴约，眼前就是你们约好的这件事。你这次想分享的就是这个相处的片段。**
+你打开自己的朋友圈，准备把此刻想分享的东西发给熟人。哪些想说、哪些留给自己，由你决定。写下你准备发出的原话——只写你真正会发出去的那句话，不要写成说明、总结、第三人称介绍或对指令的复述；配上你想分享的画面。
+按约定的 JSON 格式返回。${styleTail}`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
@@ -1276,10 +1295,7 @@ ${userDesc || '信息未知，按普通人处理。'}
 imagePrompt 中${userName}的外观以上述描述为准。`,
   });
 
-  const worldRulePrefix = worldSetting
-    ? '请遵循<world_setting>来发朋友圈，角色人设如果和<world_setting>有冲突，则以<world_setting>最高优先级。\n\n'
-    : '';
-  msgs.push({ role: 'user', content: worldRulePrefix + userMsg });
+  msgs.push({ role: 'user', content: userMsg });
 
   // 创建 generating 记录（style 标记为日程赴约，与普通帖区分）
   const postResult = db.prepare(

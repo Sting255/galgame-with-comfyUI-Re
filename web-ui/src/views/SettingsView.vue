@@ -497,60 +497,38 @@
         <linshe-input v-if="isCustomBaseURL" v-model="llmBaseURL" class="fi" placeholder="https://your-api-endpoint/v1" @input="onLlmEndpointInput" />
         </template>
 
-        <!-- 模型 -->
-        <label class="fl llm-label">模型（建议点击自动获取选择deepseek-flash）</label>
-        <div class="llm-model-row">
-          <linshe-select
-            ref="llmModelSelect"
-            v-model="llmModelSelectVal"
-            class="llm-model-select"
-            :options="llmModelOptions"
-            searchable
-            allow-free-input
-            :placeholder="llmConnectionType === 'vertexai' ? '如 gemini-2.5-pro' : 'deepseek-flash'"
-            aria-label="模型"
-          />
-          <linshe-button
-            class="model-fetch-btn"
-            variant="secondary"
-            :disabled="llmModelsLoading || (llmConnectionType === 'openai' && !llmBaseURL.trim())"
-            @click="loadAvailableModels"
-          >
-{{ llmModelsLoading ? '获取中…' : '自动获取' }}
-</linshe-button>
-        </div>
-        <p v-if="llmModelsError" class="model-fetch-error" role="alert">{{ llmModelsError }}</p>
-
-        <!-- 最大输出 tokens（上游 v3.10.0）：非法值会同时挡住保存 -->
-        <label class="fl llm-label" for="llm-max-tokens">最大输出 tokens</label>
-        <linshe-input
-          id="llm-max-tokens"
-          v-model.number="llmMaxTokens"
-          class="fi"
-          type="number"
-          min="1"
-          step="1"
-          :invalid="!llmMaxTokensValid"
-          aria-describedby="llm-max-tokens-hint"
-          aria-label="最大输出 tokens"
-          @input="onLlmMaxTokensInput"
-        />
-        <p id="llm-max-tokens-hint" class="fd" :class="{ 'gen-error': !llmMaxTokensValid, 'gen-warn': llmMaxTokensValid && llmMaxTokensOversized }" aria-live="polite">{{ llmMaxTokensHint }}</p>
-
-        <!-- 上下文窗口（token）：留空则由服务端从上游探测 / 用默认值 -->
-        <label class="fl llm-label" for="llm-context-window">上下文窗口</label>
-        <linshe-input
-          id="llm-context-window"
-          v-model.trim="llmContextWindowText"
-          class="fi"
-          inputmode="numeric"
-          :invalid="!llmContextWindowValid"
-          placeholder="1000000"
-          aria-label="上下文窗口（token）"
-          @input="markLlmDirty"
-        />
-        <p v-if="!llmContextWindowValid" class="gen-error" role="alert">请填写大于 0 的整数 token 数，或留空自动探测</p>
-        <p v-else class="fd llm-context-window-hint">留空则自动从服务端模型列表探测</p>
+        <section class="llm-section" aria-labelledby="llm-model-heading">
+          <div class="llm-section-heading"><h4 id="llm-model-heading">模型参数</h4></div>
+          <div class="llm-field">
+            <label class="llm-label">模型</label>
+            <div class="llm-model-row">
+              <linshe-select
+                ref="llmModelSelect"
+                v-model="llmModelSelectVal"
+                class="llm-model-select"
+                :options="llmModelOptions"
+                searchable
+                allow-free-input
+                :placeholder="llmConnectionType === 'vertexai' ? '如 gemini-2.5-pro' : '选择或输入模型 ID'"
+                aria-label="模型"
+              />
+              <linshe-button variant="secondary" :loading="llmModelsLoading" :disabled="llmModelsLoading || (llmConnectionType === 'openai' && !llmBaseURL.trim())" @click="loadAvailableModels">获取模型</linshe-button>
+            </div>
+            <p v-if="llmModelsError" class="model-fetch-error" role="alert">{{ llmModelsError }}</p>
+          </div>
+          <div class="llm-parameter-grid">
+            <div class="llm-field">
+              <label class="llm-label" for="llm-max-tokens">最大输出 tokens</label>
+              <linshe-input id="llm-max-tokens" v-model.number="llmMaxTokens" type="number" min="1" step="1" :invalid="!llmMaxTokensValid" aria-describedby="llm-max-tokens-hint" @input="onLlmMaxTokensInput" />
+              <p id="llm-max-tokens-hint" class="llm-token-hint" :class="{ 'is-invalid': !llmMaxTokensValid, 'is-oversized': llmMaxTokensValid && llmMaxTokensOversized }" aria-live="polite">{{ llmMaxTokensHint }}</p>
+            </div>
+            <div class="llm-field">
+              <span class="llm-label">思考模式</span>
+              <linshe-tabs v-model="llmThinkingMode" :options="thinkingModeOptions" size="sm" aria-label="思考模式" @update:model-value="markLlmDirty" />
+              <p class="llm-field-hint">{{ llmConnectionType === 'vertexai' ? '「不传」使用 Google 默认；Pro 无法完全关闭思考。' : '「不传」使用服务商默认设置。思考模式打开会增加大约30%的消耗，但是日志会很有意思' }}</p>
+            </div>
+          </div>
+        </section>
 
         <div v-if="isCustomBaseURL" class="toggle-row thinking-setting">
           <div>
@@ -4149,6 +4127,10 @@ function resetTestPrompts() {
 }
 
 .gen-error { margin-top: 6px; font-size: 12px; color: var(--danger, #ff4d4f); }
+/* 输出额度提示（上游 4.2.1 改成 llm-token-hint 类，但没写样式）：非法红、远超上限黄 */
+.llm-token-hint { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+.llm-token-hint.is-invalid { color: var(--danger, #ff4d4f); }
+.llm-token-hint.is-oversized { color: var(--warning, #faad14); }
 /* 额度远超模型常用上限：只提示不拦保存，避免用户确实想填大值时被卡住 */
 .gen-warn { margin-top: 6px; font-size: 12px; color: var(--warning, #faad14); }
 .fr { display: flex; gap: 12px; }

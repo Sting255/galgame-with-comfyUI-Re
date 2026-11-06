@@ -601,8 +601,10 @@
               </div>
 
               <div class="modal-actions">
-                <!-- SillyTavern 世界书（上游 v3.10.0 合并，2026-10-19）：按当前选中的世界观挂载 -->
-                <linshe-button class="world-lorebook-button" variant="secondary" :disabled="!selectedWorldId" @click="showLorebook = true">管理SillyTavern世界书</linshe-button>
+                <div class="world-lorebook-button world-rule-actions">
+                  <linshe-button variant="secondary" :disabled="!selectedWorldId" @click="showLorebook = true">管理SillyTavern世界书</linshe-button>
+                  <linshe-button variant="secondary" @click="showSystemRules = true">破限词修改</linshe-button>
+                </div>
                 <linshe-button variant="secondary" @click="closeWorldSetting">取消</linshe-button>
                 <linshe-button
                   variant="primary"
@@ -770,7 +772,8 @@
       <AssetGenerationModal v-if="showAssetGen" :characters="sortedCharacters" @close="showAssetGen = false" />
       <VoiceLibraryModal v-model="showVoiceLibrary" :characters="sortedCharacters" />
 
-    <!-- 上游 v4.2.0：世界观语言风格 -->
+    <WorldLorebookModal v-model="showLorebook" :world-id="selectedWorldId" :world-name="worldItems.find(item => item.id === selectedWorldId)?.name || ''" />
+    <SystemRulesModal v-model="showSystemRules" />
     <WorldLanguageStyleModal
       v-model="showLanguageStyle"
       :world-id="selectedWorldId"
@@ -795,6 +798,7 @@
 import LinsheModal from '../components/ui/LinsheModal.vue'
 
 import WorldLorebookModal from '../components/WorldLorebookModal.vue'
+import SystemRulesModal from '../components/SystemRulesModal.vue'
 import WorldLanguageStyleModal from '../components/WorldLanguageStyleModal.vue'
 import PromptPresetModal from '../components/PromptPresetModal.vue'
 import { ref, reactive, computed, onMounted, onUnmounted, watch, inject, nextTick } from 'vue'
@@ -1383,6 +1387,7 @@ watch(showRelationGraph, async (val) => {
 // 世界观收藏（标签行 + textarea）
 // ═══════════════════════════════════════
 const showWorldModal = ref(false)
+const showSystemRules = ref(false)
 const worldItems = ref([])
 const showLanguageStyle = ref(false)
 const selectedWorld = computed(() => worldItems.value.find(item => item.id === selectedWorldId.value))
@@ -2334,6 +2339,11 @@ onMounted(async () => {
 }
 
 /* Footer 操作区 */
+.world-rule-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.world-lorebook-button {
+  margin-right: auto;
+}
+
 .world-modal-panel .modal-actions {
   flex-shrink: 0;
   margin: 0;

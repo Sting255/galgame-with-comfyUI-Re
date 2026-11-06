@@ -1,4 +1,4 @@
-import { appendWorldLanguageStyle } from '../worldLanguageStyle.js';
+import { appendWorldLanguageStyle, hasActiveWorldLanguageStyle } from '../worldLanguageStyle.js';
 /**
  * 镇民朋友圈生成器
  *
@@ -159,11 +159,16 @@ export async function generateTownNpcMoment(npc, opts = {}) {
 
   // 静态规则（含生图格式）放最前，形态字数、素材与天气等每次变化的内容压到后面，
   // 避免静态的「生图格式」被夹在动态字段之后反复重新计费。
+  // 语言风格只在 <additional_writing_style> 中完整出现一次，这里只决定末条 user 是否带短指针。
+  const hasLanguageStyle = hasActiveWorldLanguageStyle();
+  const styleTail = hasLanguageStyle
+    ? '\n最后：本轮正文按 <additional_writing_style> 的短文本底线写：至少 1 个具体身体部位或衣物状态、1 个身体触觉细节、1 个可见结果，禁止只写一句概括或单形容词。'
+    : '';
   const formatPrompt = `规则：
 - 只输出 JSON，不要解释
 ${MOMENT_SINGLE_FOCUS_RULE}
-${appendWorldLanguageStyle(MOMENT_TONE_RULES)}
-${MOMENT_IMAGE_RULES}
+${appendWorldLanguageStyle(`${MOMENT_TONE_RULES}
+${MOMENT_IMAGE_RULES}`)}
 
 生图格式：
 ${imagePromptGuide || '一段完整的自然英文，描述具体画面，避免标签堆砌。'}
@@ -186,8 +191,8 @@ ${weatherHint}`;
   msgs.push({ role: 'system', content: formatPrompt });
   msgs.push({ role: 'system', content: personaMsg });
   msgs.push({ role: 'user', content: worldSetting
-    ? `请遵循当前<world_setting>来发朋友圈。${timeTag}${factsBlock}现在发一条朋友圈。`
-    : `${timeTag}${factsBlock}现在发一条朋友圈。` });
+    ? `请遵循当前<world_setting>来发朋友圈。${timeTag}${factsBlock}现在发一条朋友圈。${styleTail}`
+    : `${timeTag}${factsBlock}现在发一条朋友圈。${styleTail}` });
 
   let text = '', imagePrompt = '';
   try {

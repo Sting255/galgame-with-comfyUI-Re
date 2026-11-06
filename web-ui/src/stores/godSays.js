@@ -31,6 +31,7 @@ export const useGodSaysStore = defineStore('god-says', () => {
   const submitting = ref(false)
   const stopping = ref(false)
   const deleting = ref(false)
+  const creating = ref(false)
   const reconnecting = ref(false)
   const error = ref('')
   const draft = ref(readLocal('linshe.god.draft', ''))
@@ -39,7 +40,7 @@ export const useGodSaysStore = defineStore('god-says', () => {
   let epoch = 0
   let cursor = 0
   const activeRun = computed(() => state.value?.runs.find(r => r.status === 'running'))
-  const busy = computed(() => submitting.value || !!activeRun.value)
+  const busy = computed(() => submitting.value || creating.value || !!activeRun.value)
   const turns = computed(() => (state.value?.runs || []).map(run => ({ ...run,
     messages: state.value.messages.filter(m => m.run_id === run.id),
     calls: state.value.calls.filter(c => c.run_id === run.id),
@@ -74,37 +75,44 @@ export const useGodSaysStore = defineStore('god-says', () => {
       if (generation !== epoch) return
       state.value = result
       cursor = result.cursor
-      archiveId.value = result.current ? null : session
+      const writable = result.writable !== false
+      archiveId.value = writable ? null : result.session?.id ?? session
       if (activeRun.value) connect(activeRun.value)
     } catch (err) { if (generation === epoch) error.value = err.message }
     finally { if (generation === epoch) loading.value = false }
   }
   function setDraft(text) { draft.value = text; saveLocal('linshe.god.draft', text) }
+  async function newConversation() {
+    if (busy.value || loading.value || deleting.value || !state.value) return false
+    // 已在唯一的空白会话中时，连请求都不重复；文字和附图草稿原样保留。
+    if (!archiveId.value && state.value.current && !turns.value.length) return false
+    creating.value = true; error.value = ''
+    try {
+      await api.createGodSaysSession()
+      saveLocal('linshe.god.pending', null)
+      await load()
+      return !error.value
+    } catch (err) { error.value = err.message; return false }
+    finally { creating.value = false }
+  }
   async function send(images = []) {
     const text = draft.value.trim()
     const attachments = Array.isArray(images) ? images.filter(Boolean) : []
     if ((!text && !attachments.length) || busy.value || archiveId.value || deleting.value || loading.value) return
-    // 跨过午夜后先对齐到当天会话，避免这条消息落在旧会话后界面被切到只读历史。
-    const zone = state.value?.session?.time_zone || 'Asia/Shanghai'
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-    if (state.value?.session?.day && state.value.session.day !== today) {
-      await load()
-      if (!state.value || archiveId.value || loading.value) return
-    }
     submitting.value = true; error.value = ''
     const generation = epoch
+    const sessionId = state.value?.session?.id ?? null
     try {
       const previous = readLocal('linshe.god.pending', null)
-      const samePending = previous?.text === text && JSON.stringify(previous?.images || []) === JSON.stringify(attachments)
-      const pending = samePending ? previous : { client_id: createClientRequestId(), text, images: attachments }
+      const samePending = previous?.text === text && (previous.session_id ?? null) === sessionId && JSON.stringify(previous?.images || []) === JSON.stringify(attachments)
+      const pending = samePending ? previous : { client_id: createClientRequestId(), text, images: attachments, session_id: sessionId }
       saveLocal('linshe.god.pending', pending)
-      const { run } = await api.sendGodSaysMessage(pending.client_id, text, attachments)
+      const { run } = await api.sendGodSaysMessage(pending.client_id, text, attachments, sessionId)
       saveLocal('linshe.god.pending', null)
-      if (draft.value.trim() === text) setDraft('')
       if (generation !== epoch) return
-      await load()
-      // 发送前已按当天对齐；若仍与当前会话不一致，重新加载今天，不要切到历史只读。
-      if (state.value && state.value.session.id !== run.session_id) await load()
+      if (draft.value.trim() === text) setDraft('')
+      // 始终读回受理消息所属会话，继续历史会话时不能跳到最新会话。
+      await load(run.session_id)
       return run
     } catch (err) { error.value = err.message }
     finally { submitting.value = false }
@@ -118,9 +126,24 @@ export const useGodSaysStore = defineStore('god-says', () => {
     // SSE 若已断开可能收不到 run_end，stopping/activeRun 会永久卡死：延时对账，必要时强制复位。
     setTimeout(async () => {
       if (activeRun.value?.id !== target.id) return
-      try { await load() } catch { /* 网络仍不可用，走下面强制复位 */ }
+      try { await load(target.session_id) } catch { /* 网络仍不可用，走下面强制复位 */ }
       if (activeRun.value?.id === target.id) { target.status = 'cancelled'; stopping.value = false }
     }, 6000)
+  }
+  async function deleteSession(id) {
+    if (deleting.value || busy.value || loading.value) return false
+    deleting.value = true; error.value = ''
+    try {
+      await api.deleteGodSaysSession(id)
+      if (state.value?.session.id === id) {
+        // 清除已删除的内容，即使后续刷新失败也不再展示旧对话。
+        ++epoch; detach(); state.value = null; archiveId.value = null
+        saveLocal('linshe.god.pending', null)
+        await load()
+      }
+      return true
+    } catch (err) { error.value = err.message; return false }
+    finally { deleting.value = false }
   }
   async function deleteTurn(id) {
     if (deleting.value || busy.value) return false
@@ -162,5 +185,5 @@ export const useGodSaysStore = defineStore('god-says', () => {
     if (index < 0) state.value.worldEvents.unshift(event)
     else state.value.worldEvents[index] = event
   }
-  return { state, loading, submitting, stopping, deleting, reconnecting, error, draft, archiveId, activeRun, busy, turns, load, send, stop, deleteTurn, setDraft, detach, suspend, refreshWorld, refreshActivity, refreshWork, updateWorld }
+  return { state, loading, submitting, stopping, deleting, creating, reconnecting, error, draft, archiveId, activeRun, busy, turns, load, newConversation, send, stop, deleteTurn, deleteSession, setDraft, detach, suspend, refreshWorld, refreshActivity, refreshWork, updateWorld }
 })

@@ -2,6 +2,10 @@ import { defaultBackupFileName, parseBackupFileName } from '../utils/dataBackup.
 
 const BASE = '/api'
 
+// ── 系统规则改写（上游 4.2.1：破限词可在设置里改）──
+export const getSystemRulesOverride = () => request('/config/system-rules')
+export const saveSystemRulesOverride = content => request('/config/system-rules', { method: 'PUT', body: { content } })
+
 // ── 宿舍（同居，上游 v4.2.0）──
 export const getCohabitation = () => request('/cohabitation')
 export const createResidence = body => request('/cohabitation/rooms', { method: 'POST', body })
@@ -9,9 +13,10 @@ export const renameResidence = (id, name) => request(`/cohabitation/rooms/${id}`
 export const deleteResidence = id => request(`/cohabitation/rooms/${id}`, { method: 'DELETE' })
 export const moveResidenceMember = (id, roomId) => request(`/cohabitation/members/${id}`, { method: 'PUT', body: { roomId } })
 export const getGodSaysState = session => request(`/god-says/state${session ? `?session=${session}` : ''}`)
-export const getGodSaysSessions = before => request(`/god-says/sessions${before ? `?before=${encodeURIComponent(before)}` : ''}`)
-export const getGodSaysMemories = () => request('/god-says/memories')
-export const sendGodSaysMessage = (client_id, text, images = []) => request('/god-says/runs', { method: 'POST', body: { client_id, text, images } })
+export const getGodSaysSessions = (before, beforeId) => request(`/god-says/sessions${before ? `?before=${encodeURIComponent(before)}${beforeId ? `&before_id=${beforeId}` : ''}` : ''}`)
+export const deleteGodSaysSession = id => request(`/god-says/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export const createGodSaysSession = () => request('/god-says/sessions', { method: 'POST' })
+export const sendGodSaysMessage = (client_id, text, images = [], session_id = null) => request('/god-says/runs', { method: 'POST', body: { client_id, text, images, session_id } })
 export const stopGodSaysRun = id => request(`/god-says/runs/${id}/stop`, { method: 'POST' })
 export const deleteGodSaysTurn = id => request(`/god-says/runs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 export const getGodAngel = () => request('/god-says/angel')
@@ -27,7 +32,6 @@ export const generateGodAngelClothingDraft = ({ basePrompt, scene, tags, brief, 
 export const getGodWorldEvents = session => request(`/god-says/world-events${session ? `?session=${session}` : ''}`)
 export const getGodAngelActivity = () => request('/god-says/activity')
 export const retryGodWorldEvent = id => request(`/god-says/world-events/${id}/retry`, { method: 'POST' })
-export const retryGodSummary = id => request(`/god-says/sessions/${id}/summarize`, { method: 'POST' })
 
 export const getLogs = after => request('/logs' + (after ? `?after=${after}` : ''))
 export const clearLogs = () => request('/logs', { method: 'DELETE' })

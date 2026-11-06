@@ -17,6 +17,7 @@ import { config } from '../config.js';
 import { getGlobalRule } from '../db/index.js';
 import { isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt, extractUnbracedGroupImagePrompt } from '../utils/groupImagePrompt.js';
 import { parseGroupEmojiText } from './emojiService.js';
+import { appendWorldLanguageStyle } from './worldLanguageStyle.js';
 
 export function detectMentions(text, members) {
   const hits = [];
@@ -50,7 +51,9 @@ export function buildProtocolBlock() {
   const imageRulesBlock = imagePromptFieldGuide
     ? `\n\n<image_prompt_rules>\n（以下规范只决定 {} 里的英文画面描述怎么写。它是写作规范、不是要填进 {} 的内容，任何情况下都不得原样出现在群聊消息里）\n${imagePromptFieldGuide}\n</image_prompt_rules>`
     : '';
-  return `<group_chat_rules>
+  // 语言风格只由 appendWorldLanguageStyle 在协议块末尾完整注入一次（与上游 4.2.1 口径一致）。
+  // ⚠️ 搬家时这一层被漏掉了：协议块一度完全不注入世界观语言风格，群聊正文因此退回默认短句腔。
+  return appendWorldLanguageStyle(`<group_chat_rules>
 你一个人扮演群聊中的【全部角色】，根据聊天记录续写接下来的群聊消息。
 
 输出协议（严格遵守）：
@@ -96,7 +99,7 @@ export function buildProtocolBlock() {
 - 表情贴纸只在情绪真的到位时用（被戳中、慌、得意、无语），一句话里最多一个；不要每条都挂表情，满屏 [开心][委屈] 会显得假
 - 禁止括号动作描写、禁止方括号动作描写、禁止旁白、禁止总结式客套发言；颜文字可以正常使用，但不能把动作藏进括号
 ${imageRulesBlock}
-</group_chat_rules>`;
+</group_chat_rules>`);
 }
 
 /** 用户发言使用独占的只读标记，不再伪装成与角色相同的「名字: 台词」格式。 */

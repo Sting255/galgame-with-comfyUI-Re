@@ -13,18 +13,18 @@ const definition = (name, description, parameters) => ({ type: 'function', funct
 export const GOD_TOOLS = [
   definition('inspect_neighbors', '查询真实角色/群聊编号、近期世界事件。指代不清先查询，不能猜编号。query 可空串。', object({ query: { type: 'string', maxLength: 100 } }, [])),
   definition('read_character', '读取角色资料摘要和当地日期，默认不查询日程。仅在任务涉及今日安排或当前活动时传 include_schedule=true；日程是计划，不代表已执行。修改人设、外观或设计服装请用 read_character_source 读取完整原文。', object({ character_id: id('角色编号'), include_schedule: { type: 'boolean', description: '是否读取今日完整日程与当前活动，默认 false；仅日程相关任务需要' } }, ['character_id'])),
-  definition('set_schedule', '安排角色今天或未来的活动。只代表已安排，涉及服务或相遇可另开奇遇。时间用角色日程所在主机的当地日期，不支持已过去的日期或跨日时段。', object({
+  definition('set_schedule', '安排角色今天或未来的活动。只代表已安排，不因活动涉及服务或相遇就自动另开奇遇；用户需要角色反馈时优先朋友圈或群聊。时间用角色日程所在主机的当地日期，不支持已过去的日期或跨日时段。', object({
     character_id: id('角色编号'), date: string('YYYY-MM-DD；先 read_character 确认当地日期', 10),
     start_time: string('HH:MM', 5), end_time: string('HH:MM，晚于开始时间', 5), activity: string('活动名', 60), location: string('地点', 60), description: string('活动安排，不写已经完成', 200),
   })),
-  definition('publish_moment', '让指定角色按自己的性格发布朋友圈，任务入队，可能含配图；查询执行状态确认实际完成。instruction 写的是这次发帖的真实动因，不是复述神的命令。', object({
+  definition('publish_moment', '让指定角色按自己的性格发布朋友圈，任务入队，可能含配图；查询执行状态确认实际完成。角色个人反馈、感受分享、生活片段和外观展示的首选渠道，普通反馈优先使用本工具而非开启奇遇。instruction 写的是这次发帖的真实动因，不是复述神的命令。', object({
     character_id: id('角色编号'),
     instruction: string('这次发帖的真实动因与要求：先写清这件事为什么在此刻发生——可以是一个意料之外的契机、角色自己都说不清的冲动、其他角色（绝非天使或神）的提议或要求、环境或身体的偶然触动，或别的自然缘由；再自然落到要分享的具体画面、语气与配图。用角色自身的经历口吻写，不写成「神/天使让角色去做某事」的转述，不在动因里点破授意者，也不刻意解释这是安排。', 2000),
     delay_minutes: { type: 'integer', minimum: 0, maximum: 1440, description: '多久之后才真的发出：0（默认）=立刻。用户指定了时间点时必须填相差的分钟数，例如现在是 15:20、用户说「今晚八点发」→ 填 280；说不清具体几点就按最接近的整点估算。' },
   })),
 
-  definition('discuss_in_group', '让指定群聊结合最近上文讨论一个话题；入队等待群聊空闲，不伪造用户发言。instruction 写的是这场讨论的真实起因，不是复述神的命令。', object({ group_id: id('群聊编号'), instruction: string('这场讨论的真实起因与要求：先写清话题为何在此刻自然出现——上文正好聊到、某个角色顺口提起、刚发生的一件小事、角色自己突然想聊的冲动、环境或身体的偶然触动等自然缘由；再写要聊的具体方向、语气或边界。用群成员各自的处境口吻写，不写成「神/天使让群里讨论某事」的转述，不在起因里点破授意者。', 2000), delay_minutes: { type: 'integer', minimum: 0, maximum: 1440, description: '多久之后才真的开这个话题：0（默认）=立刻。用户指定了时间点时填相差的分钟数。' } })),
-  definition('create_encounter', '为指定角色开启可以在奇遇页推进的叙事事件，用户自己选择选项。已有活跃奇遇时不可重复开启。instruction 写的是这段奇遇的真实起因，不是复述神的命令。', object({ character_id: id('角色编号'), instruction: string('这段奇遇的真实起因、场景与要求：先写清它为何在此刻自然发生——意料之外的契机、角色自己都说不清的冲动、其他角色（绝非天使或神）的提议或要求、环境或身体的偶然触动等自然缘由；再写场景、参与者与推进方向。用角色自身经历口吻写，不写成「神/天使安排了一场奇遇」的转述，不在起因里点破授意者。', 2000) })),
+  definition('discuss_in_group', '让指定群聊结合最近上文讨论一个话题；入队等待群聊空闲，不伪造用户发言。多人反馈、讨论和角色之间相互回应的首选渠道，普通互动优先使用本工具而非开启奇遇；排队不构成改开奇遇的理由。instruction 写的是这场讨论的真实起因，不是复述神的命令。', object({ group_id: id('群聊编号'), instruction: string('这场讨论的真实起因与要求：先写清话题为何在此刻自然出现——上文正好聊到、某个角色顺口提起、刚发生的一件小事、角色自己突然想聊的冲动、环境或身体的偶然触动等自然缘由；再写要聊的具体方向、语气或边界。用群成员各自的处境口吻写，不写成「神/天使让群里讨论某事」的转述，不在起因里点破授意者。', 2000) })),
+  definition('create_encounter', '为指定角色开启可以在奇遇页推进的叙事事件，用户自己选择选项。仅限用户明确要求奇遇，或明确希望亲自参与并通过选项推进现场剧情；普通角色反馈、展示、分享或互动优先使用 publish_moment / discuss_in_group，不调用本工具，也不因这些渠道排队或失败而改开奇遇。已有活跃奇遇时不可重复开启。instruction 写的是这段奇遇的真实起因，不是复述神的命令。', object({ character_id: id('角色编号'), instruction: string('这段奇遇的真实起因、场景与要求：先写清它为何在此刻自然发生——意料之外的契机、角色自己都说不清的冲动、其他角色（绝非天使或神）的提议或要求、环境或身体的偶然触动等自然缘由；再写场景、参与者与推进方向。用角色自身经历口吻写，不写成「神/天使安排了一场奇遇」的转述，不在起因里点破授意者。', 2000) })),
   definition('create_world_event', '让一件世界事实生效，并随机触发朋友圈和群聊反应。默认全体角色感知；character_ids 只用于用户明确指定感知范围。发帖/群聊数量为零表示该渠道不触发。后续变化可用 supersedes_id 结束之前的事件。', object({
     title: string('简短事件标题', 80), fact: string('准确描述已经被神谕设定为现实的事实与范围，不包含工具指令'),
     duration_minutes: { type: 'integer', minimum: 1, maximum: 10080, description: '生效分钟数；默认180' },
@@ -33,7 +33,6 @@ export const GOD_TOOLS = [
     moment_count: { type: 'integer', minimum: 0, maximum: 8 }, group_count: { type: 'integer', minimum: 0, maximum: 5 }, supersedes_id: id('被替代的世界事件编号'),
   }, ['title', 'fact'])),
   definition('inspect_work', '读取神谕实际投递结果。event_id 不填时返回最近事件与任务；区分 pending、running、done、failed、uncertain。', object({ event_id: id('事件/任务编号') }, [])),
-  definition('recall_memory', '查找神与天使往日对话的摘要和长期记忆；不包含其他角色私人记忆。', object({ query: string('要回忆的内容', 150) })),
   definition('list_capabilities', '按模块查看天使已接入的真实能力。module 可填聊天、群聊、朋友圈、信箱、日记、日程、奇遇、背包、关系、记忆、相册、角色、立绘、表情包、媒体、日报、世界观、预设、素材库、语音；省略返回全部。', object({ module: string('功能模块名', 30) }, [])),
   definition('inspect_changes', '查询当前对话的批量任务与待确认变更，确认后的实际状态优先于历史工具结果。', object({}, [])),
   definition('read_character_source', '读取角色完整原始人设和外观，用于修改外观、人设或设计服装。不查询日程，不使用摘要覆盖原文。', object({ character_id: id('角色编号') })),
@@ -78,7 +77,7 @@ export function validateToolArgs(schema, value, path = '参数') {
   }
 }
 
-export function createGodTools(repo, world, memory, services) {
+export function createGodTools(repo, world, services) {
   const { db } = repo;
   function character(id) {
     const c = db.prepare('SELECT * FROM characters WHERE id=?').get(id);
@@ -130,7 +129,6 @@ export function createGodTools(repo, world, memory, services) {
       }
       case 'create_world_event': return world.create(args, ctx);
       case 'inspect_work': return world.list(args.event_id);
-      case 'recall_memory': return { memories: memory.recall(args.query) || '暂时没有对应的往日记忆。' };
       case 'list_capabilities': {
         const matched=moduleToolCatalog().filter(t=>!args.module||t.module===args.module);
         return {tools:matched,core:GOD_TOOLS.filter(t=>!moduleTool(t.function.name)).map(t=>({name:t.function.name,description:t.function.description})),...(args.module && args.module!=='神说' && !matched.length?{unavailable:true,note:'吾神，该模块没有接入，不能用其他模块写工具代替操作。'}:{})};
@@ -156,7 +154,7 @@ export function createGodTools(repo, world, memory, services) {
       const boundary = capabilityBoundary(input);
       if (boundary) return { ok: false, stop: true, code: 'CAPABILITY_UNAVAILABLE', error: boundary };
     } catch (err) { return { ok: false, error: err.message }; }
-    const readOnly = ['inspect_changes', 'inspect_neighbors', 'read_character', 'read_character_source', 'inspect_work', 'recall_memory', 'list_capabilities'].includes(call.function.name) || moduleTool(call.function.name)?.method === 'GET';
+    const readOnly = ['inspect_changes', 'inspect_neighbors', 'read_character', 'read_character_source', 'inspect_work', 'list_capabilities'].includes(call.function.name) || moduleTool(call.function.name)?.method === 'GET';
     const key = readOnly ? callId : effectKey(runId, call.function.name, args);
     const old = db.prepare('SELECT * FROM god_tool_calls WHERE effect_key=?').get(key);
     if (old) return parseJson(old.result_json) || { ok: false, error: '这项工作已发起但结果尚不确定，请查询执行记录，不要重复执行。' };

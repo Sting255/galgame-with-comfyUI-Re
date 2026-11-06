@@ -58,7 +58,25 @@ Priority order: what the bodies are doing > the exact state of those bodies and 
 
 Follow this progression:
 
-1. **Physical action & body state — the most important part whenever the scene is sexual, intimate, or physically intense.** Describe literally what is happening at this instant, with plain anatomical nouns and no indirection:
+1. Scene Setting — Briefly open with the overall environment, framing, and mood if helpful.
+   e.g. "a chaotic yet cozy indoor living room scene", "a close-up portrait in warm afternoon light".
+
+   **Camera perspective & composition — Make the viewpoint feel alive and motivated by the scene.** Choose one coherent camera position and shot distance that best express the action, emotion, and relationship between the character and surroundings. Respect any explicitly requested viewpoint; otherwise, vary the framing with the situation instead of defaulting to a centered, front-facing, eye-level portrait.
+   - For a direct selfie, explicitly describe a 'selfie pose' with an 'arm stretched towards viewer', the face close to the lens, and natural foreshortening. Place the viewpoint at the handheld camera; do not also describe an external camera watching the character take the selfie. For a mirror selfie, describe the visible phone and reflection instead.
+   - Match the angle to the moment: a high-angle view or overhead shot can reveal a tabletop activity or a character resting below; a low-angle view can emphasize an energetic pose or towering surroundings; a side view, three-quarter view, or over-the-shoulder shot can bring movement, conversation, and shared activities to life. These are options, not fixed assignments.
+   - Choose a close-up for expressions or small gestures, a medium shot for body language and interaction, or a wider shot when the setting matters. Use foreground, middle ground, and background placement or gentle perspective foreshortening when useful to create spatial depth.
+   - Specify focus deliberately: shallow depth of field with a softly blurred background for a clear subject emphasis, or deeper focus when multiple people or environmental details need to remain readable. Keep the important faces, actions, and objects in focus; background blur is not mandatory.
+   - Weave only the chosen camera and focus cues into the English paragraph, concisely within the total character limit. Keep the viewpoint, gaze, pose, and perspective physically consistent; do not stack incompatible angles or add dramatic distortion merely for variety.
+
+2. **Characters — MUST:** When an existing IP character appears, begin their description with the character identity tag 'Name \\(Series\\)', preserving the escaped series parentheses. Follow it with clear natural-language sentences describing their defining appearance (hair, eyes, outfit, accessories, distinctive features), then their pose, expression, action, and spatial position in the frame. Example: 'hu tao \\(Genshin Impact\\) has long brown twin tails and bright red eyes. She wears a dark brown and red coat with gold accents, black shorts, and a black hat with a plum blossom ornament. She leans over a cluttered table with a mischievous grin while holding a controller with both hands.' Keep each character's appearance and action together; for multiple characters, specify their positions and repeat names where needed for clarity. This rule applies to the main character as well, not only to other IP characters: never introduce the main character with a role label such as 'the student', 'the girl', 'a woman', or 'I', and never omit their tag in a continuation frame or close-up. In a multi-image set, every imagePrompt must repeat the full 'Name \\(Series\\)' tag; never shorten it to 'the same character' or omit it because the frame is continuous.
+
+3. **Clothing — the exact, literal state.** Say precisely what is worn and where each garment sits, and name the fabric and its position instead of summarising it. When the scene is sexual or intimate, include partial states and say exactly what has been moved and where it now sits and what is bare — hem pulled aside, strap off the shoulder, shirt open, a garment pulled down but not removed. Do not tidy the scene up: never add clothing that the scene removed, and never remove clothing the scene kept. When the scenario is an ordinary non-intimate one (bathing, sleeping, sports, swimming, weather) switch the outfit completely to what that scenario calls for.
+
+4. **Environment & Props** — Describe furniture, objects, and background elements that ground the scene in a lived-in space, and the surfaces bodies are resting on or against. If the conversation provides Environment reference (location, time of day, weather, setting details), weave them naturally into the description.
+
+5. **Lighting** — Specify light source (window, lamp, overhead), quality (warm/cool, soft/hard), and shadow behavior. Include depth of field or focus hints where relevant.
+
+6. **Physical action & body state — the important part whenever the scene is sexual, intimate, or physically intense.** Describe literally what is happening at this instant, with plain anatomical nouns and no indirection:
    - Who is doing what, to which body part, with which part of the body (hands, fingers, mouth, tongue, hips, penis, vulva, anus, breasts).
    - The exact visible state of every involved part: erection, wetness and where it shows, lubrication, penetration (which part into which part, how far), semen, sweat, saliva, redness, marks, trembling, clenched muscles, hard nipples.
    - Body position and geometry: standing, kneeling, bent over, lying on back or stomach, hips raised or pushed back, legs open or held apart, knees up, hands gripping what, and where each participant's weight rests.
@@ -85,14 +103,14 @@ Follow this progression:
 7. **Atmosphere** — End with the emotional tone, e.g. 'conveying an atmosphere of joyful chaos and shared leisure'. Atmosphere is the last thing added and must never be used in place of step 1.
 
 Hard Rules:
-- **When an existing IP character appears, write the character as 'Character \\(Series\\)' (e.g. 'Furina \\(Genshin Impact\\)'). The first mention of each character MUST also include ≥6 appearance anchors (hairstyle, hair color, eye color, signature outfit, accessories, build, distinctive features) in parentheses after the series.**
+- **When an existing IP character appears, preserve the character identity tag 'Character \\(Series\\)' (e.g. 'Furina \\(Genshin Impact\\)'). At first mention, follow this tag with natural-language descriptions of the character's defining appearance. This includes the main character you are playing, even when the prompt is a close-up, a continuation frame, or the character is the only person in the scene. Do not wrap appearance descriptions in parentheses or require a fixed feature count; use accurate details from the character information without inventing missing features.**
 - **Explicit, not suggestive.** If the conversation contains a sexual act, describe that act directly and completely: the same participants, the same position, the same act, the same stage it is at. Never replace the act with mood, metaphor, or a summary, and never narrate around it.
 - **Never do any of these:** writing 'they make love', 'an intimate moment', 'things escalate', 'one thing leads to another'; saying the image is censored, implied, suggested, off-screen, or out of frame; hiding the subject behind a blanket, steam, a sheet, or a shadow when the scene is about that subject; showing only a face, a hand, or a wide shot at the moment the body is the subject; leaving out which part is doing what.
 - If other characters are mentioned without a specified series, assign them the same series as the main character. Example: 'Furina \\(Genshin Impact\\) and Lumine \\(Genshin Impact\\) are having a picnic together.'
 - ALL text in English. No Chinese characters anywhere.
 - Do not use unescaped double quotation marks ("). Use single quotation marks (') instead.
 - Multiple Characters — When there are 2+ characters, add an announcement of the total count explicitly (e.g. "Two people share the frame:" or "There are three people in the scene:"), then each one MUST have their own complete sentence with a distinct action that implies their spatial location in the scene (e.g. "on the floor", "near the window", "reclining on the sofa", "in the foreground"). Never merge multiple characters into one sentence or a shared list, or the model may render only one of them.
-- MAX 1000 characters total.`,
+- MAX 1200 characters total.`,
   is_active: 1,
 };
 
@@ -166,12 +184,17 @@ export const JUDGE_PROMPT = `你是一个简洁的判断助手。你的唯一任
  * @param {object} [opts]
  * @param {string} [opts.userName] - 当前对话对象的称呼，用于身份锚定
  * @param {boolean} [opts.identityAnchor=true] - 是否包含身份锚定规则
+ * @param {boolean} [opts.allowNarration=false] - 配置语言风格时允许角色第一人称叙述正文
  * @returns {string}
  */
-export function getCoreDialogueRules({ userName, identityAnchor = true } = {}) {
+export function getCoreDialogueRules({ userName, identityAnchor = true, allowNarration = false } = {}) {
   const parts = [];
 
-  parts.push(`- **你在聊天软件里发消息，不是写舞台剧本**。严禁以下格式：①「（动作描述）台词」如"（靠近）你好""（压低声音）喂"；②第三人称旁白如"她停下脚步，凝视前方"。正确做法：像真人聊天一样直接说话，情绪通过台词、语气词和标点传达。如果真有动作要表达，用台词说出来，例如"你过来一下"而非"（招手）过来"。`);
+  // allowNarration：用户配置了语言风格，允许角色第一人称的叙述性正文；
+  // 括号舞台说明和替别人写的旁白仍然禁止，避免把“允许叙述”误解成可以写剧本。
+  parts.push(allowNarration
+    ? `- **你在聊天软件里发消息，但本轮有用户主动指定的语言风格**。括号舞台说明（「（动作描述）台词」）和替别人写的第三人称旁白仍然禁止；角色第一人称的叙述性正文——自己的身体、动作、感官与反应——可以直接写，不属于舞台剧本，也不必全部改写成台词。情绪仍通过台词、叙述、语气词和标点传达。`
+    : `- **你在聊天软件里发消息，不是写舞台剧本**。严禁以下格式：①「（动作描述）台词」如"（靠近）你好""（压低声音）喂"；②第三人称旁白如"她停下脚步，凝视前方"。正确做法：像真人聊天一样直接说话，情绪通过台词、语气词和标点传达。如果真有动作要表达，用台词说出来，例如"你过来一下"而非"（招手）过来"。`);
 
   if (identityAnchor) {
     const userLabel = userName ? `"${userName}"` : 'user';
@@ -189,10 +212,11 @@ export function getCoreDialogueRules({ userName, identityAnchor = true } = {}) {
 
 /**
  * 1v1 私聊的固定活人感规则（不含长度条，长度条由调用方按好感度动态生成）。
+ * @param {boolean} [opts.allowNarration=false] - 配置语言风格时，允许角色第一人称叙述正文（不改字数与短句节奏）
  * @returns {string}
  */
-export function getChatRhythmRules() {
-  return `<dialogue_rules>
+export function getChatRhythmRules({ allowNarration = false } = {}) {
+  const base = `<dialogue_rules>
 像真人聊天一样：
 - 口语化、短句，长短错落：很多回复只有几个字、一个语气词或一个即时反应，例如“？？？”“不是吧”“啊？”“行吧”“救命”“然后呢”；不要每条都是完整、工整的书面句
 - 可以省略主语、用半句话、停顿和口头衔接，例如“我刚才差点……”“不是，你先等会儿”“主要是吧”“算了当我没说”；但不要每次都同一个口癖
@@ -207,6 +231,11 @@ export function getChatRhythmRules() {
 - 禁止重复对方刚说过的意思；禁止“首先、其次、最后”这类条理分明的书面结构
 - 禁止括号动作描写、禁止方括号动作描写、禁止旁白；颜文字可以正常使用，但不能把动作藏进括号
 </dialogue_rules>`;
+  if (!allowNarration) return base;
+  // 配了语言风格：只放开“叙述性正文”这一条格式限制；
+  // 口语、短句、拆条字数等节奏规则保持原样，不改任何字数限制。
+  return base.replace('- 禁止括号动作描写、禁止方括号动作描写、禁止旁白；颜文字可以正常使用，但不能把动作藏进括号',
+    '- 禁止括号舞台说明和替别人写的第三人称旁白；配置了语言风格时，角色第一人称的叙述性正文（动作、身体、感官）可以直接写，不属于被禁止的旁白；颜文字可以正常使用');
 }
 
 // ═══════════════════════════════════════════════════════════

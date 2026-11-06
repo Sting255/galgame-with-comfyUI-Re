@@ -53,6 +53,7 @@ export const HIRES_QUALITY_VALUES = ['high', 'medium', 'low'];
 export const HIRES_QUALITY_DEFAULT = 'low';
 
 export const config = {
+  systemRules: { content: '' },
   // 开发环境检测：生产启动（launcher / PM2）会注入 NODE_ENV=production；npm run dev 等开发启动不设置
   isDev: process.env.NODE_ENV !== 'production',
   port: resolveServicePort(),

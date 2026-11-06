@@ -7,6 +7,7 @@ import { refineImage } from '../services/imageRefine.js';
 import { startEditTask, listEditTasks, applyEditTask, discardEditTask, rerunEditTask } from '../services/imageEditTasks.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
 import { buildImageCrossRefInfo, buildUserImageCrossRefInfo } from '../services/characterPersona.js';
+import { resolveAngelImageReference } from '../services/godSays/angelImageReference.js';
 import { config, getNovelaiApiKey, updatePoseControl } from '../config.js';
 import { savePoseReference, resolvePoseInputDir } from '../services/poseReference.js';
 import { checkNovelaiConnection } from '../services/novelaiClient.js';
@@ -259,6 +260,26 @@ router.post('/test-style', async (req, res) => {
   let dimensions;
   try { dimensions = studioDimensions(req.body, config.comfyui); }
   catch (error) { return res.status(400).json({ error: error.message }); }
+  // 显式入镜名单优先；查过角色不等于生图接口能继承查询上下文。
+  // 在调用 LLM / 生图服务前检查，错误编号不能静默退回匿名人物。
+  let explicitCharacters = null;
+  if (req.body.character_ids !== undefined) {
+    const ids = req.body.character_ids;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 30
+      || ids.some(id => !Number.isSafeInteger(id) || id < 1) || new Set(ids).size !== ids.length) {
+      return res.status(400).json({ error: 'character_ids 必须是 1–30 个不重复的正整数角色编号' });
+    }
+    if (typeof req.body.sceneDesc !== 'string' || !req.body.sceneDesc.trim()) {
+      return res.status(400).json({ error: '指定入镜角色时必须提供 sceneDesc 画面描述' });
+    }
+    const lookup = getDb().prepare('SELECT id, display_name, base_prompt, loras FROM characters WHERE id = ?');
+    explicitCharacters = ids.map(id => lookup.get(id));
+    const missing = ids.filter((_, index) => !explicitCharacters[index]);
+    if (missing.length) return res.status(400).json({ error: `入镜角色不存在：${missing.join('、')}` });
+  }
+  let angelReference;
+  try { angelReference = resolveAngelImageReference(req.body.sceneDesc, req.body.special_characters); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
   // 实验室可选流式返回提示词；其他调用方保留原 JSON 响应。
   const streaming = req.body.stream === true;
   const send = (event, data) => {
@@ -298,17 +319,25 @@ router.post('/test-style', async (req, res) => {
       if (getWorldSetting()) msgs.push({ role: 'system', content: getWorldIntegrationRule('photo') });
     } catch { /* 规则缺失非致命 */ }
     msgs.push({ role: 'system', content: `【生图规则】\n${IMAGE_PROMPT_RULE.rule_content}` });
+    const staticTexts = msgs.map(message => message.content);
+    const cacheBoundary = { index: msgs.length - 1, offset: msgs.at(-1).content.length };
 
     const loras = [];
     const crossBlocks = [];
-    const matched = matchAll(desc);
-    if (matched.length > 0) {
+    const characterNames = [];
+    const matched = explicitCharacters === null ? matchAll(desc) : [];
+    if (explicitCharacters !== null || matched.length > 0) {
       const db = getDb();
-      const chars = matched.map(m =>
+      const chars = explicitCharacters ?? matched.map(m =>
         db.prepare('SELECT id, display_name, base_prompt, loras FROM characters WHERE id = ?').get(m.id)
       ).filter(Boolean);
       crossBlocks.push(...chars.map(c => `[${c.display_name}]\n${buildImageCrossRefInfo(c)}`));
+      characterNames.push(...chars.map(c => c.display_name));
       loras.push(...chars.flatMap(c => parseLoras(c)));
+    }
+    if (angelReference) {
+      crossBlocks.push(angelReference.text);
+      characterNames.push(angelReference.display_name);
     }
     // 画面描述里提到用户本人时同样注入其资料（用户不是角色：没有 id、没有 LoRA）
     if (matchUser(desc)) {
@@ -326,7 +355,10 @@ router.post('/test-style', async (req, res) => {
       content: `【画面描述】\n${desc}\n\n【当前任务】\n根据上面的画面描述，直接输出对应的英文生图 prompt（严格遵循【生图规则】）。不要任何格式包装或额外文字。`,
     });
 
-    const raw = await chatSync(msgs, { temperature: 0.7, label: '画风测试' });
+    const raw = await chatSync(msgs, { temperature: 0.7, label: '图片实验室', lorebook: {
+      scope: 'image:studio', personaTexts: crossBlocks, staticTexts, cacheBoundary,
+      characterNames, characterDescription: crossBlocks.join('\n\n'), history: [msgs.at(-1)],
+    } });
     const prompt = extractImagePromptResponse(raw);
     if (!prompt) throw new Error('模型未返回有效的提示词');
     return { prompt, loras };
