@@ -67,6 +67,35 @@ export function describeBond(score) {
   return '普通，客客气气';
 }
 
+/**
+ * 从一段台词里识别"提到了谁"，顺手微调说话者与对方之间的温度（2026-11-06）。
+ * 群聊走的是"谁点名了谁"的结构化记录；私聊里她只对着用户说话，
+ * 但提到别人的语气一样能说明她此刻对那人的态度，所以补这一条。
+ * 只截取名字前后各 12 字判断语气，避免整段话里的负面词误伤无关的人。
+ * @returns {number} 实际变动的关系对数
+ */
+export function nudgeBondsFromText(fromId, text) {
+  try {
+    const body = String(text || '');
+    const from = Number(fromId);
+    if (!Number.isSafeInteger(from) || !body) return 0;
+    const rows = getDb().prepare("SELECT id, display_name FROM characters WHERE id != ? AND name != 'default'").all(from) || [];
+    let changed = 0;
+    for (const row of rows) {
+      const name = String(row.display_name || '').trim();
+      if (!name) continue;
+      const at = body.indexOf(name);
+      if (at < 0) continue;
+      const around = body.slice(Math.max(0, at - 12), Math.min(body.length, at + name.length + 12));
+      if (nudgeBond(from, row.id, { text: around })) changed += 1;
+    }
+    return changed;
+  } catch (err) {
+    console.warn('[group] bond nudge from text failed:', err?.message || err);
+    return 0;
+  }
+}
+
 /** 读一批温度，渲染成注入块（没有记录时返回空串） */
 export function buildBondsBlock(groupId) {
   try {

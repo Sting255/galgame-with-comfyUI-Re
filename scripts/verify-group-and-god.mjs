@@ -15,7 +15,8 @@ import { createWorldEventService } from '../agent-core/src/services/godSays/worl
 import { recordWorldTimeline, buildWorldTimelineBlock } from '../agent-core/src/services/worldTimeline.js';
 import { resolveSceneSeed } from '../agent-core/src/services/imageSkill.js';
 import { planOfflineChunks } from '../agent-core/src/services/offlineChronicle.js';
-import { nudgeBond, readBond, describeBond } from '../agent-core/src/services/groupBonds.js';
+import { nudgeBond, readBond, describeBond, nudgeBondsFromText } from '../agent-core/src/services/groupBonds.js';
+import { setProgramOffsetMs, resetProgramTime } from '../agent-core/src/services/programTime.js';
 
 let pass = 0, fail = 0;
 const check = (name, actual, expected) => {
@@ -110,6 +111,20 @@ for (let i = 0; i < 6; i++) {
 }
 check('日预算耗尽后拒绝继续变动', rejected, true);
 check('温度有可读描述', typeof describeBond(readBond(a, b)), 'string');
+
+// 8) 私聊台词提到别人 → 影响她们之间的温度
+const bondBefore = readBond(c, a);
+nudgeBondsFromText(c, '角色A又迟到了，烦死了');
+check('私聊提名字也能影响温度', round1(readBond(c, a) - bondBefore), -0.3);
+
+// 9) 世界钟对齐：拨快一天后写入的时间轴应落在程序时间
+setProgramOffsetMs(24 * 3600_000);
+const realNow = Date.now();
+const beforeOffsetRow = recordWorldTimeline({ kind: 'event', title: '拨钟测试', summary: 's', sourceId: 'verify-clock-1' });
+const row = db.prepare('SELECT at FROM world_timeline WHERE id = ?').get(beforeOffsetRow);
+const drift = Math.abs(new Date(row.at).getTime() - (realNow + 24 * 3600_000));
+check('时间轴按程序时间存储（误差 < 5 秒）', drift < 5000, true);
+resetProgramTime();
 
 console.log(`\n合计 ${pass} pass / ${fail} fail`);
 process.exit(fail ? 1 : 0);

@@ -11,6 +11,8 @@ import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { prepareNarrativePrompt } from '../services/presets/narrative.js';
 // 离线世界编年（2026-11-06）：回来第一轮自然提起一次离开期间发生的事
 import { takeOfflineNoticeFor } from '../services/offlineChronicle.js';
+// 关系温度（2026-11-06）：私聊里提到别人，也会影响她们彼此的温度
+import { nudgeBondsFromText } from '../services/groupBonds.js';
 import { buildConversationLorebookContext } from '../services/lorebook/conversationContext.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
@@ -2091,6 +2093,8 @@ ${coreRules}
     const rawContent = fullContent
       .replace(/<needImage>/gi, '')
       .trim();
+    // 关系温度：她在这轮里提到别人时的语气，也记进两人之间的分数（失败只 warn，不影响回复）
+    try { nudgeBondsFromText(characterId, displayContent || rawContent); } catch { /* 忽略 */ }
     // prepare 提到循环外 + 事务包裹：语句只编译一次，段落数增长时仍常数开销
     const insertRawStmt = stmt('INSERT INTO raw_messages (conversation_id, role, content, prompt) VALUES (?, ?, ?, ?)');
     const insertMsgStmt = stmt('INSERT INTO messages (conversation_id, raw_id, role, content, images, seq) VALUES (?, ?, ?, ?, ?, ?)');
