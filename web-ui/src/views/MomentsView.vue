@@ -80,12 +80,20 @@
         </div>
       </div>
 
+      <!-- 离线补记提示（2026-11-06）：补记按真实时间落在列表中间，不提示等于让人去考古 -->
+      <div v-if="showOfflineHint" class="offline-hint" role="status">
+        <span class="offline-hint-text">你不在的这段时间，有 {{ offlinePosts.length }} 条动态</span>
+        <linshe-button variant="ghost" size="sm" @click="jumpToOffline">去看看</linshe-button>
+        <linshe-button variant="icon" size="sm" aria-label="不再提示" @click="offlineHintDismissed = true">✕</linshe-button>
+      </div>
+
       <!-- 帖子列表（stagger：首屏卡片错峰浮现） -->
       <TransitionGroup name="post-enter" tag="div" class="moments-list stagger" type="transition">
         <MomentCard
           v-for="post in moments.visiblePosts"
           :key="post.id"
           :post="post"
+          :data-post-id="post.id"
           @preview="onPreview"
           @share="onShare"
         />
@@ -141,6 +149,22 @@ import { backfillMoments } from '../api/index.js'
 
 const taskStore = useImageEditTasksStore()
 const toast = inject('toast', null)
+
+// ── 离线补记提示（2026-11-06）──
+// 补记的 created_at 落在过去，会沉在列表中间；这里给一个入口，别让用户去翻。
+const offlineHintDismissed = ref(false)
+const offlinePosts = computed(() => moments.visiblePosts.filter(post =>
+  String(post?.god_delivery_key || '').startsWith('offline:')
+  && post?.created_at
+  && Date.now() - new Date(String(post.created_at).replace(' ', 'T')).getTime() < 7 * 86400_000))
+const showOfflineHint = computed(() => !offlineHintDismissed.value && offlinePosts.value.length > 0)
+function jumpToOffline() {
+  const first = offlinePosts.value[0]
+  offlineHintDismissed.value = true
+  if (!first) return
+  const el = document.querySelector(`[data-post-id="${first.id}"]`)
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
 const confirm = inject('confirm')
 const backfillSubmitting = ref(false)
 const backfillRunning = computed(() => taskStore.tasks.some(t => t.action === 'moment_backfill' && t.status === 'running'))
@@ -559,6 +583,22 @@ async function triggerGenerate(c) {
   border-color: #ff4d6d;
   opacity: 1;
 }
+
+/* 离线补记提示条：一条就够了，不抢帖子的位置 */
+.offline-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 600px;
+  margin: 8px auto 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px dashed color-mix(in srgb, var(--accent-2) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-2) 10%, var(--bg-secondary));
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.offline-hint-text { flex: 1 1 auto; min-width: 0; color: var(--text-bright); }
 
 .moments-list {
   max-width: 600px;

@@ -93,3 +93,19 @@ export function buildRecentInteractionsBlock(groupId, limit = 6) {
   const lines = rows.reverse().map(row => `- ${row.from_name} → ${row.to_name}：${row.summary}`);
   return `<recent_character_events>\n群成员之间最近发生过这些互动（可以作为话头自然提起，不必逐条复述，也不要当成玩家说过的话）：\n${lines.join('\n')}\n</recent_character_events>`;
 }
+
+/**
+ * 清理过期的成员互动（2026-11-06）。
+ * 群聊每轮最多记 12 条，不清理会一年涨到几万行；只服务"最近发生过什么"，留 90 天足够。
+ * @returns {number} 删除行数
+ */
+export function pruneInterCharacterEvents(days = 90) {
+  try {
+    const cutoff = new Date(Date.now() - Math.max(7, Number(days) || 90) * 86400_000).toISOString();
+    const row = getDb().prepare('DELETE FROM inter_character_events WHERE created_at < ?').run(cutoff);
+    return row.changes || 0;
+  } catch (err) {
+    console.warn('[group] prune inter-character events failed:', err?.message || err);
+    return 0;
+  }
+}

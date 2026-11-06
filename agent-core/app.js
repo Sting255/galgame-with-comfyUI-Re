@@ -72,6 +72,8 @@ import { runProgramDayRollover } from './src/services/programDayRollover.js';
 import { ensurePoseControlAssetsOnBoot } from './src/services/poseControlInstall.js';
 // 离线世界编年（2026-11-06）：关机期间的世界由回来时一次性补算
 import { readLastSeen, runOfflineBackfill, touchLastSeen } from './src/services/offlineChronicle.js';
+import { pruneWorldTimeline } from './src/services/worldTimeline.js';
+import { pruneInterCharacterEvents } from './src/services/groupInterCharacterEvents.js';
 import { applyFromConfig } from './src/services/llmConcurrency.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
 import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
@@ -360,6 +362,18 @@ applyFromConfig(config);
 
 // 启动时自动补全缺失的工作流文件（已有文件不会被覆盖）
 autoRestoreMissing();
+
+// 世界账本的清理（2026-11-06）：时间轴与成员互动只服务"最近发生过什么"，留 90 天。
+// 放在启动时做一次，避免两张表随事件与群聊无限增长。
+try {
+  const removedTimeline = pruneWorldTimeline(90);
+  const removedInteractions = pruneInterCharacterEvents(90);
+  if (removedTimeline || removedInteractions) {
+    console.log(`[world] 清理过期账本：时间轴 ${removedTimeline} 条，成员互动 ${removedInteractions} 条（保留 90 天）`);
+  }
+} catch (error) {
+  console.warn('[world] 账本清理跳过（不影响启动）:', error.message);
+}
 
 startBackgroundServices();
 

@@ -67,3 +67,19 @@ export function buildWorldTimelineBlock(limit = 4, { hours = 48 } = {}) {
   });
   return `<world_timeline>\n这个世界最近发生过这些事（可作为前因承接，不必逐条提及）：\n${lines.join('\n')}\n</world_timeline>`;
 }
+
+/**
+ * 清理过期的世界时间轴（2026-11-06）。
+ * 这张表只服务"最近发生了什么"，留 90 天足够；不清理会随事件/补算无限增长。
+ * @returns {number} 删除行数
+ */
+export function pruneWorldTimeline(days = 90) {
+  try {
+    const cutoff = new Date(Date.now() - Math.max(7, Number(days) || 90) * 86400_000).toISOString();
+    const row = getDb().prepare('DELETE FROM world_timeline WHERE at < ?').run(cutoff);
+    return row.changes || 0;
+  } catch (err) {
+    console.warn('[worldTimeline] prune failed:', err?.message || err);
+    return 0;
+  }
+}

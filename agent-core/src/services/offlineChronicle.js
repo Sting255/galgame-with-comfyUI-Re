@@ -230,9 +230,10 @@ function publishOfflineMoment(character, { chunk, events = [], mood = null }) {
     const text = [moodText, events[0]?.summary].filter(Boolean).join(' ').trim().slice(0, 120);
     if (!text) return null;
     const resolution = `${config.comfyui?.momentsWidth || 768}x${config.comfyui?.momentsHeight || 512}`;
+    // style 是"画师串"字段，不能被标记占用 —— 补记帖子靠 god_delivery_key 的 offline: 前缀识别
     const id = db.prepare(`
       INSERT INTO moment_posts (character_id, content, prompt, style, resolution, status, god_delivery_key, created_at)
-      VALUES (?, ?, '', '离线补记', ?, 'done', ?, ?)
+      VALUES (?, ?, '', '', ?, 'done', ?, ?)
     `).run(Number(character.id), text, resolution, key, chunk.to.toISOString()).lastInsertRowid;
     console.log(`[offline] moment published: ${character.display_name}「${text.slice(0, 20)}」`);
     return Number(id);
