@@ -47,6 +47,7 @@ import { stripImagePromptLines, stripBracePromptBlocks, extractUnbracedGroupImag
 import { getCurrentActivity, isSleeping, tempWake } from './scheduleManager.js';
 import { isSleepLocked } from './sleepLock.js';
 import { recordInterCharacterEvents, buildRecentInteractionsBlock } from './groupInterCharacterEvents.js';
+import { buildBondsBlock } from './groupBonds.js';
 import { detectAndApplyAppointment } from './appointmentDetector.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { buildGroupEmojiNote, getCharacterEmojiMap, parseGroupEmojiText, getEmojiCategories, parseEmojiText } from './emojiService.js';
@@ -1198,6 +1199,8 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   try {
     const interactions = buildRecentInteractionsBlock(group.id, 6);
     if (interactions) directiveBlocks.push(interactions);
+    const bonds = buildBondsBlock(group.id);
+    if (bonds) directiveBlocks.push(bonds);
   } catch (err) {
     console.warn('[group] recent interactions inject failed:', err.message);
   }

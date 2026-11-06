@@ -13,7 +13,8 @@ export function sampleTargets(rows, count, random = Math.random) {
 
 export function worldEventContext(db, characterIds = null, now = new Date(), { activeOnly = false } = {}) {
   // 普通角色仅注入生效区间内的事实，不依赖定时清理；神说保留最近事件及过去见闻。
-  const since = new Date(now.getTime() - 7 * 86400000).toISOString();
+  // 2026-11-06：回溯窗口 7 天 → 30 天，让"三天前发生的事"仍可被角色回想起来。
+  const since = new Date(now.getTime() - 30 * 86400000).toISOString();
   const rows = activeOnly ? db.prepare(`SELECT * FROM god_world_events
     WHERE kind='world' AND status='active'
       AND julianday(created_at)<=julianday(?) AND julianday(expires_at)>julianday(?)

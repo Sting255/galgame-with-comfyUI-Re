@@ -353,9 +353,10 @@ export async function generateEvent(character, options = {}) {
   if (recentMoment) {
     contextBlock += `\n关联线索——${character.display_name}一小时前刚发了朋友圈："${recentMoment.content}"。事件素材可以与此呼应，提高关联性。\n`;
   }
-  // 世界时间轴（2026-11-06）：把最近发生的事作为前因带上，事件之间才接得上
+  // 世界时间轴（2026-11-06）：把最近发生的事作为前因带上，事件之间才接得上。
+  // 回溯窗口放到 30 天：三天前的事也该还能被"想起"，否则世界像每几天重置一次。
   try {
-    const timeline = buildWorldTimelineBlock(3);
+    const timeline = buildWorldTimelineBlock(5, { hours: 24 * 30 });
     if (timeline) contextBlock += `\n${timeline}\n`;
   } catch (err) {
     console.warn('[eventGen] timeline block skipped:', err?.message || err);

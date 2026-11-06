@@ -12,6 +12,7 @@
  *   · 名字按长度降序匹配，避免"银狼"误命中"银狼LV.999"。
  */
 import { getDb } from '../db/index.js';
+import { nudgeBond } from './groupBonds.js';
 
 const MAX_EVENTS_PER_ROUND = 12;
 const SUMMARY_MAX = 60;
@@ -51,6 +52,8 @@ export function recordInterCharacterEvents(group, { speakerLines = [] } = {}) {
       seen.add(key);
       try {
         insert.run(groupId, fromId, hit.id, 'said_to', text.slice(0, SUMMARY_MAX), now);
+        // 关系温度（2026-11-06）：这一句是带刺还是带笑，顺手记进两人之间的分数
+        nudgeBond(fromId, hit.id, { text });
         count += 1;
       } catch (err) {
         console.warn('[group] inter-character event insert failed:', err?.message || err);
