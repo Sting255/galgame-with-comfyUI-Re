@@ -8,8 +8,13 @@
       </div>
     </div>
 
-    <div class="settings-grid">
+    <!-- 设备连接（2026-11-06 真机反馈）：它和下面那张很长的「画师串」卡同处一个 grid 行时，
+         行高由后者决定，卡片底下会空出一大截。移出 grid 单独占一行。 -->
+    <div class="settings-standalone">
       <DeviceAccessPanel />
+    </div>
+
+    <div class="settings-grid">
       <!-- ComfyUI params: 对话配图 / 朋友圈配图 / 奇遇配图（Tab 切换） -->
       <div class="card comfy-params-card">
         <h3>画师串 & 分辨率</h3>
@@ -3935,6 +3940,8 @@ function resetTestPrompts() {
 .hint { font-size: 13px; color: var(--text-secondary); }
 
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 不参与 grid 的整行卡片（设备连接）：单独占一行，行高只由自己决定 */
+.settings-standalone { margin-bottom: 16px; }
 .memory-settings-card { gap: 0; }
 
 /* ── 程序时间（面板自带皮肤，这里只负责与卡片头的间距） ── */
