@@ -79,11 +79,6 @@ export const ZONE_LEVELS = ['residence', 'activity', 'private_transit'];
 export const ZONE_LABEL = {
   residence: '居住区域', activity: '主要活动区域', private_transit: '私密空间（洗浴等）',
 };
-/** zone → 该场景下应当优先穿的服装 key（供注入与校验；'' = 不限定） */
-export const ZONE_OUTFIT_HINT = {
-  residence: 'home', activity: 'work', private_transit: 'nude',
-};
-
 /** 归一化准入：非法值 → ''（=未标注），不做猜测性兜底 */
 export function normalizeAccess(v) {
   const s = String(v ?? '').trim();
