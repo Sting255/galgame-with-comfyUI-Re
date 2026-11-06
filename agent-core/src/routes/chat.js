@@ -9,6 +9,8 @@ import { SHARED_IMAGE_PROMPT_RULE } from '../services/privateChatImagePrompt.js'
 // 保留上面的原始 chatSync/chatStream —— 上游也是两者并存，不是替换。
 import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { prepareNarrativePrompt } from '../services/presets/narrative.js';
+// 离线世界编年（2026-11-06）：回来第一轮自然提起一次离开期间发生的事
+import { takeOfflineNotice } from '../services/offlineChronicle.js';
 import { buildConversationLorebookContext } from '../services/lorebook/conversationContext.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
@@ -1501,6 +1503,14 @@ ${coreRules}
       if (hypnosisNeedsFullPerformance) {
         dynamicBlocks.push('<reply_length_override>\n- 本轮**不适用**上面的 <reply_length> 字数限制：把这一轮该演的过程完整写出来（可以明显长于平时的口语短句），不要一句话草草收场。\n</reply_length_override>');
       }
+    }
+
+    // 离线编年（2026-11-06）：用户离开过一段时间的话，第一轮自然提起一次（每段离线只提一次）
+    try {
+      const offlineNotice = takeOfflineNotice();
+      if (offlineNotice) dynamicBlocks.push(offlineNotice);
+    } catch (err) {
+      console.warn('[chat] offline notice skipped:', err?.message || err);
     }
 
     // 生图仍由原有路径 A/B/C/D/E 决策；固定格式规则已在稳定前缀中，不额外改变主回复行为。

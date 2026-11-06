@@ -42,6 +42,10 @@ const DB_ONLY_KEYS = new Set([
   'novelai_profiles',
   'active_novelai_profile_id',
   'memory_settings',
+  // 离线世界编年（2026-11-06）：心跳与一次性提示位，纯运行时状态，不走 config 加载
+  'runtime.last_seen_at',
+  'runtime.offline_backfilled_at',
+  'runtime.offline_notice_id',
   'workflow_mode_auto_detected',
   'maibot_webui_url',
   'maibot_webui_token',

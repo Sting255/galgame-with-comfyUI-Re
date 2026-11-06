@@ -70,6 +70,8 @@ import { autoRestoreMissing } from './src/services/workflowTemplates.js';
 // 2026-10-01：世界翻篇（程序日切换）——启动补一次，覆盖"关机跨天"
 import { runProgramDayRollover } from './src/services/programDayRollover.js';
 import { ensurePoseControlAssetsOnBoot } from './src/services/poseControlInstall.js';
+// 离线世界编年（2026-11-06）：关机期间的世界由回来时一次性补算
+import { readLastSeen, runOfflineBackfill, touchLastSeen } from './src/services/offlineChronicle.js';
 import { applyFromConfig } from './src/services/llmConcurrency.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
 import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
@@ -110,6 +112,8 @@ app.use('/api', (req, res, next) => {
   if (reason && !['/health', '/shutdown', '/access'].includes(req.path)) {
     return res.status(503).json({ error: reason, code: 'DATABASE_MAINTENANCE' });
   }
+  // 离线编年的心跳（2026-11-06）：内部 10 分钟节流，任意请求都会顺手记一笔"我还在线"
+  touchLastSeen();
   next();
 });
 // 刻意不使用 compression 中间件（v3.4.0 加过，已整体移除）。两条理由，改回来之前先读：
@@ -358,6 +362,22 @@ applyFromConfig(config);
 autoRestoreMissing();
 
 startBackgroundServices();
+
+// ── 离线世界编年（2026-11-06）──
+// 心跳必须在写第一笔之前读出来，否则启动后任何一个请求都会把 last_seen 覆盖成"刚刚"。
+const bootLastSeen = readLastSeen();
+if (bootLastSeen) {
+  console.log(`[offline] 上次在线：${bootLastSeen.toISOString()}`);
+}
+// 延迟再补算：避开启动高峰，也让用户先看到界面。失败只 warn，不影响任何主链路。
+// OFFLINE_BACKFILL_DELAY_MS 仅供本地验证（默认 5 分钟）。
+{
+  const delayMs = Math.max(0, Number(process.env.OFFLINE_BACKFILL_DELAY_MS || 5 * 60 * 1000) || 0);
+  const timer = setTimeout(() => {
+    void runOfflineBackfill({ lastSeen: bootLastSeen }).catch(err => console.warn('[offline] backfill error:', err?.message || err));
+  }, delayMs);
+  if (typeof timer.unref === 'function') timer.unref();
+}
 
 // 2026-10-01：角色资产「一键后台生成」——进程重启把在跑的批量任务标成 interrupted（可续跑），
 // 不假成 failed（failed 是"跑过了、错了"，interrupted 是"被打断了、还能接着跑"）。

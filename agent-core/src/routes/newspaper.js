@@ -11,8 +11,21 @@ import {
   deleteNewspaperEdition,
   deleteNewspaperEditions,
 } from '../services/newspaperService.js';
+// 离线编年（2026-11-06）：日报里加一段「昨夜邻里」，让用户看得到离开期间发生了什么
+import { recentWorldTimeline } from '../services/worldTimeline.js';
 
 const router = Router();
+
+/** 昨夜邻里：最近 24 小时的离线补记（没有就空数组，前端据此不渲染这一段） */
+function offlineNotes() {
+  try {
+    return recentWorldTimeline(6, { hours: 24 })
+      .filter(row => row.kind === 'offline' || row.kind === 'offline_summary')
+      .map(row => ({ at: row.at, title: row.title, summary: row.summary }));
+  } catch {
+    return [];
+  }
+}
 
 // POST /api/newspaper/regenerate — 重新生成今天的报纸（文字重印，配图后台补）
 router.post('/regenerate', async (req, res) => {
@@ -25,7 +38,7 @@ router.post('/regenerate', async (req, res) => {
 
 // GET /api/newspaper/today — 今天的《邻舍日报》（没有则 { newspaper: null }）
 router.get('/today', (req, res) => {
-  res.json({ newspaper: getTodayNewspaperForFrontend() });
+  res.json({ newspaper: getTodayNewspaperForFrontend(), offlineNotes: offlineNotes() });
 });
 
 // GET /api/newspaper/editions — 历史期简目（最新在前，供期号导航）
