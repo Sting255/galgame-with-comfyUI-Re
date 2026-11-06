@@ -19,6 +19,7 @@ import { applyMemoryActions } from './memory/memoryRepository.js';
 import { config } from '../config.js';
 
 const HEARTBEAT_KEY = 'runtime.last_seen_at';
+const CURSOR_KEY = 'runtime.offline_cursor';   // 补算进行到哪一刻（断点续跑）
 const MIN_GAP_MS = 3 * 3600_000;      // 3 小时以内当作连续，不补
 const CHUNK_MS = 6 * 3600_000;        // 每片 6 小时
 const MAX_CHUNKS = 4;                 // 最多精细补 24 小时
@@ -40,6 +41,32 @@ export function touchLastSeen(force = false) {
   } catch (err) {
     console.warn('[offline] heartbeat write failed:', err?.message || err);
   }
+}
+
+/** 读补算断点（上次补到哪一刻）；没有则 null */
+function readCursor() {
+  try {
+    const raw = getSetting(CURSOR_KEY);
+    const parsed = raw ? new Date(raw) : null;
+    return parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCursor(date) {
+  try { setSetting(CURSOR_KEY, new Date(date).toISOString()); } catch { /* 忽略 */ }
+}
+
+function clearCursor() {
+  try { setSetting(CURSOR_KEY, ''); } catch { /* 忽略 */ }
+}
+
+/** 补算起点：有断点就从断点继续（崩溃后不整段重算），否则用上次在线时间 */
+function resolveResumePoint(explicitLastSeen) {
+  const cursor = readCursor();
+  if (cursor) return cursor;
+  return explicitLastSeen === undefined ? readLastSeen() : explicitLastSeen;
 }
 
 /** 读上次在线时间，带兜底：心跳缺失/异常时取最后一条消息或时间轴 */
@@ -290,7 +317,8 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
   if (running) return { ran: false, chunks: 0, reason: 'already_running' };
   let plan;
   try {
-    plan = planOfflineChunks(now, lastSeen === undefined ? readLastSeen() : lastSeen);
+    // 有断点时从断点继续：崩溃后不整段重算（幂等键能防重复数据，但防不住重复花调用）
+    plan = planOfflineChunks(now, resolveResumePoint(lastSeen));
   } catch (err) {
     console.warn('[offline] plan failed:', err?.message || err);
     return { ran: false, chunks: 0, reason: 'plan_failed' };
@@ -321,6 +349,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
         const data = await generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
         if (!data) { console.warn(`[offline] 第 ${chunk.index} 片没有可用输出，跳过`); continue; }
         persistChunk(chunk, data, characters);
+        writeCursor(chunk.to);   // 断点：下一片之前崩溃，下次从这里继续
         written += 1;
         prevSummary = data.events.map(e => `${e.title}：${e.summary}`).join('；').slice(0, 300);
         prevLead = data.lead || prevLead;
@@ -351,6 +380,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
     }
 
     touchLastSeen(true);
+    clearCursor();   // 跑完了：清断点，下次从心跳开始算
     setSetting('runtime.offline_backfilled_at', now.toISOString());
     console.log(`[offline] 补算完成：写入 ${written} 条`);
     return { ran: true, chunks: written };

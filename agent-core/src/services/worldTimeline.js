@@ -8,8 +8,23 @@
  * 时间轴只回答"这个世界最近发生了什么"，不回答"谁说了哪句话"。
  */
 import { getDb } from '../db/index.js';
+import { getProgramNow } from './programTime.js';
 
 const SUMMARY_MAX = 200;
+
+/**
+ * 程序时间相对真实时间的偏移（毫秒）。
+ * 时间轴统一存**世界时间**：补算是按真实时长算出来的，落到世界时间轴上前要先加上这个偏移，
+ * 否则用户拨快/拨慢世界钟后，日报按程序日期找新闻、时间轴却写着真实日期，两边对不上。
+ */
+function programOffsetMs() {
+  try {
+    const now = getProgramNow();
+    return Number.isFinite(now.getTime()) ? now.getTime() - Date.now() : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * 记一条世界发生。sourceId 相同则忽略（幂等）。
@@ -23,10 +38,13 @@ export function recordWorldTimeline({ kind = 'event', title = '', summary = '', 
       ? characterIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0)
       : [];
     const target = db || getDb();
+    // 入参的 at 一律视为**真实瞬间**，落库统一加偏移变成世界时间
+    const realAt = at ? new Date(at) : new Date();
+    const storedAt = new Date(realAt.getTime() + programOffsetMs()).toISOString();
     const row = target.prepare(
       'INSERT OR IGNORE INTO world_timeline(at, kind, title, summary, character_ids, source_id) VALUES (?,?,?,?,?,?)'
     ).run(
-      at || new Date().toISOString(),
+      storedAt,
       String(kind || 'event'),
       cleanTitle.slice(0, 120),
       String(summary || '').trim().slice(0, SUMMARY_MAX),
@@ -43,7 +61,9 @@ export function recordWorldTimeline({ kind = 'event', title = '', summary = '', 
 /** 读最近的世界发生（默认 48 小时内，最多 N 条），按时间正序返回（便于阅读） */
 export function recentWorldTimeline(limit = 5, { hours = 48 } = {}) {
   try {
-    const since = new Date(Date.now() - Math.max(1, Number(hours) || 48) * 3600_000).toISOString();
+    // 存储是程序时间，过滤也要用程序时间（否则拨过钟以后窗口会偏）
+    const nowMs = (() => { try { return getProgramNow().getTime(); } catch { return Date.now(); } })();
+    const since = new Date(nowMs - Math.max(1, Number(hours) || 48) * 3600_000).toISOString();
     const rows = getDb().prepare(`
       SELECT id, at, kind, title, summary
       FROM world_timeline
@@ -75,7 +95,8 @@ export function buildWorldTimelineBlock(limit = 4, { hours = 48 } = {}) {
  */
 export function pruneWorldTimeline(days = 90) {
   try {
-    const cutoff = new Date(Date.now() - Math.max(7, Number(days) || 90) * 86400_000).toISOString();
+    const nowMs = (() => { try { return getProgramNow().getTime(); } catch { return Date.now(); } })();
+    const cutoff = new Date(nowMs - Math.max(7, Number(days) || 90) * 86400_000).toISOString();
     const row = getDb().prepare('DELETE FROM world_timeline WHERE at < ?').run(cutoff);
     return row.changes || 0;
   } catch (err) {
