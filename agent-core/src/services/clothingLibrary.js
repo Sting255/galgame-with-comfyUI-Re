@@ -6,7 +6,10 @@ const byTag = new Map(catalog.entries.map(entry => [entry.tag, entry]));
 export function getClothingLibrary() { return catalog; }
 
 export function resolveClothingTags(tags, scene = 'work') {
-  if (!['work', 'casual', 'home', 'sleep'].includes(scene)) throw new Error('服装场景无效');
+  // 2026-11-07：私服 / 居家已从枚举移除；角色自定义类型（custom_*）同样允许用衣服库配 tag，
+  // 否则新加的「婚纱」「泳装」一点生成就报「服装场景无效」。
+  const isCustom = String(scene || '').startsWith('custom_');
+  if (!isCustom && !['work', 'sleep'].includes(scene)) throw new Error('服装场景无效');
   if (!Array.isArray(tags) || !tags.length || tags.length > 32 || tags.some(tag => typeof tag !== 'string')) throw new Error('请选择 1–32 个服装 tag');
   return [...new Set(tags)].map(tag => {
     const entry = byTag.get(tag);
@@ -29,13 +32,15 @@ const CLOTHING_PROMPT = `你是角色服装提示词设计师。将后续角色�
 {"appearance":"Yoimiya (Genshin Impact) has blonde hair in a high ponytail and amber eyes, wearing a white collared shirt and a pleated skirt.（此处填至少 30 字符的一整段英文；以本次角色英文名及作品名开头，原创角色只写英文名；完整保留默认身体特征并准确描述每个所选 tag，不能照搬示例人物；不附加标签列表、解释或 Markdown。存在冲突时此字段为空字符串。）","conflict":"（无冲突时为空字符串；有无法兼容的标签时用简短中文说明具体冲突，并请用户调整选择，appearance 留空。）"}
 严格按示例的两个字段输出合法 JSON，不输出任何 JSON 以外的文字。`;
 
-export function buildClothingAppearanceMessages({ systemRules, worldRule = '', persona, scene, entries, brief = '' }) {
+export function buildClothingAppearanceMessages({ systemRules, worldRule = '', persona, scene, sceneLabel = '', entries, brief = '' }) {
+  // 自定义类型的 key 是 custom_<时间戳>，模型看不懂；有类型名（如「婚纱」）就用名字喂它
+  const sceneText = String(sceneLabel || '').trim() || scene;
   return [
     { role: 'system', content: systemRules },
     ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
     { role: 'system', content: CLOTHING_PROMPT },
     { role: 'system', content: `【角色人设与默认外观】\n${persona}` },
-    { role: 'system', content: `【本次服装场景】${scene}\n【所选服装词条】\n${entries.map(entry => `${entry.tag} — ${entry.label}：${entry.description}`).join('\n')}` },
+    { role: 'system', content: `【本次服装场景】${sceneText}\n【所选服装词条】\n${entries.map(entry => `${entry.tag} — ${entry.label}：${entry.description}`).join('\n')}` },
     { role: 'user', content: `请生成这套外观，严格按示例 JSON 输出。${brief ? `\n补充要求：${brief}` : ''}` },
   ];
 }

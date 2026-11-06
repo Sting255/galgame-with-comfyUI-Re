@@ -56,13 +56,19 @@ router.post('/clothing-appearance-draft', async (req, res) => {
   if (typeof brief !== 'string' || brief.length > 2000) return res.status(400).json({ error: '补充要求不能超过 2000 字' });
   const character = getDb().prepare('SELECT id, short_prompt, base_prompt FROM characters WHERE id = ?').get(Number(characterId));
   if (!character) return res.status(404).json({ error: '角色不存在' });
+  // 自定义类型给模型看名字，而不是 custom_<时间戳>
+  const customRow = String(scene).startsWith('custom_')
+    ? getDb().prepare('SELECT name FROM character_outfits WHERE character_id = ? AND scene = ?').get(character.id, scene)
+    : null;
   try {
     const world = getWorldSetting();
     const messages = buildClothingAppearanceMessages({
       systemRules: getSystemRulesWithWorld({ roleplay: false }),
       worldRule: world ? getWorldIntegrationRule('interaction') : '',
       persona: buildCharacterPersona({ ...character, base_prompt: basePrompt }, { variant: 'full', outfits: null }),
-      scene, entries, brief: brief.trim(),
+      scene,
+      sceneLabel: customRow?.name || '',
+      entries, brief: brief.trim(),
     });
     const raw = await chatSync(messages, { model: config.llm.model || 'deepseek-chat', temperature: 0.6, max_tokens: 1800, label: '衣服库外观生成' });
     res.json({ appearance: parseClothingAppearance(raw, entries, scene), tags: entries.map(entry => entry.tag) });
