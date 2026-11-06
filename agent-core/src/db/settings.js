@@ -62,7 +62,7 @@ export function setSetting(key, value) {
   handle().prepare(`INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`)
     .run(key, String(value));
   // 写入时校验：如果 key 不在映射表、也不在 disturb 前缀、也不在 DB-only 白名单，说明重启后会丢失
-  if (!(key in SETTING_TO_CONFIG) && !key.startsWith('disturb_') && !DB_ONLY_KEYS.has(key)) {
+  if (!(key in SETTING_TO_CONFIG) && !key.startsWith('disturb_') && !key.startsWith('runtime.') && !DB_ONLY_KEYS.has(key)) {
     console.warn(`[config] setSetting("${key}"): key is not registered in SETTING_TO_CONFIG — value will NOT survive restart. Add it to the mapping in db/settings.js.`);
   }
 }

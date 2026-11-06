@@ -48,6 +48,7 @@ import { getCurrentActivity, isSleeping, tempWake } from './scheduleManager.js';
 import { isSleepLocked } from './sleepLock.js';
 import { recordInterCharacterEvents, buildRecentInteractionsBlock } from './groupInterCharacterEvents.js';
 import { buildBondsBlock } from './groupBonds.js';
+import { takeOfflineNoticeFor } from './offlineChronicle.js';
 import { detectAndApplyAppointment } from './appointmentDetector.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { buildGroupEmojiNote, getCharacterEmojiMap, parseGroupEmojiText, getEmojiCategories, parseEmojiText } from './emojiService.js';
@@ -1201,6 +1202,9 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
     if (interactions) directiveBlocks.push(interactions);
     const bonds = buildBondsBlock(group.id);
     if (bonds) directiveBlocks.push(bonds);
+    // 离线编年（2026-11-06）：用户离开过一段时间时，群里也有人提一次（每个群各提一次）
+    const offlineNotice = takeOfflineNoticeFor(`group_${group.id}`);
+    if (offlineNotice) directiveBlocks.push(offlineNotice);
   } catch (err) {
     console.warn('[group] recent interactions inject failed:', err.message);
   }

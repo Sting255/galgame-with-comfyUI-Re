@@ -10,7 +10,7 @@ import { SHARED_IMAGE_PROMPT_RULE } from '../services/privateChatImagePrompt.js'
 import { chatSync as chatWithLorebook } from '../services/lorebook/runtime.js';
 import { prepareNarrativePrompt } from '../services/presets/narrative.js';
 // 离线世界编年（2026-11-06）：回来第一轮自然提起一次离开期间发生的事
-import { takeOfflineNotice } from '../services/offlineChronicle.js';
+import { takeOfflineNoticeFor } from '../services/offlineChronicle.js';
 import { buildConversationLorebookContext } from '../services/lorebook/conversationContext.js';
 import { config } from '../config.js';
 import { recallChatMemories, CHAT_RAG_TIMEOUT_MS } from '../services/memory/chatMemoryRecall.js';
@@ -1505,9 +1505,9 @@ ${coreRules}
       }
     }
 
-    // 离线编年（2026-11-06）：用户离开过一段时间的话，第一轮自然提起一次（每段离线只提一次）
+    // 离线编年（2026-11-06）：用户离开过一段时间的话，第一轮自然提起一次（每个角色各提一次）
     try {
-      const offlineNotice = takeOfflineNotice();
+      const offlineNotice = takeOfflineNoticeFor(`char_${characterId}`);
       if (offlineNotice) dynamicBlocks.push(offlineNotice);
     } catch (err) {
       console.warn('[chat] offline notice skipped:', err?.message || err);

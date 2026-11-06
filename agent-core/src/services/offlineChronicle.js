@@ -118,14 +118,26 @@ function fmt(date) {
 
 /* ── 提示词 ── */
 
-function buildChunkPrompt({ from, to, prevSummary, digest, characters, worldSetting }) {
+function buildChunkPrompt({ from, to, prevSummary, digest, characters, worldSetting, recentRows = [], prevLead = '' }) {
   const roster = characters.map(c => `- ${c.display_name}`).join('\n');
+  // 反同质化（2026-11-06）：片间只传摘要会让每一片都长成"她一个人深夜做点什么"。
+  // 最近几次的题材明确列出来，并且用关键词统计做一次确定性推动。
+  const guardLines = [];
+  if (prevLead) guardLines.push(`上一段的主角的「${prevLead}」，本片第一件事必须换一个人来做（不要还是她）。`);
+  if (recentRows.length) {
+    guardLines.push(`最近几次已经写过这些题材（不要再用同类结构、同类开场）：${recentRows.map(r => `「${r.title}」`).join('、')}`);
+    const lonely = recentRows.filter(r => /独自|一个人|独处|孤独|单独|没人/.test(`${r.title}${r.summary || ''}`)).length;
+    if (lonely >= 2) {
+      guardLines.push('最近几段都是角色一个人待着做事：本片【必须】至少有一件事是两个人一起做的（可以是偶遇、帮忙、争执），并且换一个场所、换一个时间段。');
+    }
+  }
   const system = [
     '你在为一个架空世界补写「玩家不在时发生过什么」。这是事后编年：只补世界与角色自己的经历，不补玩家在场的事。',
     worldSetting ? `<world_setting>\n${worldSetting}\n</world_setting>` : '',
     `主要角色：\n${roster}`,
     '<已发生的事实（不得改写）>\n' + digest,
     prevSummary ? '<上一段的结尾>\n' + prevSummary : '',
+    guardLines.length ? '<反重复要求>\n' + guardLines.join('\n') : '',
     '硬性约束：',
     '1. 只写这一段时间区间内发生的事；不写玩家出现或参与的情节；',
     '2. 不得与「已发生的事实」冲突，也不要重复已被记录的事件；',
@@ -154,8 +166,8 @@ function buildChunkPrompt({ from, to, prevSummary, digest, characters, worldSett
 
 /* ── 生成一片 ── */
 
-async function generateChunk({ chunk, prevSummary, digest, characters, worldSetting }) {
-  const messages = buildChunkPrompt({ from: chunk.from, to: chunk.to, prevSummary, digest, characters, worldSetting });
+async function generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows = [], prevLead = '' }) {
+  const messages = buildChunkPrompt({ from: chunk.from, to: chunk.to, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
   const raw = await chatSync(messages, { temperature: 0.95, max_tokens: 900, label: '离线编年', retries: 1 });
   // 注意：extractFirstJson 返回的是**字符串**（括号配平后的片段），还需要再 parse 一次
   const jsonText = extractFirstJson(raw || '');
@@ -167,7 +179,10 @@ async function generateChunk({ chunk, prevSummary, digest, characters, worldSett
   const events = Array.isArray(data.events) ? data.events.filter(e => e && e.title).slice(0, 3) : [];
   const moods = Array.isArray(data.moods) ? data.moods.filter(m => m && m.character && m.mood).slice(0, 3) : [];
   if (!events.length && !moods.length) return null;
-  return { events, moods };
+  // 本片主角（第一件事里出现的那位）：下一片要求换人，避免整晚都是同一个人的独处
+  const firstText = `${events[0]?.title || ''}${events[0]?.summary || ''}`;
+  const lead = characters.find(c => c.display_name && firstText.includes(c.display_name))?.display_name || '';
+  return { events, moods, lead };
 }
 
 /* ── 记忆与落库 ── */
@@ -199,6 +214,34 @@ function writeCharacterMemory(character, { from, to, mood, note, events }) {
   }
 }
 
+/**
+ * 补记发一条朋友圈（2026-11-06）：内容直接取补算结果，不再调模型、不配图。
+ * - created_at 用本片结束时刻，让它在朋友圈时间线上落在正确的过去位置；
+ * - god_delivery_key 做幂等（同一片重复补算不会多一条）；
+ * - style='离线补记' 是给"缺图补印"逻辑的排除标记（这种帖子本来就没有图）。
+ */
+function publishOfflineMoment(character, { chunk, events = [], mood = null }) {
+  try {
+    const db = getDb();
+    const key = `offline:${chunk.from.toISOString()}`;
+    if (db.prepare('SELECT id FROM moment_posts WHERE god_delivery_key = ?').get(key)) return null;
+    // 心境与事件之间要有句读，否则会读成"怀念，又觉得现在也还行 林晚在租住的公寓里…"
+    const moodText = mood?.mood ? (/[。！？…」]$/.test(mood.mood) ? mood.mood : `${mood.mood}。`) : '';
+    const text = [moodText, events[0]?.summary].filter(Boolean).join(' ').trim().slice(0, 120);
+    if (!text) return null;
+    const resolution = `${config.comfyui?.momentsWidth || 768}x${config.comfyui?.momentsHeight || 512}`;
+    const id = db.prepare(`
+      INSERT INTO moment_posts (character_id, content, prompt, style, resolution, status, god_delivery_key, created_at)
+      VALUES (?, ?, '', '离线补记', ?, 'done', ?, ?)
+    `).run(Number(character.id), text, resolution, key, chunk.to.toISOString()).lastInsertRowid;
+    console.log(`[offline] moment published: ${character.display_name}「${text.slice(0, 20)}」`);
+    return Number(id);
+  } catch (err) {
+    console.warn('[offline] moment publish failed:', err?.message || err);
+    return null;
+  }
+}
+
 function persistChunk(chunk, data, characters) {
   const title = data.events[0]?.title || '那段时间';
   const summary = data.events.map(e => `「${e.title}」${e.summary}`).join('；').slice(0, 200);
@@ -215,6 +258,24 @@ function persistChunk(chunk, data, characters) {
     const character = byName.get(mood.character);
     if (!character) continue;
     writeCharacterMemory(character, { from: chunk.from, to: chunk.to, mood: mood.mood, note: mood.note, events: data.events });
+  }
+  // 发帖人必须和内容同一个人：title 点明主角，先认 title；没有再看正文里谁被提得最多。
+  // （按数组顺序 find 会踩坑：正文里"周焰挂断林晚那通电话"会先命中林晚，判定错人。）
+  const firstEvent = data.events[0] || {};
+  const titleText = String(firstEvent.title || '');
+  const summaryText = String(firstEvent.summary || '');
+  const inTitle = characters.find(c => c.display_name && titleText.includes(c.display_name)) || null;
+  const byCount = characters
+    .map(c => ({ c, n: c.display_name ? Math.max(0, summaryText.split(c.display_name).length - 1) : 0 }))
+    .filter(item => item.n > 0)
+    .sort((a, b) => b.n - a.n)[0]?.c || null;
+  const moodCharacters = data.moods.map(m => byName.get(m.character)).filter(Boolean);
+  const rotated = characters[(Math.max(1, chunk.index) - 1) % characters.length];
+  const moodOwner = inTitle || byCount || moodCharacters[0] || rotated;
+  if (moodOwner) {
+    // 心境只在确实属于她时才带上，避免"周焰的心里话配林晚的事"
+    const ownerMood = data.moods.find(m => m.character === moodOwner.display_name) || null;
+    publishOfflineMoment(moodOwner, { chunk, events: data.events, mood: ownerMood });
   }
 }
 
@@ -247,17 +308,24 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
     }
     const worldSetting = (() => { try { return getWorldSetting() || ''; } catch { return ''; } })();
     const digest = buildTimelineDigest();
+    // 最近 3 条用于反同质化（第一片之前就有历史时同样生效）
+    const recentRows = recentWorldTimeline(3, { hours: 24 * 30 });
     console.log(`[offline] 开始补算：离线 ${plan.gapHours}h，${plan.chunks.length} 片${plan.tail ? ' + 1 条概况' : ''}`);
 
     let prevSummary = '';
+    let prevLead = '';
     let written = 0;
     for (const chunk of plan.chunks) {
       try {
-        const data = await generateChunk({ chunk, prevSummary, digest, characters, worldSetting });
+        const data = await generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
         if (!data) { console.warn(`[offline] 第 ${chunk.index} 片没有可用输出，跳过`); continue; }
         persistChunk(chunk, data, characters);
         written += 1;
         prevSummary = data.events.map(e => `${e.title}：${e.summary}`).join('；').slice(0, 300);
+        prevLead = data.lead || prevLead;
+        // 本片也进反重复名单：否则同一次补算的 4 片之间会互相重复
+        recentRows.unshift({ title: data.events[0]?.title || '', summary: data.events.map(e => e.summary).join('；') });
+        if (recentRows.length > 5) recentRows.length = 5;
       } catch (err) {
         console.warn(`[offline] 第 ${chunk.index} 片生成失败:`, err?.message || err);
       }
@@ -297,22 +365,28 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
 
 const NOTICED_KEY = 'runtime.offline_notice_id';
 
-/** 取一条还没被提过的离线记录（每次离线只提一次） */
-export function takeOfflineNotice() {
+/** 取一条还没被提过的离线记录（默认全局；传 scopeKey 可让私聊/各群各自提一次） */
+export function takeOfflineNoticeFor(scopeKey = 'global') {
   try {
+    const key = `${NOTICED_KEY}:${String(scopeKey || 'global')}`;
     const since = new Date(Date.now() - 7 * 86400_000).toISOString();
-    const noticedId = Number(getSetting(NOTICED_KEY) || 0);
+    const noticedId = Number(getSetting(key) || 0);
     const row = getDb().prepare(`
       SELECT id, title, summary, at FROM world_timeline
       WHERE kind IN ('offline','offline_summary') AND id > ? AND at >= ?
       ORDER BY id ASC LIMIT 1
     `).get(noticedId, since);
     if (!row) return '';
-    setSetting(NOTICED_KEY, row.id);
+    setSetting(key, row.id);
     return `<offline_notice>\n用户离开过一段时间，这期间发生过：${row.title}——${row.summary}\n可以自然提起这件事（只说一次，不要复述整段，也不要说成用户在场时发生的）。\n</offline_notice>`;
   } catch {
     return '';
   }
+}
+
+/** 兼容旧调用：全局只提一次 */
+export function takeOfflineNotice() {
+  return takeOfflineNoticeFor('global');
 }
 
 /** 测试用：清掉锁与节流（仅供手动脚本） */
