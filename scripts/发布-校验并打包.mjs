@@ -524,6 +524,32 @@ if (incremental) {
     log('   ⚠️ 仓库缺 agent-core/node_modules —— 包里不会有依赖，换机能启动才怪')
   }
 }
+
+// 便携 Node 的 **npm 本体**（runtime/nodejs/node_modules）。
+// 真机 2026-11-07：启动器「切换版本」后要自己跑 npm install 重建，用的就是
+// `<包>/runtime/nodejs/node.exe` + `<包>/runtime/nodejs/node_modules/npm`。
+// 而上面的全量镜像按目录名跳过所有 node_modules ⇒ npm 本体没进包 ⇒ 重建第一步就报
+// `Cannot find module '...\runtime\nodejs\node_modules\npm\bin\npm-cli.js'`，
+// 整个更新流程断在这里。npm 本体只有十几 MB，必须随包带。
+{
+  const npmSrc = path.join(REPO, 'runtime', 'nodejs', 'node_modules')
+  const npmDst = path.join(DELIVER, 'runtime', 'nodejs', 'node_modules')
+  if (fs.existsSync(npmSrc)) {
+    fs.mkdirSync(path.dirname(npmDst), { recursive: true })
+    const rc = spawnSync('robocopy', [
+      npmSrc, npmDst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1',
+    ], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+    if ((rc.status ?? 1) > 3) {
+      throw new Error(`复制 runtime/nodejs/node_modules 失败（robocopy 退出码 ${rc.status}）`)
+    }
+    // npm 入口脚本也要在（有的 Node 发行版把它放在 node_modules 外）
+    const npmCmd = path.join(REPO, 'runtime', 'nodejs', 'npm.cmd')
+    if (fs.existsSync(npmCmd)) fs.copyFileSync(npmCmd, path.join(DELIVER, 'runtime', 'nodejs', 'npm.cmd'))
+    log('   已补入 runtime/nodejs/node_modules（便携 npm，更新重建要用）')
+  } else {
+    log('   ⚠️ 仓库缺 runtime/nodejs/node_modules —— 启动器更新后的自动重建会失败')
+  }
+}
 // 文档：**整份刷掉**（2026-10-02 用户：「文档也同步吧」）。
 // 原来这里只同步 `git status` 里改动过的文件，而且 `目标/` 被**显式排除**（上面 syncDir 的跳过名单
 // 与下面的 `continue` 各有一处）⇒ 交付包里的文档一直是旧的（用户装到的包里，`目标/` 那份交接文档
