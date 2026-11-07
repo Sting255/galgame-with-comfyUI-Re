@@ -176,6 +176,14 @@ export function getCurrentSceneOutfit(characterId) {
   return request(`/characters/${characterId}/outfit-now`)
 }
 
+/**
+ * 用一句中文要求生成本套服装：后端先在衣服库里模糊筛出候选 tag，再让模型挑 tag 并写英文描述。
+ * @returns {Promise<{appearance: string, tags: string[], candidates: Array<{tag,label}>}>}
+ */
+export function generateOutfitFromBrief(characterId, { scene, brief, basePrompt }) {
+  return request(`/characters/${characterId}/outfit-from-brief`, { method: 'POST', body: { scene, brief, basePrompt } })
+}
+
 /** 删除角色自定义的服装类型（内置三套不给删，后端会拒） */
 export function deleteSceneOutfitType(characterId, scene) {
   return request(`/characters/${characterId}/outfit-scenes/${encodeURIComponent(scene)}`, { method: 'DELETE' })

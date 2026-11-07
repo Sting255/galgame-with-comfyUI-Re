@@ -234,6 +234,18 @@
                                 {{ isWearingThisScene ? '正在穿 · 取消指定' : '现在穿这套' }}
                               </linshe-button>
                             </div>
+                            <div class="scene-brief-row">
+                              <linshe-input
+                                v-model="outfitBrief" size="sm" :disabled="outfitBatchRunning || outfitBriefGenerating"
+                                placeholder="想要什么样的？例：黑色蕾丝连衣裙配高跟鞋"
+                                @keyup.enter="generateOutfitByBrief"
+                              />
+                              <linshe-button
+                                variant="secondary" size="sm" :loading="outfitBriefGenerating"
+                                :disabled="outfitBatchRunning || outfitBriefGenerating || !outfitBrief.trim()"
+                                @click="generateOutfitByBrief"
+                              >按这个生成</linshe-button>
+                            </div>
                             <linshe-input
                               v-model="activeSceneOutfit.description" type="textarea" rows="10" :disabled="outfitBatchRunning"
                               :aria-label="`${activeSceneOutfit.scene === 'work' ? '默认' : activeSceneOutfit.sceneLabel}外观描述`"
@@ -968,6 +980,9 @@ async function retryLoadSceneOutfits() {
 // 以工装为锚，只让模型换衣服，身体特征保持不变。
 // 注意变量名别与立绘的 sceneGenerating 撞（那是「生成某场景立绘」用的）。
 const outfitGenerating = ref(false)
+// 「我想要什么样的衣服」：一句话 → 后端在衣服库里模糊筛候选 tag → 模型挑 tag 写英文描述
+const outfitBrief = ref('')
+const outfitBriefGenerating = ref(false)
 const activeOutfitBatch = computed(() => imageEditTasks.tasks.find(task =>
   task.action === 'scene_outfits' && task.status === 'running' && Number(task.meta?.characterId) === Number(props.character?.id)
 ))
@@ -1023,6 +1038,31 @@ async function generateThisSceneOutfit() {
     toastFn('生成失败：' + (err?.message || '未知错误'), 'error')
   } finally {
     outfitGenerating.value = false
+  }
+}
+
+// 按「一句话需求」生成本套服装：后端先在衣服库模糊筛候选 tag，模型再挑 tag 并写英文描述。
+// 与「自动生成本套」的区别：那条是按人设自由发挥，这条是照你说的要求来（也能命中衣服库里的具体 tag）。
+async function generateOutfitByBrief() {
+  const c = props.character
+  const slot = activeSceneOutfit.value
+  const brief = outfitBrief.value.trim()
+  if (!c || !slot || !brief || outfitBriefGenerating.value || outfitBatchRunning.value) return
+  outfitBriefGenerating.value = true
+  try {
+    const result = await api.generateOutfitFromBrief(c.id, { scene: slot.scene, brief, basePrompt: workOutfitText.value || undefined })
+    const appearance = String(result?.appearance || '').trim()
+    if (!appearance) { toastFn('模型没有返回描述，稍后再试', 'warning'); return }
+    slot.description = appearance
+    detail.dirty = true
+    const tags = Array.isArray(result?.tags) ? result.tags : []
+    toastFn(tags.length ? `已生成，用到：${tags.slice(0, 6).join('、')}` : '已生成这套的服装描述', 'success')
+    outfitBrief.value = ''
+  } catch (err) {
+    console.error('generateOutfitByBrief failed:', err)
+    toastFn('生成失败：' + (err?.message || '未知错误'), 'error')
+  } finally {
+    outfitBriefGenerating.value = false
   }
 }
 
@@ -2457,6 +2497,10 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .scene-stand-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .scene-stand-upload { display: inline-flex; }
 .scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* 「我想要什么样的衣服」：一句话需求 + 生成按钮，紧贴在描述框上方 */
+.scene-brief-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.scene-brief-row > :first-child { flex: 1; min-width: 0; }
+.scene-brief-row > :last-child { flex-shrink: 0; }
 /* 自定义服装类型：页签下方的添加/删除行 */
 .scene-type-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .scene-type-input { max-width: 220px; }

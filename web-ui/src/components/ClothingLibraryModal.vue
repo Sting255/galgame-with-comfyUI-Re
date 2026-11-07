@@ -133,15 +133,36 @@ const categoryEntries = computed(() => availableEntries.value.filter(entry => ca
 const subcategoryOptions = computed(() => [{ value: 'all', label: '全部子类' }, ...[...new Set(categoryEntries.value.flatMap(entry => entry.subcategories))].map(value => ({ value, label: value }))])
 const filtered = computed(() => {
   const search = query.value.trim().toLowerCase().replace(/_/g, ' ')
-  // 搜索要带中文别名（2026-11-07：用户搜「丝袜」搜不到，库里叫「连裤袜 pantyhose」）
+  const compact = search.replace(/\s+/g, '')
+  // 搜索要带中文别名，并容忍整句/错别字（2026-11-07 用户：搜「丝袜」搜不到、
+  // 库里叫「连裤袜 pantyhose」；「白色蕾丝裙」这种整句也一样要能撞上）
   const hay = entry => `${entry.tag} ${entry.label} ${entry.description} ${(entry.aliases || []).join(' ')}`.toLowerCase().replace(/_/g, ' ')
-  const entries = categoryEntries.value.filter(entry => (scope.value !== 'selected' || tags.value.includes(entry.tag)) && (subcategory.value === 'all' || entry.subcategories.includes(subcategory.value)) && (!search || hay(entry).includes(search)))
+  const labelOf = entry => String(entry.label || '').toLowerCase()
+  const tagOf = entry => String(entry.tag || '').toLowerCase().replace(/_/g, ' ')
+  const aliasesOf = entry => (entry.aliases || []).map(a => String(a).toLowerCase())
+  const matches = entry => {
+    if (!compact) return true
+    const label = labelOf(entry)
+    const tag = tagOf(entry)
+    const aliases = aliasesOf(entry)
+    if (label.includes(compact) || tag.includes(compact) || aliases.some(a => a.includes(compact))) return true
+    // 反向：词条名出现在整句里（「黑丝配高跟鞋」→ 黑丝 / 高跟鞋）
+    if (label.length >= 2 && compact.includes(label)) return true
+    if (aliases.some(a => a.length >= 2 && compact.includes(a))) return true
+    // 兜底：字符覆盖率（容忍错别字）
+    const chars = [...new Set(compact)]
+    const h = hay(entry)
+    return chars.filter(c => h.includes(c)).length / chars.length >= 0.7
+  }
+  const entries = categoryEntries.value.filter(entry => (scope.value !== 'selected' || tags.value.includes(entry.tag)) && (subcategory.value === 'all' || entry.subcategories.includes(subcategory.value)) && matches(entry))
   if (!search) return entries
   const score = entry => {
-    const tag = entry.tag.toLowerCase().replace(/_/g, ' ')
-    const aliases = (entry.aliases || []).map(a => String(a).toLowerCase())
-    if (tag === search || entry.label === search || aliases.includes(search)) return 0
-    return `${tag} ${entry.label} ${aliases.join(' ')}`.toLowerCase().includes(search) ? 1 : 2
+    const tag = tagOf(entry)
+    const aliases = aliasesOf(entry)
+    const label = labelOf(entry)
+    if (tag === search || label === search || aliases.includes(search)) return 0
+    if (aliases.some(a => a.length >= 2 && compact.includes(a))) return 1
+    return `${tag} ${label} ${aliases.join(' ')}`.toLowerCase().includes(search) ? 2 : 3
   }
   return entries.sort((a, b) => score(a) - score(b))
 })
