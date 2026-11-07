@@ -132,7 +132,7 @@
                         <template v-if="section.key === 'persona'"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M8 13h8M8 17h6" /></template>
                         <template v-else><path d="m8 3-6 4 3 5 3-2v11h8V10l3 2 3-5-6-4a4 4 0 0 1-8 0Z" /></template>
                       </svg></span>
-                      <span class="persona-section-title">{{ section.label }}<span class="persona-section-subtitle">{{ section.key === 'persona' ? '身份 · 性格 · 经历' : '默认 · 私服 · 居家 · 睡衣' }}</span></span>
+                      <span class="persona-section-title">{{ section.label }}<span class="persona-section-subtitle">{{ section.key === 'persona' ? '身份 · 性格 · 经历' : outfitSceneSummary }}</span></span>
                       <svg class="persona-section-chevron" :class="{ open: editorSection === section.key }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
                     </div>
                   </h4>
@@ -983,6 +983,19 @@ const outfitGenerating = ref(false)
 // 「我想要什么样的衣服」：一句话 → 后端在衣服库里模糊筛候选 tag → 模型挑 tag 写英文描述
 const outfitBrief = ref('')
 const outfitBriefGenerating = ref(false)
+// 折叠标题的副标题：跟着角色实际的服装套数走，别再写死「私服 · 居家」（这两个场景已删）
+const outfitSceneSummary = computed(() => {
+  const list = Array.isArray(detail.sceneOutfits) ? detail.sceneOutfits : []
+  if (!list.length) return '按角色自定义'
+  // 默认在前、睡衣其次、裸体最后，自定义类型排在后面
+  const order = { work: 0, sleep: 1, nude: 2 }
+  const labels = [...list]
+    .sort((a, b) => (order[a.scene] ?? 5) - (order[b.scene] ?? 5))
+    .map(o => (o.scene === 'work' ? '默认' : (o.sceneLabel || o.name || '')))
+    .filter(Boolean)
+  if (labels.length <= 4) return labels.join(' · ')
+  return `${labels.slice(0, 4).join(' · ')} 等 ${labels.length} 套`
+})
 const activeOutfitBatch = computed(() => imageEditTasks.tasks.find(task =>
   task.action === 'scene_outfits' && task.status === 'running' && Number(task.meta?.characterId) === Number(props.character?.id)
 ))
