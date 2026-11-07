@@ -20,7 +20,7 @@ import {
   DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, MEDIA_AUTO_STEPS,
 } from '../services/mediaService.js';
 import { config, updateMediaAutoMinutes } from '../config.js';
-import { generateMediaOutletDraft } from '../services/mediaOutletDesigner.js';
+import { generateMediaOutletDraft, redesignMediaOutlet } from '../services/mediaOutletDesigner.js';
 import { mediaAvatarLibrary } from '../services/mediaAvatarLibrary.js';
 import { getDb } from '../db/index.js';
 import { setMediaPostFavorite } from '../db/mediaFavorites.js';
@@ -53,6 +53,21 @@ router.post('/avatars/:id/regenerate', (req, res) => {
 router.post('/outlets/draft', async (req, res) => {
   try {
     res.json({ draft: await generateMediaOutletDraft(req.body || {}) });
+  } catch (err) { fail(res, err); }
+});
+
+// POST /api/media/outlets/:id/redesign — 按当前世界观重写这家媒体的设定与板块（只回草稿，不落库）
+router.post('/outlets/:id/redesign', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const outlet = getOutlet(id);
+    if (!outlet) return res.status(404).json({ error: '媒体不存在' });
+    const draft = await redesignMediaOutlet({
+      outlet,
+      boards: listBoards(id),
+      layout: outlet.layout === 'feed' ? 'feed' : 'portal',
+    });
+    res.json({ draft });
   } catch (err) { fail(res, err); }
 });
 

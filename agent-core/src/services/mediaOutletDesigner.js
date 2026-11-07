@@ -64,3 +64,49 @@ export async function generateMediaOutletDraft({ brief, layout = 'portal' } = {}
   try { parsed = JSON.parse(raw); } catch { throw new Error('栏目草稿格式不正确，请重新生成'); }
   return { ...normalizeMediaOutletDraft(parsed), layout };
 }
+
+/**
+ * 按当前世界观重写一家已有媒体（2026-11-07 用户：「媒体完全独立在世界观外面，要一键修改」）。
+ *
+ * 为什么需要：老媒体是在别的世界观下标定的，编辑风格里写着自己的专有名词（周刊登场人物、
+ * 固定地名、上个世界的梗）。生成内容时虽然会把世界设定塞进 system，模型仍会跟着编辑风格走，
+ * 于是这家媒体怎么换世界观都还是老样子。
+ *
+ * 只返回草稿，不落库：用户在表单里看过、改过、点保存才生效。
+ */
+export async function redesignMediaOutlet({ outlet, boards = [], layout = 'portal' } = {}) {
+  if (!outlet || typeof outlet !== 'object') throw Object.assign(new Error('媒体不存在'), { statusCode: 404 });
+  const type = layout === 'feed' ? '社交平台（feed）' : '数字报刊（portal）';
+  const boardText = (Array.isArray(boards) ? boards : [])
+    .filter(board => board?.name)
+    .map(board => `- ${board.name}${board.desc ? `：${board.desc}` : ''}`)
+    .join('\n') || '（暂无板块）';
+  const messages = [{ role: 'system', content: getSystemRulesWithWorld({ roleplay: false }) }];
+  if (getWorldSetting()) messages.push({ role: 'system', content: getWorldIntegrationRule('moments') });
+  messages.push({ role: 'system', content: MEDIA_OUTLET_DESIGN_PROMPT });
+  messages.push({
+    role: 'user',
+    content: `按当前世界观重写这家${type}栏目，输出完整的新草稿（不要保留与世界设定冲突的专有名词、时代感、旧题材）。
+
+【现有设定】
+名称：${outlet.name || '（无）'}
+介绍：${outlet.tagline || '（无）'}
+编辑风格：
+${String(outlet.prompt || '（无）').slice(0, 4000)}
+
+现有板块：
+${boardText}
+
+【重写要求】
+- 保留它作为一个内容源的功能定位（例如访谈周刊、八卦小报、社区论坛），但人物、地名、机构、时代细节全部换成当前世界观里成立的东西。
+- 编辑风格仍按【身份与读者】【语气与署名】【选题与板块】【多样性】【写作规则】五段写，400 至 2000 字。
+- 板块给 4 个，各有独立定位，不要与现有板块简单照抄。
+- 名称与介绍也要跟着世界观走，不能只是把旧名字换个字。`,
+  });
+  const raw = await chatSync(messages, {
+    temperature: 0.8, response_format: { type: 'json_object' }, label: 'media:按世界观重写',
+  });
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new Error('重写结果格式不正确，请重新生成'); }
+  return { ...normalizeMediaOutletDraft(parsed), layout };
+}

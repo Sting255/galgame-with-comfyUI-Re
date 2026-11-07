@@ -2193,6 +2193,10 @@ export function createMediaOutlet(body) {
 export function generateMediaOutletDraft(body, signal) {
   return request('/media/outlets/draft', { method: 'POST', body, signal })
 }
+// 按当前世界观重写一家已有媒体的设定与板块（只回草稿，不落库）
+export function redesignMediaOutlet(id, signal) {
+  return request(`/media/outlets/${id}/redesign`, { method: 'POST', body: {}, signal })
+}
 export function updateMediaOutlet(id, body) {
   return request(`/media/outlets/${id}`, { method: 'PUT', body })
 }

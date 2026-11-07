@@ -73,13 +73,23 @@
                 </span>
                 <h3>{{ isNew ? (form.name || '给新媒体一个独特的声音') : form.name }}</h3>
               </div>
-              <linshe-switch
-                v-model="form.enabled"
-                on-text="已启用"
-                off-text="已停用"
-                aria-label="启用该媒体"
-                :disabled="saving"
-              />
+              <div class="ms-head-actions">
+                <linshe-button
+                  v-if="!isNew"
+                  size="sm"
+                  variant="ghost"
+                  :loading="rewriting"
+                  :disabled="saving || rewriting"
+                  @click="redesignByWorld"
+                >{{ rewriting ? '正在重写…' : '✦ 按世界观重写' }}</linshe-button>
+                <linshe-switch
+                  v-model="form.enabled"
+                  on-text="已启用"
+                  off-text="已停用"
+                  aria-label="启用该媒体"
+                  :disabled="saving"
+                />
+              </div>
             </div>
             <fieldset :disabled="saving" class="ms-fields">
               <section v-if="isNew" class="ms-assistant" aria-labelledby="media-assistant-title">
@@ -156,6 +166,17 @@
                   <span>{{ boards.length }} 个板块</span>
                 </div>
                 <p v-if="isNew" class="ms-hint">草稿板块会随媒体一起创建。数字报刊每期的四个栏目由编辑风格引导生成。</p>
+                <div v-if="redesignBoards.length" class="ms-redesign-boards">
+                  <p class="ms-hint">
+                    按当前世界观建议换成这 4 个板块：<strong>{{ redesignBoards.map(b => b.name).join('、') }}</strong>
+                  </p>
+                  <linshe-button size="sm" :loading="applyingBoards" :disabled="saving" @click="applyRedesignBoards">
+                    替换现有板块
+                  </linshe-button>
+                  <linshe-button size="sm" variant="ghost" :disabled="saving" @click="redesignBoards = []">
+                    不用了
+                  </linshe-button>
+                </div>
                 <template v-if="form">
                   <div class="ms-board-list">
                     <div v-for="b in boards" :key="b.id" class="ms-board-row">
@@ -329,6 +350,63 @@ function applyDraft() {
   form.value = { ...form.value, ...fields }
   boards.value = draftBoards.map(b => ({ ...b, id: `draft-${++localBoardId}` }))
   toastFn?.('草稿已填入，可继续修改；点击「创建媒体」后保存', 'success')
+}
+
+// ── 按当前世界观重写（2026-11-07 用户：媒体完全独立在世界观外面）──
+// 老媒体的编辑风格是在别的世界观下标定的，里面写着自己的专有名词与时代细节，
+// 生成时即使塞了世界设定，模型仍会跟着它走。这里只改表单，点「保存修改」才生效。
+const rewriting = ref(false)
+const redesignBoards = ref([])
+const applyingBoards = ref(false)
+
+async function redesignByWorld() {
+  if (isNew.value || !editingId.value || rewriting.value || saving.value) return
+  rewriting.value = true
+  try {
+    const { draft } = await api.redesignMediaOutlet(editingId.value)
+    if (!draft) throw new Error('重写结果为空，请重试')
+    form.value = {
+      ...form.value,
+      name: draft.name,
+      icon: draft.icon,
+      tagline: draft.tagline,
+      prompt: draft.prompt,
+    }
+    // 板块不自动改：删板块不可逆（帖子会变未分类），交给用户在下方确认
+    redesignBoards.value = Array.isArray(draft.boards) ? draft.boards : []
+    toastFn?.('已按当前世界观重写，点「保存修改」生效；板块建议在下方', 'success')
+  } catch (err) {
+    toastFn?.('重写失败：' + (err?.message || ''), 'error')
+  } finally {
+    rewriting.value = false
+  }
+}
+
+async function applyRedesignBoards() {
+  if (!redesignBoards.value.length || applyingBoards.value || !editingId.value) return
+  const ok = await confirmRemoval(
+    `把现有 ${boards.value.length} 个板块替换成这 ${redesignBoards.value.length} 个？\n旧板块下的帖子不会被删除，只会变成未分类。`
+  )
+  if (!ok) return
+  applyingBoards.value = true
+  try {
+    for (const board of [...boards.value]) {
+      if (String(board.id).startsWith('draft-')) continue
+      await api.deleteMediaBoard(board.id)
+    }
+    for (const board of redesignBoards.value) {
+      await api.createMediaBoard(editingId.value, { name: board.name, desc: board.desc || '' })
+    }
+    await reloadBoards()
+    await refreshList()
+    emit('changed')
+    redesignBoards.value = []
+    toastFn?.('板块已替换', 'success')
+  } catch (err) {
+    toastFn?.('替换板块失败：' + (err?.message || ''), 'error')
+  } finally {
+    applyingBoards.value = false
+  }
 }
 
 const canSave = computed(
@@ -687,6 +765,27 @@ async function removeBoard(b) {
   font-size: var(--fs-lg);
   color: var(--text-bright);
   overflow-wrap: anywhere;
+}
+/* 标题右侧：按世界观重写按钮与启用开关同一行 */
+.ms-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.ms-redesign-boards {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.03));
+}
+.ms-redesign-boards .ms-hint {
+  margin: 0;
+  flex: 1 1 100%;
 }
 .ms-fields {
   margin: 0;
