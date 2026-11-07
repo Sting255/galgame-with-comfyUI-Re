@@ -2078,6 +2078,11 @@ router.delete('/:id/outfit-scenes/:scene', (req, res) => {
   const r = db.prepare('DELETE FROM character_outfits WHERE character_id = ? AND scene = ?').run(char.id, scene);
   // 立绘按 scene 存，跟着一起清掉这一槽（文件由前端确认后再删，这里只删行）
   try { db.prepare('DELETE FROM character_standings WHERE character_id = ? AND scene = ?').run(char.id, scene); } catch { /* 表不存在时忽略 */ }
+  // 2026-11-08：这套要是正被「现在穿这套」钉着，把指定一起清掉，
+  // 否则会留一个指向已删除场景的 override（不会崩，但面板上会显示一套不存在的衣服）。
+  try {
+    db.prepare("UPDATE characters SET outfit_override_scene = '', outfit_override_until = NULL WHERE id = ? AND outfit_override_scene = ?").run(char.id, scene);
+  } catch { /* 老库没有这两列时忽略 */ }
   res.json({ ok: true, removed: r.changes });
 });
 

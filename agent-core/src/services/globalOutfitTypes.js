@@ -120,8 +120,15 @@ export function deleteGlobalOutfitType(id) {
   const removed = db.transaction(() => {
     const outfits = db.prepare('DELETE FROM character_outfits WHERE scene = ?').run(scene).changes;
     const standings = db.prepare('DELETE FROM character_standings WHERE scene = ?').run(scene).changes;
+    // 正被「现在穿这套」钉着的角色要把指定清掉，否则留一个指向已删除场景的 override
+    let overrides = 0;
+    try {
+      overrides = db.prepare(
+        "UPDATE characters SET outfit_override_scene = '', outfit_override_until = NULL WHERE outfit_override_scene = ?"
+      ).run(scene).changes;
+    } catch { /* 老库没有这两列时忽略 */ }
     db.prepare('DELETE FROM global_outfit_types WHERE id = ?').run(typeId);
-    return { outfits, standings };
+    return { outfits, standings, overrides };
   })();
   return { id: typeId, name: row.name, scene, ...removed };
 }
