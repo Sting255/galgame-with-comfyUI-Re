@@ -3,6 +3,31 @@
   "source": "文生图创作 / 0-语料 / 服装",
   "categories": [
     {
+      "value": "裙子",
+      "label": "裙子",
+      "count": 227
+    },
+    {
+      "value": "袜子",
+      "label": "袜子",
+      "count": 149
+    },
+    {
+      "value": "套装",
+      "label": "套装",
+      "count": 143
+    },
+    {
+      "value": "鞋子",
+      "label": "鞋子",
+      "count": 121
+    },
+    {
+      "value": "上衣",
+      "label": "上衣",
+      "count": 98
+    },
+    {
       "value": "衬衫",
       "label": "衬衫",
       "count": 97
@@ -13,39 +38,19 @@
       "count": 91
     },
     {
-      "value": "礼服",
-      "label": "礼服",
-      "count": 70
-    },
-    {
-      "value": "裙子",
-      "label": "裙子",
-      "count": 224
-    },
-    {
-      "value": "上衣",
-      "label": "上衣",
-      "count": 95
-    },
-    {
-      "value": "套装",
-      "label": "套装",
-      "count": 142
-    },
-    {
-      "value": "袜子",
-      "label": "袜子",
-      "count": 147
-    },
-    {
-      "value": "鞋子",
-      "label": "鞋子",
-      "count": 121
-    },
-    {
       "value": "泳装",
       "label": "泳装",
       "count": 88
+    },
+    {
+      "value": "礼服",
+      "label": "礼服",
+      "count": 72
+    },
+    {
+      "value": "内衣",
+      "label": "内衣",
+      "count": 30
     }
   ],
   "entries": [
@@ -2163,7 +2168,11 @@
         "通用正式礼服",
         "礼服/仪式"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "晚礼服",
+        "长礼服"
+      ]
     },
     {
       "tag": "cocktail_dress",
@@ -2178,7 +2187,11 @@
         "通用正式礼服",
         "礼服/仪式"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "小礼服",
+        "酒会裙"
+      ]
     },
     {
       "tag": "long_dress",
@@ -2484,7 +2497,11 @@
         "西式婚礼礼装",
         "礼服/仪式"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "婚纱",
+        "结婚礼服"
+      ]
     },
     {
       "tag": "bridal_veil",
@@ -2496,7 +2513,11 @@
       "subcategories": [
         "西式婚礼礼装"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "头纱",
+        "婚纱头纱"
+      ]
     },
     {
       "tag": "bridal_gauntlets",
@@ -3723,10 +3744,15 @@
       "label": "薄透睡袍/性感睡裙",
       "description": "轻薄、柔软、常带蕾丝或半透明材质的女性睡衣/家居内衣，通常比普通 nightgown 更强调性感、轻盈和装饰性。",
       "categories": [
-        "裙子"
+        "裙子",
+        "内衣"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "睡裙",
+        "薄纱睡衣"
+      ]
     },
     {
       "tag": "nightgown",
@@ -4807,7 +4833,11 @@
       "subcategories": [
         "职业装"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "女仆装",
+        "女仆"
+      ]
     },
     {
       "tag": "qi_maid",
@@ -4844,20 +4874,30 @@
       "label": "娃娃式短睡裙",
       "description": "娃娃式短睡衣/内衣裙，通常从胸下或高腰处向下宽松散开，长度较短，常用薄纱、蕾丝或轻薄面料，强调轻盈和性感。",
       "categories": [
-        "裙子"
+        "裙子",
+        "内衣"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "娃娃装",
+        "性感睡衣"
+      ]
     },
     {
       "tag": "chemise",
       "label": "衬裙式睡衣/贴身裙装",
       "description": "衬裙式贴身睡衣/内衣，通常为直筒或微收腰的轻薄无袖裙装，长度多在大腿至膝部，结构比 babydoll 更简洁贴身。",
       "categories": [
-        "裙子"
+        "裙子",
+        "内衣"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "衬裙",
+        "睡裙"
+      ]
     },
     {
       "tag": "frilled_babydoll",
@@ -4954,7 +4994,8 @@
       "label": "吊带背心",
       "description": "以细肩带固定的轻薄女式背心。",
       "categories": [
-        "上衣"
+        "上衣",
+        "内衣"
       ],
       "subcategories": [
         "背心 / 短上衣"
@@ -5038,7 +5079,8 @@
       "label": "束腰 / 紧身胸衣",
       "description": "通过硬挺结构或系带塑造躯干线条的服装。",
       "categories": [
-        "上衣"
+        "上衣",
+        "内衣"
       ],
       "subcategories": [
         "背心 / 短上衣"
@@ -6899,7 +6941,11 @@
       "subcategories": [
         "网络梗服饰"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "兔女郎",
+        "花花公子"
+      ]
     },
     {
       "tag": "naked_apron",
@@ -7261,7 +7307,11 @@
         "连体/功能服",
         "袜子种类"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "全身袜",
+        "连体网衣"
+      ]
     },
     {
       "tag": "jumpsuit",
@@ -7429,7 +7479,11 @@
       "subcategories": [
         "袜子种类"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "及膝袜",
+        "中筒袜"
+      ]
     },
     {
       "tag": "over-kneehighs",
@@ -7453,7 +7507,16 @@
       "subcategories": [
         "袜子种类"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "大腿袜",
+        "长筒袜",
+        "过膝袜",
+        "绝对领域",
+        "thigh highs",
+        "丝袜",
+        "过膝丝袜"
+      ]
     },
     {
       "tag": "hiphighs",
@@ -7477,7 +7540,14 @@
       "subcategories": [
         "袜子种类"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "丝袜",
+        "黑丝",
+        "肉丝",
+        "连裤丝袜",
+        "tights"
+      ]
     },
     {
       "tag": "tabi",
@@ -7885,7 +7955,10 @@
       "subcategories": [
         "邻近腿部配饰"
       ],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "袜夹"
+      ]
     },
     {
       "tag": "adjusting_legwear",
@@ -10718,7 +10791,11 @@
         "泳装"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "微型比基尼",
+        "超小比基尼"
+      ]
     },
     {
       "tag": "string_bikini",
@@ -10728,7 +10805,10 @@
         "泳装"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "系带比基尼"
+      ]
     },
     {
       "tag": "pretzel_bikini",
@@ -11068,7 +11148,11 @@
         "泳装"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "连体泳衣",
+        "一件式泳衣"
+      ]
     },
     {
       "tag": "casual_one-piece_swimsuit",
@@ -11098,7 +11182,11 @@
         "泳装"
       ],
       "subcategories": [],
-      "kind": "outfit"
+      "kind": "outfit",
+      "aliases": [
+        "校园泳装",
+        "死库水"
+      ]
     },
     {
       "tag": "monokini",
@@ -11349,6 +11437,380 @@
       ],
       "subcategories": [],
       "kind": "scene"
+    },
+    {
+      "tag": "bra",
+      "label": "胸罩",
+      "description": "罩住胸部的内衣，可带钢圈、肩带与背扣；不同杯型与款式差异很大。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "胸罩",
+        "文胸",
+        "内衣"
+      ]
+    },
+    {
+      "tag": "bralette",
+      "label": "无钢圈胸罩",
+      "description": "没有钢圈的软杯胸罩，布料少、结构轻。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "sports_bra",
+      "label": "运动内衣",
+      "description": "运动中穿的支撑型内衣，多为一字领与宽肩带。",
+      "categories": [
+        "内衣",
+        "上衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "strapless_bra",
+      "label": "无肩带胸罩",
+      "description": "去掉肩带的胸罩，靠侧收与背扣固定。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "lace_bra",
+      "label": "蕾丝胸罩",
+      "description": "表面是蕾丝纹样的胸罩。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "sheer_bra",
+      "label": "薄纱胸罩",
+      "description": "半透明材质的胸罩。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "pasties",
+      "label": "乳贴",
+      "description": "只遮住乳头的小片贴饰，其余部位裸露。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "panties",
+      "label": "内裤",
+      "description": "覆盖下体的内衣物，款式与覆盖面积差异很大。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "内裤",
+        "三角裤",
+        "胖次"
+      ]
+    },
+    {
+      "tag": "thong",
+      "label": "丁字裤",
+      "description": "后部只有一条细带的内裤。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "boyshorts",
+      "label": "平角内裤",
+      "description": "像短裤一样包住臀部的内裤。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "lingerie",
+      "label": "情趣内衣",
+      "description": "以装饰与情调为目的的内衣组合，通常含蕾丝、薄纱、绑带。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "情趣内衣",
+        "内衣",
+        "性感内衣"
+      ]
+    },
+    {
+      "tag": "teddy",
+      "label": "连体情趣内衣",
+      "description": "上半身与下半身连成一件的薄透内衣。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "连体内衣",
+        "情趣连体衣"
+      ]
+    },
+    {
+      "tag": "slip",
+      "label": "衬裙",
+      "description": "穿在裙内的薄质衬裙，也可单穿。",
+      "categories": [
+        "内衣",
+        "裙子"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "fishnet_stockings",
+      "label": "网袜",
+      "description": "网眼结构的袜子，露出皮肤。",
+      "categories": [
+        "内衣",
+        "袜子"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "网袜",
+        "渔网袜",
+        "网眼袜"
+      ]
+    },
+    {
+      "tag": "garter_belt",
+      "label": "吊袜带",
+      "description": "绕过腰臀、用夹子固定袜子的带子。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "吊袜带",
+        "袜带"
+      ]
+    },
+    {
+      "tag": "waist_cincher",
+      "label": "收腰束带",
+      "description": "只包住腰腹的紧身束带。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "underbust_corset",
+      "label": "下胸束腰",
+      "description": "束腰的支撑位置在胸部以下。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "bodysuit",
+      "label": "连体紧身衣",
+      "description": "上身与裆部连成一件的紧身衣物。",
+      "categories": [
+        "内衣",
+        "上衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "leotard",
+      "label": "体操连衣",
+      "description": "紧贴躯干的连体衣，常为高叉。",
+      "categories": [
+        "内衣",
+        "上衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "bunny_suit",
+      "label": "兔女郎装",
+      "description": "兔女郎制式：连体紧身衣 + 兔耳 + 袖口 + 尾巴。",
+      "categories": [
+        "内衣",
+        "套装"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "兔女郎",
+        "兔女郎装"
+      ]
+    },
+    {
+      "tag": "ball_gown",
+      "label": "舞会长裙",
+      "description": "裙摆很长、结构隆重的正式礼服，常见于舞会与婚礼。",
+      "categories": [
+        "礼服",
+        "裙子"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "长裙",
+        "晚礼服",
+        "舞会裙"
+      ]
+    },
+    {
+      "tag": "cheongsam",
+      "label": "旗袍",
+      "description": "中式立领、侧开衩的贴身长裙。",
+      "categories": [
+        "礼服",
+        "裙子"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "旗袍",
+        "中国裙"
+      ]
+    },
+    {
+      "tag": "stockings",
+      "label": "长袜",
+      "description": "覆盖小腿到脚部的袜子，长度通常到膝下或及膝；与 pantyhose（连裤）和 thighhighs（过膝）区分。",
+      "categories": [
+        "袜子",
+        "内衣"
+      ],
+      "subcategories": [
+        "袜子种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "cupless_bra",
+      "label": "开胸胸罩",
+      "description": "胸前敞开、只托住下半胸的胸罩。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "open_bra",
+      "label": "敞开胸罩",
+      "description": "罩杯可解开或前开的胸罩。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "crotchless_panties",
+      "label": "开裆内裤",
+      "description": "裆部敞开的内裤。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
+    },
+    {
+      "tag": "string_panties",
+      "label": "系带内裤",
+      "description": "靠两侧细带固定的内裤。",
+      "categories": [
+        "内衣"
+      ],
+      "subcategories": [
+        "内衣种类"
+      ],
+      "kind": "outfit"
     }
   ]
 }

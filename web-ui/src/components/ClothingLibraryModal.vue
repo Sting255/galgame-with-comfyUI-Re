@@ -133,12 +133,15 @@ const categoryEntries = computed(() => availableEntries.value.filter(entry => ca
 const subcategoryOptions = computed(() => [{ value: 'all', label: '全部子类' }, ...[...new Set(categoryEntries.value.flatMap(entry => entry.subcategories))].map(value => ({ value, label: value }))])
 const filtered = computed(() => {
   const search = query.value.trim().toLowerCase().replace(/_/g, ' ')
-  const entries = categoryEntries.value.filter(entry => (scope.value !== 'selected' || tags.value.includes(entry.tag)) && (subcategory.value === 'all' || entry.subcategories.includes(subcategory.value)) && (!search || `${entry.tag} ${entry.label} ${entry.description}`.toLowerCase().replace(/_/g, ' ').includes(search)))
+  // 搜索要带中文别名（2026-11-07：用户搜「丝袜」搜不到，库里叫「连裤袜 pantyhose」）
+  const hay = entry => `${entry.tag} ${entry.label} ${entry.description} ${(entry.aliases || []).join(' ')}`.toLowerCase().replace(/_/g, ' ')
+  const entries = categoryEntries.value.filter(entry => (scope.value !== 'selected' || tags.value.includes(entry.tag)) && (subcategory.value === 'all' || entry.subcategories.includes(subcategory.value)) && (!search || hay(entry).includes(search)))
   if (!search) return entries
   const score = entry => {
     const tag = entry.tag.toLowerCase().replace(/_/g, ' ')
-    if (tag === search || entry.label === search) return 0
-    return `${tag} ${entry.label}`.toLowerCase().includes(search) ? 1 : 2
+    const aliases = (entry.aliases || []).map(a => String(a).toLowerCase())
+    if (tag === search || entry.label === search || aliases.includes(search)) return 0
+    return `${tag} ${entry.label} ${aliases.join(' ')}`.toLowerCase().includes(search) ? 1 : 2
   }
   return entries.sort((a, b) => score(a) - score(b))
 })
