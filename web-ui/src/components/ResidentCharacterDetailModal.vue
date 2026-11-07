@@ -162,15 +162,22 @@
                       <div v-else class="scene-block">
                         <div class="scene-block-head">
                           <p class="split-hint">默认造型作为常态外观，其余服装随日程切换。</p>
+                          <!-- 一键（2026-11-07 用户选 C）：描述 + 立绘一路走到底；旁边的 Ghost 按钮只出描述 -->
                           <linshe-button
                             v-if="detail.sceneOutfits.length || detail.sceneOutfitsError" variant="secondary" size="sm"
                             :disabled="outfitGenerating || outfitBatchRunning || standingBusy || !workOutfitText" :loading="outfitGenerating"
-                            :title="workOutfitText ? '以默认外观为基准，一次生成其余三套并自动保存' : '先填写默认外观，才能生成其余服装'"
-                            @click="generateOtherSceneOutfits"
+                            :title="workOutfitText ? '以默认外观为基准，生成其余套系的服装描述，并逐套出立绘' : '先填写默认外观，才能生成其余服装'"
+                            @click="generateOtherSceneOutfits()"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 16 11-11a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4ZM13 7l3 3M19 13v6m-3-3h6M6 2v6M3 5h6" /></svg>
-                            一键生成整套系列
+                            {{ standingBatchRunning ? `出图 ${standingBatch.done}/${standingBatch.total}${standingBatch.scene ? ' · ' + standingBatch.scene : ''}` : '一键生成整套系列' }}
                           </linshe-button>
+                          <linshe-button
+                            v-if="detail.sceneOutfits.length || detail.sceneOutfitsError" variant="ghost" size="sm"
+                            :disabled="outfitGenerating || outfitBatchRunning || standingBusy || !workOutfitText"
+                            title="只生成服装描述，不出立绘（省时间）"
+                            @click="generateOtherSceneOutfits({ withStanding: false })"
+                          >只生成描述</linshe-button>
                         </div>
                         <linshe-tabs v-model="detail.sceneTab" :options="sceneTabOptions" size="sm" aria-label="外观服装分类" />
                         <!-- 自定义服装类型（2026-11-07）：每个角色各加各的，类型名交给 LLM 结合世界观生成 -->
@@ -603,15 +610,6 @@
             <div class="modal-actions" style="margin-top:16px">
               <span class="outfit-save-hint">启用中的形态会注入到所有生图链路，优先级高于人物卡原有外观</span>
               <div style="flex:1"></div>
-              <linshe-button
-                variant="secondary"
-                :loading="outfitGenerating"
-                :disabled="outfitBatchRunning || !workOutfitText"
-                :title="workOutfitText ? '按默认外观为基准，一次生成本角色所有服装类型（含自定义）的描述' : '先填写默认外观，才能生成'"
-                @click="generateOtherSceneOutfits"
-              >
-                一键生成所有衣服
-              </linshe-button>
               <linshe-button variant="primary" @click="saveOutfits" :disabled="outfitLoading">
                 {{ outfitLoading ? '保存中…' : '保存' }}
               </linshe-button>
@@ -980,6 +978,9 @@ async function retryLoadSceneOutfits() {
 // 以工装为锚，只让模型换衣服，身体特征保持不变。
 // 注意变量名别与立绘的 sceneGenerating 撞（那是「生成某场景立绘」用的）。
 const outfitGenerating = ref(false)
+// 一键生成整套时的立绘进度（0 = 没在跑）。只用于按钮文案，不参与业务判断。
+const standingBatch = ref({ total: 0, done: 0, scene: '' })
+const standingBatchRunning = computed(() => standingBatch.value.total > 0)
 // 「我想要什么样的衣服」：一句话 → 后端在衣服库里模糊筛候选 tag → 模型挑 tag 写英文描述
 const outfitBrief = ref('')
 const outfitBriefGenerating = ref(false)
@@ -1098,7 +1099,10 @@ async function generateOutfitByBrief() {
   }
 }
 
-async function generateOtherSceneOutfits() {  const c = props.character
+async function generateOtherSceneOutfits(options = {}) {
+  const c = props.character
+  // 2026-11-07（用户选 C）：默认「描述 + 立绘」一路走到底；传 withStanding:false 只出描述。
+  const withStanding = options.withStanding !== false
   if (!c || outfitGenerating.value || outfitBatchRunning.value || standingBusy.value) return
   const base = workOutfitText.value
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
@@ -1128,15 +1132,44 @@ async function generateOtherSceneOutfits() {  const c = props.character
           slot.name = item.name || slot.name
         }
       }
-      toastFn(`已生成 ${generated.length} 套服装`, 'success')
+      if (!withStanding) toastFn(`已生成 ${generated.length} 套服装描述`, 'success')
     } else {
       toastFn('没有生成新的服装描述', 'warning')
+      return
     }
+    // 描述出来后接着逐套出立绘：一套十几秒到一分钟，串行跑完才有意义。
+    // 中途失败不阻断后面，最后统一汇总（见 runStandingBatch）。
+    if (withStanding) await runStandingBatch(generated.map(item => item.scene).filter(Boolean))
   } catch (err) {
     console.error('generateOtherSceneOutfits failed:', err)
     toastFn('生成失败：' + (err?.message || ''), 'error')
   } finally {
     outfitGenerating.value = false
+    standingBatch.value = { total: 0, done: 0, scene: '' }
+  }
+}
+
+/**
+ * 逐套出立绘（一键生成整套的后半段）。
+ * 失败不阻断：跑完全部再汇总，失败的那几套留名字给用户单独重试。
+ */
+async function runStandingBatch(scenes) {
+  const list = (scenes || []).filter(Boolean)
+  if (!list.length) return
+  standingBatch.value = { total: list.length, done: 0, scene: '' }
+  const failed = []
+  for (const scene of list) {
+    const label = detail.sceneOutfits.find(o => o.scene === scene)?.sceneLabel || scene
+    standingBatch.value = { ...standingBatch.value, scene: label }
+    const ok = await generateSceneStanding('', scene, { silent: true })
+    if (ok) standingBatch.value = { ...standingBatch.value, done: standingBatch.value.done + 1 }
+    else failed.push(label)
+  }
+  const total = list.length
+  if (failed.length) {
+    toastFn(`描述已生成，立绘 ${total - failed.length}/${total} 套成功；失败：${failed.join('、')}，可在对应套系里单独重试`, 'warning')
+  } else {
+    toastFn(`整套完成：${total} 套立绘已生成`, 'success')
   }
 }
 
@@ -2008,10 +2041,11 @@ function nextStandingScene() { shiftStandingScene(1) }
  * @param {string} [prompt] - 传了就直接复用该提示词（「再次 Roll 图」），否则让 LLM 出新提示词
  * @param {string} [sceneOverride] - 指定场景（服装页签里用）；不传则用形象面板当前选中的那套
  */
-async function generateSceneStanding(prompt = '', sceneOverride = '') {
+async function generateSceneStanding(prompt = '', sceneOverride = '', options = {}) {
   const c = props.character
   const scene = sceneOverride || currentSceneKey.value
-  if (!c || !scene || standingBusy.value || sceneGenerating.value) return
+  if (!c || !scene || standingBusy.value || sceneGenerating.value) return false
+  const silent = options.silent === true
   standingFuncOpen.value = true
   sceneGenerating.value = true
   try {
@@ -2019,19 +2053,23 @@ async function generateSceneStanding(prompt = '', sceneOverride = '') {
     const res = await api.generateSceneStanding(c.id, scene, standingRequirement.value.trim(), reuse)
     if (res?.task_id) {
       await imageEditTasks.refresh()
-      toastFn('已转入后台执行，完成后在右下角对比确认', 'info')
-      return
+      if (!silent) toastFn('已转入后台执行，完成后在右下角对比确认', 'info')
+      return true
     }
     if (Array.isArray(res?.standings)) standingScenes.value = res.standings
     else await loadSceneStandings(c.id)
     if (res?.prompt_text) standingPrompt.value = res.prompt_text
-    const label = sceneOverride
-      ? (detail.sceneOutfits.find(o => o.scene === sceneOverride)?.sceneLabel || sceneOverride)
-      : currentSceneLabel.value
-    toastFn(`「${label}」形象已生成`, 'success')
+    if (!silent) {
+      const label = sceneOverride
+        ? (detail.sceneOutfits.find(o => o.scene === sceneOverride)?.sceneLabel || sceneOverride)
+        : currentSceneLabel.value
+      toastFn(`「${label}」形象已生成`, 'success')
+    }
+    return true
   } catch (e) {
     console.error('generateSceneStanding failed:', e)
-    toastFn(e?.message || '形象生成失败', 'error')
+    if (!silent) toastFn(e?.message || '形象生成失败', 'error')
+    return false
   } finally {
     sceneGenerating.value = false
   }
