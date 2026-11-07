@@ -2200,8 +2200,8 @@ export function deleteGlobalOutfitType(id) {
 export function applyGlobalOutfitType(id) {
   return request(`/global-outfits/${id}/apply`, { method: 'POST', body: {} })
 }
-export function generateGlobalOutfitType(id, withStanding = true) {
-  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding } })
+export function generateGlobalOutfitType(id, withStanding = true, skipExisting = false) {
+  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding, skipExisting } })
 }
 export function getGlobalOutfitTask(id) {
   return request(`/global-outfits/${id}/task`)

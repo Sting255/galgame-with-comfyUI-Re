@@ -2,6 +2,7 @@
 import { ref, computed, inject, onMounted, onBeforeUnmount } from 'vue'
 import LinsheInput from '../ui/LinsheInput.vue'
 import LinsheButton from '../ui/LinsheButton.vue'
+import LinsheSwitch from '../ui/LinsheSwitch.vue'
 import * as api from '../../api'
 
 /**
@@ -19,6 +20,8 @@ const newName = ref('')
 const loading = ref(false)
 const creating = ref(false)
 const busyId = ref(0)
+// 默认跳过已写好的：批量不该悄悄覆盖手写内容
+const skipExisting = ref(true)
 let timer = null
 
 async function confirmRemoval(title, message, okText = '确定') {
@@ -103,7 +106,7 @@ async function generate(type, withStanding) {
   if (busy(type.id)) return
   busyId.value = type.id
   try {
-    const res = await api.generateGlobalOutfitType(type.id, withStanding)
+    const res = await api.generateGlobalOutfitType(type.id, withStanding, skipExisting.value)
     tasks.value = { ...tasks.value, [type.id]: res.task }
     toastFn?.(
       withStanding
@@ -189,6 +192,11 @@ const runningTask = computed(() => Object.values(tasks.value).find(t => t?.runni
       </linshe-button>
     </div>
 
+    <div class="got-option">
+      <linshe-switch v-model="skipExisting" size="sm" on-text="跳过已写好的" />
+      <span class="got-hint">开启时只处理还没有描述的角色，你手写或改过的那几套不会被覆盖。</span>
+    </div>
+
     <p v-if="loading" class="got-empty">正在读取…</p>
     <p v-else-if="!types.length" class="got-empty">还没有统一服装类型。</p>
 
@@ -201,6 +209,7 @@ const runningTask = computed(() => Object.values(tasks.value).find(t => t?.runni
         </div>
         <div v-if="taskFor(type.id)?.running" class="got-progress" role="status">
           生成中 {{ taskFor(type.id).done }}/{{ taskFor(type.id).total }}
+          <template v-if="taskFor(type.id).skipped"> · 跳过 {{ taskFor(type.id).skipped }}</template>
           <template v-if="taskFor(type.id).current"> · {{ taskFor(type.id).current }}</template>
         </div>
         <div v-else-if="taskFor(type.id)?.failed?.length" class="got-failed">
@@ -267,6 +276,12 @@ const runningTask = computed(() => Object.values(tasks.value).find(t => t?.runni
 .got-create > :first-child {
   flex: 1;
   min-width: 0;
+}
+.got-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .got-empty {
   margin: 0;

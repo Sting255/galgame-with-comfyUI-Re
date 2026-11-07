@@ -212,7 +212,7 @@
                                 @keydown.enter.prevent="previewActiveSceneStanding"
                               >
                                 <img v-if="activeSceneStandingUrl" :src="activeSceneStandingUrl" :alt="`${activeSceneOutfit.sceneLabel}立绘`" />
-                                <span v-else class="scene-stand-empty">这套还没有立绘</span>
+                                <span v-else class="scene-stand-empty">{{ sceneGenerating ? '正在生成这套立绘…' : '这套还没有立绘' }}</span>
                               </div>
                               <div class="scene-stand-meta">
                                 <p class="scene-stand-hint">
@@ -221,7 +221,7 @@
                                     : '文字描述决定生图内容，立绘是它画出来的样子' }}
                                 </p>
                                 <div class="scene-stand-actions">
-                                  <linshe-button size="sm" variant="secondary" :loading="sceneGenerating" :disabled="standingBusy && !sceneGenerating" @click="generateStandingForActiveScene">生成本套立绘</linshe-button>
+                                  <linshe-button size="sm" variant="secondary" :loading="sceneGenerating" :disabled="standingBusy && !sceneGenerating" @click="generateStandingForActiveScene">{{ sceneGenerating ? '生成中…约 30 秒' : '生成本套立绘' }}</linshe-button>
                                   <label class="scene-stand-upload">
                                     <input type="file" accept="image/png,image/jpeg,image/webp" hidden @change="onSceneStandingFileChange" />
                                     <linshe-button size="sm" variant="ghost" :loading="standingUploading">上传本套</linshe-button>
@@ -253,7 +253,7 @@
                                 variant="secondary" size="sm" :loading="outfitBriefGenerating"
                                 :disabled="outfitBatchRunning || outfitBriefGenerating || !outfitBrief.trim()"
                                 @click="generateOutfitByBrief"
-                              >按这个生成</linshe-button>
+                              >{{ outfitBriefGenerating ? '生成中…约 15 秒' : '按这个生成' }}</linshe-button>
                             </div>
                             <linshe-input
                               v-model="activeSceneOutfit.description" type="textarea" rows="10" :disabled="outfitBatchRunning"

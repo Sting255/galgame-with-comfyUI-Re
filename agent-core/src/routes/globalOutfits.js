@@ -32,6 +32,7 @@ function publicTask(task) {
     withStanding: task.withStanding,
     total: task.total,
     done: task.done,
+    skipped: task.skipped,
     current: task.current,
     failed: task.failed,
     startedAt: task.startedAt,
@@ -48,7 +49,7 @@ function baseAppearanceOf(character) {
   return idx >= 0 ? raw.slice(idx).trim() : raw.trim();
 }
 
-async function runBatch(typeId, withStanding) {
+async function runBatch(typeId, withStanding, skipExisting) {
   const db = getDb();
   const type = db.prepare('SELECT id, name FROM global_outfit_types WHERE id = ?').get(typeId);
   const task = tasks.get(typeId);
@@ -60,6 +61,13 @@ async function runBatch(typeId, withStanding) {
     if (task.cancelled) break;
     task.current = character.display_name || `角色 ${character.id}`;
     try {
+      // 跳过已有描述：保护用户手写/改过的这一套，不被批量覆盖
+      if (skipExisting) {
+        const existing = db.prepare(
+          'SELECT description FROM character_outfits WHERE character_id = ? AND scene = ?'
+        ).get(character.id, scene);
+        if (String(existing?.description || '').trim()) { task.skipped++; continue; }
+      }
       // ① 描述：复用五态生成口径（会按世界观与人设写这套衣服）
       const outfits = await generateSceneOutfits(character, {
         scenes: [scene],
@@ -126,13 +134,14 @@ router.post('/:id/generate', (req, res) => {
     const existing = tasks.get(id);
     if (existing?.running) return res.json({ task: publicTask(existing), started: false });
     const withStanding = req.body?.withStanding !== false;
+    const skipExisting = req.body?.skipExisting === true;
     const total = getDb().prepare('SELECT COUNT(*) AS n FROM characters').get()?.n || 0;
     const task = {
-      running: true, withStanding, total, done: 0, current: '', failed: [],
+      running: true, withStanding, skipExisting, total, done: 0, skipped: 0, current: '', failed: [],
       startedAt: new Date().toISOString(), finishedAt: null,
     };
     tasks.set(id, task);
-    runBatch(id, withStanding).catch(error => {
+    runBatch(id, withStanding, skipExisting).catch(error => {
       task.running = false;
       task.finishedAt = new Date().toISOString();
       console.error('[global-outfits] 批量生成异常:', error?.message || error);
