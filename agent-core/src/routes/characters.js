@@ -40,7 +40,7 @@ import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
 // 角色操作反馈（右下角轻通知）：表情类别名 → 语义标记，供 reaction-assets 素材选择
 import { pickReactionMarker } from '../services/emojiService.js';
-import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance } from '../services/clothingLibrary.js';
+import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief } from '../services/clothingLibrary.js';
 
 const router = Router();
 
@@ -74,6 +74,52 @@ router.post('/clothing-appearance-draft', async (req, res) => {
     res.json({ appearance: parseClothingAppearance(raw, entries, scene), tags: entries.map(entry => entry.tag) });
   } catch (error) {
     res.status(502).json({ error: `生成服装提示词失败：${error.message}` });
+  }
+});
+
+// POST /api/characters/:id/outfit-from-brief — 用一句中文要求，自动找 tag 并生成这套服装
+// Body: { scene, brief, basePrompt? }
+// 流程：本地先按 brief 模糊筛出候选 tag → 模型从候选里挑 + 写完整英文描述。
+// 比让模型在 1000 多个词条里瞎挑更准，也更省 token。
+router.post('/:id/outfit-from-brief', async (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id, short_prompt, base_prompt FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+
+  const brief = String(req.body?.brief || '').trim().slice(0, 500);
+  if (!brief) return res.status(400).json({ error: '请先写想要什么样的衣服' });
+  const scene = String(req.body?.scene || 'work').trim();
+  if (!isValidSceneKey(scene)) return res.status(400).json({ error: '服装场景无效' });
+
+  const customRow = String(scene).startsWith('custom_')
+    ? db.prepare('SELECT name FROM character_outfits WHERE character_id = ? AND scene = ?').get(char.id, scene)
+    : null;
+  const sceneLabel = customRow?.name || (OUTFIT_SCENES.find(s => s.key === scene)?.label || '');
+  const basePrompt = String(req.body?.basePrompt || char.base_prompt || '').trim();
+  if (!basePrompt) return res.status(400).json({ error: '角色没有可用的人格卡内容' });
+
+  // 服装类型名本身也是线索（用户可能只写了「泳装」两个字）
+  const candidates = searchClothingTags(`${sceneLabel} ${brief}`.trim(), { limit: 24 });
+  try {
+    const world = getWorldSetting();
+    const messages = buildOutfitFromBriefMessages({
+      systemRules: getSystemRulesWithWorld({ roleplay: false }),
+      worldRule: world ? getWorldIntegrationRule('interaction') : '',
+      persona: buildCharacterPersona({ ...char, base_prompt: basePrompt }, { variant: 'full', outfits: null }),
+      sceneLabel,
+      brief,
+      candidates,
+    });
+    const raw = await chatSync(messages, {
+      model: config.llm.model || 'deepseek-chat',
+      temperature: 0.6,
+      max_tokens: 1600,
+      label: '按需求生成服装',
+    });
+    const parsed = parseOutfitFromBrief(raw);
+    res.json({ ...parsed, candidates: candidates.map(c => ({ tag: c.tag, label: c.label })) });
+  } catch (error) {
+    res.status(502).json({ error: `生成失败：${error.message}` });
   }
 });
 

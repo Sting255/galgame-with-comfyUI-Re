@@ -5,6 +5,66 @@ const catalog = JSON.parse(readFileSync(new URL('../../resources/clothing-librar
 const byTag = new Map(catalog.entries.map(entry => [entry.tag, entry]));
 export function getClothingLibrary() { return catalog; }
 
+/**
+ * 按一段自然语言找候选 tag（2026-11-07：用户要「在自定义衣服那边指定穿什么 + 自动找 tag」）。
+ *
+ * 打分由强到弱：tag / 中文名 / 别名精确命中 > 子串命中 > 字符覆盖率（容忍错别字与语序）。
+ * 只返回 kind === 'outfit' 的词条，动作/场景标签对静态外观没意义。
+ *
+ * @param {string} query 用户输入，如「白色蕾丝连衣裙配黑丝」
+ * @param {{limit?: number}} [opts]
+ * @returns {Array<{tag: string, label: string, description: string, score: number, matched: string}>}
+ */
+export function searchClothingTags(query, { limit = 24 } = {}) {
+  const raw = String(query || '').trim().toLowerCase();
+  if (!raw) return [];
+  const terms = raw.split(/[\s,，、;；]+/).filter(Boolean);
+  const compact = raw.replace(/[\s,，、;；]/g, '');
+
+  const scored = [];
+  for (const entry of catalog.entries) {
+    if (entry.kind !== 'outfit') continue;
+    const label = String(entry.label || '').toLowerCase();
+    const tag = String(entry.tag || '').toLowerCase().replace(/_/g, ' ');
+    const aliases = (entry.aliases || []).map(a => String(a).toLowerCase());
+    const desc = String(entry.description || '').toLowerCase();
+    const hay = `${tag} ${label} ${aliases.join(' ')} ${desc}`;
+
+    let score = 0;
+    let matched = '';
+    // ① 精确命中（整词等于 tag / 中文名 / 别名）
+    if (terms.some(t => t === tag || t === label || aliases.includes(t)) || compact === label || compact === tag) {
+      score = 100; matched = label;
+    }
+    // ② 反向包含：词条的名字/别名出现在用户整句里（「黑丝配高跟鞋」→ 命中 黑丝、高跟鞋）
+    //    这是整句输入最有效的匹配方式，正向 includes 反而几乎命中不了。
+    else if (label.length >= 2 && compact.includes(label)) {
+      score = 90; matched = label;
+    } else if (aliases.some(a => a.length >= 2 && compact.includes(a))) {
+      score = 88; matched = label;
+    }
+    // ③ 正向包含：用户分段后，某个词出现在词条里
+    else if (compact && (label.includes(compact) || tag.includes(compact))) {
+      score = 80; matched = label;
+    } else if (terms.some(t => t.length >= 2 && (label.includes(t) || tag.includes(t) || aliases.some(a => a.includes(t))))) {
+      score = 60; matched = label;
+    }
+    // ④ 字符覆盖率兜底：容忍错别字（「百色蕾丝裙」也能撞上）
+    if (!score && compact.length >= 2) {
+      const chars = [...new Set(compact)];
+      const hit = chars.filter(c => hay.includes(c)).length;
+      const ratio = hit / chars.length;
+      if (ratio >= 0.7) { score = Math.round(ratio * 50); matched = label; }
+    }
+    if (!score) continue;
+    // 鞋子/袜子这类配饰在整句里被提到时略加权，避免被大量裙装淹没
+    if (/(鞋|袜|靴|高跟鞋|丝袜|拖鞋)/.test(raw) && (entry.categories || []).some(c => ['鞋子', '袜子'].includes(c))) score += 5;
+    scored.push({ tag: entry.tag, label: entry.label, description: entry.description, score, matched });
+  }
+  scored.sort((a, b) => b.score - a.score || a.label.length - b.label.length);
+  return scored.slice(0, limit);
+}
+
 export function resolveClothingTags(tags, scene = 'work') {
   // 2026-11-07：私服 / 居家已从枚举移除；角色自定义类型（custom_*）同样允许用衣服库配 tag，
   // 否则新加的「婚纱」「泳装」一点生成就报「服装场景无效」。
@@ -31,6 +91,55 @@ const CLOTHING_PROMPT = `你是角色服装提示词设计师。将后续角色�
 【输出 JSON 示例与字段约束】
 {"appearance":"Yoimiya (Genshin Impact) has blonde hair in a high ponytail and amber eyes, wearing a white collared shirt and a pleated skirt.（此处填至少 30 字符的一整段英文；以本次角色英文名及作品名开头，原创角色只写英文名；完整保留默认身体特征并准确描述每个所选 tag，不能照搬示例人物；不附加标签列表、解释或 Markdown。存在冲突时此字段为空字符串。）","conflict":"（无冲突时为空字符串；有无法兼容的标签时用简短中文说明具体冲突，并请用户调整选择，appearance 留空。）"}
 严格按示例的两个字段输出合法 JSON，不输出任何 JSON 以外的文字。`;
+
+const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用一句中文说他想要这套衣服是什么样，你要先挑出对应的服装 tag，再写成完整的英文外观描述。
+
+【挑 tag 的规则】
+- 优先从后面给出的「候选 tag」里挑，它们都是本库真实存在的词条，直接照抄 tag 字段的英文名。
+- 候选里确实没有的再自己补，但必须是 Danbooru 风格、真实存在的服装 tag（小写、下划线分词，如 black_thighhighs）。
+- 只挑用户提到或明显必需的：衣服本体优先，其次鞋袜、配饰；不要为了凑数堆砌。
+- 用户说的是颜色/材质/长度时，用颜色类 tag 或直接写进描述，不要硬塞一个不相关的 tag。
+
+【写描述的规则】
+- 一整段英文，逗号分隔的短语或流畅句子都可以，最终会直接喂给生图模型。
+- 角色身份、脸部、瞳色、发型、发色、肤色、体型和标志性身体特征沿用默认外观，不遗漏已有身体特征，不臆造缺失特征。
+- 用户的要求是硬性要求，逐项体现；没提到的细节由你按角色人设与世界观合理补全。
+- 不要写动作、表情、姿势、场景、光线、画质、镜头，也不要用中文。
+- 睡衣必须适合睡眠且赤脚（barefoot），不写任何鞋袜。
+
+【输出格式（严格照此 JSON，不要任何解释或代码块）】
+{"tags":["white_dress","lace"],"appearance":"一整段英文外观描述，至少 30 个字符"}`;
+
+/**
+ * 组「按一句要求生成服装」的消息（2026-11-07）。
+ * 候选 tag 由 searchClothingTags 先做本地筛选，模型只在这一小撮里挑，准确率与 token 都更可控。
+ */
+export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [] }) {
+  const candText = candidates.length
+    ? candidates.map(c => `${c.tag}（${c.label}）`).join('、')
+    : '（本次没有筛选出候选，请自行判断）';
+  return [
+    { role: 'system', content: systemRules },
+    ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
+    { role: 'system', content: OUTFIT_FROM_BRIEF_PROMPT },
+    { role: 'system', content: `【角色人设与默认外观】\n${persona}` },
+    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}` },
+    { role: 'user', content: `我想要这套衣服：${brief}\n请挑 tag 并输出英文外观描述，严格按示例 JSON。` },
+  ];
+}
+
+export function parseOutfitFromBrief(raw) {
+  const text = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let result;
+  try { result = JSON.parse(text); } catch { throw new Error('生成结果不是有效 JSON，请重试'); }
+  const appearance = String(result?.appearance || '').trim().replace(/\s+/g, ' ');
+  if (appearance.length < 30) throw new Error('生成的描述太短，请重试');
+  if (/\p{Script=Han}/u.test(appearance)) throw new Error('描述必须是英文，请重试');
+  const tags = Array.isArray(result?.tags)
+    ? result.tags.map(t => String(t || '').trim()).filter(t => /^[a-z0-9_()]+$/i.test(t)).slice(0, 12)
+    : [];
+  return { appearance, tags };
+}
 
 export function buildClothingAppearanceMessages({ systemRules, worldRule = '', persona, scene, sceneLabel = '', entries, brief = '' }) {
   // 自定义类型的 key 是 custom_<时间戳>，模型看不懂；有类型名（如「婚纱」）就用名字喂它
