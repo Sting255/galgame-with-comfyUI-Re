@@ -1498,6 +1498,8 @@ async function saveWorld() {
   worldSaving.value = true
   try {
     let targetId = selectedWorldId.value
+    let worldChanged = false
+    let mediaOutletCount = 0
     if (!targetId) {
       // 兜底：没有任何世界观（如旧库空表）时，把当前内容存为新的一套并激活
       const created = await api.createWorldSetting({ name: '默认世界观', content: worldContent.value.trim() })
@@ -1507,13 +1509,21 @@ async function saveWorld() {
     } else {
       const result = await api.updateWorldSetting(targetId, { content: worldContent.value.trim() })
       if (!result?.ok) throw new Error(result?.error || '保存失败')
+      worldChanged = result.worldChanged === true
+      mediaOutletCount = result.mediaOutletCount || 0
     }
     selectedWorldId.value = targetId
     worldDirty.value = false
     worldSaved.value = true
     setTimeout(() => worldSaved.value = false, 2000)
     await loadWorldSettings()
-    showToast('世界观已保存', 'success')
+    // 2026-11-08：媒体的编辑风格是按旧世界写死的文本，世界观一改它就落在外头。
+    // 这里给一句明确提示，用户知道该去哪儿一键重写，而不是等出稿才发现内容不对。
+    if (worldChanged && mediaOutletCount > 0) {
+      showToast(`世界观已保存。${mediaOutletCount} 家媒体的编辑风格可能不再匹配，可在「传媒 → 媒体设置」里一键重写`, 'warning')
+    } else {
+      showToast('世界观已保存', 'success')
+    }
   } catch (err) {
     console.error('[world] save failed:', err)
     showToast(`世界观保存失败: ${err?.message || '未知错误'}`, 'error')
@@ -1527,7 +1537,15 @@ async function activateWorld(id, { silent = false } = {}) {
     const result = await api.activateWorldSetting(id)
     if (!result?.ok) throw new Error(result?.error || '切换失败')
     await loadWorldSettings()
-    if (!silent) showToast(`已激活世界观「${result.item?.name || ''}」`, 'success')
+    if (!silent) {
+      // 换世界观等于换了一整套设定：媒体的编辑风格是按上一个世界写的，提醒一次
+      const count = Number(result.mediaOutletCount || 0)
+      if (count > 0) {
+        showToast(`已激活「${result.item?.name || ''}」。${count} 家媒体可去「媒体设置」按新世界观一键重写`, 'warning')
+      } else {
+        showToast(`已激活世界观「${result.item?.name || ''}」`, 'success')
+      }
+    }
   } catch (err) {
     console.error('[world] activate failed:', err)
     showToast(`切换世界观失败: ${err?.message || '未知错误'}`, 'error')

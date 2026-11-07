@@ -11,6 +11,9 @@
  */
 import { createHash } from 'node:crypto';
 
+// 与 townBusinessService 同口径：UTC 毫秒折成天序号（2026-11-08 补，原本直接调用未定义函数）
+const dayNumber = nowUtcMs => Math.floor(nowUtcMs / 86400000);
+
 const GOAL_STATUSES = new Set(['active', 'completed', 'blocked', 'replaced']);
 const PROGRESS_KINDS = new Set(['work', 'read', 'eat', 'social', 'wage']);
 

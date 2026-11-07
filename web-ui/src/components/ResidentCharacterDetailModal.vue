@@ -195,7 +195,8 @@
                           </template>
                           <template v-else>
                             <linshe-button size="sm" variant="secondary" @click="showAddType = true">＋ 添加服装类型</linshe-button>
-                            <linshe-button v-if="isCustomSceneTab" size="sm" variant="ghost" @click="removeCustomType">删除「{{ activeSceneOutfit?.sceneLabel }}」</linshe-button>
+                            <linshe-button v-if="isGlobalSceneTab" size="sm" variant="ghost" disabled title="这套由「设置 → 全角色统一服装」统一管理">统一服装</linshe-button>
+                            <linshe-button v-else-if="isCustomSceneTab" size="sm" variant="ghost" @click="removeCustomType">删除「{{ activeSceneOutfit?.sceneLabel }}」</linshe-button>
                           </template>
                         </div>
                         <Transition name="persona-fold" mode="out-in">
@@ -842,6 +843,9 @@ const showAddType = ref(false)
 const newTypeName = ref('')
 const addingType = ref(false)
 const isCustomSceneTab = computed(() => String(detail.sceneTab || '').startsWith('custom_'))
+// 统一服装类型（设置 → 全角色统一服装）的 key 是 custom_g<id>：它属于全局管理，
+// 角色卡里不给「删除这个类型」的入口，否则删完设置页还显示它存在、一点「补齐角色」又回来。
+const isGlobalSceneTab = computed(() => /^custom_g\d+$/.test(String(detail.sceneTab || '')))
 
 function cancelAddType() {
   showAddType.value = false

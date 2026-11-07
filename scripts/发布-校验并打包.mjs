@@ -296,6 +296,26 @@ assertNoStalePaths()
   log('   前端生产构建通过 ✓')
 }
 
+// ── ②-未定义符号（2026-11-08 加，永远跑）───────────────────────────────────
+// 真机上出过两次 `ReferenceError: xxx is not defined`（chat.js 的 getWorldIntegrationRule、
+// expressionStandingService.js 的 buildCharacterPersona），都是「函数用了但忘了 import」。
+// node --check 只能验语法，这类错误要运行到那一行才炸，而它们又都在低频分支上 ——
+// 于是能一路混进交付包。这个检查用 AST 找「调用了但没有导入/定义的函数」，几秒钟跑完，
+// 失败就不该打包。
+{
+  log('\n── 未定义符号检查 ──────────────────────────')
+  const check = spawnSync(NODE, [path.join(REPO, 'scripts', 'check-imports.mjs')], {
+    cwd: REPO, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+  })
+  const output = `${check.stdout || ''}${check.stderr || ''}`.trim()
+  if (check.status !== 0) {
+    log('  ✗ 有文件调用了未定义的函数，见下（这类错误 node --check 查不出来）：')
+    log(output.split(/\r?\n/).map(line => '    ' + line).join('\n'))
+    die('未定义符号检查未通过：先修完再打包，别把 ReferenceError 打进交付包')
+  }
+  log(`  ✓ ${output.split(/\r?\n/).pop()}`)
+}
+
 // ── ②-冒烟族（默认关，交付日手动开）─────────────────────────────────────────
 // 跑在单测之后、同步之前：冒烟失败就不该继续产出交付包（避免"坏包已同步进交付目录"）。
 if (withSmoke) {

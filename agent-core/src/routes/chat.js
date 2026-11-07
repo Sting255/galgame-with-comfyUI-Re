@@ -138,6 +138,9 @@ import { isSleepLocked } from '../services/sleepLock.js';
 import { markTouchEventInjected, takePendingTouchEvent } from '../services/touchEventStore.js';
 // 软状态落库（2026-10-15）：候选词冷却与智能配图计数器原来是进程内 Map，重启即丢。
 import { createSoftState } from '../services/softStateStore.js';
+// 2026-11-08 补齐：私聊重试回放与分享图任务构建一直缺 import，调用即 ReferenceError
+import { getSavedPrivateChatReply } from '../services/privateChatImageTools.js';
+import { buildSharedImageTask } from '../services/privateChatImagePrompt.js';
 
 const router = Router();
 

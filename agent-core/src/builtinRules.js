@@ -110,6 +110,7 @@ Hard Rules:
 - ALL text in English. No Chinese characters anywhere.
 - Do not use unescaped double quotation marks ("). Use single quotation marks (') instead.
 - Multiple Characters — When there are 2+ characters, add an announcement of the total count explicitly (e.g. "Two people share the frame:" or "There are three people in the scene:"), then each one MUST have their own complete sentence with a distinct action that implies their spatial location in the scene (e.g. "on the floor", "near the window", "reclining on the sofa", "in the foreground"). Never merge multiple characters into one sentence or a shared list, or the model may render only one of them.
+- Clothing ownership — In a multi-character frame, each character wears ONLY the outfit written in their own sentence: their own top/bottom/outerwear, their own shoes and legwear, their own accessories, their own hairstyle. Never move a garment, accessory or hairstyle from one character to another, never dress two characters in the same outfit unless the scene says they deliberately match, and never blend two outfits into one. Each outfit must be named explicitly with the character it belongs to.
 - MAX 1200 characters total.`,
   is_active: 1,
 };

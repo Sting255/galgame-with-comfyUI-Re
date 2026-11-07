@@ -1739,7 +1739,10 @@ async function generateSceneStandingPrompt(char, scene, requirement, mode, promp
 
 
 // POST /api/characters/:id/standings/generate — 生成指定场景立绘 Body: { scene, requirement? }
-router.post('/:id/standings/generate', async (req, res) => {
+// 2026-11-08：抽成命名函数 —— 下面的兼容别名 /scene-standings/:scene/generate 也要用它。
+// 之前别名里写的是 generateSceneStanding(req, res)，而这个函数根本不存在，
+// 所以走旧路径的请求一调就 ReferenceError（旧缓存包/脚本才会踩到，但确实是坏的）。
+const generateSceneStandingRoute = async (req, res) => {
   const db = getDb();
   const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
@@ -1754,18 +1757,18 @@ router.post('/:id/standings/generate', async (req, res) => {
 
   try {
     const promptText = await generateSceneStandingPrompt(char, scene, requirement, mode, req.body?.prompt);
-    const beforeUrl = listSceneStandings(char.id).find(item => item.scene === scene)?.image_url;
-    if (beforeUrl) {
-      const task = startSceneStandingTask(char, scene, promptText, beforeUrl);
-      return res.json({ ok: true, task_id: task.id, scene });
-    }
+    // 2026-11-08 真机：以前「这套已经有立绘」会转成后台任务，图停在 pending_confirm，
+    // 必须去右下角任务卡里点确认才落库 —— 用户看到的是「出图了，但预览框还是空的」。
+    // 「生成本套立绘」的语义就是替换这一套，因此一律同步生成并直接落库；
+    // 想先看效果再决定的话，走「再次 Roll 图」那条（带 prompt 复用）。
     const url = await renderSceneStandingImage(char, promptText, scene);
     res.json({ ok: true, scene, image_url: url, prompt_text: promptText, standings: listSceneStandings(char.id) });
   } catch (err) {
     console.error('[scene-standing] error:', err.message);
     res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : '生成失败: ' + err.message });
   }
-});
+};
+router.post('/:id/standings/generate', generateSceneStandingRoute);
 
 // POST /api/characters/:id/standings/upload — 上传某场景立绘 Body: { scene, base64 }
 router.post('/:id/standings/upload', (req, res) => {
@@ -2237,7 +2240,7 @@ router.get('/:id/scene-standings', (req, res) => {
 });
 router.post('/:id/scene-standings/:scene/generate', (req, res) => {
   req.body = { ...(req.body || {}), scene: req.params.scene };
-  return generateSceneStanding(req, res);
+  return generateSceneStandingRoute(req, res);
 });
 router.delete('/:id/scene-standings/:scene', deleteSceneStandingRoute);
 

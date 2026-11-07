@@ -37,6 +37,8 @@ import { buildLanguageStylePolishRequest } from '../services/worldLanguageStyleP
 import { chatSync as chatSyncWithLorebook } from '../services/lorebook/runtime.js';
 
 import { setSetting } from '../db/settings.js';
+// 2026-11-08 补齐：Vertex 校验与模型列表一直缺 import，接口一调就 ReferenceError
+import { parseServiceAccount, getVertexAccessToken, listVertexModels } from '../llm/vertex-client.js';
 
 const router = Router();
 
@@ -1304,11 +1306,18 @@ router.post('/world-settings', (req, res) => {
 // PUT /api/world-settings/:id — 编辑某个世界观
 router.put('/world-settings/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  if (!id || !getWorldSettingById(id)) return res.status(404).json({ error: 'not found' });
+  const before = getWorldSettingById(id);
+  if (!id || !before) return res.status(404).json({ error: 'not found' });
   const { name, content, language_style } = req.body;
   if (language_style !== undefined && typeof language_style !== 'string') return res.status(400).json({ error: '语言风格必须是文本' });
   const item = updateWorldSetting(id, { name: name?.trim(), content: content?.trim(), language_style: language_style?.trim() });
-  res.json({ ok: true, item });
+  // 2026-11-08：世界观内容变了 ⇒ 媒体的编辑风格多半已经落在外头（它们是按旧世界写的文本）。
+  // 这里只回一个标记和受影响数量，由前端提示用户去「传媒 → 媒体设置」一键重写。
+  const contentChanged = content !== undefined && String(content || '').trim() !== String(before.content || '').trim();
+  const mediaOutletCount = contentChanged
+    ? (getDb().prepare('SELECT COUNT(*) AS n FROM media_outlets').get()?.n || 0)
+    : 0;
+  res.json({ ok: true, item, worldChanged: contentChanged, mediaOutletCount });
 });
 
 // DELETE /api/world-settings/:id — 删除某个世界观
@@ -1324,7 +1333,9 @@ router.post('/world-settings/:id/activate', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const item = activateWorldSetting(id);
   if (!item) return res.status(404).json({ error: 'not found' });
-  res.json({ ok: true, item });
+  // 换世界观 = 换一整套设定，媒体编辑风格是按旧世界写的，附上数量让前端提醒
+  const mediaOutletCount = getDb().prepare('SELECT COUNT(*) AS n FROM media_outlets').get()?.n || 0;
+  res.json({ ok: true, item, mediaOutletCount });
 });
 
 // GET /api/config/system-rules — 获取系统破限词（供世界观润色等 AI 功能请求体携带）
