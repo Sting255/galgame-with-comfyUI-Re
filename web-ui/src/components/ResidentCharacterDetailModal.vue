@@ -1313,6 +1313,13 @@ watch(() => [props.visible, props.character], ([v, c], previous) => {
     editorSection.value = editor; detail.sceneTab = scene
     return
   }
+  // 2026-11-07 真机：点「保存」后整页像被刷新 —— 页签跳回「默认」、正在看的服装页消失。
+  // 原因是保存成功后父组件重新拉角色列表并把新对象传进来，触发了 init()，而 init 会重置
+  // 页签与服装列表。同一个角色、且没有未保存改动时，只需要补一下立绘，不要重建编辑态。
+  if (previous?.[0] && previous[1]?.id === c.id && !detail.dirty) {
+    loadSceneStandings(c.id)
+    return
+  }
   init(c)
 })
 onMounted(() => { if (props.visible && props.character) init(props.character) })
