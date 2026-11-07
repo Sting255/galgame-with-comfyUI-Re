@@ -1272,8 +1272,11 @@ export function buildStandingMessages(char, requirement, mode = 'normal', scene 
   // 2026-11-04：指定场景必须取该槽的服装，不受生成时的日程选装影响。
   // 使用 text 保留本地共用身体描述；缺槽时关闭自动选装，避免悄悄借用另一套。
   const outfit = scene ? listSceneOutfits(char.id).find(item => item.scene === scene) : null;
+  // 2026-11-07：这里原来传 `outfit.text`（= body + 服装 拼接），把 body 里的旧衣服
+  // 一起捧成了最高优先级的「限时服饰」，和新服装打架。改成只传这一套的 description，
+  // body 另走 bodyHint，由 buildOutfitInjectionBlocks 降级成「身体特征、其中的服装不画」。
   const outfits = scene
-    ? (outfit ? { limited: [{ name: outfit.name, description: outfit.text || outfit.description }], exclusive: null } : null)
+    ? (outfit ? { limited: [{ name: outfit.name, description: outfit.description, bodyHint: outfit.body }], exclusive: null } : null)
     : 'auto';
   const sceneLabel = STANDING_SCENE_LABELS[scene] || scene;
   msgs.push({

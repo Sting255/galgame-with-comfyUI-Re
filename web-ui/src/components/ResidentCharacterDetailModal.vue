@@ -1068,6 +1068,18 @@ async function generateOutfitByBrief() {
     if (!appearance) { toastFn('模型没有返回描述，稍后再试', 'warning'); return }
     slot.description = appearance
     detail.dirty = true
+    // 2026-11-07 修：这里原来只改界面、不写库。「生成本套立绘」读的是数据库里的
+    // description（buildStandingMessages → listSceneOutfits），所以点完「按这个生成」
+    // 再点立绘，画的还是上一套衣服 —— 用户看到的正是「输入白丝全身，出图还是旧内衣」。
+    // 生成成功即落库这一套（不传 body，避免覆盖身体真源）。
+    try {
+      await api.saveSceneOutfits(c.id, [{ scene: slot.scene, name: slot.name || slot.sceneLabel || '服装', description: appearance }])
+    } catch (saveErr) {
+      console.error('saveSceneOutfits after brief failed:', saveErr)
+      toastFn('描述已生成，但保存失败，请手动点「保存」再出图', 'warning')
+      outfitBrief.value = ''
+      return
+    }
     const tags = Array.isArray(result?.tags) ? result.tags : []
     const missing = Array.isArray(result?.missing) ? result.missing : []
     // 库外 tag 单独说一句：模型允许自补词条，但只写进描述、不进衣服库，

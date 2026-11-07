@@ -110,7 +110,17 @@ export function buildOutfitInjectionBlocks(outfits, opts = {}) {
 
   const leadParts = [];
   if (limited.length > 0) {
-    const lines = limited.map((o, i) => `${i + 1}. ${o.name}：${o.description}`);
+    // 2026-11-07：`body` 里通常带着角色原本那身（"wearing a white sleeveless dress..."）。
+    // 以前调用方用 composeOutfitText 把 body 和服装拼成一行塞进来，等于让**旧衣服**
+    // 也获得了「限时服饰」的最高优先级，和新服装互相打架 —— 用户输入「全身白丝、无其他外衣」，
+    // 出图却仍然画着蓝外套和白裙。现在把两者拆开：
+    //   description 只写这一套的衣服；body 降级为「身体特征」，并明确禁止把其中的服装画出来。
+    const lines = limited.map((o, i) => {
+      const head = `${i + 1}. ${o.name}：${o.description}`;
+      const hint = String(o.bodyHint || '').trim();
+      if (!hint) return head;
+      return `${head}\n   身体只取发色、发型、瞳色、肤色、体型与身体标记；下面这段里的服装、鞋袜、配饰一律不画：${hint}`;
+    });
     const head = owner
       ? `【${own}限时服饰（当前生效，优先级最高，多套同时叠加）——**只在描绘${owner}时**完整呈现以下全部要素，不要穿到同场其他角色身上】`
       : '【限时服饰（当前生效，优先级最高，多套同时叠加）——画面必须完整呈现以下全部要素】';
