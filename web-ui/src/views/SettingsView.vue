@@ -2425,10 +2425,11 @@ let llmTokenEditVersion = 0
 const llmMaxTokensHint = computed(() => {
   if (!llmMaxTokensValid.value) return '请输入大于 0 的整数。'
   const amount = Number(llmMaxTokens.value).toLocaleString()
-  // 输出额度没有硬上限（服务商各自不同），但填出远超常用值的大数会被服务商拒绝或截断，
-  // 而界面上只表现为「模型未完成本轮回复」，非常难查（2026-11-06 真机：填了 340000）。
+  // 输出额度没有硬上限（服务商各自不同），但填出远超真实上限的大数会被服务商拒绝或截断。
+  // 2026-11-07：**只在「上游明确声明过上限」时才比较**——点过「获取模型」才有这个值。
+  // 硬编码表只是兜底估计（deepseek v4 族猜 32768，中转站实际 393216），
+  // 拿它比较会把完全合规的 393216 报成「远超上限 32,768」，和后端 applyOutputTokenLimit 同口径。
   const cap = llmModelCapabilities.value[llmModel.value]?.maxTokens
-    || defaultMaxTokens(llmBaseURL.value, llmModel.value)
   if (isValidMaxTokens(cap) && Number(llmMaxTokens.value) > cap * 1.5) {
     return `当前额度 ${amount} tokens，远超这个模型的常用上限 ${Number(cap).toLocaleString()}`
       + ' —— 部分服务商会直接拒绝或截断回复，建议改回常用值。'
@@ -2437,11 +2438,11 @@ const llmMaxTokensHint = computed(() => {
   if (llmTokenSource.value === 'manual' || llmTokenSource.value === 'saved') return '当前额度 ' + amount + ' tokens，仍受服务商上限约束。'
   return '默认额度 ' + amount + ' tokens；自动获取模型后优先使用接口上限，也可手动调整。'
 })
-/** 额度是否远超模型常用上限（只做提示，不拦保存：用户可能确实知道自己在干什么） */
+/** 额度是否远超模型上限（只做提示，不拦保存：用户可能确实知道自己在干什么） */
 const llmMaxTokensOversized = computed(() => {
   if (!llmMaxTokensValid.value) return false
+  // 同上：没有上游声明值就不判断，避免用兜底估计误报
   const cap = llmModelCapabilities.value[llmModel.value]?.maxTokens
-    || defaultMaxTokens(llmBaseURL.value, llmModel.value)
   return isValidMaxTokens(cap) && Number(llmMaxTokens.value) > cap * 1.5
 })
 function clearLlmModels() {
