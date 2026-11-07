@@ -1217,6 +1217,10 @@ function applyExistingOutfit(idx, scene) {
   if (!item || !src) return
   item.name = src.sceneLabel || src.name || ''
   item.description = src.description || ''
+  // 2026-11-07：这个下拉本质是「复制动作」而不是「选中状态」，所以 model-value 一直是空串。
+  // 结果是选完之后框里还是那句 placeholder、卡片也没明显变化，用户以为没选上。
+  // 给一次明确回执，并且把两个字段的落点讲清楚（很多人找不到描述框在哪）。
+  toastFn(`已填入「${item.name || '这套'}」的名称与外观描述，可继续修改`, 'success')
 }
 
 const clickShouldClose = ref(false)
