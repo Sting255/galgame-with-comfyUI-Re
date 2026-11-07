@@ -411,6 +411,13 @@ function syncDir(from, to) {
         // 里面还留着上游合并时的 node_modules junction —— 被当文件复制会 EPERM，且绝不该进包。
         '.pai'].includes(e.name)) continue
       if (path.relative(REPO, s).split(path.sep).join('/') === 'agent-core/data') continue
+      // 2026-11-07 事故：`launcher/build_cache/` 是 PyInstaller 虚拟环境与下载的工具链（≈800 MB），
+      // `launcher/build/` 与 `launcher/dist/` 是构建中间产物和旧 exe（各 ≈50 MB）。
+      // 三者都被 .gitignore 忽略（launcher/.gitignore / 根 .gitignore:39），但**顶层镜像是
+      // robocopy 直拷、不看 gitignore** ⇒ 整份进包，包体积从 1.1 GB 涨到 2.3 GB。
+      // 启动器真正要交付的是仓库根那份 `邻舍.EXE.exe`（build_launcher.py 的 --output）。
+      const rel = path.relative(REPO, s).split(path.sep).join('/')
+      if (rel === 'launcher/build_cache' || rel === 'launcher/build' || rel === 'launcher/dist') continue
       syncDir(s, d)
     } else {
       // ── 文件级排除（2026-10-17 复查 §P1-2 / §P2-4；2026-10-18 补 launcher_config）──
@@ -633,7 +640,7 @@ const today = (() => { const d = new Date(); const p = (n) => String(n).padStart
 const outFile = path.join(OUTDIR, `邻舍-${PACK_LABEL}-完整可运行包-${WITH_DATA ? '含数据' : '不含数据'}-${today}-第${cnNum(round)}轮.7z`)
 const cores = Number(process.env.NUMBER_OF_PROCESSORS || 0) || 8
 log('\n── 打包 ───────────────────────────────────────────')
-log(`   线程 = ${cores}（本机核心数）| 级别 -mx=3（比 -mx=5 快约一倍，体积只大一点点）`)
+log(`   线程 = ${cores}（本机核心数）| 级别 -mx=${LEVEL}（交付日设 SEVENZIP_LEVEL=9 走最高压缩）`)
 
 // ── 打包前：往交付包里写一份「校验清单」（会跟着进包）──────────────────
 // 2026-10-02 真事故：用户在另一台机器上用网盘客户端解压，解出来的 agent.db 损坏
