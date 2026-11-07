@@ -554,6 +554,17 @@
                       <span>启用中</span>
                     </label>
                   </div>
+                  <!-- 2026-11-07：可以直接挑一套已经配好的服装，不用手打名称和描述 -->
+                  <div v-if="outfitPickOptions.length" class="outfit-pick-row">
+                    <linshe-select
+                      :model-value="''"
+                      :options="outfitPickOptions"
+                      size="sm"
+                      placeholder="从已配好的服装里选一套，自动填入名称与描述"
+                      aria-label="从已有服装里选择"
+                      @update:model-value="v => applyExistingOutfit(idx, v)"
+                    />
+                  </div>
                   <div class="lora-trigger-row">
                     <label class="fl lora-inline-label">外观描述</label>
                     <linshe-input
@@ -580,6 +591,15 @@
             <div class="modal-actions" style="margin-top:16px">
               <span class="outfit-save-hint">启用中的形态会注入到所有生图链路，优先级高于人物卡原有外观</span>
               <div style="flex:1"></div>
+              <linshe-button
+                variant="secondary"
+                :loading="outfitGenerating"
+                :disabled="outfitBatchRunning || !workOutfitText"
+                :title="workOutfitText ? '按默认外观为基准，一次生成本角色所有服装类型（含自定义）的描述' : '先填写默认外观，才能生成'"
+                @click="generateOtherSceneOutfits"
+              >
+                一键生成所有衣服
+              </linshe-button>
               <linshe-button variant="primary" @click="saveOutfits" :disabled="outfitLoading">
                 {{ outfitLoading ? '保存中…' : '保存' }}
               </linshe-button>
@@ -1074,6 +1094,25 @@ function openIntimateModal() {
 const showOutfitModal = ref(false)
 const outfitLoading = ref(false)
 const outfitItems = ref([]) // 本地编辑副本：{ id, name, description, enabled, _deleted }
+
+/**
+ * 「外观 / 形态」可以直接套用已经配好的场景服装（2026-11-07 用户：还得重新输入，想直接选）。
+ * 只列有描述的——空描述套进来没有意义。
+ */
+const outfitPickOptions = computed(() =>
+  (detail.sceneOutfits || [])
+    .filter(o => (o.description || '').trim())
+    .map(o => ({ value: o.scene, label: o.sceneLabel || o.name || o.scene }))
+)
+
+/** 把某套场景服装的名称与描述搬进当前形态卡片（搬完仍可继续编辑） */
+function applyExistingOutfit(idx, scene) {
+  const item = outfitItems.value[idx]
+  const src = (detail.sceneOutfits || []).find(o => o.scene === scene)
+  if (!item || !src) return
+  item.name = src.sceneLabel || src.name || ''
+  item.description = src.description || ''
+}
 
 const clickShouldClose = ref(false)
 
@@ -2428,6 +2467,8 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .outfit-deleted input, .outfit-deleted textarea { text-decoration: line-through; }
 .float-badge-name { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .outfit-save-hint { font-size: 11px; color: var(--text-secondary); }
+/* 形态卡片里的「从已有服装选」下拉 */
+.outfit-pick-row { margin: 8px 0 2px; }
 
 /* 修正外观样式已随弹窗本体收编至 AppearanceRefineModal.vue */
 
