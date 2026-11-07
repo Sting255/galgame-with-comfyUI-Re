@@ -48,6 +48,24 @@ export function dayStamp(ms = Date.now()) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/**
+ * 带本地时区偏移的时间戳（2026-11-07 用户：「加个时间码吧，你好看问题」）。
+ *
+ * 原来是 `toISOString()` = UTC（`…T02:22:32.113Z`），而用户在东八区 ——
+ * 每读一行都要脑内 +8，跨天时更容易算错日期。改成 `…T10:22:32.113+08:00`：
+ * 仍是可排序的 ISO 形状，但直接就是本地时间。
+ */
+export function localStamp(ms = Date.now()) {
+  const d = new Date(ms);
+  const pad = (n, width = 2) => String(n).padStart(width, '0');
+  const offsetMin = -d.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMin);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    + `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+    + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
 /** 该日期对应的日志文件名 */
 export function logFileName(prefix, day) {
   return `${prefix}-${day}.log`;
@@ -182,9 +200,17 @@ export function initFileLogging({
       const day = dayStamp(now());
       if (day !== currentDay) openFor(day);
       rollIfNeeded();
-      const line = `${new Date(now()).toISOString()} [${level}] ${format(...args)}\n`;
-      stream.write(line);
-      writtenBytes += Buffer.byteLength(line);
+      // 2026-11-07：多行输出（prompt / JSON 转储）原来只有首行有时间戳，后面几行裸奔，
+      // 排查时对着一段几十行的 JSON 找不到它是几点发的。现在**每一行都带本地时间戳**，
+      // 续行不再重复 [level]（同一块内容级别相同），grep 任意一行都能拿到时间。
+      const stamp = localStamp(now());
+      const text = format(...args);
+      const body = text
+        .split('\n')
+        .map((line, index) => (index === 0 ? `${stamp} [${level}] ${line}` : `${stamp} ${line}`))
+        .join('\n');
+      stream.write(`${body}\n`);
+      writtenBytes += Buffer.byteLength(body) + 1;
     } catch { /* 旁路，绝不抛给调用方 */ }
   };
 
