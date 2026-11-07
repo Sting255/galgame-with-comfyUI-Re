@@ -211,6 +211,12 @@ const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用�
 - 描述里要给出**只有这套才有的具体结构**（束身衣的鱼骨走线、短摆的荷叶边下摆、背部交叉绑带、胯侧系带结），不要用 deep plunging neckline、thin adjustable shoulder straps、high-cut leg opening 这种套在任何一套上都成立的通用句。
 - 反例（不要这样写）：wearing a black lace lingerie set with thin straps —— 这就是「任何角色都一样的黑蕾丝连体衣」，没有形制判断。
 
+【自由组合：别只给一件主体】
+- 一套衣服可以自由叠穿：主体形制 + 外罩（披肩、开襟罩衫、系带小外套）+ 下装 + 袜 + 鞋 + 配饰（颈饰、臂环、手套、腰链、腿环）+ 头饰。这些单品的候选在「可自由搭配的单品」里，按她的编号取的，别的角色拿到的不一样，直接用。
+- 除主体外至少再组合 **2 类**其它单品，让整套只属于她；不要绕开给她的搭配池，回落到最常见的「黑蕾丝 + 细肩带」。
+- 2~5 件为宜，不是越多越好；每件都要落到可见的结构与位置，不要把 tag 写成清单。
+- 世界观与场合优先：世界观规定的丝袜颜色、绑带方式、内衣款式属于硬规则；睡衣必须赤脚、不加鞋袜；性爱化的内衣配外套时要能自洽（半褪的罩衫、只挂在肩上的披帛都算）。
+
 【写描述的规则】
 - 一整段英文，逗号分隔的短语或流畅句子都可以，最终会直接喂给生图模型。
 - 角色身份、脸部、瞳色、发型、发色、肤色、体型和标志性身体特征沿用默认外观，不遗漏已有身体特征，不臆造缺失特征。
@@ -220,14 +226,72 @@ const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用�
 - 睡衣必须适合睡眠且赤脚（barefoot），不写任何鞋袜。
 
 【输出格式（严格照此 JSON，不要任何解释或代码块）】
-{"design_note":"一句话中文，写清她的身材气质与本类目最典型形象差在哪、据此选了这个形制；不能写成套话","tags":["teddy","black_lace"],"appearance":"一整段英文外观描述，至少 30 个字符，tags 第一个必须是本次采用的具体形制（如 teddy / babydoll / corset），不要只给 lingerie 这类泛称"}
+{"design_note":"一句话中文，写清她的身材气质与本类目最典型形象差在哪、据此选了这个形制；不能写成套话","tags":["teddy","black_lace","thighhighs","choker"],"appearance":"一整段英文外观描述，至少 30 个字符，tags 3~6 个、覆盖主体形制与搭配单品，第一个必须是本次采用的具体形制（如 teddy / babydoll / corset），不要只给 lingerie 这类泛称"}
 先写 design_note 再写 appearance，形制与配色以 design_note 的判断为准，不要让 appearance 回落到最通用的那套。`;
 
 /**
  * 组「按一句要求生成服装」的消息（2026-11-07）。
  * 候选 tag 由 searchClothingTags 先做本地筛选，模型只在这一小撮里挑，准确率与 token 都更可控。
  */
-export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [], families = [], usedForms = [] }) {
+/**
+ * 可自由搭配的单品池（2026-11-07 用户：「有这么多呢，自由组合啊」）。
+ *
+ * 只给同族形制，角色能选的永远只有那几套内衣本体；库里 1078 条词条中，
+ * 袜子 / 鞋 / 配饰 / 头饰 / 手部 / 腰饰 / 外罩各有几十条，组合空间才是真正撑开差异的地方。
+ * 按角色 id 做确定性轮换取样：不同角色拿到不同的配饰与鞋袜池，同一条要求也组合不出同一套。
+ */
+// 贴身类（内衣、睡衣、泳装）只要轻装饰，外套军装这类厚重单品进来只会变成噪音；
+// 常服才需要外罩维度。prefer 是「这一类里更贴题的词」，够数就用它，不够再退回整池。
+const COMBINATION_DIMENSIONS = {
+  intimate: [
+    { subcategories: ['袜子种类'], take: 3, prefer: /lace|fishnet|thighhigh|stocking|garter|pantyhose/i },
+    { subcategories: ['高跟结构', '凉鞋与开放鞋', '靴子'], take: 2, prefer: /heel|stiletto|lace-up|cross-laced|corset/i },
+    { subcategories: ['颈部', '胸饰', '项链'], take: 2, prefer: /choker|collar|ribbon|necklace|pendant|chain|cross/i },
+    { subcategories: ['手部', '腰饰', '耳饰'], take: 2, prefer: /glove|bracelet|armband|garter|chain|belt|ring/i },
+    { subcategories: ['头饰', '头部'], take: 2, prefer: /hair|ribbon|ornament|flower|pin|veil|headband|horn/i },
+  ],
+  general: [
+    { subcategories: ['袜子种类'], take: 3, prefer: /lace|fishnet|thighhigh|stocking|garter|pantyhose/i },
+    { subcategories: ['靴子', '运动鞋', '高跟结构', '凉鞋与开放鞋', '拖鞋与舞鞋'], take: 3 },
+    { subcategories: ['颈部', '胸饰', '项链'], take: 3 },
+    { subcategories: ['手部', '腰饰', '耳饰', '头饰', '头部'], take: 3 },
+    { subcategories: ['大衣 / 披肩外套', '夹克 / 西装外套'], take: 2 },
+  ],
+};
+export function pickCombinationTags({ seed = 0, limit = 15, candidates = [] } = {}) {
+  // 候选命中的是内衣 / 睡衣 / 泳装时按贴身类给池子
+  const intimate = candidates.slice(0, 3).some(c => (byTag.get(c.tag)?.categories || []).some(category => ['内衣', '睡衣', '泳装'].includes(category)));
+  const picked = [];
+  const usedTags = new Set();
+  let round = 0;
+  for (const dimension of (intimate ? COMBINATION_DIMENSIONS.intimate : COMBINATION_DIMENSIONS.general)) {
+    const all = catalog.entries.filter(entry => entry.kind === 'outfit'
+      && (entry.subcategories || []).some(sub => dimension.subcategories.includes(sub)));
+    const preferred = dimension.prefer
+      ? all.filter(entry => dimension.prefer.test(`${entry.tag} ${entry.label || ''} ${entry.description || ''}`))
+      : [];
+    const pool = preferred.length ? preferred : all;
+    if (!pool.length) continue;
+    // 用 seed 做确定性洗牌：池子只有几条（袜子 8 条、颈部 7 条）时，
+    // 取连续切片会让不同角色拿到几乎相同的几条，打散后才有区分度。
+    const shuffled = [...pool];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.abs(seed * 31 + round * 17 + i * 7) % (i + 1);
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    for (let i = 0; i < Math.min(dimension.take, shuffled.length); i++) {
+      const entry = shuffled[i];
+      if (usedTags.has(entry.tag)) continue;
+      usedTags.add(entry.tag);
+      picked.push({ tag: entry.tag, label: entry.label, dimension: dimension.subcategories[0] });
+      if (picked.length >= limit) return picked;
+    }
+    round++;
+  }
+  return picked;
+}
+
+export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [], families = [], usedForms = [], combinations = [] }) {
   const candText = candidates.length
     ? candidates.map(c => `${c.tag}（${c.label}）`).join('、')
     : '（本次没有筛选出候选，请自行判断）';
@@ -239,12 +303,16 @@ export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', pers
   const usedText = usedForms.length
     ? `\n【这些形制已经被其它角色穿走，本次不得再用】${usedForms.map(f => `${f.tag}（${f.label}）`).join('、')}：从剩下的形制里挑最合适的那一族，不要以「更贴合气质」为由复用。`
     : '';
+  // 组合池按维度分组给，模型才知道哪些能叠在一起
+  const comboText = combinations.length
+    ? `\n【可自由搭配的单品（按角色不同而不同，挑得上就组合进来）】${combinations.map(c => `${c.dimension}：${c.tag}（${c.label}）`).join('；')}`
+    : '';
   return [
     { role: 'system', content: systemRules },
     ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
     { role: 'system', content: OUTFIT_FROM_BRIEF_PROMPT },
     { role: 'system', content: `【角色人设与默认外观】\n${persona}` },
-    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}${familyText}${usedText}` },
+    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}${familyText}${comboText}${usedText}` },
     { role: 'user', content: `我想要这套衣服：${brief}\n请挑 tag 并输出英文外观描述，严格按示例 JSON。` },
   ];
 }

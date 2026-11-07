@@ -40,7 +40,7 @@ import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
 // 角色操作反馈（右下角轻通知）：表情类别名 → 语义标记，供 reaction-assets 素材选择
 import { pickReactionMarker } from '../services/emojiService.js';
-import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms } from '../services/clothingLibrary.js';
+import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms, pickCombinationTags } from '../services/clothingLibrary.js';
 
 const router = Router();
 
@@ -102,6 +102,10 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
   // limit 40：模糊匹配会带出同一片段的多个变体，24 条时「蕾丝裙」会被连衣裙变体挤出候选。
   const candidates = searchClothingTags(`${sceneLabel} ${brief}`.trim(), { limit: 40 });
   const families = expandOutfitFamilyCandidates(candidates);
+  // 搭配池按角色 id 轮换：同一句要求，不同角色拿到不同的鞋袜配饰组合
+  const isSleepScene = /睡/.test(sceneLabel || '');
+  const combinations = pickCombinationTags({ seed: Number(char.id) || 0, limit: 15, candidates })
+    .filter(item => !(isSleepScene && /袜子种类|高跟结构|凉鞋与开放鞋/.test(item.dimension)));
   // 同一类型下别的角色已经穿过的形制：不传这个，模型对每个角色都会收敛到同一套
   const usedForms = sceneLabel
     ? collectUsedOutfitForms(
@@ -120,6 +124,7 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
       brief,
       candidates,
       families,
+      combinations,
       usedForms,
     });
     const raw = await chatSync(messages, {
@@ -131,8 +136,11 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
     const parsed = parseOutfitFromBrief(raw);
     // 模型允许在库里没有对应词条时自己补 danbooru tag（如「机械外骨骼裙」）。
     // 这里把补出来的单独报给前端，用户才知道哪些词条是库外的，能决定要不要补进库。
+    // 颜色/材质前缀（black_lace、white_thighhighs 这种）是生图常用写法，不算「库里缺词条」，
+    // 否则每次生成都要弹一句「1 个词条衣服库里没有」，纯噪音。
     const known = new Set(getClothingLibrary().entries.map(entry => entry.tag));
-    const missing = parsed.tags.filter(tag => !known.has(tag));
+    const COLOR_PREFIX = /^(black|white|red|blue|green|pink|purple|yellow|orange|brown|grey|gray|silver|gold|multicolored|two-tone|pastel|dark|light)[_-]/i;
+    const missing = parsed.tags.filter(tag => !known.has(tag) && !COLOR_PREFIX.test(tag));
     res.json({ ...parsed, missing, candidates: candidates.map(c => ({ tag: c.tag, label: c.label })) });
   } catch (error) {
     res.status(502).json({ error: `生成失败：${error.message}` });
