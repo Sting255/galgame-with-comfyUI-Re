@@ -91,7 +91,7 @@ import { getLightHint, getLightNoteWithWeather } from '../services/timeLight.js'
 import { buildTimeContextBlock } from '../services/chatTimeContext.js';
 // 每日首次互动 +5：判据是"用户真实互动"（messages 表），不是被系统写入污染的 last_interaction_at
 import { saveDailyInteractionBonus } from '../services/chatDailyBonus.js';
-import { getCoreDialogueRules, getChatRhythmRules, JUDGE_PROMPT, detectImageIntent } from '../builtinRules.js';
+import { getCoreDialogueRules, getChatRhythmRules, JUDGE_PROMPT, detectImageIntent, getWorldIntegrationRule } from '../builtinRules.js';
 import { matchAll } from '../services/characterSearch.js';
 import { getUserName, matchUser } from '../services/userSearch.js';
 import { buildChatContext, getSplitHistory, applyContextBudget } from '../services/contextAssembler.js';

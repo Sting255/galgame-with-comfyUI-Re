@@ -505,7 +505,14 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   // `missing_node_type: Node 'AnimaPoseControl' not found`，整张图生不出来 ——
   // 这比"没有姿势"严重得多（姿势是增强，出图是底线）。
   // 所以先查节点清单：**明确没有**就跳过注入、照常出图；清单还没取到（null）时按原逻辑继续尝试。
-  const poseNodeOk = hasNodeType('AnimaPoseControl');
+  // 2026-11-08 真机补：这个插件实际提供两个节点 —— AnimaPoseControl（吃骨架）与
+  // AnimaControlApply（把适配器接进模型链）。只查前者时，装了半个插件的机器会通过检查、
+  // 注入后照样 400 `Node 'AnimaControlApply' not found`，每次出图白跑一轮重试。
+  // 两个都必须在，缺任一个就当没装。
+  const poseNodeStates = ['AnimaPoseControl', 'AnimaControlApply'].map(type => hasNodeType(type));
+  const poseNodeOk = poseNodeStates.includes(false)
+    ? false
+    : (poseNodeStates.every(state => state === true) ? true : null);
   if (poseNodeOk === false) {
     if (!poseNodeMissingWarned) {
       poseNodeMissingWarned = true;
@@ -518,13 +525,16 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
         const mod = await import('./poseControlInstall.js');
         placement = mod.inspectPoseAssetPlacement();
       } catch { /* 取不到按未知处理，沿用通用文案 */ }
-      const detail = placement.reason === 'installed-need-restart'
-        ? `资产已在 ${placement.nodeDir}，只差重启 ComfyUI —— 自定义节点只在启动时加载，重启后 AnimaPoseControl 才可用`
-        : placement.reason === 'no-comfy-root'
-          ? '启动器里没配 ComfyUI 路径（comfyui_exe），程序无法自动安装随包的节点资产'
-          : '随包的节点资产还没装进去，程序会在 30 分钟内重试安装';
-      console.warn('[poseControl] 目标 ComfyUI 没有 AnimaPoseControl 节点，本次跳过骨架注入、按无姿势出图：'
-        + detail + '（这条只提醒一次）');
+      const partial = poseNodeStates[0] === true && poseNodeStates[1] === false;
+      const detail = partial
+        ? '插件版本较旧：只有 AnimaPoseControl、缺 AnimaControlApply。请更新 ComfyUI-anima-pose-control（或删掉 custom_nodes 里那份让它重装）'
+        : placement.reason === 'installed-need-restart'
+          ? `资产已在 ${placement.nodeDir}，只差重启 ComfyUI —— 自定义节点只在启动时加载，重启后 AnimaPoseControl 才可用`
+          : placement.reason === 'no-comfy-root'
+            ? '启动器里没配 ComfyUI 路径（comfyui_exe），程序无法自动安装随包的节点资产'
+            : '随包的节点资产还没装进去，程序会在 30 分钟内重试安装';
+      console.warn('[poseControl] 目标 ComfyUI 缺姿势控制节点（AnimaPoseControl / AnimaControlApply），'
+        + '本次跳过骨架注入、按无姿势出图：' + detail + '（这条只提醒一次）');
     }
   } else {
     maybeApplyPoseControl(apiPrompt, { poseJson: options.poseJson });

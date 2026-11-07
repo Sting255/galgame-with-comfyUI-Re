@@ -7,6 +7,9 @@ import { getWorldIntegrationRule } from '../builtinRules.js';
 import { config } from '../config.js';
 import { chatSync } from './lorebook/runtime.js';
 import { buildStandingPersona, normalizeStandingOutfitScene, hasStandingOutfit, inspectStandingOutfits, validateMissingOutfitPolicy, completeStandingOutfit } from './expressionStandingAppearance.js';
+// 2026-11-08：generateStandingPrompts 的默认参数用了 buildCharacterPersona，但一直没导入，
+// 调用方不传 persona 时会抛 ReferenceError（表情立绘整条链路报错）。
+import { buildCharacterPersona } from './characterPersona.js';
 import { buildStandingPromptMessages } from './expressionStandingPrompt.js';
 import { charArtistOverride } from './characterImageOpts.js';
 import { parseCharacterLoras } from './emojiService.js';
