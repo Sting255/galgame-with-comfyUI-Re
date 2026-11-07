@@ -99,13 +99,15 @@
       "label": "天鹅绒",
       "group": "纹理",
       "hint": "绒面吸光，边缘发亮，摸过的方向留下浅淡压痕",
-      "scenes": ["礼服", "睡衣", "内衣"]
+      "stability": "low",
+      "scenes": ["礼服", "睡衣"]
     },
     {
       "tag": "knit",
       "label": "针织",
       "group": "纹理",
       "hint": "可见织纹与罗纹，边缘卷边，宽松处起自然堆褶",
+      "stability": "low",
       "scenes": ["常服", "睡衣"]
     },
     {
@@ -185,6 +187,22 @@
       "hint": "布料吸水后颜色变深、贴住皮肤，边缘滴水",
       "scenes": ["泳装", "内衣"]
     }
+  ],
+  "parts": [
+    { "tag": "cups", "label": "罩杯" },
+    { "tag": "bodice", "label": "上身主体" },
+    { "tag": "waist", "label": "腰" },
+    { "tag": "hem", "label": "下摆" },
+    { "tag": "skirt panel", "label": "裙片" },
+    { "tag": "sleeves", "label": "袖子" },
+    { "tag": "straps", "label": "肩带" },
+    { "tag": "side panels", "label": "侧片" },
+    { "tag": "back", "label": "背部" },
+    { "tag": "trim", "label": "滚边" },
+    { "tag": "cuffs", "label": "袖口" },
+    { "tag": "neckline", "label": "领口" },
+    { "tag": "train", "label": "拖尾" },
+    { "tag": "thigh band", "label": "腿环" }
   ],
   "colors": [
     { "tag": "black", "label": "黑", "group": "深色" },

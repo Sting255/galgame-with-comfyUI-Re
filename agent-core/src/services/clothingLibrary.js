@@ -25,16 +25,24 @@ function shuffleBySeed(list, seed, salt = 0) {
  * 只抽小批：材质多了模型会把几种质感糊成一片，颜色多了整件衣服变脏。
  * 场景相关：内衣/睡衣不给牛仔、针织这类厚重料，常服不给硬纱。
  */
-export function pickFabricAndColors({ seed = 0, materials = 2, colors = 3, candidates = [] } = {}) {
+export function pickFabricAndColors({ seed = 0, materials = 3, colors = 3, candidates = [] } = {}) {
   const intimate = candidates.slice(0, 3).some(c => (byTag.get(c.tag)?.categories || []).some(category => ['内衣', '睡衣', '泳装'].includes(category)));
   const materialPool = fabricCatalog.materials.filter(item => {
     if (intimate) return (item.scenes || []).some(scene => ['内衣', '睡衣', '泳装', '礼服'].includes(scene));
     return !/tulle|sequins/i.test(item.tag);
   });
-  const colorPool = fabricCatalog.colors;
+  // 稳定材质优先：部位-材质绑定要 2~3 种料子，先从不飘的那些里取，不够才补 velvet / knit
+  // （实测这两种在 Anima 上会被画成亮面漆皮或直接长出一件外衣）。
+  const stable = materialPool.filter(item => item.stability !== 'low');
+  const shaky = materialPool.filter(item => item.stability === 'low');
+  const pickedMaterials = shuffleBySeed(stable, seed, 3).slice(0, materials);
+  if (pickedMaterials.length < materials) {
+    pickedMaterials.push(...shuffleBySeed(shaky, seed, 3).slice(0, materials - pickedMaterials.length));
+  }
   return {
-    materials: shuffleBySeed(materialPool, seed, 3).slice(0, materials),
-    colors: shuffleBySeed(colorPool, seed, 11).slice(0, colors),
+    materials: pickedMaterials,
+    colors: shuffleBySeed(fabricCatalog.colors, seed, 11).slice(0, colors),
+    parts: fabricCatalog.parts || [],
   };
 }
 
@@ -251,11 +259,18 @@ const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用�
 - 世界观与场合优先：世界观规定的丝袜颜色、绑带方式、内衣款式属于硬规则；睡衣必须赤脚、不加鞋袜；性爱化的内衣配外套时要能自洽（半褪的罩衫、只挂在肩上的披帛都算）。
 
 【材质与配色：写到能看见的程度】
-- 材质从下面「本次可用材质」里挑 1~2 个。**写法必须把材质贴在单品前面**：a satin babydoll、a black velvet slip、a sheer lace teddy。不要写成「babydoll, satin」这种并列 —— 真机实测：材质词单独并列时，模型会把它画成另一件衣服（写 knit 会额外长出一件针织开衫，主体原样不动）。
+- 材质从下面「本次可用材质」里挑 2 个（最多 3 个）。**写法必须把材质贴在单品前面**：a satin babydoll、a black velvet slip、a sheer lace teddy。不要写成「babydoll, satin」这种并列 —— 真机实测：材质词单独并列时，模型会把它画成另一件衣服（写 knit 会额外长出一件针织开衫，主体原样不动）。
 - 有强单品先验的材质只能配到对应单品上：knit 配毛衣或针织袜、denim 配裤子或裙子、fur 只做领口滚边、tulle 只做蓬裙层。不要把它们当作贴身内衣的面料 —— 实测写成 knit babydoll 时，模型会在主体外面又长出一件针织开衫。光泽类（satin、silk、latex、vinyl、glossy material）和装饰类（lace、mesh、sequins、embroidery）贴在主体上最稳。
-- 绑好之后还要补一句它在这件衣服上的可见表现：薄透到能看见肤色与阴影、缎面高光沿身体滑过、乳胶的硬反光、天鹅绒的绒面吸光、亮片的点状碎光、蕾丝的花卉镂空透出皮肤。只写材质名不算数。
+- 绑好之后还要补一句它在这件衣服上的可见表现：薄透到能看见肤色与阴影、缎面高光沿身体滑过、乳胶的硬反光、亮片的点状碎光、蕾丝的花卉镂空透出皮肤。只写材质名不算数。
 - 配色用 1 个主色 + 至多 1 个辅色，别全身同色。金属色（gold、silver）放在配饰与滚边上最稳，大面积金属容易糊。
 - 英文一律小写、词间用空格（Anima 官方要求：spaces instead of underscores），不要写成下划线 tag。
+
+【部位-材质绑定：一件衣服上分开放】
+- 不要整件铺一种料。挑中的 2~3 种材质各管一块部位，写成「部位 + 材质 + 可见表现」：lace cups showing the shadow of her skin、a satin skirt panel with a hard mirror sheen、sheer mesh sleeves with a faint grid pattern。实测这样写三块料子都画得出来。
+- 同一块地方只准一种材质：sheer satin cups 这种叠写，实测只画得出缎面，薄透直接丢掉了。
+- 部位只从后面「可分配的部位」里选，不要自己造部位名。
+- 只给这件衣服本来就有的部位分配材质：写了 sleeves 就会真的多出长袖，别为了用某个材质凭空造部件。
+- 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽类、薄透类、装饰类就别用它们。
 
 【写描述的规则】
 - 一整段英文，逗号分隔的短语或流畅句子都可以，最终会直接喂给生图模型。
@@ -351,8 +366,9 @@ export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', pers
     : '';
   // 材质只给 2 个、配色 3 个：给多了模型会把几种质感糊成一片、颜色调脏
   const fabricText = fabrics && (fabrics.materials?.length || fabrics.colors?.length)
-    ? `\n【本次可用材质（挑 1~2 个，写出它在这件衣服上的可见效果）】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
+    ? `\n【本次可用材质（挑 2~3 个，各管一块部位，写出它在那块地方的可见效果）】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
       + `\n【本次可用配色（1 主 + 至多 1 辅）】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
+      + (fabrics.parts?.length ? `\n【可分配的部位】${fabrics.parts.map(p => `${p.tag}（${p.label}）`).join('、')}` : '')
     : '';
   return [
     { role: 'system', content: systemRules },
