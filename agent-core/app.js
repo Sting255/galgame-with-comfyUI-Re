@@ -510,10 +510,21 @@ walCheckpointTimer.unref();
 
 // 全局未捕获异常，防止进程崩溃
 process.on('unhandledRejection', (reason) => {
-  console.error('[agent-core] unhandled rejection:', reason?.message || reason);
+  const message = reason?.message || String(reason);
+  // 维护期（恢复/已恢复待重启）里每个定时任务都会拿到这句话，是**预期内**的拒绝，
+  // 记成 error 只会让真崩溃被埋掉（真机日志每次导入备份后都刷两条）。
+  if (/正在恢复备份|请重启邻舍后继续使用/.test(message)) return;
+  console.error('[agent-core] unhandled rejection:', message);
 });
 process.on('uncaughtException', (err) => {
-  console.error('[agent-core] uncaught exception:', err.message);
+  const message = err?.message || String(err);
+  // 同上：DB 已被 closeDb() 之后，启动器拉起新进程前的这几秒里，残留的异步任务会
+  // 一路抛到这里。它不代表代码出错，压成 log 免得误判。
+  if (/正在恢复备份|请重启邻舍后继续使用/.test(message)) {
+    console.log('[agent-core] 维护期内的预期异常（忽略）：', message);
+    return;
+  }
+  console.error('[agent-core] uncaught exception:', message);
 });
 
 // 优雅退出（幂等 — 防止 shutdown 端点 + 信号双重触发）

@@ -249,9 +249,16 @@ export function maybeInitializeSchedule({ db = getDb(), now = new Date(), genera
     snapshotTodaySchedule(character.id);
     return { characterId: character.id };
   }).catch(error => {
-    db.prepare('UPDATE characters SET next_schedule_refresh_at=? WHERE id=?').run(sqlTime(new Date(now.getTime() + 3600_000)), character.id);
-    console.warn('[scheduleBatch] 单人日程初始化失败：', error.message);
-    return { characterId: character.id, error: error.message };
+    // 2026-11-07：**配置类失败不能推后一小时**。真机日志里启动时库还没有 API Key，
+    // 日程初始化失败并被推后 1h —— 用户随后配好 key，这一小时内也不会再试，
+    // 表现为「日程明明没生成，但怎么点都没反应」。
+    // 配置缺失 / 网络类失败都只等 5 分钟，其余（内容、解析等）仍按 1 小时退避。
+    const message = String(error?.message || '');
+    const transient = /OPENAI_API_KEY|api[_-]?key|未配置|请先配置|fetch failed|ECONNREFUSED|ETIMEDOUT|timeout/i.test(message);
+    const delay = transient ? 5 * 60_000 : 3600_000;
+    db.prepare('UPDATE characters SET next_schedule_refresh_at=? WHERE id=?').run(sqlTime(new Date(now.getTime() + delay)), character.id);
+    console.warn(`[scheduleBatch] 单人日程初始化失败${transient ? '（配置/网络问题，5 分钟后重试）' : ''}：`, message);
+    return { characterId: character.id, error: message };
   }).finally(() => { initialization = null; });
   return initialization;
 }
