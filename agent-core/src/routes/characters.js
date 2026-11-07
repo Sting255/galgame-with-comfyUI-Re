@@ -2052,7 +2052,10 @@ router.post('/:id/outfits/generate', async (req, res) => {
       seeds: req.body?.seeds,
       // 上游 v4.2.0：改服装时把目标槽位现有的样子一起给模型，否则它只能凭空重写
       instruction: req.body?.instruction,
-      currentOutfits: String(req.body?.instruction || '').trim() ? listSceneOutfits(char.id) : [],
+      // 2026-11-07：原来只在带 instruction 时才传现有服装。可自动生成时模型看不到
+      // 上一版长什么样，每次从零发挥 ⇒ 同一套「情趣内衣」点三次，三次都是 babydoll。
+      // 现在始终传，由 buildOutfits 决定用途（有改稿要求=在它基础上改，没有=换掉它）。
+      currentOutfits: listSceneOutfits(char.id),
     });
     const saved = req.body?.save === true ? upsertSceneOutfits(char.id, outfits) : null;
     res.json({ ok: true, outfits, saved });

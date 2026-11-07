@@ -326,6 +326,23 @@ export async function generateSceneOutfits(character, opts = {}) {
     last.content += `\n\n【本次修改要求】\n${instructionText}`
       + (current.length ? `\n\n【这套现在长这样，在它基础上改，别推倒重来】\n${current.join('\n')}` : '')
       + '\n\n只改被要求改的部分（颜色/款式/材质/配饰），其余沿用上面的身体与服装基准；输出格式与字段要求完全不变。';
+  } else {
+    // 2026-11-07：没有改稿要求 = 用户在「重新生成这一套」。
+    // 模型看不到上一版时，每次都会收敛到最典型的款式（情趣内衣永远出 babydoll），
+    // 用户的原话是「千篇一律」。所以把现有那套摆出来，明确要求换方向。
+    const prev = (Array.isArray(opts.currentOutfits) ? opts.currentOutfits : [])
+      .filter(o => o && targetScenes.includes(o.scene) && String(o.description || '').trim())
+      .map(o => `【现有${SCENE_LABELS[o.scene] || o.scene}】${String(o.description).trim()}`);
+    if (prev.length) {
+      const last = msgs[msgs.length - 1];
+      last.content += `\n\n【这套已经有了，本次要换掉它】\n${prev.join('\n')}\n\n`
+        + '请换一个**明显不同的设计方向**，不要沿用上一版的单品组合：\n'
+        + '- 款式类型至少换掉：例如上次是 babydoll（娃娃睡裙）就换成 teddy（连体情趣内衣）/ corset（束腰）/ '
+        + 'chemise（衬裙）/ 吊带两件式 / 蕾丝连体衣 / 开襟罩衫+丁字裤 / 兔女郎式套装 里的另一种\n'
+        + '- 材质与配色也要换（上次白+蕾丝，这次就别再白+蕾丝）\n'
+        + '- 仍然贴合角色气质与世界观，只是换一个方向，不是换一个角色\n'
+        + '输出格式与字段要求完全不变。';
+    }
   }
 
   const raw = await chatSync(msgs, {
