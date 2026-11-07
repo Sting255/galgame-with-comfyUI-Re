@@ -478,6 +478,9 @@ if (incremental) {
   //   · *.tar.gz / *.apk —— 108 MB 旧备份与旧安装包（下面 7z 也排除它们）
   const SKIP_TOP = new Set([
     '.git', 'node_modules', 'data', 'logs', '目标', 'docs', '.mimosa', '完整', '.claude',
+    // 2026-11-07 用户："AGENTS 怎么还在包里" —— 这些是仓库的**开发/维护资产**，
+    // 用户拿到只会困惑（而且 AGENTS.md 里写着本机路径与协作约定，不该外发）：
+    '.github', '.learnings', '.playwright-cli',
     // 2026-11-03 事故：`.pai/` 是项目级临时资产目录（计划 / 报告 / 参考仓库 / 工作树 / 临时副本），
     // 里面还留着上游合并时的 **node_modules junction**。顶层镜像是逐个目录直传、**不走**
     // syncDir 的子项跳过名单 ⇒ 整个 .pai 被搬过去，而 junction 的 isDirectory() 为 false
@@ -485,9 +488,12 @@ if (incremental) {
     '.pai',
   ])
   const SKIP_FILE = /\.(tar\.gz|apk|log)$/i
+  // 顶层的维护文件同样不该进用户包（AGENTS.md 里还写着本机路径与协作约定）
+  const SKIP_TOP_FILE = /^(AGENTS\.md|\.gitattributes|\.gitignore|\.zcodeignore)$/i
   for (const e of fs.readdirSync(REPO, { withFileTypes: true })) {
     if (SKIP_TOP.has(e.name)) continue
     if (e.isFile() && SKIP_FILE.test(e.name)) continue
+    if (e.isFile() && SKIP_TOP_FILE.test(e.name)) continue
     const from = path.join(REPO, e.name)
     const to = path.join(DELIVER, e.name)
     if (e.isDirectory()) {
