@@ -147,6 +147,11 @@ async function generateScheduleImpl(character, direction, options = {}) {
 判断标准很简单：**把每条活动按 00:00 展开成一条时间轴，任意两段不许有交集，且合起来正好是 24 小时。**
 
 每个活动对象格式（description 必填，26-52 字，禁止空字符串或只写标点）：
+
+**description 只做状态记录**：日程是供系统判断「角色此刻在哪、在做什么」的时间线，不是正文描写。
+写得越像小说正文，越容易被服务商在输出侧掐断，整份 JSON 直接作废。
+所以只写动作和场景，身体部位、衣物穿着、表情、声音、情绪反应一律不写。
+
 {
   "startTime": "HH:MM",
   "endTime": "HH:MM",
@@ -154,7 +159,7 @@ async function generateScheduleImpl(character, direction, options = {}) {
   "location": "地点（比如「公寓书房」）",
   "replyDelay": 数字（0 / -1）,
   "tags": ["标签1", "标签2"],
-  "description": "简短描述（26-52 字），省略主语或使用第三人称（角色名），如「在厨房煎蛋，香气飘满房间」或「芙宁娜在街头发呆」，不出现“我”，“你”，“她/他”"
+  "description": "26-52 字，只写「在做什么」：动作 + 所处场景，中性叙述。如「在厨房煎蛋，顺手把锅移开」或「坐在教室后排记笔记」。省略主语或用第三人称（角色名），不出现「我」「你」「她/他」"
 }
 
 完整 JSON 结构示例（示例仅2个活动，实际需要覆盖完整24小时）：
@@ -398,8 +403,9 @@ export function repairScheduleOverlaps(activities) {
 /** 首轮就把格式约束贴在最后一条 user 消息里：长 system 中间那份规范，模型经常读不到 */
 const SCHEDULE_FORMAT_TAIL = `【输出格式 · 硬性要求】
 只输出一个 JSON 对象，形如：
-{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"她站在镜前慢慢理顺长发，水汽沾湿额发。"}]}
+{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"在浴室洗脸，把毛巾挂回架子上。"}]}
 8~15 条，按时间顺序覆盖完整 24 小时、上一条 endTime 等于下一条 startTime，不留空档；只有睡觉那条 replyDelay=-1，其余为 0；description 20~40 字且必须有内容。
+description 只写动作与场景，中性叙述：不写身体部位、衣物穿着、表情、声音或情绪反应（这是时间线记录，不是正文）。
 不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
 
 /**
@@ -419,13 +425,14 @@ const JSON_ONLY_REPAIR = `你上一次的回答不是合法 JSON（写成了 Mar
 现在请把**同样的日程内容**改写成下面这个结构的纯 JSON，字段名一个字都不能改：
 
 {"activities":[
-  {"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"她站在镜前慢慢理顺长发，水汽沾湿额发。"}
+  {"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"在浴室洗脸，把毛巾挂回架子上。"}
 ]}
 
 硬性要求：
 - 一共 8~15 条，按时间顺序覆盖完整 24 小时，上一条的 endTime 必须等于下一条的 startTime，不留任何空档；
 - 只有睡觉那一条 replyDelay 是 -1，其余全部 0；
 - description 20~40 字、必须有内容，不许空字符串；
+- description 顺手收敛成中性动作：只写「在做什么」，去掉身体部位、衣物穿着、表情、声音与情绪反应（这次改写同时也是最后一次机会，写得太像正文会被服务商掐断）；
 - 只输出这个 JSON 对象本身：不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
 
 /**
