@@ -5,6 +5,39 @@ const catalog = JSON.parse(readFileSync(new URL('../../resources/clothing-librar
 const byTag = new Map(catalog.entries.map(entry => [entry.tag, entry]));
 export function getClothingLibrary() { return catalog; }
 
+// 材质与配色词条单独存，跟单品库分开维护（2026-11-07）
+const fabricCatalog = JSON.parse(readFileSync(new URL('../../resources/fabric-library.json', import.meta.url), 'utf8'));
+export function getFabricLibrary() { return fabricCatalog; }
+
+/** 按种子做确定性洗牌：同一次生成可复现，不同角色抽到的组合不同。 */
+function shuffleBySeed(list, seed, salt = 0) {
+  const array = [...list];
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.abs(Math.round(seed) * 31 + salt * 17 + i * 7) % (i + 1);
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
+/**
+ * 抽材质与配色（2026-11-07 用户：材质也得让模型能画出来）。
+ *
+ * 只抽小批：材质多了模型会把几种质感糊成一片，颜色多了整件衣服变脏。
+ * 场景相关：内衣/睡衣不给牛仔、针织这类厚重料，常服不给硬纱。
+ */
+export function pickFabricAndColors({ seed = 0, materials = 2, colors = 3, candidates = [] } = {}) {
+  const intimate = candidates.slice(0, 3).some(c => (byTag.get(c.tag)?.categories || []).some(category => ['内衣', '睡衣', '泳装'].includes(category)));
+  const materialPool = fabricCatalog.materials.filter(item => {
+    if (intimate) return (item.scenes || []).some(scene => ['内衣', '睡衣', '泳装', '礼服'].includes(scene));
+    return !/tulle|sequins/i.test(item.tag);
+  });
+  const colorPool = fabricCatalog.colors;
+  return {
+    materials: shuffleBySeed(materialPool, seed, 3).slice(0, materials),
+    colors: shuffleBySeed(colorPool, seed, 11).slice(0, colors),
+  };
+}
+
 /**
  * 按一段自然语言找候选 tag（2026-11-07：用户要「在自定义衣服那边指定穿什么 + 自动找 tag」）。
  *
@@ -217,6 +250,13 @@ const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用�
 - 2~5 件为宜，不是越多越好；每件都要落到可见的结构与位置，不要把 tag 写成清单。
 - 世界观与场合优先：世界观规定的丝袜颜色、绑带方式、内衣款式属于硬规则；睡衣必须赤脚、不加鞋袜；性爱化的内衣配外套时要能自洽（半褪的罩衫、只挂在肩上的披帛都算）。
 
+【材质与配色：写到能看见的程度】
+- 材质从下面「本次可用材质」里挑 1~2 个。**写法必须把材质贴在单品前面**：a satin babydoll、a black velvet slip、a sheer lace teddy。不要写成「babydoll, satin」这种并列 —— 真机实测：材质词单独并列时，模型会把它画成另一件衣服（写 knit 会额外长出一件针织开衫，主体原样不动）。
+- 有强单品先验的材质只能配到对应单品上：knit 配毛衣或针织袜、denim 配裤子或裙子、fur 只做领口滚边、tulle 只做蓬裙层。不要把它们当作贴身内衣的面料 —— 实测写成 knit babydoll 时，模型会在主体外面又长出一件针织开衫。光泽类（satin、silk、latex、vinyl、glossy material）和装饰类（lace、mesh、sequins、embroidery）贴在主体上最稳。
+- 绑好之后还要补一句它在这件衣服上的可见表现：薄透到能看见肤色与阴影、缎面高光沿身体滑过、乳胶的硬反光、天鹅绒的绒面吸光、亮片的点状碎光、蕾丝的花卉镂空透出皮肤。只写材质名不算数。
+- 配色用 1 个主色 + 至多 1 个辅色，别全身同色。金属色（gold、silver）放在配饰与滚边上最稳，大面积金属容易糊。
+- 英文一律小写、词间用空格（Anima 官方要求：spaces instead of underscores），不要写成下划线 tag。
+
 【写描述的规则】
 - 一整段英文，逗号分隔的短语或流畅句子都可以，最终会直接喂给生图模型。
 - 角色身份、脸部、瞳色、发型、发色、肤色、体型和标志性身体特征沿用默认外观，不遗漏已有身体特征，不臆造缺失特征。
@@ -291,28 +331,35 @@ export function pickCombinationTags({ seed = 0, limit = 15, candidates = [] } = 
   return picked;
 }
 
-export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [], families = [], usedForms = [], combinations = [] }) {
+export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [], families = [], usedForms = [], combinations = [], fabrics = null }) {
+  // 展示给模型一律用空格形式（Anima 官方要求），下划线只留在库里当主键
+  const showTag = tag => String(tag).replace(/_/g, ' ');
   const candText = candidates.length
-    ? candidates.map(c => `${c.tag}（${c.label}）`).join('、')
+    ? candidates.map(c => `${showTag(c.tag)}（${c.label}）`).join('、')
     : '（本次没有筛选出候选，请自行判断）';
   // 同族形制只给名字和中文，不给描述：它们的作用是「让模型知道还有哪些形制可选」，
   // 不是让它照抄释义。
   const familyText = families.length
-    ? `\n【同族形制（同一大类下的其它可选形制，挑一个当主体）】${families.map(f => `${f.tag}（${f.label}）`).join('、')}`
+    ? `\n【同族形制（同一大类下的其它可选形制，挑一个当主体）】${families.map(f => `${showTag(f.tag)}（${f.label}）`).join('、')}`
     : '';
   const usedText = usedForms.length
-    ? `\n【这些形制已经被其它角色穿走，本次不得再用】${usedForms.map(f => `${f.tag}（${f.label}）`).join('、')}：从剩下的形制里挑最合适的那一族，不要以「更贴合气质」为由复用。`
+    ? `\n【这些形制已经被其它角色穿走，本次不得再用】${usedForms.map(f => `${showTag(f.tag)}（${f.label}）`).join('、')}：从剩下的形制里挑最合适的那一族，不要以「更贴合气质」为由复用。`
     : '';
   // 组合池按维度分组给，模型才知道哪些能叠在一起
   const comboText = combinations.length
-    ? `\n【可自由搭配的单品（按角色不同而不同，挑得上就组合进来）】${combinations.map(c => `${c.dimension}：${c.tag}（${c.label}）`).join('；')}`
+    ? `\n【可自由搭配的单品（按角色不同而不同，挑得上就组合进来）】${combinations.map(c => `${c.dimension}：${showTag(c.tag)}（${c.label}）`).join('；')}`
+    : '';
+  // 材质只给 2 个、配色 3 个：给多了模型会把几种质感糊成一片、颜色调脏
+  const fabricText = fabrics && (fabrics.materials?.length || fabrics.colors?.length)
+    ? `\n【本次可用材质（挑 1~2 个，写出它在这件衣服上的可见效果）】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
+      + `\n【本次可用配色（1 主 + 至多 1 辅）】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
     : '';
   return [
     { role: 'system', content: systemRules },
     ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
     { role: 'system', content: OUTFIT_FROM_BRIEF_PROMPT },
     { role: 'system', content: `【角色人设与默认外观】\n${persona}` },
-    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}${familyText}${comboText}${usedText}` },
+    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}${familyText}${comboText}${fabricText}${usedText}` },
     { role: 'user', content: `我想要这套衣服：${brief}\n请挑 tag 并输出英文外观描述，严格按示例 JSON。` },
   ];
 }
@@ -325,7 +372,7 @@ export function parseOutfitFromBrief(raw) {
   if (appearance.length < 30) throw new Error('生成的描述太短，请重试');
   if (/\p{Script=Han}/u.test(appearance)) throw new Error('描述必须是英文，请重试');
   const tags = Array.isArray(result?.tags)
-    ? result.tags.map(t => String(t || '').trim()).filter(t => /^[a-z0-9_()]+$/i.test(t)).slice(0, 12)
+    ? result.tags.map(t => String(t || '').trim().replace(/_/g, ' ')).filter(t => /^[a-z0-9() ]+$/i.test(t)).slice(0, 12)
     : [];
   // design_note 是模型「先判断形制再落笔」的那句中文理由（见 OUTFIT_FROM_BRIEF_PROMPT），
   // 不参与出图，只回给前端让用户知道这套为什么这么设计。

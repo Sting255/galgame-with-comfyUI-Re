@@ -40,7 +40,7 @@ import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
 // 角色操作反馈（右下角轻通知）：表情类别名 → 语义标记，供 reaction-assets 素材选择
 import { pickReactionMarker } from '../services/emojiService.js';
-import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms, pickCombinationTags } from '../services/clothingLibrary.js';
+import { getClothingLibrary, getFabricLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms, pickCombinationTags, pickFabricAndColors } from '../services/clothingLibrary.js';
 
 const router = Router();
 
@@ -106,6 +106,7 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
   const isSleepScene = /睡/.test(sceneLabel || '');
   const combinations = pickCombinationTags({ seed: Number(char.id) || 0, limit: 15, candidates })
     .filter(item => !(isSleepScene && /袜子种类|高跟结构|凉鞋与开放鞋/.test(item.dimension)));
+  const fabrics = pickFabricAndColors({ seed: Number(char.id) || 0, candidates });
   // 同一类型下别的角色已经穿过的形制：不传这个，模型对每个角色都会收敛到同一套
   const usedForms = sceneLabel
     ? collectUsedOutfitForms(
@@ -125,6 +126,7 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
       candidates,
       families,
       combinations,
+      fabrics,
       usedForms,
     });
     const raw = await chatSync(messages, {
@@ -138,9 +140,14 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
     // 这里把补出来的单独报给前端，用户才知道哪些词条是库外的，能决定要不要补进库。
     // 颜色/材质前缀（black_lace、white_thighhighs 这种）是生图常用写法，不算「库里缺词条」，
     // 否则每次生成都要弹一句「1 个词条衣服库里没有」，纯噪音。
-    const known = new Set(getClothingLibrary().entries.map(entry => entry.tag));
-    const COLOR_PREFIX = /^(black|white|red|blue|green|pink|purple|yellow|orange|brown|grey|gray|silver|gold|multicolored|two-tone|pastel|dark|light)[_-]/i;
-    const missing = parsed.tags.filter(tag => !known.has(tag) && !COLOR_PREFIX.test(tag));
+    const known = new Set([
+      ...getClothingLibrary().entries.map(entry => entry.tag),
+      // 材质与配色词条单独维护，也算「库里有」，否则每次都会报「库里没有 crimson」
+      ...getFabricLibrary().colors.map(item => item.tag.replace(/ /g, '_')),
+      ...getFabricLibrary().materials.map(item => item.tag.replace(/ /g, '_')),
+    ]);
+    const COLOR_PREFIX = /^(black|white|red|blue|green|pink|purple|yellow|orange|brown|grey|gray|silver|gold|multicolored|two-tone|pastel|dark|light)[ _]/i;
+    const missing = parsed.tags.filter(tag => !known.has(tag.replace(/ /g, '_')) && !COLOR_PREFIX.test(tag));
     res.json({ ...parsed, missing, candidates: candidates.map(c => ({ tag: c.tag, label: c.label })) });
   } catch (error) {
     res.status(502).json({ error: `生成失败：${error.message}` });

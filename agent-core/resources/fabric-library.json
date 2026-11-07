@@ -1,0 +1,215 @@
+{
+  "name": "fabric-library",
+  "version": "2026-11-07.1",
+  "note": "材质与配色词条。英文一律小写、词间用空格（Anima 官方 README：Use lowercase for tags, and spaces instead of underscores；Danbooru / Gelbooru 用词不一致时优先 Gelbooru）。只收高频、视觉上能明确画出差别的词，宁少不杂。hint 是给模型看的可画效果说明，不是词条释义。",
+  "materials": [
+    {
+      "tag": "sheer",
+      "label": "薄透薄纱",
+      "group": "薄透",
+      "hint": "布料半透，能看见皮肤与里面那件的轮廓，随身体起伏贴出形状",
+      "scenes": ["内衣", "睡衣", "礼服", "泳装"]
+    },
+    {
+      "tag": "see through fabric",
+      "label": "透视布料",
+      "group": "薄透",
+      "hint": "整片布透到能看清肤色，只有缝线与边缘是实的",
+      "scenes": ["内衣", "睡衣", "泳装"]
+    },
+    {
+      "tag": "translucent",
+      "label": "半透明",
+      "group": "薄透",
+      "hint": "介于实与透之间，逆光时透出体形剪影",
+      "scenes": ["内衣", "睡衣", "礼服"]
+    },
+    {
+      "tag": "mesh",
+      "label": "网纱",
+      "group": "薄透",
+      "hint": "细密网格，网眼之间露出皮肤，接缝处有包边",
+      "scenes": ["内衣", "泳装", "常服"]
+    },
+    {
+      "tag": "fishnet",
+      "label": "网眼",
+      "group": "薄透",
+      "hint": "菱形大网眼，线条感强，用在袜或衣身",
+      "scenes": ["内衣", "常服"]
+    },
+    {
+      "tag": "thin fabric",
+      "label": "薄料",
+      "group": "薄透",
+      "hint": "布料薄到能看见布下的轮廓与阴影，褶子细密",
+      "scenes": ["睡衣", "常服", "礼服"]
+    },
+    {
+      "tag": "satin",
+      "label": "缎面",
+      "group": "光泽",
+      "hint": "大面积连续高光沿身体滑过，暗部干净，边缘有镜面反光",
+      "scenes": ["内衣", "睡衣", "礼服"]
+    },
+    {
+      "tag": "silk",
+      "label": "丝绸",
+      "group": "光泽",
+      "hint": "柔和高光，褶皱薄而软，走动时布料流动感强",
+      "scenes": ["内衣", "睡衣", "礼服"]
+    },
+    {
+      "tag": "glossy material",
+      "label": "亮面材质",
+      "group": "光泽",
+      "hint": "整片反光，高光边缘清晰，像打过蜡",
+      "scenes": ["内衣", "泳装", "常服"]
+    },
+    {
+      "tag": "latex",
+      "label": "乳胶",
+      "group": "光泽",
+      "hint": "强反光、贴合紧绷，高光极亮且边缘利落，暗部近乎纯黑",
+      "scenes": ["内衣", "常服"]
+    },
+    {
+      "tag": "vinyl",
+      "label": "乙烯基 / PVC",
+      "group": "光泽",
+      "hint": "塑料质感硬挺，反光成块，折痕是硬折线",
+      "scenes": ["内衣", "常服"]
+    },
+    {
+      "tag": "leather",
+      "label": "皮革",
+      "group": "光泽",
+      "hint": "表面细纹路，反光偏哑，接缝与铆钉处更亮",
+      "scenes": ["常服", "内衣"]
+    },
+    {
+      "tag": "metallic",
+      "label": "金属感",
+      "group": "光泽",
+      "hint": "布面像金属箔，反光成带状，明暗对比极强",
+      "scenes": ["礼服", "常服"]
+    },
+    {
+      "tag": "velvet",
+      "label": "天鹅绒",
+      "group": "纹理",
+      "hint": "绒面吸光，边缘发亮，摸过的方向留下浅淡压痕",
+      "scenes": ["礼服", "睡衣", "内衣"]
+    },
+    {
+      "tag": "knit",
+      "label": "针织",
+      "group": "纹理",
+      "hint": "可见织纹与罗纹，边缘卷边，宽松处起自然堆褶",
+      "scenes": ["常服", "睡衣"]
+    },
+    {
+      "tag": "denim",
+      "label": "牛仔",
+      "group": "纹理",
+      "hint": "粗斜纹、褪色不均，接缝处有双线车线",
+      "scenes": ["常服"]
+    },
+    {
+      "tag": "cotton",
+      "label": "棉布",
+      "group": "纹理",
+      "hint": "哑光，褶皱软而钝，洗过后有轻微起伏",
+      "scenes": ["常服", "睡衣"]
+    },
+    {
+      "tag": "fur",
+      "label": "毛皮 / 绒毛",
+      "group": "纹理",
+      "hint": "边缘发虚成毛尖，光下透出绒毛层次，通常在领口与滚边",
+      "scenes": ["常服", "礼服"]
+    },
+    {
+      "tag": "lace",
+      "label": "蕾丝",
+      "group": "纹理",
+      "hint": "花卉镂空可见皮肤，边缘是扇形花边",
+      "scenes": ["内衣", "睡衣", "礼服"]
+    },
+    {
+      "tag": "embroidery",
+      "label": "刺绣",
+      "group": "纹理",
+      "hint": "绣线浮在布面上，图案有轻微凸起与线光",
+      "scenes": ["礼服", "常服", "睡衣"]
+    },
+    {
+      "tag": "sequins",
+      "label": "亮片",
+      "group": "纹理",
+      "hint": "整片点状反光，随角度闪成碎光",
+      "scenes": ["礼服", "常服"]
+    },
+    {
+      "tag": "tulle",
+      "label": "硬纱",
+      "group": "纹理",
+      "hint": "半透且硬挺，撑出蓬起轮廓，层次之间留缝隙",
+      "scenes": ["礼服"]
+    },
+    {
+      "tag": "tight fit",
+      "label": "贴身紧绷",
+      "group": "版型",
+      "hint": "布料贴住身体，接缝被撑开，腰臀线条完全显出来",
+      "scenes": ["内衣", "泳装", "常服"]
+    },
+    {
+      "tag": "clothing wrinkles",
+      "label": "衣褶",
+      "group": "版型",
+      "hint": "关节与腰侧堆出细褶，褶皱处的阴影是实的",
+      "scenes": ["常服", "睡衣"]
+    },
+    {
+      "tag": "fabric folds",
+      "label": "布褶垂坠",
+      "group": "版型",
+      "hint": "长布自上而下垂出深褶，褶底暗、褶脊亮",
+      "scenes": ["礼服", "睡衣"]
+    },
+    {
+      "tag": "wet clothes",
+      "label": "湿衣贴身",
+      "group": "版型",
+      "hint": "布料吸水后颜色变深、贴住皮肤，边缘滴水",
+      "scenes": ["泳装", "内衣"]
+    }
+  ],
+  "colors": [
+    { "tag": "black", "label": "黑", "group": "深色" },
+    { "tag": "white", "label": "白", "group": "浅色" },
+    { "tag": "off white", "label": "米白", "group": "浅色" },
+    { "tag": "ivory", "label": "象牙白", "group": "浅色" },
+    { "tag": "beige", "label": "米色", "group": "浅色" },
+    { "tag": "grey", "label": "灰", "group": "中性" },
+    { "tag": "silver", "label": "银", "group": "金属" },
+    { "tag": "gold", "label": "金", "group": "金属" },
+    { "tag": "brown", "label": "棕", "group": "中性" },
+    { "tag": "wine red", "label": "酒红", "group": "深色" },
+    { "tag": "crimson", "label": "绯红", "group": "深色" },
+    { "tag": "red", "label": "正红", "group": "亮色" },
+    { "tag": "rose", "label": "玫瑰粉", "group": "亮色" },
+    { "tag": "pink", "label": "粉", "group": "亮色" },
+    { "tag": "hot pink", "label": "桃红", "group": "亮色" },
+    { "tag": "lavender", "label": "薰衣草紫", "group": "亮色" },
+    { "tag": "purple", "label": "紫", "group": "深色" },
+    { "tag": "navy blue", "label": "藏青", "group": "深色" },
+    { "tag": "sky blue", "label": "天蓝", "group": "亮色" },
+    { "tag": "blue", "label": "蓝", "group": "亮色" },
+    { "tag": "emerald", "label": "祖母绿", "group": "深色" },
+    { "tag": "green", "label": "绿", "group": "亮色" },
+    { "tag": "yellow", "label": "黄", "group": "亮色" },
+    { "tag": "orange", "label": "橙", "group": "亮色" }
+  ]
+}
