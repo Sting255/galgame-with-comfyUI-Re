@@ -1,15 +1,17 @@
 /**
  * 联网搜索 — 为角色生成提供真实资料
  *
- * 先搜萌娘百科（ACG 角色专业 wiki，大陆可直连），获取角色背景、
- * 性格、经历等结构化资料。萌娘百科无结果时降级到 Bing 搜索。
+ * 三个源**并行**打，谁先回来都能用：
+ *   1. 虚空终端（Story MCP）— 游戏原文 + 萌娘角色页 + 米游社攻略，带行号片段，最专业
+ *   2. 萌娘百科 MediaWiki API — ACG 角色资料
+ *   3. Bing — 兜底补充
  *
- * 免费、无需 API Key、无速率限制。
- *
- * 搜索链路：萌娘百科（mzh.moegirl.org.cn）→ 无结果时 Bing 降级
+ * 全部免费、无需 API Key。2026-11-07 改：原先是串行（萌娘失败才降级 Bing），
+ * 而且正文抓取走 HTML 会被 Cloudflare 拦（403）白等十几秒，现在正文一律走 API。
  */
 
 import { chatSync } from '../llm/llm-client.js';
+import { searchAkasha } from './akashaMcp.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const FETCH_TIMEOUT = 5000; // 萌娘百科/通用单次请求 5s 超时
@@ -93,16 +95,21 @@ export async function searchCharacterInfo(query) {
     error => { console.warn(`[webSearch] ${name} failed: ${error?.message || error}`); return []; },
   );
 
-  // 2026-11-07：**并线搜索**。原来萌娘百科跑完（失败要等爬虫超时）才降级 Bing，
+  // 2026-11-07：**三源并线**。原来萌娘百科跑完（失败要等爬虫超时）才降级 Bing，
   // 两个源串行，最坏叠一次超时。现在同时打，谁先回来都能用。
-  const [moe, bing] = await Promise.all([
+  // 虚空终端（Story MCP）优先级最高：它直接给游戏原文和萌娘角色页的带行号片段。
+  const [akasha, moe, bing] = await Promise.all([
+    timed('Akasha', searchAkasha(searchName, context).then(item => (item ? [item] : []))),
     timed('Moegirl', searchMoegirl(searchName, context)),
     timed('Bing', searchBing(`${searchName} ${context}`)),
   ]);
 
   const allResults = [];
 
-  // 1. 萌娘百科优先：有作品上下文时只保留匹配作品名的那条，排除同名干扰
+  // 0. 虚空终端排最前：它给的是游戏原文 / 萌娘角色页的带行号片段，信息密度最高
+  allResults.push(...akasha);
+
+  // 1. 萌娘百科：有作品上下文时只保留匹配作品名的那条，排除同名干扰
   if (moe.length > 0 && context) {
     const ctx = context.toLowerCase();
     const matched = moe.filter(r => r.title.toLowerCase().includes(ctx) || r.content.toLowerCase().includes(ctx));
@@ -114,11 +121,10 @@ export async function searchCharacterInfo(query) {
       console.log(`[webSearch] no results matched context "${context}", keeping all`);
     }
   }
-  allResults.push(...moe);
 
-  // 2. Bing 结果补充（同标题去重，避免两个源把同一条内容喂两遍）
+  // 2. 合并去重（同标题只留一条，避免几个源把同一份内容喂两遍）
   const seen = new Set(allResults.map(r => String(r.title || '').trim()));
-  for (const item of bing) {
+  for (const item of [...moe, ...bing]) {
     const key = String(item.title || '').trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
