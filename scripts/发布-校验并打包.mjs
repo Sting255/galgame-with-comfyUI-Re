@@ -698,6 +698,14 @@ const zip = spawnSync(SEVENZIP, [
   // （`linshe-backup-20260930-1405.tar.gz`）+ 一个 2.5 MB 的 apk ⇒ 它们**不是运行所需**，
   // 排除后包体积立省约 1/8。（用户磁盘上那两个文件不动，只是不进包。）
   '-xr!*.tar.gz', '-xr!.access-token',
+  // 2026-11-07 真机：包体积从 733 MB 涨到 2.4 GB（GitHub 单资产上限 2 GiB，直接传不上去）。
+  // 查出来是三个非运行内容被打了进去，全部排除：
+  //   · release/ —— build-release.mjs 的历史产物（1.9 GB，含上一版 exe 与 zip）
+  //   · launcher/build_cache/ —— PyInstaller 与便携运行时下载缓存（697 MB）
+  //   · launcher/build/ —— PyInstaller 中间产物（57 MB，成品在 dist/）
+  `-xr!${DELIVER_NAME}\\release\\*`,
+  `-xr!${DELIVER_NAME}\\launcher\\build_cache\\*`,
+  `-xr!${DELIVER_NAME}\\launcher\\build\\*`,
 ], { cwd: DELIVER_PARENT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
 if (zip.status !== 0) die(`7z 退出码 ${zip.status}：${(zip.stderr || '').slice(0, 300)}`)
 const secs = Math.round((Date.now() - t0) / 1000)
