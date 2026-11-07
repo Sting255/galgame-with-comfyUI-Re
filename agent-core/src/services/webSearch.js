@@ -518,6 +518,9 @@ async function scrapeMoegirlPage(pageUrl) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: pageUrl }),
+      // 2026-11-07：抓取侧已压到最坏 2×5s（候选并行 + 短超时），这里再兜一层，
+      // 免得向量服务本身卡住时前端无限等下去。
+      signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
       console.warn(`[webSearch] python scrape returned ${res.status}`);

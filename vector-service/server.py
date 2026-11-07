@@ -7,12 +7,14 @@ Python FastAPI 向量服务
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+import asyncio
 import uuid
 import os
 import time
 import requests
 import cloudscraper
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from embedding import embed, embed_single
 from chroma_store import (
@@ -237,30 +239,50 @@ _SCRAPE_HEADERS = {
 _direct_session = requests.Session()
 _direct_session.trust_env = False
 
+# 2026-11-07：搜索慢的真凶在这。
+# 原来是 `for 候选(2) × for 重试(2) × (cloudscraper 15s + requests 15s)`，
+# 萌娘百科一旦不通，最坏要干等 120 秒；日志里实测一次 30 秒起步。
+# 现在：超时压到 5 秒（正常响应 <2s）、候选并行、不再对超时重试。
+_SCRAPE_TIMEOUT = float(os.environ.get('SCRAPE_TIMEOUT', '5'))
+# 熔断：连续失败后短时间内直接跳过，避免每次搜索都白等一轮
+_SCRAPE_COOLDOWN_SECONDS = float(os.environ.get('SCRAPE_COOLDOWN', '300'))
+_scrape_blocked_until = 0.0
+
+
+def _probe_once(url):
+    """单候选：先 cloudscraper，失败立刻换 requests（都是短超时，串行可接受）。"""
+    for name, client in (('cloudscraper', _scraper), ('requests', _direct_session)):
+        try:
+            resp = client.get(url, headers=_SCRAPE_HEADERS, timeout=_SCRAPE_TIMEOUT)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            print(f"[scrape] {name} failed ({url}): {e}")
+    return None
+
+
 def _fetch_moegirl_page(url):
+    global _scrape_blocked_until
+    now = time.time()
+    if now < _scrape_blocked_until:
+        raise RuntimeError(f'moegirl 熔断中，{int(_scrape_blocked_until - now)} 秒后再试')
+
     candidates = [url]
     if 'zh.moegirl.org.cn' in url:
         candidates.append(url.replace('zh.moegirl.org.cn', 'mzh.moegirl.org.cn'))
 
-    last_error = None
-    for candidate in candidates:
-        for attempt in range(2):
-            try:
-                resp = _scraper.get(candidate, headers=_SCRAPE_HEADERS, timeout=15)
-                resp.raise_for_status()
+    # 两个候选**并行**：最坏 2×5s，而不是 4×15s
+    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        futures = [pool.submit(_probe_once, c) for c in candidates]
+        for future in as_completed(futures):
+            resp = future.result()
+            if resp is not None:
+                _scrape_blocked_until = 0.0   # 通了就清掉熔断
                 return resp
-            except Exception as e:
-                last_error = e
-                print(f"[scrape] cloudscraper fetch failed ({candidate}, attempt {attempt + 1}/2): {e}")
-                try:
-                    resp = _direct_session.get(candidate, headers=_SCRAPE_HEADERS, timeout=15)
-                    resp.raise_for_status()
-                    return resp
-                except Exception as e2:
-                    last_error = e2
-                    print(f"[scrape] requests fallback failed ({candidate}): {e2}")
-                time.sleep(0.8)
-    raise last_error
+
+    _scrape_blocked_until = time.time() + _SCRAPE_COOLDOWN_SECONDS
+    print(f"[scrape] 全部候选失败，{int(_SCRAPE_COOLDOWN_SECONDS)} 秒内跳过抓取")
+    raise RuntimeError('moegirl 全部候选超时或被拒')
 
 @app.post("/scrape", response_model=ScrapeResponse)
 async def scrape_moegirl(req: ScrapeRequest):
@@ -269,7 +291,9 @@ async def scrape_moegirl(req: ScrapeRequest):
     print(f"[scrape] fetching {fetch_url}")
 
     try:
-        resp = _fetch_moegirl_page(fetch_url)
+        # 2026-11-07：抓取是同步阻塞的，原来直接在这里调用会让**整个事件循环**卡住
+        # 最长 30 秒——期间 embedding、记忆检索全停摆。丢到线程池里等。
+        resp = await asyncio.to_thread(_fetch_moegirl_page, fetch_url)
         resp.raise_for_status()
         print(f"[scrape] status: {resp.status_code}, bytes: {len(resp.content)}")
     except Exception as e:
