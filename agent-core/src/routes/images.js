@@ -6,7 +6,7 @@ import { generateImage, generateImageRaw, getLastWorkflowMode } from '../service
 import { refineImage } from '../services/imageRefine.js';
 import { startEditTask, listEditTasks, applyEditTask, discardEditTask, rerunEditTask } from '../services/imageEditTasks.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
-import { buildImageCrossRefInfo, buildUserImageCrossRefInfo } from '../services/characterPersona.js';
+import { buildImageCrossRefInfo, buildUserImageCrossRefInfo, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
 import { resolveAngelImageReference } from '../services/godSays/angelImageReference.js';
 import { config, getNovelaiApiKey, updatePoseControl } from '../config.js';
 import { savePoseReference, resolvePoseInputDir } from '../services/poseReference.js';
@@ -346,7 +346,7 @@ router.post('/test-style', async (req, res) => {
     if (crossBlocks.length > 0) {
       msgs.push({
         role: 'system',
-        content: `【画面交叉参考】以下角色/用户的身份与外观信息必须体现在生成的画面中：\n\n${crossBlocks.join('\n\n')}`,
+        content: `【画面交叉参考】以下角色/用户的身份与外观信息必须体现在生成的画面中：\n\n${crossBlocks.join('\n\n')}\n\n${IMAGE_CROSS_REF_OWNERSHIP_RULE}`,
       });
     }
 

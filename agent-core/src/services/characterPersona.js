@@ -438,6 +438,16 @@ export function ensureImagePromptIdentity(prompt, character) {
 }
 
 /**
+ * 多人同框的「服装归属」硬规则（2026-11-07 真机：A 的衣服穿到 B 身上）。
+ *
+ * 为什么单独抽出来：两组生图入口（chat.js 私聊 / images.js 画风测试与独立生图）
+ * 各自拼【画面交叉参考】，措辞分叉过一次就会有地方漏改。
+ * 说明：这只压住「描述被合并」这一类，压不住模型先验（同发色同气质的角色在潜空间里
+ * 太近），那一层只能靠角色 LoRA 或角色级负面词。
+ */
+export const IMAGE_CROSS_REF_OWNERSHIP_RULE = '【归属硬规则】上面每一段只属于该角色本人：服装、鞋袜、配饰、发型、瞳色、身体特征都不得出现在另一个角色身上，也不得把两个人的衣服合成一件。多人同框时按各自段落分别画，各自完整，不互换、不共用、不各取一半。';
+
+/**
  * 生图交叉参考信息（私聊 needImage / 画风测试共用）：身份行 + 外观段（含外观注入），
  * 「你」→角色名替换。
  * @param {object} char - characters 表行（至少含 base_prompt, display_name）
