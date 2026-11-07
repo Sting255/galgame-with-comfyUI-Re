@@ -1069,7 +1069,14 @@ async function generateOutfitByBrief() {
     slot.description = appearance
     detail.dirty = true
     const tags = Array.isArray(result?.tags) ? result.tags : []
-    toastFn(tags.length ? `已生成，用到：${tags.slice(0, 6).join('、')}` : '已生成这套的服装描述', 'success')
+    const missing = Array.isArray(result?.missing) ? result.missing : []
+    // 库外 tag 单独说一句：模型允许自补词条，但只写进描述、不进衣服库，
+    // 明确告知才不会被误当成「库里已有这套」。
+    if (missing.length) {
+      toastFn(`已生成，用到：${tags.slice(0, 4).join('、') || '—'}；其中 ${missing.length} 个词条衣服库里没有（${missing.slice(0, 2).join('、')}），已写进描述`, 'success')
+    } else {
+      toastFn(tags.length ? `已生成，用到：${tags.slice(0, 6).join('、')}` : '已生成这套的服装描述', 'success')
+    }
     outfitBrief.value = ''
   } catch (err) {
     console.error('generateOutfitByBrief failed:', err)

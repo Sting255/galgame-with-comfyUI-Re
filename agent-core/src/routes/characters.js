@@ -99,7 +99,8 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
   if (!basePrompt) return res.status(400).json({ error: '角色没有可用的人格卡内容' });
 
   // 服装类型名本身也是线索（用户可能只写了「泳装」两个字）
-  const candidates = searchClothingTags(`${sceneLabel} ${brief}`.trim(), { limit: 24 });
+  // limit 40：模糊匹配会带出同一片段的多个变体，24 条时「蕾丝裙」会被连衣裙变体挤出候选。
+  const candidates = searchClothingTags(`${sceneLabel} ${brief}`.trim(), { limit: 40 });
   try {
     const world = getWorldSetting();
     const messages = buildOutfitFromBriefMessages({
@@ -117,7 +118,11 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
       label: '按需求生成服装',
     });
     const parsed = parseOutfitFromBrief(raw);
-    res.json({ ...parsed, candidates: candidates.map(c => ({ tag: c.tag, label: c.label })) });
+    // 模型允许在库里没有对应词条时自己补 danbooru tag（如「机械外骨骼裙」）。
+    // 这里把补出来的单独报给前端，用户才知道哪些词条是库外的，能决定要不要补进库。
+    const known = new Set(getClothingLibrary().entries.map(entry => entry.tag));
+    const missing = parsed.tags.filter(tag => !known.has(tag));
+    res.json({ ...parsed, missing, candidates: candidates.map(c => ({ tag: c.tag, label: c.label })) });
   } catch (error) {
     res.status(502).json({ error: `生成失败：${error.message}` });
   }

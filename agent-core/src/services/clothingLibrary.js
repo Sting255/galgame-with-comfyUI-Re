@@ -15,7 +15,7 @@ export function getClothingLibrary() { return catalog; }
  * @param {{limit?: number}} [opts]
  * @returns {Array<{tag: string, label: string, description: string, score: number, matched: string}>}
  */
-export function searchClothingTags(query, { limit = 24 } = {}) {
+export function searchClothingTags(query, { limit = 40 } = {}) {
   const raw = String(query || '').trim().toLowerCase();
   if (!raw) return [];
   const terms = raw.split(/[\s,，、;；]+/).filter(Boolean);
@@ -49,7 +49,25 @@ export function searchClothingTags(query, { limit = 24 } = {}) {
     } else if (terms.some(t => t.length >= 2 && (label.includes(t) || tag.includes(t) || aliases.some(a => a.includes(t))))) {
       score = 60; matched = label;
     }
-    // ④ 字符覆盖率兜底：容忍错别字（「百色蕾丝裙」也能撞上）
+    // ④ 片段滑窗：中文没有空格，「蕾丝连衣裙」整词撞不上任何词条（库里叫「蕾丝裙」），
+    //    但拆成「蕾丝」「连衣裙」就都命中。取最长命中片段定分：2 字 55 / 3 字 65 / 4 字以上 75。
+    //    这一段专治复合词，代价是短词条会多些低分命中，靠排序和 limit 兜住。
+    if (!score && compact.length >= 4) {
+      let best = 0;
+      let matchedFrag = '';
+      for (let len = Math.min(5, compact.length); len >= 2 && !best; len--) {
+        for (let i = 0; i + len <= compact.length; i++) {
+          const frag = compact.slice(i, i + len);
+          if (label.includes(frag) || frag.includes(label) || aliases.some(a => a.includes(frag) || frag.includes(a))) {
+            best = len >= 4 ? 75 : len === 3 ? 65 : 55;
+            matchedFrag = frag;
+            break;
+          }
+        }
+      }
+      if (best) { score = best; matched = matchedFrag || label; }
+    }
+    // ⑤ 字符覆盖率兜底：容忍错别字（「百色蕾丝裙」也能撞上）
     if (!score && compact.length >= 2) {
       const chars = [...new Set(compact)];
       const hit = chars.filter(c => hay.includes(c)).length;
@@ -62,7 +80,20 @@ export function searchClothingTags(query, { limit = 24 } = {}) {
     scored.push({ tag: entry.tag, label: entry.label, description: entry.description, score, matched });
   }
   scored.sort((a, b) => b.score - a.score || a.label.length - b.label.length);
-  return scored.slice(0, limit);
+  // 按「命中片段」配额取样：不然「黑色蕾丝连衣裙」会把二十多种连衣裙变体
+  // （连帽/乳胶/百褶/罗纹…）排满整个候选，真正要用的「蕾丝裙」被挤到第 83 名。
+  // 同一片段最多占 4 个名额；≥70 分是整词真命中，不受配额限制。
+  const perBucket = new Map();
+  const picked = [];
+  for (const item of scored) {
+    const key = item.matched || item.tag;
+    const used = perBucket.get(key) || 0;
+    if (used >= 4 && item.score < 70) continue;
+    perBucket.set(key, used + 1);
+    picked.push(item);
+    if (picked.length >= limit) break;
+  }
+  return picked;
 }
 
 export function resolveClothingTags(tags, scene = 'work') {
