@@ -81,7 +81,11 @@ export async function runGodAgent(run, { repo, tools, stream, prepare, signal, m
   } catch (err) {
     const cancelled = signal?.aborted && signal.reason?.name !== 'TimeoutError';
     if (current) repo.updateMessage(current.id, { status: cancelled ? 'cancelled' : 'interrupted' });
-    if (!cancelled) repo.message(run, 'assistant', `吾神，我暂时没能完成这次回应。${signal?.reason?.name === 'TimeoutError' ? '这次回应耗时过长，已经停止。' : err.message} 已经完成的工作会保留，您可以查看执行记录。`);
+    // 2026-11-07：这条失败提示只给用户看，**不能进下一轮上下文**。
+    // history.js 只收 status === 'done' 的行，所以这里必须标 failed；
+    // 之前用默认的 done，导致「我暂时没能完成这次回应」被当成天使自己说过的话，
+    // 真机日志里同一段话在请求体中重复出现 85 处，越失败上下文越脏、越难成功。
+    if (!cancelled) repo.message(run, 'assistant', `吾神，我暂时没能完成这次回应。${signal?.reason?.name === 'TimeoutError' ? '这次回应耗时过长，已经停止。' : err.message} 已经完成的工作会保留，您可以查看执行记录。`, { status: 'failed' });
     repo.finish(run.id, cancelled ? 'cancelled' : 'failed', cancelled ? null : err.message);
   }
 }
