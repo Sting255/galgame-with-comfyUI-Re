@@ -11811,6 +11811,824 @@
         "内衣种类"
       ],
       "kind": "outfit"
+    },
+    {
+      "tag": "hat",
+      "label": "帽子",
+      "description": "戴在头上的帽子",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "帽子"
+      ]
+    },
+    {
+      "tag": "baseball_cap",
+      "label": "棒球帽",
+      "description": "棒球帽，前额有帽檐",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "鸭舌帽"
+      ]
+    },
+    {
+      "tag": "beret",
+      "label": "贝雷帽",
+      "description": "贝雷帽，扁平圆帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "sun_hat",
+      "label": "遮阳帽",
+      "description": "宽檐遮阳帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "草帽"
+      ]
+    },
+    {
+      "tag": "straw_hat",
+      "label": "草帽",
+      "description": "编织草帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "top_hat",
+      "label": "大礼帽",
+      "description": "高筒大礼帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "witch_hat",
+      "label": "女巫帽",
+      "description": "尖顶女巫帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "魔女帽"
+      ]
+    },
+    {
+      "tag": "sailor_hat",
+      "label": "水手帽",
+      "description": "水手风格帽子",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "nurse_cap",
+      "label": "护士帽",
+      "description": "白色护士帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "maid_headdress",
+      "label": "女仆头饰",
+      "description": "女仆装配套的白色荷叶边头饰",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "女仆头带"
+      ]
+    },
+    {
+      "tag": "hood",
+      "label": "兜帽",
+      "description": "罩在头上的兜帽",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "连帽"
+      ]
+    },
+    {
+      "tag": "scarf",
+      "label": "围巾",
+      "description": "围在脖子上的围巾",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "围脖",
+        "围巾"
+      ]
+    },
+    {
+      "tag": "muffler",
+      "label": "厚围脖",
+      "description": "保暖用的厚围脖",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "毛线围巾"
+      ]
+    },
+    {
+      "tag": "choker",
+      "label": "颈圈",
+      "description": "贴颈的窄颈圈",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "项圈"
+      ]
+    },
+    {
+      "tag": "collar",
+      "label": "立领项圈",
+      "description": "带铃铛或金属环的颈圈",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "necktie",
+      "label": "领带",
+      "description": "衬衫领下的领带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "领带"
+      ]
+    },
+    {
+      "tag": "bowtie",
+      "label": "领结",
+      "description": "领口的蝴蝶结",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "蝴蝶结领"
+      ]
+    },
+    {
+      "tag": "ribbon",
+      "label": "缎带",
+      "description": "系在颈间或发间的缎带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "颈部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "蝴蝶结"
+      ]
+    },
+    {
+      "tag": "glasses",
+      "label": "眼镜",
+      "description": "普通框架眼镜",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "眼镜"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "框架眼镜"
+      ]
+    },
+    {
+      "tag": "sunglasses",
+      "label": "墨镜",
+      "description": "深色镜片太阳镜",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "眼镜"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "太阳镜"
+      ]
+    },
+    {
+      "tag": "round_eyewear",
+      "label": "圆框眼镜",
+      "description": "圆形镜框眼镜",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "眼镜"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "semi-rimless_eyewear",
+      "label": "半框眼镜",
+      "description": "上半框或下半框眼镜",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "眼镜"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "monocle",
+      "label": "单片眼镜",
+      "description": "夹在单眼的单片眼镜",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "眼镜"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "eyepatch",
+      "label": "眼罩",
+      "description": "遮住单眼的眼罩",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "眼镜"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "earrings",
+      "label": "耳环",
+      "description": "耳部装饰",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "耳饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "耳饰"
+      ]
+    },
+    {
+      "tag": "hoop_earrings",
+      "label": "圈状耳环",
+      "description": "环形大耳环",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "耳饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "dangle_earrings",
+      "label": "垂坠耳环",
+      "description": "带垂坠饰物的耳环",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "耳饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "流苏耳环"
+      ]
+    },
+    {
+      "tag": "stud_earrings",
+      "label": "耳钉",
+      "description": "贴耳的小耳钉",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "耳饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "necklace",
+      "label": "项链",
+      "description": "戴在颈部的项链",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "项链"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "pendant",
+      "label": "吊坠",
+      "description": "项链上的吊坠",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "项链"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "pearl_necklace",
+      "label": "珍珠项链",
+      "description": "一串珍珠项链",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "项链"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "珍珠链"
+      ]
+    },
+    {
+      "tag": "cross_necklace",
+      "label": "十字项链",
+      "description": "带十字吊坠的项链",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "项链"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "十字架项链"
+      ]
+    },
+    {
+      "tag": "crown",
+      "label": "王冠",
+      "description": "头顶的金属王冠",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "皇冠"
+      ]
+    },
+    {
+      "tag": "tiara",
+      "label": "头冠",
+      "description": "额前的小型头冠",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "circlet",
+      "label": "头环",
+      "description": "环绕额头的细环",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "hairband",
+      "label": "发带",
+      "description": "箍在头上的发带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "发箍"
+      ]
+    },
+    {
+      "tag": "hairbow",
+      "label": "发结",
+      "description": "系在头发上的蝴蝶结",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "hair_flower",
+      "label": "发花",
+      "description": "别在发间的花饰",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "头花"
+      ]
+    },
+    {
+      "tag": "hairpin",
+      "label": "发夹",
+      "description": "固定头发的小夹子",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "kanzashi",
+      "label": "簪子",
+      "description": "和风发簪",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "hair_ornament",
+      "label": "发饰",
+      "description": "泛指头发上的装饰物",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "hair_scrunchie",
+      "label": "发圈",
+      "description": "扎头发用的发圈",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "头饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "大肠圈"
+      ]
+    },
+    {
+      "tag": "gloves",
+      "label": "手套",
+      "description": "双手戴的手套",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "fingerless_gloves",
+      "label": "露指手套",
+      "description": "露出指尖的手套",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "elbow_gloves",
+      "label": "长手套",
+      "description": "长及肘部以上的手套",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "过肘手套"
+      ]
+    },
+    {
+      "tag": "white_gloves",
+      "label": "白手套",
+      "description": "纯白色正装手套",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "lace_gloves",
+      "label": "蕾丝手套",
+      "description": "蕾丝材质半透手套",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "mittens",
+      "label": "连指手套",
+      "description": "不分指的手套",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "bracelet",
+      "label": "手镯",
+      "description": "腕部金属或宝石手镯",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "手链"
+      ]
+    },
+    {
+      "tag": "bangle",
+      "label": "硬质手镯",
+      "description": "硬质环状手镯",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "wristband",
+      "label": "腕带",
+      "description": "运动或装饰用腕带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "ring",
+      "label": "戒指",
+      "description": "手指上的戒指",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "手部"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "belt",
+      "label": "腰带",
+      "description": "束在腰间的腰带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "腰饰"
+      ],
+      "kind": "outfit",
+      "aliases": [
+        "皮带"
+      ]
+    },
+    {
+      "tag": "sash",
+      "label": "束腰饰带",
+      "description": "缠绕腰间的布质饰带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "腰饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "obi",
+      "label": "和服腰带",
+      "description": "和服用的宽腰带",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "腰饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "brooch",
+      "label": "胸针",
+      "description": "别在胸前的装饰别针",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "胸饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "badge",
+      "label": "徽章",
+      "description": "别在胸前的小徽章",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "胸饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "armband",
+      "label": "臂章",
+      "description": "缠在上臂的臂章",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "胸饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
+    },
+    {
+      "tag": "corsage",
+      "label": "胸花",
+      "description": "别在胸前的花饰",
+      "categories": [
+        "配饰"
+      ],
+      "subcategories": [
+        "胸饰"
+      ],
+      "kind": "outfit",
+      "aliases": []
     }
   ]
 }
