@@ -6,6 +6,7 @@ import { load as yamlLoad } from 'js-yaml';
 import { readLauncherConfig, resolveComfyRoot, resolveComfySubdir } from '../utils/comfyPaths.js';
 import { config, updateComfyConfig, getNovelaiApiKey, updateFeatureFlag, getLlmConfig, getLlmApiKey, updateLlmConfig, updateFreeEggEnabled, updateUserConfig, getUserConfig, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWorkflowMode, updateWorkflowScene, updateWorkflowCustomTemplate, getWorkflowConfig, getLlmProfiles, getActiveProfileId, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, getActiveNovelaiProfileId, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateWeatherConfig, updateGlobalLora, updateHiresSettings, updateHiresLora, updateGroupSummaryInterval, updateGroupTemperature, updateGroupActivity, updateScheduleRefreshDays, updateAntiRepetitionPenalty } from '../config.js';
 import { resetClient, chatSync, resetFreeEggFailureCount, testLlmConnection } from '../llm/llm-client.js';
+import { normalizeModelCapabilities, rememberUpstreamCapabilities } from '../llm/modelCapabilities.js';
 import { getDb, getSystemRules } from '../db/index.js';
 import { listWorldSettings, getActiveWorldSetting, getWorldSettingById, createWorldSetting, updateWorldSetting, deleteWorldSetting, activateWorldSetting } from '../db/index.js';
 import { DEFAULT_GLOBAL_RULES } from '../db/seedData.js';
@@ -815,7 +816,11 @@ router.post('/llm/models', async (req, res) => {
     if (!models.length) {
       return res.status(502).json({ error: '接口未返回可识别的模型列表' });
     }
-    res.json({ ok: true, models, endpoint: modelsURL.toString() });
+    // 2026-11-07：把能力字段一起返回并记进进程内——上游本来就给了输出上限和上下文，
+    // 之前只留 id 列表，前端拿不到就只能按硬编码表猜（deepseek v4 族猜 32768，实际 393216）。
+    const capabilities = normalizeModelCapabilities(rows);
+    rememberUpstreamCapabilities(baseURL, capabilities);
+    res.json({ ok: true, models, capabilities, endpoint: modelsURL.toString() });
   } catch (error) {
     const message = error?.name === 'TimeoutError' ? '请求超时' : error.message;
     res.status(502).json({ error: `获取模型失败：${message}` });

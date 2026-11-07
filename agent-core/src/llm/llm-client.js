@@ -13,7 +13,7 @@ import { resolveModelForLabel } from '../services/modelRouting.js';
 // 本地独有：拒答检测（模型把"我无法提供"当结果返回时重发一次，见 services/refusalDetector.js）
 import { isRefusal, REFUSAL_RETRY_INSTRUCTION } from '../services/refusalDetector.js';
 // 上游 v3.10.0：输出额度统一由设置页决定（按 baseURL/模型猜上限）
-import { defaultMaxTokens, isValidMaxTokens } from './modelCapabilities.js';
+import { defaultMaxTokens, isValidMaxTokens, getUpstreamCapability } from './modelCapabilities.js';
 import { buildAgentRequest, readAgentResponse } from './agentStream.js';   // 上游 4.1.0：神说原生工具流
 
 /**
@@ -62,11 +62,13 @@ function applyOutputTokenLimit(params, maxTokens = config.llm.maxTokens, baseURL
   delete params.max_completion_tokens;
   delete params.max_output_tokens;
   const value = isValidMaxTokens(maxTokens) ? maxTokens : defaultMaxTokens(baseURL, params.model);
-  // 额度远超常用上限时只警告一次（不钳制：有些服务商确实支持大额度，静默改小反而更难查）
-  const cap = defaultMaxTokens(baseURL, params.model);
-  if (!_oversizedWarned && isValidMaxTokens(value) && value > cap * 1.5) {
+  // 2026-11-07：只在**上游明确声明过上限**时才告警。
+  // 硬编码表只是兜底估计（deepseek v4 族猜 32768，中转站实际 393216），
+  // 拿它去比会把 300000 这种完全合规的值报成「远超上限」，把人往更小的值上带。
+  const knownCap = getUpstreamCapability(baseURL, params.model)?.maxTokens;
+  if (!_oversizedWarned && isValidMaxTokens(knownCap) && isValidMaxTokens(value) && value > knownCap * 1.5) {
     _oversizedWarned = true;
-    console.warn(`[llm] 输出额度 ${value} 远超该模型常用上限 ${cap}（模型 ${params.model || '?'}），`
+    console.warn(`[llm] 输出额度 ${value} 远超该模型上限 ${knownCap}（模型 ${params.model || '?'}，上限来自上游声明），`
       + '部分服务商会拒绝或截断回复；如遇「模型未完成本轮回复」请先在设置里调小额度和。');
   }
   params[field] = value;
@@ -110,11 +112,15 @@ export async function* chatAgentStream(messages, { tools = [], toolChoice = 'aut
     target: resolveShieldTarget(label),
   });
   const params = buildAgentRequest(messages, tools, llm, { forceThinking, temperature, toolChoice });
-  // 同一份真机日志：设置里填的 300000 被原样发进这条链（模型常用上限 32768）。
-  // 超大额度会让服务商对请求打标甚至直接拒绝，所以这里收敛到模型上限；
-  // 用户设得比上限小时仍按用户的来，其余链路保持 applyOutputTokenLimit 的原有行为（不钳制，只警告）。
-  const cap = defaultMaxTokens(config.llm.baseURL, params.model);
-  applyOutputTokenLimit(params, Math.min(isValidMaxTokens(config.llm.maxTokens) ? config.llm.maxTokens : cap, cap));
+  // 同一份真机日志：设置里填的 300000 被原样发进这条链。
+  // 2026-11-07 修正：**只有上游明确声明过上限时才收敛**。硬编码表只是兜底估计
+  // （deepseek v4 族猜 32768，而中转站实际给 393216），拿它去砍用户额度会砍掉 92% 的空间。
+  // 拿不到上游信息 → 传 undefined，走 applyOutputTokenLimit 的默认参数（= 用户设置值）。
+  const knownCap = getUpstreamCapability(config.llm.baseURL, params.model)?.maxTokens;
+  applyOutputTokenLimit(params,
+    isValidMaxTokens(knownCap) && isValidMaxTokens(config.llm.maxTokens)
+      ? Math.min(config.llm.maxTokens, knownCap)
+      : undefined);
   if (isDeepseek()) params.stream_options = { ...params.stream_options, include_usage: true };
   const logLabel = requestId ? `${label} [${requestId}]` : label;
   let usage;
