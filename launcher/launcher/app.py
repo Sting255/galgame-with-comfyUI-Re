@@ -725,6 +725,13 @@ class MainWindow(QMainWindow):
                 self._version_page.append_log("版本切换完成，可以启动项目")
             if self._stack.currentIndex() == self.PAGE_LOG:
                 self._start_services()
+            else:
+                # 2026-11-07 修：成功分支原来没有恢复首页按钮和日志页忙碌态。
+                # 失败分支一直有这个复位，成功分支漏了 —— 表现就是「日志明明打了
+                # ✓ 构建完成，按钮却永远停在 ⏳ 构建中...，只能重启启动器」。
+                # 用户切版本时通常停在版本页，正好命中这条路径。
+                self._home_page.set_launch_state(False)
+                self._log_page.set_busy_state(False)
         else:
             self._log_page.append_log(f"[ERROR] 构建失败: {message}")
             self._version_page.append_log(f"[ERROR] {message}")
