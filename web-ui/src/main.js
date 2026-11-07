@@ -29,7 +29,7 @@ const MomentsView = () => import('./views/MomentsView.vue')
 const EventsView = () => import('./views/EventsView.vue')
 const ScheduleView = () => import('./views/ScheduleView.vue')
 const GalleryView = () => import('./views/GalleryView.vue')
-const WorldMapView = () => import('./views/WorldMapView.vue')
+const DormView = () => import('./views/DormView.vue')
 const TavernView = () => import('./views/TavernView.vue')
 const MailboxView = () => import('./views/MailboxView.vue')
 const BackpackView = () => import('./views/BackpackView.vue')
@@ -54,7 +54,7 @@ const routes = [
   { path: '/media', component: MediaView },   // 上游 v3.9.0 合并：媒体内容页
   { path: '/schedule', component: ScheduleView },
   { path: '/gallery', component: GalleryView },
-  { path: '/worldmap', component: WorldMapView },   // 地图页：世界地图骨架（叙事地理）
+  { path: '/dorm', component: DormView },   // 宿舍页：房间与入住安排（2026-11-07 取代原地图页）
   { path: '/tavern', component: TavernView },
   { path: '/mailbox', component: MailboxView },
   { path: '/backpack', component: BackpackView },

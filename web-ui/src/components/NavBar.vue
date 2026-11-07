@@ -70,15 +70,14 @@
         <span class="nav-label">相册</span>
       </router-link>
 
-      <!-- 地图：世界地理骨架（与游戏化小镇刻意分开的叙事地理） -->
-      <router-link to="/worldmap" data-nav="worldmap" class="nav-item" :class="{ active: $route.path.startsWith('/worldmap') }" title="地图">
+      <!-- 宿舍：房间与入住安排（2026-11-07 取代原地图页） -->
+      <router-link to="/dorm" data-nav="dorm" class="nav-item" :class="{ active: $route.path.startsWith('/dorm') }" title="宿舍">
         <div class="nav-icon-wrap">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z" />
-            <path d="M9 4v14M15 6v14" />
+            <path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7" />
           </svg>
         </div>
-        <span class="nav-label">地图</span>
+        <span class="nav-label">宿舍</span>
       </router-link>
 
       <router-link to="/tavern" data-nav="tavern" class="nav-item" :class="{ active: $route.path.startsWith('/tavern') }" title="酒馆">

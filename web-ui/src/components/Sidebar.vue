@@ -198,12 +198,11 @@
             </svg>
             <span>相册</span>
           </router-link>
-          <router-link to="/worldmap" class="more-menu-item" @click="onMenuItemClick">
+          <router-link to="/dorm" class="more-menu-item" @click="onMenuItemClick">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/>
-              <path d="M9 4v14M15 6v14"/>
+              <path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7"/>
             </svg>
-            <span>地图</span>
+            <span>宿舍</span>
           </router-link>
           <router-link to="/backpack" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">

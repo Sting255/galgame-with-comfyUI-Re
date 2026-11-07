@@ -18,7 +18,6 @@ import { migrateTownSchema } from './townSchema.js';
 import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
 import { migrateTownActionSchema } from './townActionSchema.js';
 import { ensureTownDialogueSchema } from './townDialogueSchema.js';
-import { ensureWorldMapSchema } from './worldMapSchema.js';
 import { migrateTownEconomySchema } from './townEconomySchema.js';
 import { migrateTownNpcFunctionsSchema } from './townNpcFunctionsSchema.js';
 import { migrateTownNpcEventSchema } from './townNpcEventSchema.js';
@@ -1251,7 +1250,6 @@ function initSchema(db) {
   migrateTownActionSchema(db);
   ensureTownDialogueSchema(db);
   // 迁移: 世界地图骨架（叙事地理，「地图」页）—— 与 town_maps 网格图刻意分开
-  ensureWorldMapSchema(db);
   migrateTownEconomySchema(db);
   migrateTownNpcFunctionsSchema(db);
   migrateTownNpcEventSchema(db);

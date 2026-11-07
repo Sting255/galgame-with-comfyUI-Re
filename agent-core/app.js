@@ -37,7 +37,6 @@ import configRoutes from './src/routes/config.js';
 import lorebookRoutes from './src/routes/lorebooks.js';
 import presetRoutes from './src/routes/presets.js';
 import momentsRoutes from './src/routes/moments.js';
-import worldMapRoutes from './src/routes/worldMap.js';
 import godSaysRoutes from './src/routes/godSays.js';   // 上游 4.1.0：神说（godSays）
 import logRoutes from './src/routes/logs.js';          // 上游 4.1.0：内存日志面板
 import { startGodSays, stopGodSays } from './src/services/godSays/runtime.js';
@@ -233,8 +232,6 @@ app.use('/api/presets', wrapRouterAsync(presetRoutes));
 app.use('/api/god-says', wrapRouterAsync(godSaysRoutes));
 app.use('/api/logs', wrapRouterAsync(logRoutes));
 app.use('/api/moments', wrapRouterAsync(momentsRoutes));
-// 地图页（世界地图骨架 = 叙事地理）；与小镇的网格图接口刻意分开
-app.use('/api/worldmap', wrapRouterAsync(worldMapRoutes));
 app.use('/api/relationships', wrapRouterAsync(relationshipsRoutes));
 app.use('/api/user-relationships', wrapRouterAsync(userRelationshipsRoutes));
 app.use('/api/portraits', wrapRouterAsync(portraitsRoutes));

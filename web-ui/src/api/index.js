@@ -448,67 +448,6 @@ export function expandAppearanceDraft({ brief, characterId, basePrompt, displayN
   })
 }
 
-// ── 地图页（世界地图骨架 = 叙事地理，非游戏网格图；2026-10-29 移植自 PR#24）──
-
-/** 层级标签与 POI 类型（口径在后端，前端不写死） */
-export function getWorldMapMeta() {
-  return request('/worldmap/meta')
-}
-
-export function listWorldMaps() {
-  return request('/worldmap/maps')
-}
-
-export function createWorldMap({ name, worldSettingId = null, note = '' } = {}) {
-  return request('/worldmap/maps', { method: 'POST', body: { name, worldSettingId, note } })
-}
-
-export function getWorldMap(mapId) {
-  return request(`/worldmap/maps/${mapId}`)
-}
-
-export function updateWorldMap(mapId, patch = {}) {
-  return request(`/worldmap/maps/${mapId}`, { method: 'PUT', body: patch })
-}
-
-export function deleteWorldMap(mapId) {
-  return request(`/worldmap/maps/${mapId}`, { method: 'DELETE' })
-}
-
-/** 复制一张地图（整棵子树）为新地图 —— 用作「新建时套模板」 */
-export function duplicateWorldMap(mapId, name = '') {
-  return request(`/worldmap/maps/${mapId}/duplicate`, { method: 'POST', body: { name } })
-}
-
-/** ① 生成骨架（L1 大地区 + L2 子地区，1 次短 LLM） */
-export function generateWorldMapSkeleton(mapId, { brief = '', regionCount, districtPerRegion } = {}) {
-  return request(`/worldmap/maps/${mapId}/generate`, {
-    method: 'POST', body: { brief, regionCount, districtPerRegion },
-  })
-}
-
-/** 导出 Markdown（贴回知识库用） */
-export function exportWorldMapMarkdown(mapId) {
-  return request(`/worldmap/maps/${mapId}/export`)
-}
-
-export function addWorldMapPlace(mapId, place) {
-  return request(`/worldmap/maps/${mapId}/places`, { method: 'POST', body: place })
-}
-
-export function updateWorldMapPlace(placeId, patch) {
-  return request(`/worldmap/places/${placeId}`, { method: 'PUT', body: patch })
-}
-
-export function deleteWorldMapPlace(placeId) {
-  return request(`/worldmap/places/${placeId}`, { method: 'DELETE' })
-}
-
-/** ② 逐区展开（L3 场景 + 每场景 POI；重复调用 = 换一批） */
-export function expandWorldMapPlace(placeId) {
-  return request(`/worldmap/places/${placeId}/expand`, { method: 'POST' })
-}
-
 export const getClothingLibrary = () => request('/characters/clothing-library')
 export const generateClothingAppearanceDraft = ({ characterId, basePrompt, scene, tags, brief, signal }) => request('/characters/clothing-appearance-draft', {
   method: 'POST', body: { character_id: characterId, base_prompt: basePrompt, scene, tags, brief }, signal,
