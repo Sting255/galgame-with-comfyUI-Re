@@ -90,8 +90,8 @@ function copyTree(from, to, report, label) {
   report.copied.push(`${label}（${files} 个文件）`);
 }
 
-function copyDirIfMissing(from, to, label, report) {
-  if (fs.existsSync(path.join(to, 'node.py'))) return; // 已经装过
+function copyDirIfMissing(from, to, label, report, markFile = 'node.py') {
+  if (fs.existsSync(path.join(to, markFile))) return; // 已经装过
   if (!fs.existsSync(from)) { report.skipped.push(`${label}（包里没有该资产）`); return; }
   try {
     fs.mkdirSync(path.dirname(to), { recursive: true });
@@ -131,6 +131,16 @@ export function ensurePoseControlAssets({ comfyRoot, bundledDir, rtmlibDir, dryR
     '自定义节点 ComfyUI-anima-pose-control',
     report,
   );
+  // ①-b 控制注入节点（2026-11-08 补）：AnimaControlApply 不在 pose-control 包里，
+  // 它属于同一个 HF 仓库的另一份插件 anima_control_lora。之前只装了前者，注入链
+  // 一路引用 AnimaControlApply，目标机器上没有 → 每次出图先吃一次 400 再退回无姿势。
+  copyDirIfMissing(
+    path.join(src, 'custom_nodes', 'anima_control_lora'),
+    path.join(root, 'custom_nodes', 'anima_control_lora'),
+    '自定义节点 anima_control_lora（AnimaControlApply）',
+    report,
+    '__init__.py',
+  );
   // ② 姿态 LoRA
   copyIfMissing(
     path.join(src, 'models', 'loras', POSE_LORA_FILE),
@@ -163,9 +173,25 @@ export function inspectPoseAssetPlacement() {
   const comfyRoot = resolveComfyRoot();
   if (!comfyRoot) return { placed: false, comfyRoot: null, nodeDir: '', reason: 'no-comfy-root' };
   const nodeDir = path.join(comfyRoot, 'custom_nodes', 'ComfyUI-anima-pose-control');
+  // 2026-11-08：注入链要两个插件 —— pose-control（出骨架）与 anima_control_lora（AnimaControlApply）。
+  // 只查前者会把"装了半个"误判成到位，用户看到「已装」却一直没姿势。
+  const applyDir = path.join(comfyRoot, 'custom_nodes', 'anima_control_lora');
   let placed = false;
-  try { placed = fs.existsSync(nodeDir); } catch { placed = false; }
-  return { placed, comfyRoot, nodeDir, reason: placed ? 'installed-need-restart' : 'not-installed' };
+  let applyPlaced = false;
+  try {
+    placed = fs.existsSync(nodeDir);
+    applyPlaced = fs.existsSync(path.join(applyDir, '__init__.py'));
+  } catch { placed = false; applyPlaced = false; }
+  if (placed && applyPlaced) {
+    return { placed: true, comfyRoot, nodeDir, applyDir, reason: 'installed-need-restart' };
+  }
+  return {
+    placed: false,
+    comfyRoot,
+    nodeDir,
+    applyDir,
+    reason: placed ? 'partial-old-plugin' : 'not-installed',
+  };
 }
 
 /** 启动时调用：只做一次、只打一行日志、绝不影响启动 */
