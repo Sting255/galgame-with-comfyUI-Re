@@ -40,7 +40,7 @@ import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
 // 角色操作反馈（右下角轻通知）：表情类别名 → 语义标记，供 reaction-assets 素材选择
 import { pickReactionMarker } from '../services/emojiService.js';
-import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief } from '../services/clothingLibrary.js';
+import { getClothingLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms } from '../services/clothingLibrary.js';
 
 const router = Router();
 
@@ -101,6 +101,15 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
   // 服装类型名本身也是线索（用户可能只写了「泳装」两个字）
   // limit 40：模糊匹配会带出同一片段的多个变体，24 条时「蕾丝裙」会被连衣裙变体挤出候选。
   const candidates = searchClothingTags(`${sceneLabel} ${brief}`.trim(), { limit: 40 });
+  const families = expandOutfitFamilyCandidates(candidates);
+  // 同一类型下别的角色已经穿过的形制：不传这个，模型对每个角色都会收敛到同一套
+  const usedForms = sceneLabel
+    ? collectUsedOutfitForms(
+      db.prepare('SELECT description FROM character_outfits WHERE character_id <> ? AND name = ? AND description <> \'\' LIMIT 8')
+        .all(char.id, sceneLabel).map(row => row.description),
+      { candidates, families },
+    )
+    : [];
   try {
     const world = getWorldSetting();
     const messages = buildOutfitFromBriefMessages({
@@ -110,6 +119,8 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
       sceneLabel,
       brief,
       candidates,
+      families,
+      usedForms,
     });
     const raw = await chatSync(messages, {
       model: config.llm.model || 'deepseek-chat',

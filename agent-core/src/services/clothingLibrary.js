@@ -96,6 +96,71 @@ export function searchClothingTags(query, { limit = 40 } = {}) {
   return picked;
 }
 
+/**
+ * 同族形制扩展（2026-11-07 真机：「情趣内衣」这种类目词，所有角色都只出同一套）。
+ *
+ * 原因：brief 写的是**类目词**，它只精确撞上 lingere/「情趣内衣」这一条泛称，
+ * 模型于是只拿到「lingerie」一个主体，四个角色全是「黑色蕾丝连体衣」。
+ * 裤子里明明还有 teddy / babydoll / negligee / chemise / corset / bunny_suit 等十几种形制，
+ * 它们的中文名不含「内衣」二字，字面检索永远召回不到。
+ *
+ * 做法：命中条目所属大类（且该类条目数有限）里的其它词条按形制补进候选，模型才有得挑。
+ * 大类太宽的不扩（裙子 226 条、袜子 128 条，一扩就把候选淹了）。
+ */
+const FAMILY_EXPAND_MAX_CATEGORY_SIZE = 40;
+const categorySizes = (() => {
+  const sizes = new Map();
+  for (const entry of catalog.entries) {
+    for (const category of entry.categories || []) sizes.set(category, (sizes.get(category) || 0) + 1);
+  }
+  return sizes;
+})();
+export function expandOutfitFamilyCandidates(candidates, { limit = 14 } = {}) {
+  if (!Array.isArray(candidates) || !candidates.length) return [];
+  const hitTags = new Set(candidates.map(c => c.tag));
+  // 只从命中条目的前三个里取大类：后面的多是「内衣」这种字面擦到的泛词，
+  // 带上它们会把裙子、套装一起拖进扩展。
+  const categories = new Set();
+  for (const candidate of candidates.slice(0, 3)) {
+    for (const category of byTag.get(candidate.tag)?.categories || []) categories.add(category);
+  }
+  // 大类太宽的（裙子 226 条、袜子 128 条）不扩，一扩就把候选淹了
+  const narrow = [...categories].filter(category => (categorySizes.get(category) || 0) <= FAMILY_EXPAND_MAX_CATEGORY_SIZE);
+  if (!narrow.length) return [];
+  return catalog.entries
+    .filter(entry => entry.kind === 'outfit' && !hitTags.has(entry.tag)
+      && (entry.categories || []).some(category => narrow.includes(category)))
+    .slice(0, limit)
+    .map(entry => ({ tag: entry.tag, label: entry.label, description: entry.description }));
+}
+
+/**
+ * 「别的角色已经在穿这些形制」（2026-11-07 真机）：
+ * 同一句要求逐个角色配，模型每次都会收敛到同一两族（teddy / babydoll），真机上就是「所有角色一套」。
+ * 这里从其它角色同类服装的描述里抽出已用的形制，交给提示词明确避开。
+ * 形制词表直接取本次候选 + 同族形制，不另建白名单，避免口径分叉。
+ */
+function containsForm(hay, needle) {
+  // 英文按词边界判，避免 slip 命中 slippers、bra 命中 bracelet 这类误判
+  if (!/^[a-z0-9 _-]+$/i.test(needle)) return hay.includes(needle);
+  return new RegExp(`(^|[^a-z0-9_])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9_]|$)`, 'i').test(hay);
+}
+export function collectUsedOutfitForms(descriptions, { candidates = [], families = [] } = {}) {
+  const forms = [...candidates, ...families];
+  const used = new Map();
+  for (const text of descriptions) {
+    const hay = String(text || '').toLowerCase();
+    if (!hay) continue;
+    for (const form of forms) {
+      if (used.has(form.tag)) continue;
+      const needles = [String(form.tag).toLowerCase(), String(form.tag).toLowerCase().replace(/_/g, ' '), String(form.label || '').toLowerCase()]
+        .filter(needle => needle.length >= 3);
+      if (needles.some(needle => containsForm(hay, needle))) used.set(form.tag, { tag: form.tag, label: form.label });
+    }
+  }
+  return [...used.values()].slice(0, 6);
+}
+
 export function resolveClothingTags(tags, scene = 'work') {
   // 2026-11-07：私服 / 居家已从枚举移除；角色自定义类型（custom_*）同样允许用衣服库配 tag，
   // 否则新加的「婚纱」「泳装」一点生成就报「服装场景无效」。
@@ -137,30 +202,49 @@ const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用�
 - 只挑用户提到或明显必需的：衣服本体优先，其次鞋袜、配饰；不要为了凑数堆砌。
 - 用户说的是颜色/材质/长度时，用颜色类 tag 或直接写进描述，不要硬塞一个不相关的 tag。
 
+【形制优先：类目词只是方向，不是成品】
+- 用户给的常常是**类目词**（情趣内衣、泳装、礼服、睡衣、制服…）。类目词只规定方向，不规定形制：主体必须落到一个**具体形制**上，而不是把类目泛称当成品。
+- 同一个类目下面的形制差异很大，例如内衣可以是：连体式（teddy / bodysuit / bunny_suit）、短摆裙式（babydoll / see-through_babydoll）、睡袍裹身式（negligee / chemise）、束身式（corset / underbust_corset / waist_cincher）、两件式（bralette + thong / panties）、吊带长裙式（slip）。「同族形制」里给出的都可以当主体用。
+- 泛称类目 tag（lingerie、dress、skirt、swimsuit 这类）只在用户明确只要它、且库里没有更具体的形制可用时才作为主体。
+- **形制由角色决定，不由 brief 决定**：按她的身材、气质和世界观着装规范挑。丰满的用束身/连体显曲线，纤细娇小的用短摆或两件式，高挑的用吊带长裙或裹身袍；清冷气质配素色薄纱，活泼配浅色褶边，明艳配深色缎面与绑带。同一句要求给不同角色，应当落到**不同形制**上，单品组合和颜色也不要照抄最通用的那套。
+- 连体式 teddy 是最省事的默认答案，也是最容易让所有角色长成一套的答案：只有当她的身材气质和世界观都更适合连体式时才用它，否则换族。落笔前按顺序过一遍：①世界观着装规范允许什么（细肩带、前扣、绑带、束缚具这些硬规则先满足）；②她的身材适合哪一族；③她的气质配什么材质与配色。
+- 描述里要给出**只有这套才有的具体结构**（束身衣的鱼骨走线、短摆的荷叶边下摆、背部交叉绑带、胯侧系带结），不要用 deep plunging neckline、thin adjustable shoulder straps、high-cut leg opening 这种套在任何一套上都成立的通用句。
+- 反例（不要这样写）：wearing a black lace lingerie set with thin straps —— 这就是「任何角色都一样的黑蕾丝连体衣」，没有形制判断。
+
 【写描述的规则】
 - 一整段英文，逗号分隔的短语或流畅句子都可以，最终会直接喂给生图模型。
 - 角色身份、脸部、瞳色、发型、发色、肤色、体型和标志性身体特征沿用默认外观，不遗漏已有身体特征，不臆造缺失特征。
+- 默认外观里那串原始 tag 只用来认人：**原服装、姿势、动作、镜头、画质词全部丢掉**。出现 standing / holding … / looking at viewer / pose / official art / masterpiece / best quality / highres / transparent background 这类词就是照抄，必须重写。
 - 用户的要求是硬性要求，逐项体现；没提到的细节由你按角色人设与世界观合理补全。
 - 不要写动作、表情、姿势、场景、光线、画质、镜头，也不要用中文。
 - 睡衣必须适合睡眠且赤脚（barefoot），不写任何鞋袜。
 
 【输出格式（严格照此 JSON，不要任何解释或代码块）】
-{"tags":["white_dress","lace"],"appearance":"一整段英文外观描述，至少 30 个字符"}`;
+{"design_note":"一句话中文，写清她的身材气质与本类目最典型形象差在哪、据此选了这个形制；不能写成套话","tags":["teddy","black_lace"],"appearance":"一整段英文外观描述，至少 30 个字符，tags 第一个必须是本次采用的具体形制（如 teddy / babydoll / corset），不要只给 lingerie 这类泛称"}
+先写 design_note 再写 appearance，形制与配色以 design_note 的判断为准，不要让 appearance 回落到最通用的那套。`;
 
 /**
  * 组「按一句要求生成服装」的消息（2026-11-07）。
  * 候选 tag 由 searchClothingTags 先做本地筛选，模型只在这一小撮里挑，准确率与 token 都更可控。
  */
-export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [] }) {
+export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', persona, sceneLabel = '', brief, candidates = [], families = [], usedForms = [] }) {
   const candText = candidates.length
     ? candidates.map(c => `${c.tag}（${c.label}）`).join('、')
     : '（本次没有筛选出候选，请自行判断）';
+  // 同族形制只给名字和中文，不给描述：它们的作用是「让模型知道还有哪些形制可选」，
+  // 不是让它照抄释义。
+  const familyText = families.length
+    ? `\n【同族形制（同一大类下的其它可选形制，挑一个当主体）】${families.map(f => `${f.tag}（${f.label}）`).join('、')}`
+    : '';
+  const usedText = usedForms.length
+    ? `\n【这些形制已经被其它角色穿走，本次不得再用】${usedForms.map(f => `${f.tag}（${f.label}）`).join('、')}：从剩下的形制里挑最合适的那一族，不要以「更贴合气质」为由复用。`
+    : '';
   return [
     { role: 'system', content: systemRules },
     ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
     { role: 'system', content: OUTFIT_FROM_BRIEF_PROMPT },
     { role: 'system', content: `【角色人设与默认外观】\n${persona}` },
-    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}` },
+    { role: 'system', content: `【服装类型】${sceneLabel || '常服'}\n【候选 tag】${candText}${familyText}${usedText}` },
     { role: 'user', content: `我想要这套衣服：${brief}\n请挑 tag 并输出英文外观描述，严格按示例 JSON。` },
   ];
 }
@@ -175,7 +259,10 @@ export function parseOutfitFromBrief(raw) {
   const tags = Array.isArray(result?.tags)
     ? result.tags.map(t => String(t || '').trim()).filter(t => /^[a-z0-9_()]+$/i.test(t)).slice(0, 12)
     : [];
-  return { appearance, tags };
+  // design_note 是模型「先判断形制再落笔」的那句中文理由（见 OUTFIT_FROM_BRIEF_PROMPT），
+  // 不参与出图，只回给前端让用户知道这套为什么这么设计。
+  const designNote = String(result?.design_note || '').trim().slice(0, 200);
+  return { appearance, tags, designNote };
 }
 
 export function buildClothingAppearanceMessages({ systemRules, worldRule = '', persona, scene, sceneLabel = '', entries, brief = '' }) {
