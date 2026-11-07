@@ -55,6 +55,8 @@ const DB_ONLY_KEYS = new Set([
   'novelai_api_key',
   // 提示词破限正文（长文本，可空串=用代码默认）——走 DB 直读，不进 config
   'jailbreak_prompt',
+  // 按调用链分配模型（2026-11-07）：JSON 对象，services/modelRouting 直读并缓存，不进 config
+  'llm_model_routes',
 ]);
 
 /** 写入单条系统设置 */

@@ -838,6 +838,18 @@ export async function getActiveJailbreakRule() {
   return request(`/config/jailbreak/rules/active`)
 }
 
+// ── 按调用链分配模型（2026-11-07）──────────────────────────────────────────
+// 神说 / 日程 / 事件结局对模型的需求不同，一个模型通吃两头不到位。
+// GET  → { ok, routes: [{ key, label, model }], defaultModel, freeEgg }
+// PUT  → { routes: { angel: 'model-a', schedule: '' } }，空串=清掉该链路
+export async function getModelRoutes() {
+  return request(`/config/model-routes`)
+}
+
+export async function saveModelRoutes(routes) {
+  return request(`/config/model-routes`, { method: 'PUT', body: { routes } })
+}
+
 // GET → { ok, targets[], available[], labels{} }
 export async function getJailbreakTargets() {
   return request(`/config/jailbreak/targets`)

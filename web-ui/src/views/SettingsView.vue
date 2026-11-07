@@ -525,6 +525,34 @@
           </div>
         </section>
 
+        <section class="llm-section llm-routes-section" aria-labelledby="llm-routes-heading">
+          <div class="llm-section-heading">
+            <h4 id="llm-routes-heading">按用途分配模型</h4>
+            <span v-if="modelRoutesSaved" class="smsg">已保存</span>
+          </div>
+          <p class="llm-routes-hint">留空即跟随上面的默认模型。神说和日程对模型的要求常常相反，分开配比反复调一个通吃更省事。</p>
+          <p v-if="modelRoutesFreeEgg" class="llm-routes-hint">当前开着免费鸡蛋，模型由免费池决定，这套分配暂不生效。</p>
+          <div class="llm-routes-grid">
+            <div v-for="route in modelRoutes" :key="route.key" class="llm-routes-item">
+              <label class="llm-label">{{ route.label }}</label>
+              <linshe-select
+                v-model="route.model"
+                :options="llmModelOptions"
+                searchable
+                allow-free-input
+                size="sm"
+                :placeholder="modelRoutesDefault ? `默认 ${modelRoutesDefault}` : '选择或输入模型 ID'"
+                :aria-label="route.label"
+                @update:model-value="markModelRoutesDirty"
+              />
+            </div>
+          </div>
+          <p v-if="modelRoutesError" class="model-fetch-error" role="alert">{{ modelRoutesError }}</p>
+          <div class="llm-routes-actions">
+            <linshe-button variant="secondary" size="sm" :loading="modelRoutesSaving" :disabled="modelRoutesSaving || !modelRoutesDirty" @click="saveModelRouteChanges">保存分配</linshe-button>
+          </div>
+        </section>
+
         <div v-if="isCustomBaseURL" class="toggle-row thinking-setting">
           <div>
             <div class="tl llm-label">思考模式</div>
@@ -1666,7 +1694,7 @@ import DataBackupPanel from '../components/settings/DataBackupPanel.vue'
 import LlmProfilesPanel from '../components/settings/LlmProfilesPanel.vue'
 import { useLlmProfiles } from '../composables/useLlmProfiles.js'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval, getModelRoutes, saveModelRoutes } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
@@ -2338,6 +2366,61 @@ const llmMaxTokensValid = computed(() => isValidMaxTokens(llmMaxTokens.value))
 const llmTokenSource = ref('default')
 const llmModelCapabilities = ref({})
 let llmModelsVersion = 0
+
+// ── 按用途分配模型（2026-11-07）──
+// 神说需要「愿意写、不设防」的模型，日程 / 事件结局需要「稳定输出完整 JSON」的模型，
+// 这两类需求常指向不同供应商——一个模型通吃的结果是两头都不够好。
+// 后端存 system_settings.llm_model_routes，生效点在 llm-client 的三个收口。
+const modelRoutes = ref([])
+const modelRoutesDefault = ref('')
+const modelRoutesFreeEgg = ref(false)
+const modelRoutesError = ref('')
+const modelRoutesSaving = ref(false)
+const modelRoutesSaved = ref(false)
+const modelRoutesDirty = ref(false)
+let modelRoutesSnapshot = ''
+
+const modelRoutesSignature = () => JSON.stringify(modelRoutes.value.map(r => [r.key, r.model || '']))
+
+function applyModelRouteData(data) {
+  modelRoutes.value = (data?.routes || []).map(r => ({ key: r.key, label: r.label, model: r.model || '' }))
+  modelRoutesDefault.value = data?.defaultModel || ''
+  modelRoutesFreeEgg.value = !!data?.freeEgg
+  modelRoutesSnapshot = modelRoutesSignature()
+  modelRoutesDirty.value = false
+}
+
+async function loadModelRoutes() {
+  modelRoutesError.value = ''
+  try {
+    applyModelRouteData(await getModelRoutes())
+  } catch (err) {
+    // 读失败只影响这一块，不阻塞设置页其它配置
+    modelRoutesError.value = err?.message || '读取按用途分配失败'
+  }
+}
+
+function markModelRoutesDirty() {
+  modelRoutesDirty.value = modelRoutesSignature() !== modelRoutesSnapshot
+  modelRoutesSaved.value = false
+}
+
+async function saveModelRouteChanges() {
+  if (modelRoutesSaving.value) return
+  modelRoutesSaving.value = true
+  modelRoutesError.value = ''
+  try {
+    const patch = {}
+    for (const r of modelRoutes.value) patch[r.key] = r.model || ''
+    applyModelRouteData(await saveModelRoutes(patch))
+    modelRoutesSaved.value = true
+    setTimeout(() => { modelRoutesSaved.value = false }, 2000)
+  } catch (err) {
+    modelRoutesError.value = err?.message || '保存失败'
+  } finally {
+    modelRoutesSaving.value = false
+  }
+}
 let llmTokenEditVersion = 0
 const llmMaxTokensHint = computed(() => {
   if (!llmMaxTokensValid.value) return '请输入大于 0 的整数。'
@@ -2799,6 +2882,8 @@ function applyLlmConfig(saved) {
 onMounted(async () => {
   // 数据备份摘要独立加载：读失败只影响这一行，不阻塞设置页其它配置
   loadPoseControl()
+  // 按用途分配模型同样独立加载，读失败只影响这一块
+  loadModelRoutes()
   try {
     const data = await getConfig()
     // 画师串口径（与后端 routes/images.js 一致）：空串 '' ＝ 用户明确要「不要画师串」，
@@ -4651,6 +4736,12 @@ function resetTestPrompts() {
 .llm-custom-editor { padding: 4px 0 2px; }
 .llm-json-textarea { min-height: 72px; font-family: monospace; font-size: 12px; resize: vertical; }
 .llm-label { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+/* ── 按用途分配模型（2026-11-07）── */
+.llm-routes-section { margin-top: 18px; }
+.llm-routes-hint { margin: 0 0 12px; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.llm-routes-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 14px; }
+.llm-routes-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.llm-routes-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .llm-advanced-toggle {
   display: flex; align-items: center; justify-content: flex-start; gap: 6px;
   width: 100%; margin-top: 4px; padding: 12px 0 10px;

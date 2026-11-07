@@ -16,6 +16,7 @@ import { restartComfyClient } from '../services/comfyClient.js';
 import { triggerDisturbCheck } from '../services/disturbModeScheduler.js';
 import { shieldStatus, setShieldPrompt, DEFAULT_PROMPT as SHIELD_DEFAULT_PROMPT, shieldRulesStatus, setActiveShieldRule, getShieldTargets, setShieldTargets } from '../services/promptShield.js';
 import { listRules as listJailbreakRules, getRule as getJailbreakRule, createRule as createJailbreakRule, updateRule as updateJailbreakRule, deleteRule as deleteJailbreakRule, RULE_TARGETS as JAILBREAK_TARGETS, RULE_TARGET_LABELS as JAILBREAK_TARGET_LABELS } from '../services/jailbreakRules.js';
+import { getModelRouteSummary, setModelRoutes } from '../services/modelRouting.js';
 import { restartWeatherScheduler, triggerUpdate as triggerWeatherUpdate } from '../services/weatherService.js';
 import { applyFromConfig } from '../services/llmConcurrency.js';
 import { BUILTIN_RULE_KEYS } from '../builtinRules.js';
@@ -672,6 +673,31 @@ router.put('/llm/free-egg', (req, res) => {
   resetFreeEggFailureCount();
   resetClient();
   res.json({ ok: true, ...getLlmConfig() });
+});
+
+// ── 按调用链分配模型（2026-11-07）────────────────────────────────────────
+// 神说 / 日程 / 事件结局对模型的需求不同，一个模型通吃的结果是两头都不到位。
+// 存 system_settings.llm_model_routes，生效点在 llm-client 的三个收口。
+// 未配置的链路走 config.llm.model；免费鸡蛋模式下整套无效（模型由免费池决定）。
+
+// GET /api/config/model-routes — 全量路由 + 默认模型
+router.get('/model-routes', (_req, res) => {
+  res.json({ ok: true, ...getModelRouteSummary() });
+});
+
+// PUT /api/config/model-routes — 保存路由（只覆盖传入的键，空串 = 清掉该链路）
+// body: { routes: { angel: 'model-a', schedule: '' } }
+router.put('/model-routes', (req, res) => {
+  const { routes } = req.body ?? {};
+  if (!routes || typeof routes !== 'object' || Array.isArray(routes)) {
+    return res.status(400).json({ error: 'routes 必须是对象' });
+  }
+  try {
+    setModelRoutes(routes);
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+  res.json({ ok: true, ...getModelRouteSummary() });
 });
 
 // GET /api/config/llm/key — 获取当前 LLM API Key（前端复制用）

@@ -8,6 +8,8 @@ import { recordLlmCall } from '../services/llmTelemetry.js';
 // 本地独有（上游没有）：上下文用量回填 + 破限层注入
 import { notePromptUsage } from '../services/contextUsage.js';
 import { applyShield } from '../services/promptShield.js';
+// 本地独有：按调用链分配模型（神说 / 日程 / 事件结局可各用不同模型）
+import { resolveModelForLabel } from '../services/modelRouting.js';
 // 本地独有：拒答检测（模型把"我无法提供"当结果返回时重发一次，见 services/refusalDetector.js）
 import { isRefusal, REFUSAL_RETRY_INSTRUCTION } from '../services/refusalDetector.js';
 // 上游 v3.10.0：输出额度统一由设置页决定（按 baseURL/模型猜上限）
@@ -96,7 +98,9 @@ function logResponse(label, content, reasoning) {
 
 /** 神说使用结构化原生工具流，不合并消息、不丢弃 tool 角色、不自动重放。 */
 export async function* chatAgentStream(messages, { tools = [], toolChoice = 'auto', signal, label = '神说', requestId, forceThinking = true, temperature = 0.72 } = {}) {
-  const llm = { ...config.llm, model: config.llm.freeEgg ? freeEggCandidates()[0] : config.llm.model };
+  // 按调用链路由模型：神说固定命中 angel（前缀表在 modelRouting），免费鸡蛋模式不路由。
+  const agentRoutedModel = resolveModelForLabel(label);
+  const llm = { ...config.llm, model: config.llm.freeEgg ? freeEggCandidates()[0] : (agentRoutedModel || config.llm.model) };
   if (!llm.model) throw new Error('请先配置支持思考与工具调用的模型');
   // 2026-11-07：破限层在 chatSync / chatStream 都收了口，唯独这条原生工具流漏掉——
   // 而神说恰恰是全仓撞 content_filter 最频繁的链（真机日志：17 次调用 0 次注入）。
@@ -546,6 +550,10 @@ export async function chatSync(messages, opts = {}) {
     // 投递范围：显式 opts.target 优先，否则按 label 前缀识别（见 resolveShieldTarget）
     target: opts.target !== undefined ? opts.target : resolveShieldTarget(opts.label),
   });
+  // 按调用链路由模型（2026-11-07）：调用方显式传 opts.model 时不覆盖。
+  // 没配路由 / 免费鸡蛋模式 / label 认不出来 → 返回 null，行为与加这个功能前一致。
+  const routedModel = opts.model ? null : resolveModelForLabel(opts.label || 'chatSync');
+  if (routedModel) opts = { ...opts, model: routedModel };
   // 所有非流式调用的唯一收口：网络失败由内层重试，**拒答**在这里兜一次。
   // 之前只有 applyShield（注入破限词），拒答文本与正常结果同路径返回，上层无从分辨。
   const runOnce = (msgs) => (config.llm.freeEgg
@@ -948,6 +956,9 @@ export async function* chatStream(messages, opts = {}) {
     label: opts.label || 'chatStream',
     target: opts.target !== undefined ? opts.target : resolveShieldTarget(opts.label),
   });
+  // 同 chatSync：按调用链路由模型，显式 opts.model 优先
+  const streamRoutedModel = opts.model ? null : resolveModelForLabel(opts.label || 'chatStream');
+  if (streamRoutedModel) opts = { ...opts, model: streamRoutedModel };
   let anyYielded = false;
   try {
     if (config.llm.freeEgg) {
