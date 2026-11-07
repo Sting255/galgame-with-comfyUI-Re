@@ -170,7 +170,9 @@
                             @click="generateOtherSceneOutfits()"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 16 11-11a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4ZM13 7l3 3M19 13v6m-3-3h6M6 2v6M3 5h6" /></svg>
-                            {{ standingBatchRunning ? `出图 ${standingBatch.done}/${standingBatch.total}${standingBatch.scene ? ' · ' + standingBatch.scene : ''}` : '一键生成整套系列' }}
+                            {{ standingBatchRunning
+                              ? `出图 ${standingBatch.done}/${standingBatch.total}${standingBatch.scene ? ' · ' + standingBatch.scene : ''}`
+                              : outfitGenerating ? `正在生成 ${detail.sceneOutfits.length || 1} 套描述…` : '一键生成整套系列' }}
                           </linshe-button>
                           <linshe-button
                             v-if="detail.sceneOutfits.length || detail.sceneOutfitsError" variant="ghost" size="sm"
@@ -1115,6 +1117,13 @@ async function generateOtherSceneOutfits(options = {}) {
     ? detail.sceneOutfits.filter(o => o.scene !== 'work').map(o => o.scene)
     : FALLBACK_SCENE_KEYS
   if (!targets.length) return
+  // 顺序有讲究（2026-11-07 真机）：批量是从第一套开始串行出图的，而用户盯着的是当前页签。
+  // 原来按固定顺序跑，第一套往往是他不看的 nude，于是「点了没反应、当前这套还是没图」。
+  // 现在：当前页签最先出，nude 最后出（nude 通常不是他要看的那套）。
+  targets.sort((a, b) => {
+    const weight = scene => (scene === detail.sceneTab ? 0 : scene === 'nude' ? 2 : 1)
+    return weight(a) - weight(b)
+  })
   outfitGenerating.value = true
   try {
     if (props.profileAdapter) { await props.profileAdapter.generateOutfits(base, targets); return }
