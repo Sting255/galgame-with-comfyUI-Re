@@ -222,14 +222,17 @@ ${SCHEDULE_FORMAT_TAIL}`;
     try {
       let attemptMsgs = msgs.map(m => ({ ...m }));
       if (validationError) attemptMsgs.at(-1).content += `\n上次日程校验失败：${validationError}，请修正时间安排。`;
-      rawResult = await (options.chat || chatSync)(attemptMsgs, {
+      const chatResult = await (options.chat || chatSync)(attemptMsgs, {
         temperature: 0.5,
         // 2026-10-01：2048 → 4096。真机复现实测：14~16 段的日程输出就已经到 1500+ tokens、
         // 原文 5000+ 字符；话多的角色（纳西妲/风瑾）会顶到 2048 上限**被截断**，
         // 表现正是日志里那类 `JSON parse failed`（截断的 JSON 当然解析不了）。
+        // 注意：这个值实际会被 applyOutputTokenLimit 用设置页的全局额度覆盖，这里只是兜底声明。
         max_tokens: 4096,
         response_format: { type: 'json_object' },
         label: `schedule-gen:${character.display_name}`,
+        // returnMeta 让 chatSync 把 finish_reason 一起带回来（自定义 options.chat 可能忽略，下面按类型兼容）
+        returnMeta: true,
         ...(config.features.scheduleDisableThinking
           ? { thinking: { type: 'disabled' }, forceDisableThinking: true }
           : options.thinking ? { thinking: options.thinking } : {}),
@@ -237,8 +240,17 @@ ${SCHEDULE_FORMAT_TAIL}`;
           cacheBoundary: { index: msgs.findIndex(m => m.content === personaMsg), offset: personaMsg.length },
           history: [{ role: 'user', content: `${JSON.stringify(cohabitation)}\n${triggerContent}` }] },
       });
+      rawResult = typeof chatResult === 'string' ? chatResult : (chatResult?.content || '');
+      const finishReason = chatResult && typeof chatResult === 'object' ? chatResult.finishReason : null;
 
       let schedule = parseAndValidateSchedule(rawResult, character.display_name);
+      if (!schedule) {
+        // 2026-11-07：解析失败时必须留下 finish_reason 与真实长度。
+        // 真机现象是输出到第 3 条 activity 就停（2736 字符），而实测同一网关要它写 8000 字
+        // 能吐 7865 字符且 finish_reason=stop —— 所以不是额度不够。
+        // 只有 finish_reason 能区分「被服务商砍断（length/content_filter）」与「模型自己停下（stop）」。
+        console.warn(`[scheduleGen] ${character.display_name} 输出不完整：finish_reason=${finishReason ?? '未知'}，共 ${String(rawResult).length} 字符`);
+      }
       if (schedule) {
         // 批次的新提案在全部草稿完成后统一协调；已发布约定仍在此严格校验。
         const enforced = options.persist === false && options.deferSharedActivities
