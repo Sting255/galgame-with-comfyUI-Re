@@ -36,20 +36,6 @@ function assertAllowedOutboundUrl(url) {
   return url;
 }
 
-// 交给本地爬虫前的最后一道清洗：只保留路径/查询，主机用字面量硬重建。
-// 这样即使 URL 取自远程 HTML（Bing 结果等），实际请求目标也固定是萌娘百科，
-// 远程内容无法把抓取引向其他主机（含内网）。
-function toSafeMoegirlScrapeUrl(rawUrl) {
-  let parsed;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-  if (!ALLOWED_FETCH_HOSTS.test(parsed.hostname)) return null;
-  return `https://zh.moegirl.org.cn${parsed.pathname}${parsed.search}`;
-}
-
 function fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT) {
   assertAllowedOutboundUrl(url);
   const controller = new AbortController();
@@ -102,79 +88,61 @@ export async function searchCharacterInfo(query) {
     return '';
   }
 
+  const timed = (name, promise) => promise.then(
+    value => value,
+    error => { console.warn(`[webSearch] ${name} failed: ${error?.message || error}`); return []; },
+  );
+
+  // 2026-11-07：**并线搜索**。原来萌娘百科跑完（失败要等爬虫超时）才降级 Bing，
+  // 两个源串行，最坏叠一次超时。现在同时打，谁先回来都能用。
+  const [moe, bing] = await Promise.all([
+    timed('Moegirl', searchMoegirl(searchName, context)),
+    timed('Bing', searchBing(`${searchName} ${context}`)),
+  ]);
+
   const allResults = [];
 
-  // 1. 萌娘百科（ACG 角色专业 wiki，大陆可直连）
-  try {
-    const moe = await searchMoegirl(searchName, context);
-    // 如有作品上下文，对结果排序并只保留匹配作品名的第一条（排除同名干扰）
-    if (context && moe.length > 0) {
-      const ctx = context.toLowerCase();
-      moe.sort((a, b) => {
-        const aMatch = a.title.toLowerCase().includes(ctx) || a.content.toLowerCase().includes(ctx) ? 1 : 0;
-        const bMatch = b.title.toLowerCase().includes(ctx) || b.content.toLowerCase().includes(ctx) ? 1 : 0;
-        return bMatch - aMatch;
-      });
-      const matched = moe.filter(r => r.title.toLowerCase().includes(ctx) || r.content.toLowerCase().includes(ctx));
-      if (matched.length > 0) {
-        console.log(`[webSearch] filtered ${moe.length} → 1 result by context "${context}": "${matched[0].title}"`);
-        // 深度抓取萌娘百科基本资料栏，补全外貌等关键信息
-        const best = matched[0];
-        // 深度抓取萌娘百科页面（Python 服务提取 infobox + 正文）
-        // 向前兼容：source 可能是完整 URL，也可能是"萌娘百科·Title"格式
-        const rawScrapeUrl = best.source && best.source.includes('moegirl.org.cn')
-          ? best.source
-          : `https://zh.moegirl.org.cn/${encodeURIComponent(best.title)}`;
-        const scrapeUrl = toSafeMoegirlScrapeUrl(rawScrapeUrl);
-        try {
-          const pageData = await scrapeMoegirlPage(scrapeUrl);
-          if (pageData && pageData.content) {
-            const infoboxLen = pageData.infobox?.length || 0;
-            const contentLen = pageData.content?.length || 0;
-            // 质量检查：infobox 为空且正文很短 → 可能是消歧义页或无效页，丢弃不用
-            if (infoboxLen === 0 && contentLen < 600) {
-              console.log(`[webSearch] low quality scrape (infobox=0, body=${contentLen} chars), discarding`);
-            } else {
-              best.content = pageData.content;
-              console.log(`[webSearch] scraped moegirl page (${pageData.content.length} chars) for "${best.title}"`);
-            }
-          }
-        } catch (err) {
-          console.warn(`[webSearch] infobox scrape failed: ${err.message}`);
-        }
-        // Python 深度抓取失败或内容太短时，改用 MediaWiki API 拉全文兜底
-        if (!best.content || best.content.length < 600) {
-          const apiFallback = await fetchFullPageExtract('https://mzh.moegirl.org.cn/api.php', best.title);
-          if (apiFallback && apiFallback.content) {
-            best.content = apiFallback.content;
-            best.source = apiFallback.source;
-            console.log(`[webSearch] API full extract fallback used for "${best.title}" (${apiFallback.content.length} chars)`);
-          }
-        }
-        moe.length = 0; moe.push(best);
-      } else {
-        console.log(`[webSearch] no results matched context "${context}", keeping all`);
-      }
+  // 1. 萌娘百科优先：有作品上下文时只保留匹配作品名的那条，排除同名干扰
+  if (moe.length > 0 && context) {
+    const ctx = context.toLowerCase();
+    const matched = moe.filter(r => r.title.toLowerCase().includes(ctx) || r.content.toLowerCase().includes(ctx));
+    if (matched.length > 0) {
+      console.log(`[webSearch] filtered ${moe.length} → 1 result by context "${context}": "${matched[0].title}"`);
+      moe.length = 0;
+      moe.push(matched[0]);
+    } else {
+      console.log(`[webSearch] no results matched context "${context}", keeping all`);
     }
-    allResults.push(...moe);
-  } catch (err) {
-    console.warn('[webSearch] Moegirl failed:', err.message);
+  }
+  allResults.push(...moe);
+
+  // 2. Bing 结果补充（同标题去重，避免两个源把同一条内容喂两遍）
+  const seen = new Set(allResults.map(r => String(r.title || '').trim()));
+  for (const item of bing) {
+    const key = String(item.title || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    allResults.push(item);
   }
 
-  // 2. 萌娘百科无结果时降级到 Bing
-  if (allResults.length === 0) {
-    console.log('[webSearch] Moegirl returned no results, falling back to Bing');
-    try {
-      const bing = await searchBing(`${searchName} ${context}`);
-      allResults.push(...bing);
-    } catch (err) {
-      console.warn('[webSearch] Bing failed:', err.message);
+  // 3. 对最匹配的那一条补全文：走 MediaWiki API，不走 HTML 爬虫
+  //    （真机实测：HTML 页面被 Cloudflare 拦（403）或超时，API 0.4 秒就回来）
+  const best = allResults[0];
+  if (best && (best.content || '').length < 600) {
+    const full = await fetchFullPageExtract('https://mzh.moegirl.org.cn/api.php', best.title)
+      || await fetchFullPageExtract('https://zh.moegirl.org.cn/api.php', best.title);
+    if (full && full.content) {
+      best.content = full.content;
+      best.source = full.source;
+      console.log(`[webSearch] full extract used for "${best.title}" (${full.content.length} chars)`);
     }
   }
 
   if (allResults.length === 0) return '';
 
+  // 只把最匹配的一两条喂给模型：条数多了反而稀释重点
   return allResults
+    .slice(0, 2)
     .map((r, i) => `[${i + 1}] ${r.title}\n${r.content}\n来源: ${r.source}`)
     .join('\n\n');
 }
@@ -398,23 +366,10 @@ async function searchBing(query) {
 
   const results = [];
 
-  // 先检查是否有萌娘百科结果，有则深度抓取
-  const moegirlMatch = /<a[^>]*href="(https?:\/\/[a-z]*\.?moegirl\.org\.cn\/[^"]*?)"/i.exec(html);
-  if (moegirlMatch) {
-    const moegirlUrl = toSafeMoegirlScrapeUrl(moegirlMatch[1].replace(/&amp;/g, '&'));
-    if (!moegirlUrl) {
-      console.warn('[webSearch] blocked non-moegirl link extracted from Bing HTML');
-    }
-    console.log(`[webSearch] Found moegirl link: ${moegirlUrl}`);
-    try {
-      if (moegirlUrl) {
-        const moegirlData = await scrapeMoegirlPage(moegirlUrl);
-        if (moegirlData) results.push(moegirlData);
-      }
-    } catch (err) {
-      console.warn('[webSearch] Moegirl scrape failed:', err.message);
-    }
-  }
+  // 2026-11-07：原来这里会从 Bing 结果里挑出萌娘链接再深度抓一遍 HTML。
+  // 那条路已被证实：HTML 页面被 Cloudflare 拦（403）或超时，白等十几秒。
+  // 而且主流程已经并行跑过 searchMoegirl（走 MediaWiki API），这里重复抓没意义。
+  // Bing 只负责补充非萌娘来源的摘要。
 
   // 再取普通 Bing 结果（补充非萌娘来源）
   const BLOCK_RE = /<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/gi;
@@ -501,58 +456,4 @@ function extractInfoboxFromText(bodyText) {
   }
 
   return { infobox: infoboxLines.join('\n'), cleanBody };
-}
-
-/**
- * 调用 Python 爬虫服务获取萌娘百科页面内容
- */
-async function scrapeMoegirlPage(pageUrl) {
-  // 汇点兜底：无论调用方来源如何，送进爬虫的必须是萌娘百科页面
-  if (!/^https:\/\/([^/]+\.)?moegirl\.org\.cn\//.test(String(pageUrl))) {
-    console.warn(`[webSearch] scrapeMoegirlPage blocked non-moegirl url: ${pageUrl}`);
-    return null;
-  }
-  console.log(`[webSearch] scrapeMoegirlPage calling python: ${pageUrl}`);
-  try {
-    const res = await fetch(`http://localhost:8765/scrape`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: pageUrl }),
-      // 2026-11-07：抓取侧已压到最坏 2×5s（候选并行 + 短超时），这里再兜一层，
-      // 免得向量服务本身卡住时前端无限等下去。
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) {
-      console.warn(`[webSearch] python scrape returned ${res.status}`);
-      return null;
-    }
-    const data = await res.json();
-    const pyInfoboxLen = data.infobox?.length || 0;
-    const bodyLen = data.content?.length || 0;
-    console.log(`[webSearch] python scrape done: infobox=${pyInfoboxLen} chars, body=${bodyLen} chars`);
-
-    let infoboxText = data.infobox || '';
-    let bodyText = data.content || '';
-
-    // Python 未提取到信息框 → Node.js 侧从正文文本中解析（安全网）
-    if (!infoboxText && bodyText.includes('基本资料')) {
-      console.log('[webSearch] Python infobox empty, falling back to Node.js text parsing');
-      const parsed = extractInfoboxFromText(bodyText);
-      if (parsed.infobox) {
-        infoboxText = parsed.infobox;
-        bodyText = parsed.cleanBody;
-        console.log(`[webSearch] Node.js infobox extracted: ${infoboxText.length} chars`);
-      }
-    }
-
-    // 组装内容：信息框前置，正文置后
-    if (infoboxText) {
-      data.content = infoboxText + '\n\n【正文描述】\n' + bodyText;
-      data.content = data.content.slice(0, 8000);
-    }
-    return data;
-  } catch (err) {
-    console.warn(`[webSearch] python scrape call failed: ${err.message}`);
-    return null;
-  }
 }
