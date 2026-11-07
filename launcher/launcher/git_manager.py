@@ -20,8 +20,12 @@ _CACHE_TTL = 2.0  # 同一次初始化链内去重，2 秒内复用缓存
 # 通过单次调用参数禁用该检查，不写入用户全局配置。
 _TLS_NO_REVOKE_ARGS = ["-c", "http.schannelCheckRevoke=false"]
 # 统一的 fetch 参数：--update-shallow 兼容 release 包的 shallow clone；
-# --prune --prune-tags 清理远程已删除的旧 tag，避免用户切到废弃版本。
-_FETCH_ARGS = ["fetch", "--update-shallow", "--prune", "--prune-tags",
+# --prune --prune-tags 清理远程已删除的旧 tag，避免用户切到废弃版本；
+# --force 让**已存在且指向变化**的 tag 也跟随远程更新 —— 少了它会踩这个坑：
+#   git fetch --tags 对已存在的同名 tag 默认拒绝覆盖（would clobber existing tag），
+#   而 --prune-tags 只删远程已不存在的，不管「同名但指向变了」。
+#   发版时 tag 从旧提交移到新提交，用户本地点「检查更新」会**静默停在旧代码**上。
+_FETCH_ARGS = ["fetch", "--update-shallow", "--prune", "--prune-tags", "--force",
                "origin", "--tags"]
 
 
@@ -471,7 +475,7 @@ class GitManager(QObject):
         self._init_repo_steps = [
             (["init"], "git init"),
             (["remote", "add", "origin", self._repo_url], "git remote add"),
-            (["fetch", "origin", "--tags"], "git fetch"),
+            (["fetch", "origin", "--tags", "--force"], "git fetch"),
         ]
         self._init_repo_step_idx = 0
         self._run_git(self._init_repo_steps[0][0])
@@ -593,7 +597,7 @@ class GitManager(QObject):
                 if steps and idx < len(steps):
                     self._run_git(steps[idx][0], ssl_backend="openssl")
                 else:
-                    self._run_git(["fetch", "origin", "--tags"], ssl_backend="openssl")
+                    self._run_git(["fetch", "origin", "--tags", "--force"], ssl_backend="openssl")
             return
         # ----------------------------------------------------
 
@@ -661,7 +665,7 @@ class GitManager(QObject):
                             if steps and self._init_repo_step_idx < len(steps):
                                 self._run_git(steps[self._init_repo_step_idx][0])
                             else:
-                                self._run_git(["fetch", "origin", "--tags"])
+                                self._run_git(["fetch", "origin", "--tags", "--force"])
                         return
                     else:
                         self.output.emit("[proxy] 代理配置写入失败，继续...")
