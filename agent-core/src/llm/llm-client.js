@@ -26,6 +26,9 @@ import { buildAgentRequest, readAgentResponse } from './agentStream.js';   // �
  */
 const LABEL_TARGET_PREFIXES = [
   ['私聊', 'chat'],
+  // 2026-11-07：神说走 chatAgentStream，虽然不传 target 也会照常注入（undefined = 照常），
+  // 但显式映射后才能被设置页的「私聊」开关统一控制，避免它在规则集禁用后仍然注入。
+  ['神说', 'chat'],
   ['群聊', 'group'],
   ['奇遇', 'event'],
   ['事件分支', 'event'],
@@ -95,8 +98,19 @@ function logResponse(label, content, reasoning) {
 export async function* chatAgentStream(messages, { tools = [], toolChoice = 'auto', signal, label = '神说', requestId, forceThinking = true, temperature = 0.72 } = {}) {
   const llm = { ...config.llm, model: config.llm.freeEgg ? freeEggCandidates()[0] : config.llm.model };
   if (!llm.model) throw new Error('请先配置支持思考与工具调用的模型');
+  // 2026-11-07：破限层在 chatSync / chatStream 都收了口，唯独这条原生工具流漏掉——
+  // 而神说恰恰是全仓撞 content_filter 最频繁的链（真机日志：17 次调用 0 次注入）。
+  // 补在这里，口径与另两条一致：applyShield 零副作用，未启用/正文为空时原样返回同一引用。
+  messages = applyShield(messages, {
+    label,
+    target: resolveShieldTarget(label),
+  });
   const params = buildAgentRequest(messages, tools, llm, { forceThinking, temperature, toolChoice });
-  applyOutputTokenLimit(params);
+  // 同一份真机日志：设置里填的 300000 被原样发进这条链（模型常用上限 32768）。
+  // 超大额度会让服务商对请求打标甚至直接拒绝，所以这里收敛到模型上限；
+  // 用户设得比上限小时仍按用户的来，其余链路保持 applyOutputTokenLimit 的原有行为（不钳制，只警告）。
+  const cap = defaultMaxTokens(config.llm.baseURL, params.model);
+  applyOutputTokenLimit(params, Math.min(isValidMaxTokens(config.llm.maxTokens) ? config.llm.maxTokens : cap, cap));
   if (isDeepseek()) params.stream_options = { ...params.stream_options, include_usage: true };
   const logLabel = requestId ? `${label} [${requestId}]` : label;
   let usage;
