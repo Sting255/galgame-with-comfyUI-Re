@@ -2184,6 +2184,29 @@ export function removeMediaAvatar(id) {
 }
 
 // 媒体 CRUD
+// 全角色统一服装类型（设置里定义一次，对所有角色生效）
+export function listGlobalOutfitTypes() {
+  return request('/global-outfits')
+}
+export function createGlobalOutfitType(name) {
+  return request('/global-outfits', { method: 'POST', body: { name } })
+}
+export function renameGlobalOutfitType(id, name) {
+  return request(`/global-outfits/${id}`, { method: 'PUT', body: { name } })
+}
+export function deleteGlobalOutfitType(id) {
+  return request(`/global-outfits/${id}`, { method: 'DELETE' })
+}
+export function applyGlobalOutfitType(id) {
+  return request(`/global-outfits/${id}/apply`, { method: 'POST', body: {} })
+}
+export function generateGlobalOutfitType(id, withStanding = true) {
+  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding } })
+}
+export function getGlobalOutfitTask(id) {
+  return request(`/global-outfits/${id}/task`)
+}
+
 export function listMediaOutlets() {
   return request('/media/outlets')
 }

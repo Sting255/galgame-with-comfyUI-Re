@@ -33,6 +33,7 @@ import {
 } from '../services/outfitScene.js';
 import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS, STANDING_SCENE_LABELS } from '../services/characterStanding.js';
 import { buildCharacterPersona, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
+import { applyAllTypesToCharacter } from '../services/globalOutfitTypes.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
 // 对话背景（上游 v3.9.0 合并）：工厂路由 + 沉浸背景生成（依赖注入便于单测）
@@ -237,6 +238,8 @@ router.post('/', (req, res) => {
     const newCharId = result.lastInsertRowid;
     res.status(201).json({ id: newCharId, name, display_name });
     refreshCharSearch();
+    // 新建角色自动带上设置里的「全角色统一服装」类型（空描述，等生成）
+    try { applyAllTypesToCharacter(newCharId); } catch (err) { console.warn('[char] apply global outfits failed:', err.message); }
 
     // 异步选择手写字体（不阻塞响应）
     assignFontForNewCharacter(newCharId, base_prompt).catch(err =>
@@ -786,6 +789,7 @@ router.post('/generate', async (req, res) => {
       ).run(charName, displayName, basePrompt, cropPersonalityForEmotion(basePrompt, displayName), emotionBaseline);
 
       const generatedCharId = insertResult.lastInsertRowid;
+      try { applyAllTypesToCharacter(generatedCharId); } catch (err) { console.warn('[characters] apply global outfits failed:', err.message); }
 
       console.log(`[characters] AI-generated: "${displayName}" (${charName}) — saved`);
 
@@ -1647,6 +1651,20 @@ async function renderSceneStandingImage(char, promptText, scene) {
   fs.mkdirSync(path.dirname(stageBase), { recursive: true });
   const staged = await runStandingGeneration(char, promptText, { stageBase });
   return commitSceneStandingImage(char.id, scene, promptText, path.join(getPendingDir(), staged.filename), staged);
+}
+
+/**
+ * 给指定角色的某套服装直接出一张立绘（2026-11-07：全角色统一服装的批量出图用）。
+ * 与路由的区别：不判断「已有立绘要走后台确认」，批量场景就是直接覆盖。
+ * @returns {Promise<string>} 立绘 URL
+ */
+export async function generateSceneStandingForCharacter(characterId, scene, { requirement = '' } = {}) {
+  const char = getDb().prepare('SELECT * FROM characters WHERE id = ?').get(Number(characterId));
+  if (!char) throw Object.assign(new Error('角色不存在'), { statusCode: 404 });
+  if (!isValidSceneKey(scene)) throw Object.assign(new Error('无效的场景'), { statusCode: 400 });
+  const mode = getSetting(STANDING_MODE_KEY) === 'dynamic' ? 'dynamic' : 'normal';
+  const promptText = await generateSceneStandingPrompt(char, scene, requirement, mode);
+  return renderSceneStandingImage(char, promptText, scene);
 }
 
 function commitSceneStandingImage(characterId, scene, promptText, pendingPath, staged) {

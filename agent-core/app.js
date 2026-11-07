@@ -52,6 +52,7 @@ import { recoverInterruptedAssetJobs } from './src/services/assetGenerationQueue
 import scheduleRoutes from './src/routes/schedule.js';
 import diaryRoutes from './src/routes/diary.js';   // 上游 v3.9.0 合并：角色日记 /api/diaries/*
 import mediaRoutes from './src/routes/media.js';   // 上游 v3.9.0 合并：媒体内容页 /api/media/*
+import globalOutfitRoutes from './src/routes/globalOutfits.js'; // 全角色统一服装类型 /api/global-outfits/*
 import timeRoutes from './src/routes/time.js';   // 程序时间（世界钟）：/api/time*
 import cohabitationRoutes from './src/routes/cohabitation.js';   // 上游 v4.2.0：宿舍（同居）/api/cohabitation/*
 import workflowsRoutes from './src/routes/workflows.js';
@@ -251,6 +252,7 @@ app.use('/api/newspaper', wrapRouterAsync(newspaperRoutes));   // /api/newspaper
 app.use('/api/character-reactions', wrapRouterAsync(characterReactionsRoutes));
 // 上游 v3.9.0 合并：媒体内容页（传媒 / 数字媒体，见 services/mediaService.js）
 app.use('/api/media', wrapRouterAsync(mediaRoutes));
+app.use('/api/global-outfits', wrapRouterAsync(globalOutfitRoutes));
 app.use('/api/context', wrapRouterAsync(contextRoutes));   // /api/context/usage, /api/context/compress
 app.use('/api/data', wrapRouterAsync(dataRoutes));         // /api/data/export, /api/data/export/info, /api/data/import
 

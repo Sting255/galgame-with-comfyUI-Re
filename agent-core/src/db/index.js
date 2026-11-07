@@ -569,6 +569,15 @@ function initSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_character_standings_char ON character_standings(character_id);
 
+    -- 全角色统一服装类型（2026-11-07）：在设置里定义一次，对所有角色生效。
+    -- scene_key 固定为 custom_g<id>，同一类型在所有角色上是同一个 key，批量生成与页签文案都靠它对齐；
+    -- 各角色的实际服装仍写 character_outfits（scene=scene_key, name=类型名, description=各自生成）。
+    CREATE TABLE IF NOT EXISTS global_outfit_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     -- 通用限时服饰（如一套女仆装的 tag 组合）。character_id 为空 = 全员可见的全局服饰；
     -- 指定角色 = 道具系统写入的该角色专属限时服饰。expires_at 为过期时间（空 = 永久生效），
     -- 两者均由 outfitService.getActiveOutfits 惰性过滤。condition_json 预留未来更复杂的注入条件，当前不解析

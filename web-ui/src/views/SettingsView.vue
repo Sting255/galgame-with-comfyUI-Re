@@ -724,6 +724,11 @@ type="range" min="1" max="10" step="1"
         </div>
       </linshe-modal>
 
+      <!-- 全角色统一服装（2026-11-07）：设置里定义一次，对所有人生效 -->
+      <div class="card">
+        <GlobalOutfitTypesPanel />
+      </div>
+
       <!-- 功能开关 -->
       <div class="card">
         <h3>功能开关</h3>
@@ -1715,6 +1720,7 @@ import GearIcon from '../components/GearIcon.vue'
 import MemoryHealthPanel from '../components/MemoryHealthPanel.vue'
 import TimeControlPanel from '../components/TimeControlPanel.vue'
 import UpdateTag from '../components/UpdateTag.vue'
+import GlobalOutfitTypesPanel from '../components/settings/GlobalOutfitTypesPanel.vue'
 import { CHANGELOG_ENTRIES } from '../data/changelog.js'
 import { getIntimateInjectAll, setIntimateInjectAll } from '../api/intimate.js'
 
