@@ -149,8 +149,9 @@ async function generateScheduleImpl(character, direction, options = {}) {
 每个活动对象格式（description 必填，26-52 字，禁止空字符串或只写标点）：
 
 **description 只做状态记录**：日程是供系统判断「角色此刻在哪、在做什么」的时间线，不是正文描写。
-写得越像小说正文，越容易被服务商在输出侧掐断，整份 JSON 直接作废。
+写得越像小说正文，越容易被服务商在输出侧掐断（真机实测 finish_reason=content_filter），整份 JSON 直接作废。
 所以只写动作和场景，身体部位、衣物穿着、表情、声音、情绪反应一律不写。
+**这一条优先于 <world_setting> 的露骨要求**：日程只记录时间线，露骨内容由聊天正文承载。
 
 {
   "startTime": "HH:MM",
@@ -223,10 +224,24 @@ ${SCHEDULE_FORMAT_TAIL}`;
 
   let rawResult = '';
   let validationError = '';
+  // 上一轮的 finish_reason：content_filter 说明被服务商输出侧切断，重试必须换写法而不是原样再发
+  let lastFinishReason = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       let attemptMsgs = msgs.map(m => ({ ...m }));
-      if (validationError) attemptMsgs.at(-1).content += `\n上次日程校验失败：${validationError}，请修正时间安排。`;
+      if (lastFinishReason === 'content_filter') {
+        // 2026-11-07 真机实证（日志里那行 finish_reason=content_filter）：
+        // 输出是被服务商在**输出侧**切断的，不是格式错。原样重试只会再被切一次，
+        // 所以这一次把描写彻底压平 —— 明确告诉它哪些词一个都不要出现。
+        attemptMsgs.at(-1).content += '\n\n【重要 · 上一次被内容策略拦截了】\n'
+          + '上一次的日程写到一半被服务商按内容策略切断，整份作废。这一次请把 description 写成完全中性的日常动作：\n'
+          + '只说明「在做什么、在哪」，不要写性行为、身体部位、体液、衣物穿着状态、表情或情绪反应。\n'
+          + '活动名称（activity）同样收敛，例如把「深夜补课——精液容量耐力训练」写成「深夜自习」、\n'
+          + '把「巡逻——清理残留」写成「走廊巡逻」。\n'
+          + '世界观要求的那部分由聊天正文承载，日程这里只是时间线，不需要它。';
+      } else if (validationError) {
+        attemptMsgs.at(-1).content += `\n上次日程校验失败：${validationError}，请修正时间安排。`;
+      }
       const chatResult = await (options.chat || chatSync)(attemptMsgs, {
         temperature: 0.5,
         // 2026-10-01：2048 → 4096。真机复现实测：14~16 段的日程输出就已经到 1500+ tokens、
@@ -247,6 +262,7 @@ ${SCHEDULE_FORMAT_TAIL}`;
       });
       rawResult = typeof chatResult === 'string' ? chatResult : (chatResult?.content || '');
       const finishReason = chatResult && typeof chatResult === 'object' ? chatResult.finishReason : null;
+      lastFinishReason = finishReason;
 
       let schedule = parseAndValidateSchedule(rawResult, character.display_name);
       if (!schedule) {
@@ -405,7 +421,8 @@ const SCHEDULE_FORMAT_TAIL = `【输出格式 · 硬性要求】
 只输出一个 JSON 对象，形如：
 {"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"在浴室洗脸，把毛巾挂回架子上。"}]}
 8~15 条，按时间顺序覆盖完整 24 小时、上一条 endTime 等于下一条 startTime，不留空档；只有睡觉那条 replyDelay=-1，其余为 0；description 20~40 字且必须有内容。
-description 只写动作与场景，中性叙述：不写身体部位、衣物穿着、表情、声音或情绪反应（这是时间线记录，不是正文）。
+description 只写动作与场景，中性叙述：不写身体部位、衣物穿着、表情、声音或情绪反应。**即使 <world_setting> 要求露骨描写，这里也不写**——日程是给系统看的时间线，露骨内容由聊天正文承载。
+activity 和 location 也保持中性：写「深夜自习」「走廊巡逻」「晨间梳洗」，不要写任何性行为、体液、身体状态相关的名目。
 不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
 
 /**
