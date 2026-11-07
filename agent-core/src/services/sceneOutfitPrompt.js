@@ -10,9 +10,20 @@
  * 本文件在它基础上把这两半**分开输出**，并把 nude 那一套固定成裸体声明。
  */
 
-/** 可设计的场景（不含 work —— 常服是角色的招牌/默认形象，不许重新生成） */
-// 与 outfitScene.js 的 OUTFIT_SCENES 保持同步（2026-11-07 删掉 casual/home）
-export const GENERATED_OUTFIT_SCENES = ['nude', 'work', 'sleep'];
+/**
+ * 可设计的场景（**不含 work**）。
+ *
+ * 2026-11-08 用户反馈「点自动生成会把本来的角色 tag 替换掉，冷门角色就飘了」，
+ * 根因就是 work 被放进来生成：work 那一套的 description 在库里同时充当
+ * **角色身份锚点**（前端保存时它被整段写回 base_prompt 的「## 你的外观」段），
+ * 于是生成一次就等于把角色的发色发型瞳色、`Name (Series)` 识别 tag 全部换成
+ * 一串只写衣服的英文 tag。模型先验认识的热门角色还能靠先验画出来，冷门/LoRA
+ * 角色没有先验，只能照着这串衣服画 ⇒ 人和衣服一起飘。
+ *
+ * 结论：默认外观是**角色身份真源**，只允许手写编辑，任何生成入口都不许覆盖。
+ * 换衣服请走 nude / sleep / custom_*（自定义类型）。
+ */
+export const GENERATED_OUTFIT_SCENES = ['nude', 'sleep'];
 // 自定义类型的 scene 前缀（同一份约定见 outfitScene.js）
 const CUSTOM_SCENE_PREFIX = 'custom_';
 
@@ -35,8 +46,9 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
   这一套的 \`description\` 固定写 \`${NUDE_DECLARATION}\`；
   \`body\` 要写得比平时**更完整**（既然是裸体，身体就是画面主体）：
   除发型瞳色外，补上肤色、体型、胸/腰/腿的形态、以及显著身体特征（痣、伤痕、纹身、兽耳兽尾等）。
-- work（常服）：这个角色在**其职业/身份场合**日常穿的那身。制式职业（警察、护士、学生等）
-  就是对应制服；自由职业者则是工作时常穿的那身。
+- work（默认外观）：**不参与本流程，不要输出这一套**。它是角色的**身份真源** ——
+  发色、发型、瞳色、肤色、体型、Name (Series) 这类角色识别 tag 都写在里面，
+  由角色卡原文逐字提供。重写它等于把角色换成另一个人。
 - sleep（睡衣）：**睡觉时穿的睡衣或内衣**（睡裙 / 睡衣睡裤 / 吊带内衣 + 短裤 / 内裤等），
   不要设计成能穿出门的服装。
   **★ 必须赤脚**：description 里必须明确写出 barefoot。
@@ -51,6 +63,19 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
 - 部位只用这些：cups、bodice、waist、hem、skirt panel、sleeves、straps、side panels、back、trim、cuffs、neckline、train、thigh band。只给这套本来就有的部位分配材质，别为了用某个材质凭空造部件。
 - 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽 / 薄透 / 装饰类替代就别用。
 - 睡衣那一套不要给鞋袜部位分配材质（本来就赤脚）。
+
+【description 里绝对不许写身体（2026-11-08）】
+\`description\` 只写**衣服、鞋袜、配饰**。下面这些属于 \`body\`，一个字都不要出现在 \`description\` 里：
+- 发型、发色、发长、刘海、辫子、瞳色、眼神、眉毛、睫毛
+- 肤色、肤质、体型、身高、胸腰臀腿与任何裸露部位的形态
+- 痣、疤、纹身、兽耳、兽尾、角、翅膀、以及表情
+
+理由：生图时 \`description\` 的优先级高于角色原本的外观描述。你在里面重写一次发色或瞳色，
+角色原本的特征就会被整体替换掉 —— 冷门角色没有模型先验，一换就变成另一个人。
+身体的每个细节都由 \`body\` 单独提供，不需要在衣服里重复。
+
+例外（这些是**穿戴物**，算 description）：画在头发上的发饰/发带/发夹/发圈、帽子、耳环、项链、
+项圈、手套、臂环、腰带、绑带、鞋袜、腿环。
 
 【要求】
 1. 各套服装必须**彼此区分明显** —— 一眼能看出是上班、睡觉，还是这个角色自己的某种场合。
@@ -104,10 +129,14 @@ ${bodySource}
 const SCENE_LABELS = { nude: '裸体', work: '常服', sleep: '睡衣' };
 
 export function normalizeDesignScenes(scenes = GENERATED_OUTFIT_SCENES) {
-  // 内置三套 + 角色自定义的类型（custom_*，标签存在 character_outfits.name）
+  // 内置可生成套 + 角色自定义的类型（custom_*，标签存在 character_outfits.name）
   const ok = scene => GENERATED_OUTFIT_SCENES.includes(scene) || String(scene || '').startsWith(CUSTOM_SCENE_PREFIX);
   if (!Array.isArray(scenes) || !scenes.length || scenes.some(scene => !ok(scene))) {
-    throw new Error('只支持设计裸体、常服、睡衣，以及角色自己添加的服装类型');
+    // work 单独给一条可检索的错因：前端旧版本 / 旧调用方仍可能把默认外观传进来
+    if (Array.isArray(scenes) && scenes.includes('work')) {
+      throw new Error('默认外观是角色身份锚点（发色、瞳色、体型、角色识别 tag 都在这），不能用生成覆盖；换衣服请用睡衣或自定义类型');
+    }
+    throw new Error('只支持设计裸体、睡衣，以及角色自己添加的服装类型');
   }
   return [...new Set(scenes)];
 }
@@ -162,6 +191,29 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
   return msgs;
 }
 
+/**
+ * 出口过滤：把混进衣服描述里的**身体特征**剔掉（2026-11-08）。
+ *
+ * 背景同上（work 被当身份真源的问题）：注入时 `description` 的优先级高于角色原外观段，
+ * 只要它写到「long silver hair」这类东西，就会把角色原本的发色发型整体替换掉。
+ * 提示词负责「大概率不写」，这里负责「必然不写」——与 enforceSceneFootwear 同一口径。
+ *
+ * 判定：该片段命中身体词、且**不命中**任何衣服/穿戴词，才整段剔除。
+ * 这样 "long silver hair" 会掉，而 "satin ribbon for her hair"、"thigh band with lace"
+ * （thigh 是身体词但整段是穿戴物）会保留。
+ */
+const BODY_TRAIT_RE = /\b(hair|hairstyle|bangs|braid|ponytails?|twintails?|twin tails|fringe|ahoge|eyes?|pupils?|iris|eyebrows?|lashes|skin|complexion|freckles?|mole|scars?|tattoos?|figure|physique|body|height|bust|breasts?|chest|waist|hips?|thighs?|legs?|feet|foot|toes|expression|blush|smile|tail|wings?|horns?|fangs?|ears?|muscular|slim|petite|curvy)\b/i;
+const WEARABLE_RE = /\b(dress|skirt|shirt|blouse|jacket|coat|cape|cloak|robe|gown|bra|brassiere|panty|panties|underwear|lingerie|bodysuit|leotard|corset|bustier|teddy|babydoll|chemise|negligee|stockings?|thighhighs?|thigh-high|socks?|shoes?|boots?|heels?|sandals?|slippers?|gloves?|mittens?|belt|necklace|choker|earrings?|bracelet|bangle|ring|hat|cap|hood|scarf|tiara|crown|veil|ribbon|bow|apron|uniform|suit|vest|cardigan|sweater|hoodie|shorts|pants|trousers|jeans|leggings|swimsuit|bikini|garter|suspenders?|cuffs?|collar|lapel|buttons?|zipper|frills?|lace|ruffles?|embroidery|cloth|clothing|fabric|satin|silk|velvet|denim|leather|mesh|sheer|chiffon|sequins?|knit|wool|cotton|trim|straps?|panels?|sleeves?|hem|neckline|train|bands?|headband|hairpin|hair clip|hairclip|hair tie|hairband|hair accessory|ornament|headpiece|headwear|clip|worn|wearing)\b/i;
+
+export function stripBodyTraits(description) {
+  const text = String(description || '').trim();
+  if (!text) return text;
+  const segs = text.split(/[,，;；]/).map(s => s.trim()).filter(Boolean);
+  const kept = segs.filter(seg => !BODY_TRAIT_RE.test(seg) || WEARABLE_RE.test(seg));
+  const out = kept.join(', ').replace(/\s{2,}/g, ' ').replace(/,\s*,/g, ',').replace(/[,\s]+$/, '').trim();
+  return out || text;   // 全被剔光时保留原文：宁可写错，也不给一套空衣服
+}
+
 /** 模型漏给某场景时的兜底（尽量中性，避免画不出来） */
 export const FALLBACK_OUTFITS = {
   nude: { name: '裸体', description: NUDE_DECLARATION },
@@ -202,7 +254,9 @@ export function parseSceneOutfitDesign(raw, scenes, opts = {}) {
     }
     // 身体一律以真源为准（模型可能仍自作主张改写），保证五套完全一致
     const body = bodySource || String(hit.body || '').trim().slice(0, 2000);
-    let description = String(hit.description || '').trim().slice(0, 2400);
+    // 衣服里混进来的身体特征（发色/瞳色/体型…）整段剔掉：注入时它优先级高于角色原外观，
+    // 留着就会把角色本身替换掉（2026-11-08 冷门角色飘人的根因之一）。
+    let description = stripBodyTraits(String(hit.description || '').trim()).slice(0, 2400);
     // nude 那套必须显式声明裸体
     if (scene === 'nude' && !/nude|no clothing|bare skin/i.test(description)) {
       description = FALLBACK_OUTFITS.nude.description;

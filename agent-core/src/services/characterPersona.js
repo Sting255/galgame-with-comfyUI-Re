@@ -107,6 +107,10 @@ export function buildOutfitInjectionBlocks(outfits, opts = {}) {
   //   并追加一条"不得混穿"的硬约束；**不给 owner 时输出与改动前逐字节一致**（单角色路径不受影响）。
   const owner = String(opts?.owner || '').trim();
   const own = owner ? `${owner}的` : '';
+  // 2026-11-08：场景服装（按日程穿的这一身）只许换衣服，不许改人。
+  // 以前它和「换装道具/变身」共用同一套替换规则，规则里明写了「发型、发色…整体替换」，
+  // 于是服装描述里一旦混进发色/瞳色，角色本身的身份就被替换掉 —— 冷门/LoRA 角色直接飘成别人。
+  const bodyLocked = outfits?.bodyLocked === true;
 
   const leadParts = [];
   if (limited.length > 0) {
@@ -121,9 +125,13 @@ export function buildOutfitInjectionBlocks(outfits, opts = {}) {
       if (!hint) return head;
       return `${head}\n   身体只取发色、发型、瞳色、肤色、体型与身体标记；下面这段里的服装、鞋袜、配饰一律不画：${hint}`;
     });
-    const head = owner
-      ? `【${own}限时服饰（当前生效，优先级最高，多套同时叠加）——**只在描绘${owner}时**完整呈现以下全部要素，不要穿到同场其他角色身上】`
-      : '【限时服饰（当前生效，优先级最高，多套同时叠加）——画面必须完整呈现以下全部要素】';
+    const head = bodyLocked
+      ? (owner
+        ? `【${own}当前服装（按日程/指定生效，只决定穿什么，不决定长什么样）——**只在描绘${owner}时**采用，不要穿到同场其他角色身上】`
+        : '【当前服装（按日程/指定生效，只决定穿什么，不决定长什么样）——画面按以下要素穿；人物的发型、发色、瞳色、体型一律不变】')
+      : (owner
+        ? `【${own}限时服饰（当前生效，优先级最高，多套同时叠加）——**只在描绘${owner}时**完整呈现以下全部要素，不要穿到同场其他角色身上】`
+        : '【限时服饰（当前生效，优先级最高，多套同时叠加）——画面必须完整呈现以下全部要素】');
     leadParts.push(`${head}\n${lines.join('\n')}`);
   }
   if (exclusive) {
@@ -137,23 +145,37 @@ export function buildOutfitInjectionBlocks(outfits, opts = {}) {
 
   // 特殊外观指代与优先级说明按生效外观组合三选一（都无时本函数已返回 null，整段不注入）
   const both = limited.length > 0 && exclusive;
-  const special = both ? '限时服饰与角色专属形态' : (limited.length > 0 ? '限时服饰' : '角色专属形态');
-  const order = both
-    ? '限时服饰 > 角色专属形态 > 基础外观'
-    : (limited.length > 0 ? '限时服饰 > 基础外观' : '角色专属形态 > 基础外观');
-  const baseLabel = owner
-    ? `【${own}基础外观（仅用于填补${special}未提及的部位，与${special}冲突的描述无效）】`
-    : `【基础外观（仅用于填补${special}未提及的部位，与${special}冲突的描述无效）】`;
+  const special = bodyLocked
+    ? '当前服装'
+    : (both ? '限时服饰与角色专属形态' : (limited.length > 0 ? '限时服饰' : '角色专属形态'));
+  const order = bodyLocked
+    ? '当前服装（服装/鞋袜/配饰）> 基础外观（身体特征，永远以它为准）'
+    : (both
+      ? '限时服饰 > 角色专属形态 > 基础外观'
+      : (limited.length > 0 ? '限时服饰 > 基础外观' : '角色专属形态 > 基础外观'));
+  const baseLabel = bodyLocked
+    ? (owner
+      ? `【${own}基础外观（**身体特征以它为准**：发型、发色、瞳色、肤色、体型、身体标记；其中旧的衣服、鞋袜若与当前服装冲突则无效）】`
+      : '【基础外观（**身体特征以它为准**：发型、发色、瞳色、肤色、体型、身体标记；其中旧的衣服、鞋袜若与当前服装冲突则无效）】')
+    : (owner
+      ? `【${own}基础外观（仅用于填补${special}未提及的部位，与${special}冲突的描述无效）】`
+      : `【基础外观（仅用于填补${special}未提及的部位，与${special}冲突的描述无效）】`);
 
-  const replaceRule = both
-    ? `- ${own}限时服饰与角色专属形态描写到的每个部位（发型、发色、服装、饰品、鞋袜等），其全部属性（颜色、长度、款式、材质）按上述优先级取最高者的描写，必须完全照此描绘——这是对基础外观对应部位的整体替换，不是叠加。`
-    : `- ${own}${special}描写到的每个部位（发型、发色、服装、饰品、鞋袜等），其全部属性（颜色、长度、款式、材质）必须完全按${special}描绘——这是对基础外观对应部位的整体替换，不是叠加。`;
+  const replaceRule = bodyLocked
+    ? `- ${own}上述服装只替换**服装、鞋袜、配饰**以及它们覆盖到的部位；发型、发色、发长、瞳色、五官、肤色、体型与身体标记一律沿用基础外观、上面那段身体特征，即使服装描述里写到也不采用。`
+    : (both
+      ? `- ${own}限时服饰与角色专属形态描写到的每个部位（发型、发色、服装、饰品、鞋袜等），其全部属性（颜色、长度、款式、材质）按上述优先级取最高者的描写，必须完全照此描绘——这是对基础外观对应部位的整体替换，不是叠加。`
+      : `- ${own}${special}描写到的每个部位（发型、发色、服装、饰品、鞋袜等），其全部属性（颜色、长度、款式、材质）必须完全按${special}描绘——这是对基础外观对应部位的整体替换，不是叠加。`);
   const tailLines = [
     owner ? `【${own}着装裁定（只适用于${owner}一个人；优先级：${order}，逐条执行）】` : `【着装裁定（优先级：${order}，逐条执行）】`,
     replaceRule,
-    `- ${own}基础外观中与上述特殊外观同部位或相冲突的描述一律作废，禁止出现在画面与提示词中；尤其当特殊外观改变了发型或发色时，${own || ''}基础外观的原发型、原发色必须完全消失，不得再出现。`,
-    // 刻意不把「发型」列进沿用基础外观的部位举例（发型/发色是最常被限时服饰改写的部位）
-    `- 只有特殊外观完全未提及的部位（瞳色、五官、体型等）才沿用基础外观。`,
+    bodyLocked
+      ? `- ${own}基础外观中与上述服装相冲突的**旧衣服、旧鞋袜**一律作废，禁止出现；但发型、发色、瞳色、五官、肤色、体型等身体描述必须原样保留，一个字都不许改。`
+      : `- ${own}基础外观中与上述特殊外观同部位或相冲突的描述一律作废，禁止出现在画面与提示词中；尤其当特殊外观改变了发型或发色时，${own || ''}基础外观的原发型、原发色必须完全消失，不得再出现。`,
+    bodyLocked
+      ? '- 身体部位（发色、发型、发长、瞳色、五官、肤色、体型、身体标记）一律沿用基础外观，服装描述里写的同类内容视为不存在。'
+      // 刻意不把「发型」列进沿用基础外观的部位举例（发型/发色是最常被限时服饰改写的部位）
+      : '- 只有特殊外观完全未提及的部位（瞳色、五官、体型等）才沿用基础外观。',
   ];
   // 多人同场专用硬约束：不加这句，模型会把各角色的衣服/配饰来回串（用户 2026-10-02 的反馈）
   if (owner) {
@@ -393,6 +415,11 @@ export function buildCharacterPersona(character, opts = {}) {
 // 角色身份标签：外观段通常以 "Name (Series) has ..." 开头；限时服饰会把它包在
 // 「1. 日常装：...」之后，因此在外观段整段里搜，而不是只认第一行。
 const CHARACTER_IDENTITY_TAG_RE = /([A-Za-z][A-Za-z0-9 .'\-:]{1,50}?)\s*\\?\(([^()]{2,60})\\?\)\s+has\b/;
+// 2026-11-08：多数角色卡的外观段是 danbooru tag 串（`1girl, solo, Hyacine (Honkai: Star Rail), ...`），
+// 没有 "has" 句式，上面那条正则命中不到 ⇒ 冷门角色失去唯一的身份锚点。补一条 tag 串形态。
+const CHARACTER_TAG_IDENTITY_RE = /(?:^|[,:;]\s*)([A-Za-z][A-Za-z0-9 .'\-]{1,40}?)\s*\\?\(([^()]{2,60})\\?\)/g;
+/** 画质/风格这类「名字 (括号)」不是角色身份（防止 masterpiece (best quality) 之类被当成名字） */
+const NON_IDENTITY_TOKEN_RE = /^(best|top|high|ultra|very|super|master|official|quality|detail|details|absurdres|highres|\d+k|art|style|anime|illustration|realistic)\b/i;
 
 /**
  * 提取角色在生图 prompt 中应使用的 'Name (Series)' 身份标签。
@@ -411,6 +438,20 @@ export function extractCharacterIdentityTag(character) {
     const name = match[1].replace(/\s+/g, ' ').trim();
     const series = match[2].replace(/\s+/g, ' ').trim();
     if (name && series) return `${name} (${series})`;
+  }
+  // 第二种写法：danbooru tag 串里的 `Name (Series)`（本仓多数卡是这个形态）
+  for (const text of corpora) {
+    CHARACTER_TAG_IDENTITY_RE.lastIndex = 0;
+    let hit;
+    while ((hit = CHARACTER_TAG_IDENTITY_RE.exec(text)) !== null) {
+      const name = hit[1].replace(/\s+/g, ' ').trim();
+      const series = hit[2].replace(/\s+/g, ' ').trim();
+      if (!name || !series) continue;
+      if (NON_IDENTITY_TOKEN_RE.test(name) || NON_IDENTITY_TOKEN_RE.test(series)) continue;
+      // 要求名字里至少有一个字母开头的词，且不是纯数字/纯符号
+      if (!/[A-Za-z]{2}/.test(name)) continue;
+      return `${name} (${series})`;
+    }
   }
   return '';
 }

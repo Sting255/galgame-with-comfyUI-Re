@@ -279,7 +279,10 @@ export async function generateSceneOutfits(character, opts = {}) {
   // ⚠ 用 isValidSceneKey 而不是 SCENE_KEYS：后者只有内置三套，会把 custom_* 全部过滤掉，
   //   表现为「给自定义类型点生成，结果生成的是常服/睡衣」（2026-11-07 真机）。
   const wanted = Array.isArray(opts.scenes) ? opts.scenes.filter(s => isValidSceneKey(s)) : [];
-  const targetScenes = (wanted.length ? wanted : SCENE_KEYS).filter(s => !seedScenes.has(s));
+  // 2026-11-08：默认目标里排除 work。work 那一套 = 角色身份锚点（前端保存时整段写回
+  // base_prompt 的「## 你的外观」），生成它等于换掉角色本身。显式传 work 会被
+  // normalizeDesignScenes 直接拒掉并给出可读错因。
+  const targetScenes = (wanted.length ? wanted : SCENE_KEYS.filter(k => k !== BASE_SCENE)).filter(s => !seedScenes.has(s));
   if (!targetScenes.length) return [];
 
   const baseAppearance = String(opts.baseAppearance || '').trim();
@@ -533,10 +536,19 @@ export function getSceneOutfitForNow(characterId, date = new Date()) {
 export function asPersonaOutfits(sceneOutfit) {
   if (!sceneOutfit?.outfit) return null;
   const o = sceneOutfit.outfit;
-  // ⚠ 注入的是**组合后**的文本（身体 + 服装）—— `o.description` 现在只存衣服，
-  //   直接用它会丢掉身体特征。listSceneOutfits 已算好 `text`；这里的对象可能来自别处，故兜底现算。
-  const text = o.text || composeOutfitText(o.body, o.description);
-  return { limited: [{ name: o.name, description: text }], exclusive: null };
+  // ⚠ 2026-11-08：注入的是**拆开的两半**，不再是 composeOutfitText 的拼接文本。
+  //   以前这里塞进去的是 `身体 + 服装` 一整段，被当成「限时服饰」的最高优先级描述，
+  //   于是身体（发色发型瞳色）跟着衣服一起获得了「可整体替换基础外观」的地位 ——
+  //   只要 description 里混进一句发色，角色就被换掉（用户反馈的「冷门角色直接飘」）。
+  //   现在：description 只给这套的衣服，body 走 bodyHint 只取身体特征、其中的衣服不画，
+  //   并用 bodyLocked 告诉注入层「这套只许换衣服，不许改人」。
+  const garment = String(o.description || '').trim();
+  const body = String(o.body || '').trim();
+  const item = garment
+    ? { name: o.name, description: garment, bodyHint: body }
+    // 没有衣服描述（老数据 / 纯裸体声明缺失）：退回整段文本，此时不锁身体，避免裸体画成穿着衣服
+    : { name: o.name, description: String(o.text || composeOutfitText(o.body, o.description) || '').trim() };
+  return { limited: [item], exclusive: null, bodyLocked: !!garment };
 }
 
 // ── 日程生成时的服装标注层 ──────────────────────────────────

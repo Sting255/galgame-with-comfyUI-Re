@@ -201,7 +201,7 @@
                         </div>
                         <Transition name="persona-fold" mode="out-in">
                           <div v-if="activeSceneOutfit" :key="activeSceneOutfit.scene" class="scene-edit">
-                            <p class="split-hint">{{ activeSceneOutfit.scene === 'sleep' ? '睡眠时段优先使用睡衣；未配置时沿用其他有效服装。' : activeSceneOutfit.scene === 'work' ? '保留角色的常态形象，作为其他服装的生成基准。' : '只调整这套服装，保留角色的身体特征。' }}</p>
+                            <p class="split-hint">{{ activeSceneOutfit.scene === 'sleep' ? '睡眠时段优先使用睡衣；未配置时沿用其他有效服装。' : activeSceneOutfit.scene === 'work' ? '这是角色的身份锚点：发型、发色、瞳色、体型与角色识别 tag 都写在这里，保存后会写回角色卡外观段，只接受手写编辑。' : '只调整这套服装，保留角色的身体特征。' }}</p>
                             <!-- 这套服装画出来长什么样：改文字的同时能看见图，串角色一眼可辨 -->
                             <div class="scene-stand-card">
                               <div
@@ -231,8 +231,13 @@
                               </div>
                             </div>
                             <div class="scene-edit-tools">
-                              <linshe-button variant="secondary" size="sm" :loading="outfitGenerating" :disabled="outfitBatchRunning || outfitGenerating || !workOutfitText" @click="generateThisSceneOutfit">自动生成本套</linshe-button>
-                              <linshe-button variant="secondary" size="sm" class="clothing-library-trigger" :disabled="outfitBatchRunning || outfitGenerating" @click="openClothingLibrary">衣服库 · 选 tag 搭配</linshe-button>
+                              <template v-if="isDefaultScene">
+                                <p class="scene-edit-locked">默认外观是角色的身份锚点（发型、发色、瞳色、体型、角色识别 tag 都写在这里）。生成会把它整段换成只描述衣服的文本，冷门角色和 LoRA 角色就此变成另一个人，所以这里只接受手写编辑。想换衣服请用睡衣或自定义类型。</p>
+                              </template>
+                              <template v-else>
+                                <linshe-button variant="secondary" size="sm" :loading="outfitGenerating" :disabled="outfitBatchRunning || outfitGenerating || !workOutfitText" @click="generateThisSceneOutfit">自动生成本套</linshe-button>
+                                <linshe-button variant="secondary" size="sm" class="clothing-library-trigger" :disabled="outfitBatchRunning || outfitGenerating" @click="openClothingLibrary">衣服库 · 选 tag 搭配</linshe-button>
+                              </template>
                               <linshe-button
                                 :variant="isWearingThisScene ? 'primary' : 'secondary'"
                                 size="sm"
@@ -244,7 +249,7 @@
                                 {{ isWearingThisScene ? '正在穿 · 取消指定' : '现在穿这套' }}
                               </linshe-button>
                             </div>
-                            <div class="scene-brief-row">
+                            <div v-if="!isDefaultScene" class="scene-brief-row">
                               <linshe-input
                                 v-model="outfitBrief" size="sm" :disabled="outfitBatchRunning || outfitBriefGenerating"
                                 placeholder="想要什么样的？例：黑色蕾丝连衣裙配高跟鞋"
@@ -804,6 +809,8 @@ function openClothingLibrary() {
 }
 function applyClothingLibrary({ characterId, scene, appearance }) {
   if (!props.visible || String(characterId) !== String(props.character?.id) || outfitBatchRunning.value) return
+  // 衣服库回填是整段替换：默认外观（work）里装着角色身份，不能被一套 tag 组合盖掉（2026-11-08）
+  if (scene === 'work') { toastFn('默认外观是角色身份锚点，不能整段替换；换衣服请用睡衣或自定义类型', 'warning'); return }
   const target = detail.sceneOutfits.find(outfit => outfit.scene === scene)
   if (!target) return
   target.description = appearance
@@ -843,6 +850,8 @@ const showAddType = ref(false)
 const newTypeName = ref('')
 const addingType = ref(false)
 const isCustomSceneTab = computed(() => String(detail.sceneTab || '').startsWith('custom_'))
+/** 当前页签是不是「默认」那套：它是角色身份真源，所有生成类入口都不给（2026-11-08） */
+const isDefaultScene = computed(() => activeSceneOutfit.value?.scene === 'work')
 // 统一服装类型（设置 → 全角色统一服装）的 key 是 custom_g<id>：它属于全局管理，
 // 角色卡里不给「删除这个类型」的入口，否则删完设置页还显示它存在、一点「补齐角色」又回来。
 const isGlobalSceneTab = computed(() => /^custom_g\d+$/.test(String(detail.sceneTab || '')))
@@ -1039,6 +1048,9 @@ async function generateThisSceneOutfit() {
   const c = props.character
   const slot = activeSceneOutfit.value
   if (!c || !slot || outfitGenerating.value || outfitBatchRunning.value) return
+  // 默认外观（work）是角色身份真源：库里存的就是「## 你的外观」段，保存时整段写回 base_prompt。
+  // 生成它 = 把发色发型瞳色和角色识别 tag 换成一句衣服描述，冷门/LoRA 角色立刻变人（2026-11-08）。
+  if (slot.scene === 'work') { toastFn('默认外观是角色身份锚点，不能被生成覆盖；换衣服请用睡衣或自定义类型', 'warning'); return }
   const base = workOutfitText.value
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
   outfitGenerating.value = true
@@ -1068,6 +1080,7 @@ async function generateOutfitByBrief() {
   const slot = activeSceneOutfit.value
   const brief = outfitBrief.value.trim()
   if (!c || !slot || !brief || outfitBriefGenerating.value || outfitBatchRunning.value) return
+  if (slot.scene === 'work') { toastFn('默认外观是角色身份锚点，不能被生成覆盖；换衣服请用睡衣或自定义类型', 'warning'); return }
   outfitBriefGenerating.value = true
   try {
     const result = await api.generateOutfitFromBrief(c.id, { scene: slot.scene, brief, basePrompt: workOutfitText.value || undefined })
@@ -2591,6 +2604,8 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .scene-stand-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .scene-stand-upload { display: inline-flex; }
 .scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* 默认外观（身份锚点）的锁定说明：占满一行，语气克制，不抢立绘的视觉重心 */
+.scene-edit-locked { flex: 1 1 100%; margin: 0 0 2px; font-size: 12px; line-height: 1.6; color: var(--text-secondary, #8a7f76); }
 /* 「我想要什么样的衣服」：一句话需求 + 生成按钮，紧贴在描述框上方 */
 .scene-brief-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
 .scene-brief-row > :first-child { flex: 1; min-width: 0; }

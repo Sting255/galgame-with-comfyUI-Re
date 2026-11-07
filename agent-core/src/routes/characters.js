@@ -32,7 +32,7 @@ import {
   readOutfitOverride, setOutfitOverride,
 } from '../services/outfitScene.js';
 import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS, STANDING_SCENE_LABELS } from '../services/characterStanding.js';
-import { buildCharacterPersona, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
+import { buildCharacterPersona, ensureImagePromptIdentity, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
 import { applyAllTypesToCharacter } from '../services/globalOutfitTypes.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
@@ -1224,6 +1224,9 @@ ${buildCharacterPersona(char, { variant: 'full', outfitScene: 'base' })}
 
     // Step 2: 调用 ComfyUI 生图（1024x1024）
     console.log(`[generate-avatar] Step 2/2: generating image at 1024x1024...`);
+    // 身份锚点兜底（2026-11-08）：LLM 输出的英文 prompt 不一定带 `Name (Series)`。
+    // 带了模型才走 IP 先验，冷门/LoRA 角色才不会因为服装描述换了一版就变人。
+    promptText = ensureImagePromptIdentity(promptText, char);
     const charLoras = _parseCharLoras(char.loras);
     const avatarArtist = charArtistOverride(char);
     const result = await generateImageRaw(promptText, {
@@ -1313,7 +1316,7 @@ export function buildStandingMessages(char, requirement, mode = 'normal', scene 
   // 一起捧成了最高优先级的「限时服饰」，和新服装打架。改成只传这一套的 description，
   // body 另走 bodyHint，由 buildOutfitInjectionBlocks 降级成「身体特征、其中的服装不画」。
   const outfits = scene
-    ? (outfit ? { limited: [{ name: outfit.name, description: outfit.description, bodyHint: outfit.body }], exclusive: null } : null)
+    ? (outfit ? { limited: [{ name: outfit.name, description: outfit.description, bodyHint: outfit.body }], exclusive: null, bodyLocked: true } : null)
     : 'auto';
   const sceneLabel = STANDING_SCENE_LABELS[scene] || scene;
   msgs.push({
@@ -1377,6 +1380,9 @@ router.post('/:id/generate-standing', async (req, res) => {
 async function runStandingGeneration(char, promptText, { stageBase, onProgress }) {
   // 出图：朋友圈画师串口径（角色单独画师串优先），固定 1:2 竖幅 768x1536
   console.log(`[generate-standing] Step 2/2: generating image at 768x1536...`);
+  // 身份锚点兜底（2026-11-08）：见 generate-avatar 同名注释。立绘是角色招牌形象，
+  // 一旦外观段被换成只写衣服的描述，模型就只剩「一串衣服 tag + 一点身体词」可用。
+  promptText = ensureImagePromptIdentity(promptText, char);
   const charLoras = _parseCharLoras(char.loras);
   const standingArtist = charArtistOverride(char);
   let lastStage = '';
@@ -2101,6 +2107,12 @@ router.post('/:id/outfits/generate', async (req, res) => {
   const db = getDb();
   const char = db.prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
+  // 2026-11-08：work（默认外观）是角色身份真源 —— 库里这一行就是 base_prompt 的「## 你的外观」段，
+  // 前端保存时又会把它整段写回 base_prompt。生成它会连带换掉角色的发色发型瞳色与
+  // `Name (Series)` 识别 tag，冷门/LoRA 角色当即画成别人。入口层直接拒掉，不依赖内部校验。
+  if (Array.isArray(req.body?.scenes) && req.body.scenes.includes('work')) {
+    return res.status(400).json({ error: '默认外观是角色身份锚点（发型、发色、瞳色、体型、角色识别 tag），不能用生成覆盖；换衣服请用睡衣或自定义类型' });
+  }
   try {
     // baseAppearance 是**必需**的（sceneOutfitPrompt 会校验：没有身体基准就无法保证五套是同一个人）。
     // 请求体没带就回落角色卡 base_prompt —— 前端老版本不带这个字段，不能让它们直接 400（2026-10-15）。

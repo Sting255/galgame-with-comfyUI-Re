@@ -65,7 +65,7 @@ import {
 } from '../services/emotionEngine.js';
 import { generateImage, getLastWorkflowMode, captureImageGenerationConfig } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
-import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
+import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock, ensureImagePromptIdentity, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
 import { getActiveBuffBlock } from '../services/itemService.js';
 import { getWorldStateBlock, getCharacterEventBlockFor } from '../services/newspaperService.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
@@ -2513,13 +2513,17 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
 
   // 查找角色 lora 设置
   let loraOpts = {};
+  // 身份锚点来源：LLM 写的英文描述不一定带 `Name (Series)`，缺了模型就只能靠先验认人，
+  // 冷门/LoRA 角色会直接画成路人（2026-11-08 用户反馈）。有该角色本人入镜时兜底补在最前。
+  let identitySource = null;
   // 角色级负面词（2026-11-06）：只在「这张图里有该角色本人」时注入，规则跟随 includeCharacter
   let characterNegative = '';
   try {
     const charId = parseInt(String(conversationId).replace(/^char_/, ''), 10);
     if (!Number.isNaN(charId)) {
-      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override, negative_prompt FROM characters WHERE id = ?').get(charId);
+      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override, negative_prompt, base_prompt, short_prompt FROM characters WHERE id = ?').get(charId);
       if (char) {
+        if (includeCharacter) identitySource = char;
         if (includeCharacter && typeof char.negative_prompt === 'string') characterNegative = char.negative_prompt;
         const loras = includeCharacter ? _parseLoras(char) : [];
         if (loras.length > 0 || (includeCharacter && char.custom_workflow) || charArtistOverride(char) !== null) {
@@ -2559,7 +2563,9 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
   }
 
   try {
-    const result = await generateImage(prompt, {
+    // 身份锚点兜底：只补在「角色本人在画面里」的图上（分享图 includeCharacter=false 时不补）
+    const finalPrompt = identitySource ? ensureImagePromptIdentity(prompt, identitySource) : prompt;
+    const result = await generateImage(finalPrompt, {
       scene: 'chat',
       ragQuery,
       ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
@@ -3245,7 +3251,7 @@ async function handleDreamTalkReply(res, characterId, conversationId, userMsgId,
     send('bubble_break', {});
 
     // 4. 现场生成梦境配图：完整 generate_start/progress/done 推送流（用户正在等图，走高优先级队列）
-    const finalPrompt = decorateDreamImagePrompt(imagePrompt);
+    const finalPrompt = ensureImagePromptIdentity(decorateDreamImagePrompt(imagePrompt), character);
     if (finalPrompt) {
       genTaskId = db.prepare(
         'INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status) VALUES (?, ?, ?, ?)'
