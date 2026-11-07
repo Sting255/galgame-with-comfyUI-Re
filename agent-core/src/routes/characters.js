@@ -62,13 +62,20 @@ router.post('/clothing-appearance-draft', async (req, res) => {
     : null;
   try {
     const world = getWorldSetting();
+    // 材质与部位：睡衣/内衣类走贴身池，其余按常服池；seed 用角色 id + 场景，同一套重生成会拿到同一组
+    const sceneLabelText = customRow?.name || '';
+    const sceneSeed = [...String(scene)].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+    const fabrics = pickFabricAndColors({
+      seed: Number(character.id) * 13 + sceneSeed,
+      sceneKind: scene === 'sleep' || /内衣|泳装|情趣|睡/.test(sceneLabelText) ? 'intimate' : '',
+    });
     const messages = buildClothingAppearanceMessages({
       systemRules: getSystemRulesWithWorld({ roleplay: false }),
       worldRule: world ? getWorldIntegrationRule('interaction') : '',
       persona: buildCharacterPersona({ ...character, base_prompt: basePrompt }, { variant: 'full', outfits: null }),
       scene,
       sceneLabel: customRow?.name || '',
-      entries, brief: brief.trim(),
+      entries, brief: brief.trim(), fabrics,
     });
     const raw = await chatSync(messages, { model: config.llm.model || 'deepseek-chat', temperature: 0.6, max_tokens: 1800, label: '衣服库外观生成' });
     res.json({ appearance: parseClothingAppearance(raw, entries, scene), tags: entries.map(entry => entry.tag) });

@@ -32,6 +32,7 @@ import { getDb, getSystemRules } from '../db/index.js';
 import { registerSceneOutfitProvider } from './sceneOutfitRegistry.js';
 import { splitAppearanceSection } from './characterPersona.js';
 import { buildSceneOutfitMessages, normalizeDesignScenes, parseSceneOutfitDesign } from './sceneOutfitPrompt.js';
+import { pickFabricAndColors } from './clothingLibrary.js';
 import { getLocalDateKey } from '../utils/localDate.js';
 import { chatSync } from './lorebook/runtime.js';
 import { config } from '../config.js';
@@ -300,6 +301,16 @@ export async function generateSceneOutfits(character, opts = {}) {
   };
   const bodySource = pickBody();
 
+  const sceneLabels = Object.fromEntries(listSceneOutfits(character.id).map(o => [o.scene, o.sceneLabel]));
+  // 每套抽一组材质与配色（2026-11-07）：seed 带场景序号，同一角色五套各拿各的，
+  // 否则模型会给所有场景配同一套「缎面 + 黑」。
+  const fabricLayer = targetScenes.map((scene, index) => {
+    const label = sceneLabels[scene] || SCENE_LABELS[scene] || scene;
+    const intimate = scene === 'sleep' || /内衣|泳装|情趣|睡/.test(label);
+    const fabrics = pickFabricAndColors({ seed: (character.id || 0) * 31 + index, sceneKind: intimate ? 'intimate' : '' });
+    return `- ${label}（${scene}）：材质 ${fabrics.materials.map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}；配色 ${fabrics.colors.map(c => `${c.tag}（${c.label}）`).join('、')}`;
+  }).join('\n');
+
   const msgs = buildSceneOutfitMessages({
     systemRules: getSystemRules({ roleplay: false }),
     persona,
@@ -310,7 +321,8 @@ export async function generateSceneOutfits(character, opts = {}) {
     seeds,
     bodySource,
     // 自定义类型的标签存在 character_outfits.name —— 生成时必须把名字给到模型，否则它不认识 custom_xxx
-    sceneLabels: Object.fromEntries(listSceneOutfits(character.id).map(o => [o.scene, o.sceneLabel])),
+    sceneLabels,
+    fabricLayer: fabricLayer ? `【本次每套可用的材质与配色（每套各不相同，别几套都用同一组）】\n${fabricLayer}` : '',
   });
   // 上游 v4.2.0：神说/用户对服装提出修改要求时，要求必须作为独立 user 消息投递，
   // 否则模型只看到「反推未填分项」的指令、收不到本次要改什么（真机上表现为「说了但没改」）。

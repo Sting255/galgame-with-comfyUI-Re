@@ -25,8 +25,8 @@ function shuffleBySeed(list, seed, salt = 0) {
  * 只抽小批：材质多了模型会把几种质感糊成一片，颜色多了整件衣服变脏。
  * 场景相关：内衣/睡衣不给牛仔、针织这类厚重料，常服不给硬纱。
  */
-export function pickFabricAndColors({ seed = 0, materials = 3, colors = 3, candidates = [] } = {}) {
-  const intimate = candidates.slice(0, 3).some(c => (byTag.get(c.tag)?.categories || []).some(category => ['内衣', '睡衣', '泳装'].includes(category)));
+export function pickFabricAndColors({ seed = 0, materials = 3, colors = 3, candidates = [], sceneKind = '' } = {}) {
+  const intimate = sceneKind === 'intimate' || (!sceneKind && candidates.slice(0, 3).some(c => (byTag.get(c.tag)?.categories || []).some(category => ['内衣', '睡衣', '泳装'].includes(category))));
   const materialPool = fabricCatalog.materials.filter(item => {
     if (intimate) return (item.scenes || []).some(scene => ['内衣', '睡衣', '泳装', '礼服'].includes(scene));
     return !/tulle|sequins/i.test(item.tag);
@@ -225,6 +225,14 @@ const CLOTHING_PROMPT = `你是角色服装提示词设计师。将后续角色�
 - 如果标签彼此无法同时满足（同一件衣服相反颜色、互斥长度或款式），返回 conflict 说明冲突，不擅自丢弃任何标签。可以合理叠穿的单品不视为冲突。
 - 用户补充只补全标签没规定的细节，不能覆盖已选标签。不要写动作、表情、姿势、场景、光线、画质、镜头或示例图人物身份。
 - 睡衣必须适合睡眠，赤脚，明确写 barefoot，不写鞋袜或旁边摆放的鞋袜；其他场景按场合搭配。
+【材质与部位（必须落到看得见）】
+- 材质要**贴在单品前面**写：a satin dress、sheer lace bodice、a leather belt。不要写成「dress, satin」这种并列 —— 实测并列时模型会把材质画成另一件单品。
+- 一套衣服用 2~3 种料子，各管一块部位，写成「部位 + 材质 + 可见表现」：lace cups showing the shadow of her skin、a satin skirt panel with a hard mirror sheen、sheer mesh sleeves with a faint grid。
+- 同一部位只准一种材质：sheer satin cups 这种叠写，生图时只会剩缎面。
+- 部位只用这些：cups、bodice、waist、hem、skirt panel、sleeves、straps、side panels、back、trim、cuffs、neckline、train、thigh band。只给本来就有的部位分配材质，别为了用某材质凭空造部件。
+- 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽 / 薄透 / 装饰类就别用。
+- 配色用一个主色 + 至多一个辅色；metal 色（gold、silver）放配饰与滚边最稳。
+- 英文一律小写、词间用空格（Anima 官方要求），不要写成下划线 tag。
 【输出 JSON 示例与字段约束】
 {"appearance":"Yoimiya (Genshin Impact) has blonde hair in a high ponytail and amber eyes, wearing a white collared shirt and a pleated skirt.（此处填至少 30 字符的一整段英文；以本次角色英文名及作品名开头，原创角色只写英文名；完整保留默认身体特征并准确描述每个所选 tag，不能照搬示例人物；不附加标签列表、解释或 Markdown。存在冲突时此字段为空字符串。）","conflict":"（无冲突时为空字符串；有无法兼容的标签时用简短中文说明具体冲突，并请用户调整选择，appearance 留空。）"}
 严格按示例的两个字段输出合法 JSON，不输出任何 JSON 以外的文字。`;
@@ -396,15 +404,20 @@ export function parseOutfitFromBrief(raw) {
   return { appearance, tags, designNote };
 }
 
-export function buildClothingAppearanceMessages({ systemRules, worldRule = '', persona, scene, sceneLabel = '', entries, brief = '' }) {
+export function buildClothingAppearanceMessages({ systemRules, worldRule = '', persona, scene, sceneLabel = '', entries, brief = '', fabrics = null }) {
   // 自定义类型的 key 是 custom_<时间戳>，模型看不懂；有类型名（如「婚纱」）就用名字喂它
   const sceneText = String(sceneLabel || '').trim() || scene;
+  const fabricText = fabrics && (fabrics.materials?.length || fabrics.colors?.length)
+    ? `\n\n【本次可用材质（挑 2~3 个，各管一块部位，写出它在那块地方的可见效果）】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
+      + `\n【本次可用配色（1 主 + 至多 1 辅）】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
+      + (fabrics.parts?.length ? `\n【可分配的部位】${fabrics.parts.map(p => `${p.tag}（${p.label}）`).join('、')}` : '')
+    : '';
   return [
     { role: 'system', content: systemRules },
     ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
     { role: 'system', content: CLOTHING_PROMPT },
     { role: 'system', content: `【角色人设与默认外观】\n${persona}` },
-    { role: 'system', content: `【本次服装场景】${sceneText}\n【所选服装词条】\n${entries.map(entry => `${entry.tag} — ${entry.label}：${entry.description}`).join('\n')}` },
+    { role: 'system', content: `【本次服装场景】${sceneText}\n【所选服装词条】\n${entries.map(entry => `${entry.tag} — ${entry.label}：${entry.description}`).join('\n')}${fabricText}` },
     { role: 'user', content: `请生成这套外观，严格按示例 JSON 输出。${brief ? `\n补充要求：${brief}` : ''}` },
   ];
 }

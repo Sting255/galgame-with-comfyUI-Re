@@ -44,6 +44,14 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
   pantyhose / tights 一律不写，**连「床边摆着一双没穿的拖鞋」这种也不要写**
   （生图模型看到 slippers 就会把它画出来）。只交代脚本身是裸的。
 
+【材质与部位（每套都要落到看得见）】
+- 材质必须**贴在单品前面**写：a satin slip、sheer lace bodice、a leather belt。不要写成「slip, satin」这种并列 —— 实测并列时生图模型会把材质画成另一件单品。
+- 一套衣服用 2~3 种料子，各管一块部位，写成「部位 + 材质 + 可见表现」：lace cups showing the shadow of her skin、a satin skirt panel with a hard mirror sheen、sheer mesh sleeves with a faint grid pattern。
+- 同一部位只准一种材质：sheer satin cups 这种叠写，生图时只会剩下缎面。
+- 部位只用这些：cups、bodice、waist、hem、skirt panel、sleeves、straps、side panels、back、trim、cuffs、neckline、train、thigh band。只给这套本来就有的部位分配材质，别为了用某个材质凭空造部件。
+- 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽 / 薄透 / 装饰类替代就别用。
+- 睡衣那一套不要给鞋袜部位分配材质（本来就赤脚）。
+
 【要求】
 1. 各套服装必须**彼此区分明显** —— 一眼能看出是上班、睡觉，还是这个角色自己的某种场合。
 2. 必须**贴合这个角色的人设与世界观**：颜色、风格要呼应 ta 的气质与所处世界。
@@ -116,7 +124,7 @@ export function normalizeDesignScenes(scenes = GENERATED_OUTFIT_SCENES) {
  * @param {Array<{scene,name,body,description}>} [o.seeds] 已填分项（反推锚点）
  * @param {string} [o.bodySource] 身体真源（由调用方按锚点优先级挑好）
  */
-export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {} }) {
+export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {}, fabricLayer = '' }) {
   const targets = normalizeDesignScenes(scenes);
   // 自定义类型（custom_*）模型不认识 key，必须把用户起的名字告诉它，否则只能瞎编
   const labelOf = scene => sceneLabels[scene] || SCENE_LABELS[scene] || scene;
@@ -148,6 +156,7 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
     role: 'user',
     content: `请设计 ${targets.map(labelOf).join('、')}，严格按规定 JSON 输出，仅包含这些场景。`
       + (customLines ? `\n\n【角色自定义的服装类型（scene 字段照抄左边的 key）】\n${customLines}` : '')
+      + (fabricLayer ? `\n\n${fabricLayer}` : '')
       + (bodySource ? '\n\n⚠ 每套的 body 字段都必须逐字照抄「身体描述的唯一真源」，不得改写。' : ''),
   });
   return msgs;
