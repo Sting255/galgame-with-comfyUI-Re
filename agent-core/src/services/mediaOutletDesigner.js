@@ -66,6 +66,52 @@ export async function generateMediaOutletDraft({ brief, layout = 'portal' } = {}
 }
 
 /**
+ * 按当前世界观**规划一整批媒体**（2026-11-08 用户：自动按照世界观规划新媒体，还可以替换旧媒体）。
+ *
+ * 与 redesignMediaOutlet 的区别：那个是「保留这家的定位、把世界细节换掉」；
+ * 这个是「重新排一套阵容」——媒体数量、定位、板块都可以变，并避开已有媒体的重复定位。
+ * 只返回草稿，不落库：用户在界面上勾选、看过、点应用才创建。
+ */
+export async function planMediaLineup({ count = 4, existing = [] } = {}) {
+  const total = Math.min(Math.max(Number(count) || 4, 1), 8);
+  const existingText = (Array.isArray(existing) ? existing : [])
+    .filter(item => item?.name)
+    .map(item => `- ${item.name}${item.tagline ? `：${item.tagline}` : ''}`)
+    .join('\n') || '（目前没有任何媒体）';
+  const messages = [{ role: 'system', content: getSystemRulesWithWorld({ roleplay: false }) }];
+  if (getWorldSetting()) messages.push({ role: 'system', content: getWorldIntegrationRule('moments') });
+  messages.push({ role: 'system', content: MEDIA_OUTLET_DESIGN_PROMPT });
+  messages.push({ role: 'user', content: `按当前世界观规划 ${total} 家媒体，作为一个完整的内容阵容：报刊、小报、论坛、电台、社区公告等类型自行搭配，彼此定位不能重复，也不要照抄现有媒体。
+
+【现有媒体（命名与定位都要避开）】
+${existingText}
+
+【硬要求】
+- 每家都要落到这个世界里真实存在的信息渠道（谁办的、写给谁看、用什么路子拿消息）。
+- 至少包含一家严肃信息源与一家八卦/闲谈源，其余自行判断。
+- 板块各 4 个，彼此不重复。
+- 名称、介绍、编辑风格里都不许出现现实世界的地名、机构、网络梗。
+
+输出 JSON：{"outlets":[{ "name":"…", "icon":"📰", "tagline":"…", "layout":"portal 或 feed", "prompt":"…（400~2000 字，五段式）", "boards":[{"name":"…","desc":"…"},…4 项] }]}，outlets 恰好 ${total} 项，不要解释或 Markdown。` });
+  const raw = await chatSync(messages, {
+    temperature: 0.85, response_format: { type: 'json_object' }, max_tokens: 6000, label: 'media:按世界观规划阵容',
+  });
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new Error('规划结果格式不正确，请重新生成'); }
+  const list = Array.isArray(parsed?.outlets) ? parsed.outlets : [];
+  if (!list.length) throw new Error('规划结果为空，请重新生成');
+  const normalized = [];
+  for (const item of list.slice(0, total)) {
+    try {
+      const draft = normalizeMediaOutletDraft(item);
+      normalized.push({ ...draft, layout: item?.layout === 'feed' ? 'feed' : 'portal' });
+    } catch { /* 单家不合格就跳过，不整体失败 */ }
+  }
+  if (!normalized.length) throw new Error('规划结果都不完整，请重新生成');
+  return { outlets: normalized };
+}
+
+/**
  * 按当前世界观重写一家已有媒体（2026-11-07 用户：「媒体完全独立在世界观外面，要一键修改」）。
  *
  * 为什么需要：老媒体是在别的世界观下标定的，编辑风格里写着自己的专有名词（周刊登场人物、

@@ -19,14 +19,49 @@
       <aside class="ms-sidebar" aria-label="媒体列表">
         <div class="ms-list-head">
           <span>内容源</span>
-          <linshe-button
-            size="sm"
-            variant="secondary"
-            :disabled="saving || isNew"
-            @click="startCreate"
-          >
-            ＋ 新建媒体
-          </linshe-button>
+          <div class="ms-list-head-actions">
+            <linshe-button
+              size="sm"
+              variant="ghost"
+              :loading="planning"
+              :disabled="saving || planning"
+              @click="planLineup"
+            >{{ planning ? '规划中…' : '✦ 按世界观规划' }}</linshe-button>
+            <linshe-button
+              size="sm"
+              variant="secondary"
+              :disabled="saving || isNew"
+              @click="startCreate"
+            >
+              ＋ 新建媒体
+            </linshe-button>
+          </div>
+        </div>
+
+        <!-- 按世界观规划的草稿：勾选后创建，可选停用旧媒体（停用不是删除，旧帖都还在） -->
+        <div v-if="planDrafts.length" class="ms-plan">
+          <div class="ms-plan-head">
+            <strong>按当前世界观规划 {{ planDrafts.length }} 家媒体</strong>
+            <linshe-button size="sm" variant="ghost" :disabled="applyingPlan" @click="planDrafts = []">收起</linshe-button>
+          </div>
+          <label v-for="(draft, index) in planDrafts" :key="draft.name + index" class="ms-plan-item">
+            <input v-model="planPicked" type="checkbox" :value="index" :disabled="applyingPlan" />
+            <span class="ms-plan-text">
+              <strong>{{ draft.icon }} {{ draft.name }}</strong>
+              <span>{{ draft.tagline }}</span>
+              <span class="ms-plan-boards">{{ (draft.boards || []).map(b => b.name).join(' · ') }}</span>
+            </span>
+          </label>
+          <label class="ms-plan-disable">
+            <input v-model="planDisableOld" type="checkbox" :disabled="applyingPlan" />
+            <span>创建后停用原有媒体（不删除，旧帖子保留）</span>
+          </label>
+          <div class="ms-plan-actions">
+            <linshe-button size="sm" :loading="applyingPlan" :disabled="!planPicked.length" @click="applyLineup">
+              {{ applyingPlan ? '创建中…' : `创建选中的 ${planPicked.length} 家` }}
+            </linshe-button>
+            <linshe-button size="sm" variant="ghost" :disabled="applyingPlan" @click="planLineup">重新规划</linshe-button>
+          </div>
         </div>
         <div class="ms-list">
           <div v-if="isNew" class="ms-item active ms-draft-item" aria-current="step">
@@ -356,8 +391,59 @@ function applyDraft() {
 // 老媒体的编辑风格是在别的世界观下标定的，里面写着自己的专有名词与时代细节，
 // 生成时即使塞了世界设定，模型仍会跟着它走。这里只改表单，点「保存修改」才生效。
 const rewriting = ref(false)
+// 按世界观规划一批新媒体（2026-11-08）
+const planning = ref(false)
+const planDrafts = ref([])
+const planPicked = ref([])
+const planDisableOld = ref(false)
+const applyingPlan = ref(false)
 const redesignBoards = ref([])
 const applyingBoards = ref(false)
+
+async function planLineup() {
+  if (planning.value || saving.value) return
+  planning.value = true
+  try {
+    const res = await api.planMediaLineup({ count: Math.max(3, Math.min(list.value.length || 4, 6)) })
+    const drafts = Array.isArray(res?.outlets) ? res.outlets : []
+    if (!drafts.length) throw new Error('没有返回任何媒体方案')
+    planDrafts.value = drafts
+    planPicked.value = drafts.map((_, index) => index)
+    toastFn?.(`已按当前世界观规划 ${drafts.length} 家媒体，勾选后创建`, 'success')
+  } catch (err) {
+    toastFn?.('规划失败：' + (err?.message || ''), 'error')
+  } finally {
+    planning.value = false
+  }
+}
+
+async function applyLineup() {
+  if (applyingPlan.value || !planPicked.value.length) return
+  const picked = planPicked.value.map(index => planDrafts.value[index]).filter(Boolean)
+  if (planDisableOld.value) {
+    const ok = await confirmRemoval(
+      `创建 ${picked.length} 家新媒体，并停用现有 ${list.value.length} 家？`,
+      '停用不会删除任何东西：旧媒体与它下面的帖子都还在，之后可以在列表里重新启用。'
+    )
+    if (!ok) return
+  }
+  applyingPlan.value = true
+  try {
+    const res = await api.applyMediaPlan({ outlets: picked, disableOld: planDisableOld.value })
+    planDrafts.value = []
+    planPicked.value = []
+    await refreshList()
+    emit('changed')
+    toastFn?.(
+      `已创建 ${res?.created?.length || picked.length} 家媒体${res?.disabled ? `，并停用 ${res.disabled} 家旧媒体` : ''}`,
+      'success'
+    )
+  } catch (err) {
+    toastFn?.('创建失败：' + (err?.message || ''), 'error')
+  } finally {
+    applyingPlan.value = false
+  }
+}
 
 async function redesignByWorld() {
   if (isNew.value || !editingId.value || rewriting.value || saving.value) return
@@ -749,6 +835,57 @@ async function removeBoard(b) {
   scrollbar-gutter: stable;
   padding: 4px 10px 8px 4px;
 }
+.ms-list-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ms-plan {
+  margin: 8px 0 12px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.03));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ms-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-bright);
+}
+.ms-plan-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.ms-plan-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.ms-plan-text strong { color: var(--text-bright); }
+.ms-plan-boards { opacity: 0.8; }
+.ms-plan-disable {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.ms-plan-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .ms-form-head {
   display: flex;
   align-items: center;
@@ -917,7 +1054,58 @@ async function removeBoard(b) {
   .ms-footer {
     gap: 12px;
   }
-  .ms-form-head {
+  .ms-list-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ms-plan {
+  margin: 8px 0 12px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.03));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ms-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-bright);
+}
+.ms-plan-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.ms-plan-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.ms-plan-text strong { color: var(--text-bright); }
+.ms-plan-boards { opacity: 0.8; }
+.ms-plan-disable {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.ms-plan-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ms-form-head {
     margin-bottom: 18px;
   }
 }

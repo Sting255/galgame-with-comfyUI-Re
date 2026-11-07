@@ -20,7 +20,7 @@ import {
   DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, MEDIA_AUTO_STEPS,
 } from '../services/mediaService.js';
 import { config, updateMediaAutoMinutes } from '../config.js';
-import { generateMediaOutletDraft, redesignMediaOutlet } from '../services/mediaOutletDesigner.js';
+import { generateMediaOutletDraft, redesignMediaOutlet, planMediaLineup } from '../services/mediaOutletDesigner.js';
 import { mediaAvatarLibrary } from '../services/mediaAvatarLibrary.js';
 import { getDb } from '../db/index.js';
 import { setMediaPostFavorite } from '../db/mediaFavorites.js';
@@ -53,6 +53,43 @@ router.post('/avatars/:id/regenerate', (req, res) => {
 router.post('/outlets/draft', async (req, res) => {
   try {
     res.json({ draft: await generateMediaOutletDraft(req.body || {}) });
+  } catch (err) { fail(res, err); }
+});
+
+// POST /api/media/outlets/plan — 按当前世界观规划一批媒体（只回草稿，不创建）
+router.post('/outlets/plan', async (req, res) => {
+  try {
+    const count = Number(req.body?.count) || 4;
+    res.json(await planMediaLineup({ count, existing: listOutlets() }));
+  } catch (err) { fail(res, err); }
+});
+
+// POST /api/media/outlets/plan/apply — 把选中的草稿创建出来；disableOld=true 时把原有媒体停用
+// 说明：停用不是删除 —— 删媒体会级联删掉它下面的帖子，不可逆，所以这里只改 enabled。
+router.post('/outlets/plan/apply', (req, res) => {
+  try {
+    const drafts = Array.isArray(req.body?.outlets) ? req.body.outlets : [];
+    if (!drafts.length) return res.status(400).json({ error: '没有要创建的媒体' });
+    const before = new Set(listOutlets().map(item => item.id));
+    const created = [];
+    for (const draft of drafts.slice(0, 8)) {
+      created.push(createOutlet({
+        name: draft?.name,
+        tagline: draft?.tagline || '',
+        prompt: draft?.prompt || '',
+        icon: draft?.icon || '📰',
+        layout: draft?.layout === 'feed' ? 'feed' : 'portal',
+        enabled: true,
+        boards: Array.isArray(draft?.boards) ? draft.boards : [],
+      }));
+    }
+    let disabled = 0;
+    if (req.body?.disableOld === true) {
+      for (const id of before) {
+        if (updateOutlet(id, { enabled: false })) disabled++;
+      }
+    }
+    res.status(201).json({ created, disabled });
   } catch (err) { fail(res, err); }
 });
 

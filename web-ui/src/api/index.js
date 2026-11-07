@@ -2220,6 +2220,13 @@ export function generateMediaOutletDraft(body, signal) {
 export function redesignMediaOutlet(id, signal) {
   return request(`/media/outlets/${id}/redesign`, { method: 'POST', body: {}, signal })
 }
+// 按当前世界观规划一批新媒体（只回草稿），以及把这批草稿真正创建出来
+export function planMediaLineup(body, signal) {
+  return request('/media/outlets/plan', { method: 'POST', body, signal })
+}
+export function applyMediaPlan(body) {
+  return request('/media/outlets/plan/apply', { method: 'POST', body })
+}
 export function updateMediaOutlet(id, body) {
   return request(`/media/outlets/${id}`, { method: 'PUT', body })
 }
