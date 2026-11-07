@@ -42,9 +42,25 @@ export function normalizeMediaOutletDraft(raw) {
     name: text(raw?.name, 24, '名称'), icon: text(raw?.icon, 8, '图标'),
     tagline: text(raw?.tagline, 60, '介绍'), prompt: text(raw?.prompt, 8000, '编辑风格'),
   };
-  if (!Array.isArray(raw?.boards) || raw.boards.length !== 4) throw new Error('栏目草稿必须包含4个板块，请重新生成');
-  draft.boards = raw.boards.map(b => ({ name: text(b?.name, 16, '板块名称'), desc: text(b?.desc, 60, '板块定位') }));
-  if (new Set(draft.boards.map(b => b.name)).size !== 4) throw new Error('板块名称重复，请重新生成');
+  // 2026-11-08 真机：原来硬要求「恰好 4 个板块」，规划 6 家时模型有一家写成 3 个，
+  // 整批被判失败（用户看到的是「规划失败」而没有任何产出）。改成 1~12 个都收，
+  // 只剔除明显不合格的单条；板块数由用户在界面上自己增删。
+  if (!Array.isArray(raw?.boards) || raw.boards.length < 1 || raw.boards.length > 12) {
+    throw new Error('栏目草稿的板块缺失或过多，请重新生成');
+  }
+  draft.boards = raw.boards
+    .map(b => {
+      try {
+        return { name: text(b?.name, 16, '板块名称'), desc: typeof b?.desc === 'string' ? b.desc.trim().slice(0, 60) : '' };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (!draft.boards.length) throw new Error('栏目草稿没有可用的板块，请重新生成');
+  // 同名板块留第一个（规划时模型偶尔会重复）
+  const seen = new Set();
+  draft.boards = draft.boards.filter(b => (seen.has(b.name) ? false : seen.add(b.name)));
   return draft;
 }
 
@@ -73,7 +89,8 @@ export async function generateMediaOutletDraft({ brief, layout = 'portal' } = {}
  * 只返回草稿，不落库：用户在界面上勾选、看过、点应用才创建。
  */
 export async function planMediaLineup({ count = 4, existing = [] } = {}) {
-  const total = Math.min(Math.max(Number(count) || 4, 1), 8);
+  // 上限压到 5：模型一次写 6~8 家时输出太长，尾部容易被截断，整批反而失败
+  const total = Math.min(Math.max(Number(count) || 4, 1), 5);
   const existingText = (Array.isArray(existing) ? existing : [])
     .filter(item => item?.name)
     .map(item => `- ${item.name}${item.tagline ? `：${item.tagline}` : ''}`)
@@ -89,10 +106,10 @@ ${existingText}
 【硬要求】
 - 每家都要落到这个世界里真实存在的信息渠道（谁办的、写给谁看、用什么路子拿消息）。
 - 至少包含一家严肃信息源与一家八卦/闲谈源，其余自行判断。
-- 板块各 4 个，彼此不重复。
+- 板块各 3~4 个，彼此不重复。
 - 名称、介绍、编辑风格里都不许出现现实世界的地名、机构、网络梗。
 
-输出 JSON：{"outlets":[{ "name":"…", "icon":"📰", "tagline":"…", "layout":"portal 或 feed", "prompt":"…（400~2000 字，五段式）", "boards":[{"name":"…","desc":"…"},…4 项] }]}，outlets 恰好 ${total} 项，不要解释或 Markdown。` });
+输出 JSON：{"outlets":[{ "name":"…", "icon":"📰", "tagline":"…", "layout":"portal 或 feed", "prompt":"…（400~2000 字，五段式）", "boards":[{"name":"…","desc":"…"}] }]}，outlets 恰好 ${total} 项，不要解释或 Markdown。` });
   const raw = await chatSync(messages, {
     temperature: 0.85, response_format: { type: 'json_object' }, max_tokens: 6000, label: 'media:按世界观规划阵容',
   });
