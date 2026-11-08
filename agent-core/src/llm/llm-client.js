@@ -789,6 +789,38 @@ function bumpMaxTokens(opts) {
 }
 
 /**
+ * 续写兜底：给一份内容打「可用度」，越大越好。
+ *   0 空 / 1 有字但结构不可用 / 2 补齐一下就能用 / 3 直接能用
+ * 文本模式只区分「有没有正文」，长短由调用处另比。
+ */
+function contentUsabilityScore(content, jsonMode) {
+  const text = String(content || '');
+  if (!text.trim()) return 0;
+  if (!jsonMode) return 1;
+  if (isCompleteJsonText(text)) return 3;
+  if (repairJsonText(text)) return 2;
+  return 1;
+}
+
+/**
+ * 两份候选里谁更值得交出去：先比可用度，同分比长度。
+ *
+ * 为什么必须有这道兜底（2026-11-08 真机）：续写**不保证越重试越好**。
+ * 那天的现场是第一次返回了完整答案、之后 5 次续写把它拼成 9k 字垃圾，
+ * 用户拿到的比不重试还差。判据出错时，"有 5 次机会"会被放大成 5 倍损失，
+ * 所以循环里每轮都留一份当前最好的，收尾按它返回，而不是按最后一次的结果。
+ */
+export function pickBetterContent(current, candidate, jsonMode) {
+  const cur = String(current || '');
+  const cand = String(candidate || '');
+  if (!cand.trim()) return cur;
+  const curScore = contentUsabilityScore(cur, jsonMode);
+  const candScore = contentUsabilityScore(cand, jsonMode);
+  if (candScore !== curScore) return candScore > curScore ? cand : cur;
+  return cand.length > cur.length ? cand : cur;
+}
+
+/**
  * 非流式聊天（用于摘要、实体抽取、情绪评估等任务）
  * 外层包装：免费鸡蛋全部模型失败触发时（错误带 __freeEggFailover 标记），
  * 立即用恢复后的自有配置把本次请求重发一遍（model/thinking 等默认值重新求值）
@@ -866,6 +898,9 @@ export async function chatSync(messages, opts = {}) {
       : MAX_INCOMPLETE_RETRIES;
     let attempt = 0;
     let retryOpts = opts;
+    // 兜底基线：循环里每轮都留一份「目前最可用」的，收尾按它返回（见 pickBetterContent 注释）
+    let bestContent = String(meta.content || '');
+    let stagnant = 0;
     while (attempt < retryLimit) {
       const kind = classifyIncomplete(meta, { jsonMode });
       if (!kind) break;
@@ -885,6 +920,7 @@ export async function chatSync(messages, opts = {}) {
           if (mergedJson) {
             meta = { content: mergedJson, finishReason: 'stop' };
             result = retried;
+            bestContent = pickBetterContent(bestContent, mergedJson, jsonMode);
             break;
           }
           // 拼不出来 = 增量是「整份重写之后又被截断的 JSON」。
@@ -906,6 +942,18 @@ export async function chatSync(messages, opts = {}) {
           };
           result = retried;
         }
+        // 每轮记一份「目前最可用」的，并识别「连续两轮没变得更可用」
+        const mergedBest = pickBetterContent(bestContent, meta.content, jsonMode);
+        if (mergedBest === bestContent) {
+          stagnant += 1;
+          if (stagnant >= 2) {
+            console.warn(`[incomplete] ▸ 连续 ${stagnant} 轮没有变得更可用，停止续写 (${opts.label || 'chatSync'})`);
+            break;
+          }
+        } else {
+          stagnant = 0;
+          bestContent = mergedBest;
+        }
       } catch (retryErr) {
         throwIfSyncAborted(opts.signal, retryErr);
         console.warn(`[incomplete] ▸ 重试失败，保留上一次结果 (${opts.label || 'chatSync'}): ${retryErr?.message || retryErr}`);
@@ -915,6 +963,17 @@ export async function chatSync(messages, opts = {}) {
     if (attempt >= retryLimit) {
       const kind = classifyIncomplete(meta, { jsonMode });
       if (kind) console.warn(`[incomplete] ▸ 连续 ${retryLimit} 次仍不完整，按现状返回 (${opts.label || 'chatSync'})`);
+    }
+    // 收尾兜底：交「最可用的那一份」，而不是最后一次尝试的结果——重试可能把结果弄差。
+    const finalContent = pickBetterContent(meta.content, bestContent, jsonMode);
+    if (finalContent !== String(meta.content || '')) {
+      console.warn(`[incomplete] ▸ 最后一次续写不如之前的一份，改用之前那份返回 (${opts.label || 'chatSync'})`);
+      meta = {
+        ...meta,
+        content: finalContent,
+        // JSON 已经能解析就报 stop，别让上层以为还欠内容
+        finishReason: jsonMode && isCompleteJsonText(finalContent) ? 'stop' : meta.finishReason,
+      };
     }
     return wantMeta ? meta : meta.content;
   } catch (err) {
