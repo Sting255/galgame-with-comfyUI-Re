@@ -1,6 +1,7 @@
 import { parseJson } from './repository.js';
 // 世界时间轴（2026-11-06）：神降下的事实要与奇遇事件共用同一条"最近发生了什么"
 import { recordWorldTimeline } from '../worldTimeline.js';
+import { splitSystemCharacterIds } from '../characterScope.js';
 
 export function sampleTargets(rows, count, random = Math.random) {
   const pool = [...rows];
@@ -50,9 +51,13 @@ export function createWorldEventService(repo, { publishMoment, discussGroup, gro
     if (existing) return list(existing.id)[0];
     let characters = db.prepare("SELECT id,display_name FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id").all();
     if (args.character_ids?.length) {
-      const ids = new Set(args.character_ids);
-      if (args.character_ids.some(id => !characters.some(c => c.id === id))) throw new Error('事件范围中有不存在的角色，请重新查询');
-      characters = characters.filter(c => ids.has(c.id));
+      // 点名里可能带系统内置角色（神说的角色清单含它）——静默剔掉，别人照常；
+      // 只有真正不存在的编号才报错。剔完一个不剩时退回「全体用户角色」。
+      const { ids: wantedIds } = splitSystemCharacterIds(db, args.character_ids);
+      if (wantedIds.length) {
+        if (wantedIds.some(id => !characters.some(c => c.id === id))) throw new Error('事件范围中有不存在的角色，请重新查询');
+        characters = characters.filter(c => wantedIds.includes(c.id));
+      }
     }
     const groupIds = db.prepare('SELECT DISTINCT group_id FROM group_members').all().map(r => r.group_id);
     const groups = groupIds.filter(id => !args.character_ids?.length || db.prepare('SELECT character_id FROM group_members WHERE group_id=?').all(id).some(r => args.character_ids.includes(r.character_id))).map(id => ({ id }));

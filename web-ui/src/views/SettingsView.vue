@@ -3769,7 +3769,7 @@ async function confirmWeatherCity() {
 
 async function loadAllCharacters() {
   try {
-    const data = await listCharacters()
+    const data = await listCharacters({ scope: 'user' })
     allCharacters.value = data.characters || []
   } catch { /* 非关键 */ }
 }

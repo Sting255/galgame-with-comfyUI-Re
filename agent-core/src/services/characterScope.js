@@ -45,3 +45,20 @@ export function isUserCharacter(character) {
 export function userVisibleScope(db) {
   return isDefaultAssistantEnabled(db) ? '1=1' : USER_SCOPE;
 }
+
+/**
+ * 把请求里的角色编号拆成「可操作的」和「系统内置的」。
+ *
+ * 为什么要有它：神说通过本地 API 拿到角色清单（那份清单受开关影响，会含默认助手），
+ * 于是它下批量指令时会自然把默认助手编号带进来。旧代码一旦发现编号对不上范围就整批拒绝，
+ * 真机日志里因此连报四次「角色范围无效」——它的推理里甚至猜到「可能 1 号有问题」，
+ * 但没人告诉它 1 号是系统角色。这里改成：系统角色编号静默剔除，其余不存在编号才算错。
+ */
+export function splitSystemCharacterIds(db, ids) {
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isFinite);
+  if (!list.length) return { ids: [], systemIds: [] };
+  const placeholders = list.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT id, COALESCE(is_system, 0) AS sys FROM characters WHERE id IN (${placeholders})`).all(...list);
+  const sysIds = new Set(rows.filter(r => r.sys === 1).map(r => r.id));
+  return { ids: list.filter(id => !sysIds.has(id)), systemIds: list.filter(id => sysIds.has(id)) };
+}

@@ -238,7 +238,7 @@ async function loadPublishCharacters() {
   charactersLoading.value = true
   charactersError.value = ''
   try {
-    const result = await api.listCharacters()
+    const result = await api.listCharacters({ scope: 'user' })
     publishCharacters.value = result.characters || []
   } catch (err) {
     charactersError.value = err.message || '角色加载失败，请重试'

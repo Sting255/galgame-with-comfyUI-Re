@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { splitSystemCharacterIds } from '../characterScope.js';
 // A batch owns its frozen target list and item results. Confirmation is supplied independently.
 export function createBatchTasks(repo, { validate, needsConfirmation, changes, execute }) {
   const { db } = repo;
@@ -10,14 +11,19 @@ export function createBatchTasks(repo, { validate, needsConfirmation, changes, e
   const list = session => db.prepare('SELECT b.* FROM god_batches b JOIN god_runs r ON r.id=b.run_id WHERE r.session_id=? AND r.deleted_at IS NULL ORDER BY b.created_at,b.id').all(session).map(decode);
   const save = row => db.prepare('UPDATE god_batches SET status=?,items_json=? WHERE id=?').run(row.status, JSON.stringify(row.items), row.id);
   async function start(args, ctx) {
-    // 开关关掉时「所有人」不含默认助手：2026-11-08 用户的痛点就是
+    // 2026-11-08：系统内置角色（默认助手）永远不参与批量 —— 用户的痛点就是
     // 对所有人下覆盖设置/批量命令时它被一起拉起来，实际又根本不用它。
-    // 显式点名（character_ids）时仍按点名来，只在「所有人」这条路上过滤。
+    // 神说通过本地 API 拿到的角色清单里含它，所以「点名」里也可能出现它的编号：
+    // 这种情况下静默剔除（别人照常处理），只有真正不存在的编号才算范围错误。
     const all = db.prepare('SELECT id,name,display_name,COALESCE(is_system,0) AS sys FROM characters ORDER BY id').all();
-    // 系统内置角色永远不进「所有人」；显式点名时仍按点名来（用户就是要单独操作它）
-    const scope = args.character_ids ? all : all.filter(c => c.sys === 0);
-    const targets = args.character_ids ? scope.filter(c => args.character_ids.includes(c.id)) : scope;
-    if (!targets.length || targets.length > 1000 || (args.character_ids && targets.length !== args.character_ids.length)) throw new Error('角色范围无效或超过单批 1000 人');
+    const { ids: wantedIds } = Array.isArray(args.character_ids)
+      ? splitSystemCharacterIds(db, args.character_ids)
+      : { ids: null };
+    const targets = wantedIds
+      ? all.filter(c => wantedIds.includes(c.id))
+      : all.filter(c => c.sys === 0);
+    const missing = wantedIds ? wantedIds.filter(id => !targets.some(c => c.id === id)) : [];
+    if (!targets.length || targets.length > 1000 || missing.length) throw new Error('角色范围无效或超过单批 1000 人');
     const common = JSON.parse(args.arguments_json);
     const overrides = args.per_character_json ? JSON.parse(args.per_character_json) : {};
     if (!common || typeof common !== 'object' || Array.isArray(common) || !overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('批量参数必须是 JSON 对象');
