@@ -3,8 +3,28 @@ import { parseJson } from './repository.js';
 import { recordWorldTimeline } from '../worldTimeline.js';
 import { splitSystemCharacterIds } from '../characterScope.js';
 
-export function sampleTargets(rows, count, random = Math.random) {
-  const pool = [...rows];
+/** 归一化事实文本用于判重：去掉空白与标点，只比内容 */
+function normalizeFactText(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[。！？!?，,、；;：:""''"'《》()（）\[\]]/g, '')
+    .trim();
+}
+
+/**
+ * 找一条「内容相同且仍在生效」的世界事实。
+ * 只比归一化后的全文相等，不做相似度 —— 宁可漏判让人自己判断，也不要误合并。
+ */
+function findActiveDuplicate(db, fact, nowIso) {
+  const key = normalizeFactText(fact);
+  if (!key) return null;
+  const rows = db.prepare(`SELECT id, title, fact, created_at, expires_at FROM god_world_events
+    WHERE kind='world' AND status='active' AND julianday(expires_at) > julianday(?)
+    ORDER BY id DESC`).all(nowIso);
+  return rows.find(row => normalizeFactText(row.fact) === key) || null;
+}
+
+export function sampleTargets(rows, count, random = Math.random) {  const pool = [...rows];
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -49,6 +69,23 @@ export function createWorldEventService(repo, { publishMoment, discussGroup, gro
   const create = db.transaction((args, { runId, effectKey }) => {
     const existing = db.prepare('SELECT id FROM god_world_events WHERE effect_key=?').get(effectKey);
     if (existing) return list(existing.id)[0];
+    // 同一条事实不重复建（2026-11-08 用户要求：「让神说自己收口」）。
+    // 真机日志里神说连着重试，把同一条 fact 建了 5 次：世界时间线里同义事实堆成一列，
+    // 朋友圈/群聊感知也会重复读到。这里不替它隐式合并，而是把「已存在」如实回给它，
+    // 由它决定：沿用就收工，真要重新强调就用 supersedes_id 结束旧的再开新的。
+    const dup = findActiveDuplicate(db, args.fact, repo.timestamp());
+    if (dup) {
+      console.log(`[god] 世界事实重复，未重复创建（已有 #${dup.id}）`);
+      return {
+        status: 'duplicate',
+        duplicateOf: dup.id,
+        title: dup.title,
+        fact: dup.fact,
+        endsAt: dup.expires_at,
+        note: `已经有一条内容相同的生效中事实（编号 ${dup.id}，标题「${dup.title}」，截止 ${dup.expires_at}），本次没有重复创建。`
+          + '如果只是沿用，不需要再做任何操作；如果确实要重新强调或改变范围，请用 supersedes_id 结束它之后再建一条。',
+      };
+    }
     let characters = db.prepare("SELECT id,display_name FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id").all();
     if (args.character_ids?.length) {
       // 点名里可能带系统内置角色（神说的角色清单含它）——静默剔掉，别人照常；
