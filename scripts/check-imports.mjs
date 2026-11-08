@@ -42,7 +42,10 @@ const GLOBAL_WHITELIST = new Set([
 ]);
 
 // 测试框架 / node 内建（在这些文件里出现不算缺 import 的常见形态）
-const EXTRA_OK = new Set(['describe', 'it', 'test', 'expect', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
+const EXTRA_OK = new Set(['describe', 'it', 'test', 'expect', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll',
+  // 语言层面的「非绑定标识符」：不是变量，但出现在值位置是合法的
+  'undefined', 'NaN', 'Infinity', 'arguments',
+  'DOMException', 'Headers', 'Request', 'Response', 'ReadableStream', 'WebAssembly']);
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -84,6 +87,7 @@ function analyze(file) {
 
   const bound = new Set();
   const calls = [];
+  const refs = [];
 
   // 简单的深度遍历（不引 acorn-walk，减少依赖）
   const visit = (node, parent) => {
@@ -113,6 +117,25 @@ function analyze(file) {
           calls.push({ name: node.callee.name, line: node.loc?.start.line || 0 });
         }
         break;
+      case 'Identifier': {
+        // 只收「值位置」的标识符：a.b 的属性名、{a: 1} 的键、解构的键、语句标签都不是引用。
+        // 为什么收它：2026-11-08 真机出过 `promptWithIdentity is not defined` ——
+        // 重构时把局部变量删了、留下两处「当值用」的地方，全是 CallExpression 之外的位置，
+        // 只查调用漏掉了它，结果朋友圈配图整条链路挂了一整天。
+        const p = parent;
+        if (p) {
+          if (p.type === 'MetaProperty') break;   // import.meta / new.target
+          if (p.type === 'MemberExpression' && p.property === node && !p.computed) break;
+          if (p.type === 'Property' && p.key === node && !p.computed) break;
+          if (p.type === 'MethodDefinition' && p.key === node && !p.computed) break;
+          if (p.type === 'PropertyDefinition' && p.key === node && !p.computed) break;
+          if (p.type === 'LabeledStatement' || p.type === 'BreakStatement' || p.type === 'ContinueStatement') break;
+          if (p.type === 'ImportSpecifier' || p.type === 'ImportDefaultSpecifier'
+            || p.type === 'ImportNamespaceSpecifier' || p.type === 'ExportSpecifier') break;
+        }
+        refs.push({ name: node.name, line: node.loc?.start.line || 0 });
+        break;
+      }
       default:
         break;
     }
@@ -133,7 +156,12 @@ function analyze(file) {
     && !GLOBAL_WHITELIST.has(call.name)
     && !EXTRA_OK.has(call.name)
   );
-  return { missing };
+  const missingRefs = refs.filter(ref =>
+    !bound.has(ref.name)
+    && !GLOBAL_WHITELIST.has(ref.name)
+    && !EXTRA_OK.has(ref.name)
+  );
+  return { missing, missingRefs };
 }
 
 const files = walk(ROOT);
@@ -144,7 +172,10 @@ for (const file of files) {
   const result = analyze(file);
   if (result.parseError) { parseErrors.push({ file: path.relative(ROOT, file), error: result.parseError }); continue; }
   for (const miss of result.missing) {
-    problems.push({ file: path.relative(ROOT, file), line: miss.line, name: miss.name });
+    problems.push({ file: path.relative(ROOT, file), line: miss.line, name: miss.name, kind: 'call' });
+  }
+  for (const ref of result.missingRefs || []) {
+    problems.push({ file: path.relative(ROOT, file), line: ref.line, name: ref.name, kind: 'ref' });
   }
 }
 
@@ -159,14 +190,16 @@ if (!problems.length && !parseErrors.length) {
 }
 
 if (problems.length) {
-  console.error(`\n✗ 发现 ${problems.length} 处「调用了未定义的函数」：`);
+  const callCount = problems.filter(p => p.kind !== 'ref').length;
+  const refCount = problems.filter(p => p.kind === 'ref').length;
+  console.error(`\n✗ 发现 ${problems.length} 处未定义符号（调用了未定义的函数 ${callCount} 处 / 引用了未定义的变量 ${refCount} 处）：`);
   const seen = new Set();
   for (const item of problems) {
     const key = `${item.file}:${item.name}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    console.error(`  · ${item.file}:${item.line}  ${item.name}()`);
+    console.error(`  · ${item.file}:${item.line}  ${item.name}${item.kind === 'ref' ? '' : '()'}`);
   }
-  console.error('\n修法：补 import，或改成实际存在的函数名。这类错误 node --check 查不出来。');
+  console.error('\n修法：补 import，或改成实际存在的名字。这类错误 node --check 查不出来。');
 }
 process.exit(1);
