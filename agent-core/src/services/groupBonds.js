@@ -79,7 +79,7 @@ export function nudgeBondsFromText(fromId, text) {
     const body = String(text || '');
     const from = Number(fromId);
     if (!Number.isSafeInteger(from) || !body) return 0;
-    const rows = getDb().prepare("SELECT id, display_name FROM characters WHERE id != ? AND name != 'default'").all(from) || [];
+    const rows = getDb().prepare("SELECT id, display_name FROM characters WHERE id != ? AND COALESCE(is_system, 0) = 0").all(from) || [];
     let changed = 0;
     for (const row of rows) {
       const name = String(row.display_name || '').trim();

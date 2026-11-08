@@ -1381,6 +1381,9 @@ function initSchema(db) {
 
   // 种子: 注入全部初始数据（仅首次运行生效）
   seedAll(db);
+  // 迁移: 角色作用域（characters.is_system）—— 必须在 seedAll 之后，
+  // 因为要让刚种出来的默认助手被标成系统角色（2026-11-08）
+  migrateCharacterScope(db);
   // 新存档 seed 会创建默认角色；首启就完成 actor 回填，避免第二次启动才补身份。
   createTownActorRegistry(db).synchronize();
   // 种子: 表情类别（仅首次运行插入默认 15 类）
@@ -1998,6 +2001,35 @@ function migrateDisturbSchema(db) {
     }
   } catch (err) {
     console.log('[db] migrateDisturbSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 角色作用域（characters.is_system）
+ *
+ * 2026-11-08 用户要求「根治」：默认助手（生图助手）同时是一个角色行、
+ * 一个内置人格、又是「所有人」集合的成员，任何「遍历所有角色」的链路都会不知不觉
+ * 把它带上（批量覆盖设置、日程生成、事件、朋友圈…都要逐个调用点手工排除）。
+ *
+ * 现在给它一个显式身份：is_system = 1 的行是系统内置角色，**面向用户的角色集合
+ * 一律只取 is_system = 0**（见 services/characterScope.js）。
+ * 幂等：列已存在不重建，标记每次都按 name 校正一遍。
+ */
+export function migrateCharacterScope(db) {
+  try {
+    const cols = db.prepare('PRAGMA table_info(characters)').all();
+    if (!cols.find(c => c.name === 'is_system')) {
+      db.exec('ALTER TABLE characters ADD COLUMN is_system INTEGER DEFAULT 0');
+      console.log('[db] Added characters.is_system column (default 0)');
+    }
+    // 内置角色清单：默认助手（生图助手）。以后再加内置角色，往这里加 name。
+    const SYSTEM_CHARACTER_NAMES = ['default'];
+    const mark = db.prepare('UPDATE characters SET is_system = 1 WHERE name = ?');
+    let marked = 0;
+    for (const name of SYSTEM_CHARACTER_NAMES) marked += mark.run(name).changes;
+    if (marked > 0) console.log(`[db] characters.is_system: marked ${marked} built-in character(s)`);
+  } catch (err) {
+    console.log('[db] migrateCharacterScope skipped:', err.message);
   }
 }
 

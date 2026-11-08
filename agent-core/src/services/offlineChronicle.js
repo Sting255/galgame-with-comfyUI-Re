@@ -128,7 +128,7 @@ function loadCharacters(limit = MAX_CHARACTERS) {
   try {
     return getDb().prepare(`
       SELECT id, display_name, name, short_prompt, base_prompt
-      FROM characters WHERE name != 'default'
+      FROM characters WHERE COALESCE(is_system, 0) = 0
       ORDER BY id ASC LIMIT ?
     `).all(limit) || [];
   } catch { return []; }

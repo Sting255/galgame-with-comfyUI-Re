@@ -87,7 +87,7 @@ export function hasTouchLines(state) {
 export function fillMissingTouchLines({ db, generate, emit = () => {} }) {
   const result = { started: 0, skipped: 0 };
   let queue = Promise.resolve();
-  for (const character of db.prepare('SELECT * FROM characters ORDER BY id').all()) {
+  for (const character of db.prepare('SELECT * FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all()) {
     const state = readTouchLines(db, character.id);
     if (hasTouchLines(state) || state.status === 'generating') { result.skipped++; continue; }
     const task = startTouchLines({ db, character, emit, generate: char => {

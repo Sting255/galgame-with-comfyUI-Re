@@ -145,7 +145,7 @@ export function initialize() {
   // 检查所有启用日程的角色
   const chars = db.prepare(`
     SELECT id, display_name FROM characters
-    WHERE schedule_enabled = 1 OR schedule_enabled IS NULL
+    WHERE (schedule_enabled = 1 OR schedule_enabled IS NULL) AND COALESCE(is_system, 0) = 0
   `).all();
 
   let sleepers = 0;
@@ -201,7 +201,7 @@ function startSleepingStateCron() {
   async function tick() {
     const db = getDb();
     const chars = db.prepare(
-      'SELECT id FROM characters WHERE schedule_enabled = 1 OR schedule_enabled IS NULL'
+      'SELECT id FROM characters WHERE (schedule_enabled = 1 OR schedule_enabled IS NULL) AND COALESCE(is_system, 0) = 0'
     ).all();
 
     for (const char of chars) {
@@ -749,7 +749,7 @@ function revertTempWake(characterId) {
 function restoreTempWakeTimers() {
   const db = getDb();
   const now = new Date();
-  const chars = db.prepare(`SELECT id, temporary_wake_until FROM characters WHERE temporary_wake_until IS NOT NULL`).all();
+  const chars = db.prepare(`SELECT id, temporary_wake_until FROM characters WHERE temporary_wake_until IS NOT NULL AND COALESCE(is_system, 0) = 0`).all();
   for (const char of chars) {
     const until = parseSqlUtc(char.temporary_wake_until);
     if (!until || until <= now) {
@@ -912,7 +912,7 @@ export function getSleepStatus(characterId) {
 export function refreshAllSleepStates(programNow = getProgramNow(), { dayKeys = [] } = {}) {
   const db = getDb();
   const chars = db.prepare(
-    'SELECT id, display_name FROM characters WHERE schedule_enabled = 1 OR schedule_enabled IS NULL'
+    'SELECT id, display_name FROM characters WHERE (schedule_enabled = 1 OR schedule_enabled IS NULL) AND COALESCE(is_system, 0) = 0'
   ).all();
 
   invalidateAllCache();
@@ -967,7 +967,7 @@ export function advanceProgramDays(days, { programNow } = {}) {
   const db = getDb();
   const skippedTempWakes = [];
   const tempWokenChars = db.prepare(
-    'SELECT id, temporary_wake_until FROM characters WHERE temporary_wake_until IS NOT NULL'
+    'SELECT id, temporary_wake_until FROM characters WHERE temporary_wake_until IS NOT NULL AND COALESCE(is_system, 0) = 0'
   ).all();
   for (const char of tempWokenChars) {
     const until = parseSqlUtc(char.temporary_wake_until);

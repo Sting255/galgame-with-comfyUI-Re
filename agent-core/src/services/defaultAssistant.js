@@ -36,8 +36,9 @@ export function setDefaultAssistantEnabled(db, enabled) {
 
 /**
  * 给「所有角色」这类范围查询拼的 SQL 片段：开关关掉时把默认助手排除在外。
- * 用片段而不是改写每条查询，是为了让每个调用点自己决定拼在哪（有的查 id，有的查整行）。
- * @param {string} column 用来判断角色身份的列，默认 name
+ *
+ * @deprecated 2026-11-08 起改用 services/characterScope.js 的 USER_SCOPE（按 is_system 判定，
+ * 不再按名字特判）。这里只为兼容老调用点保留，新代码不要用。
  */
 export function excludeDefaultAssistantClause(db, column = 'name') {
   return isDefaultAssistantEnabled(db) ? '' : ` AND ${column} != '${DEFAULT_ASSISTANT_NAME}'`;

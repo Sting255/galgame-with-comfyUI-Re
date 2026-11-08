@@ -35,7 +35,7 @@ export function startMomentBackfill(generatePost, { waitForIdle = async () => {}
 
 async function runBackfill(task, generatePost, now, control) {
   const db = getDb();
-  const characters = db.prepare("SELECT * FROM characters WHERE moments_disabled = 0 ORDER BY id").all();
+  const characters = db.prepare("SELECT * FROM characters WHERE moments_disabled = 0 AND COALESCE(is_system, 0) = 0 ORDER BY id").all();
   // 长任务执行期间也尊重最新开关，关闭朋友圈后不再开始后续补发。
   const enabled = db.prepare('SELECT 1 FROM characters WHERE id = ? AND moments_disabled = 0');
   const { start, end } = backfillDay(now);

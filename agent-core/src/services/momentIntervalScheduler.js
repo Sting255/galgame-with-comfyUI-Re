@@ -31,6 +31,7 @@ function pickAuthor(lastAuthor, generateCharacter) {
   const authors = generateCharacter ? db.prepare(`
     SELECT c.* FROM characters c
     WHERE c.moments_disabled = 0
+      AND COALESCE(c.is_system, 0) = 0
       AND (c.is_sleeping IS NULL OR c.is_sleeping = 0)
       AND (c.temporary_wake_until IS NULL OR c.temporary_wake_until <= datetime('now'))
       AND NOT EXISTS (SELECT 1 FROM character_events e

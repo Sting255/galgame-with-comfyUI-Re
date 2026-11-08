@@ -1142,7 +1142,7 @@ export function runShortPromptMigration() {
 
   const db = getDb();
   const chars = db.prepare(
-    `SELECT id, name, display_name, base_prompt FROM characters WHERE short_prompt LIKE '%##%' OR short_prompt NOT LIKE '%来自%'`
+    `SELECT id, name, display_name, base_prompt FROM characters WHERE (short_prompt LIKE '%##%' OR short_prompt NOT LIKE '%来自%') AND COALESCE(is_system, 0) = 0`
   ).all();
 
   if (chars.length === 0) {

@@ -94,7 +94,7 @@ export function listStandingOverview() {
   return db.prepare(`SELECT c.id, j.status AS jobStatus, j.error AS error FROM characters c
     LEFT JOIN expression_standing_jobs j ON j.id = (
       SELECT id FROM expression_standing_jobs WHERE character_id=c.id ORDER BY created_at DESC,rowid DESC LIMIT 1
-    ) ORDER BY c.id`).all().map(row => {
+    ) WHERE COALESCE(c.is_system, 0) = 0 ORDER BY c.id`).all().map(row => {
     const missingSlotIds = slots.filter(s => !images.get(row.id)?.has(s.id)).map(s => s.id);
     const touch = readStandingTouchLines(db,row.id);
     const speechLines = Object.values(touch.speech.lines).flat();

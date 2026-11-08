@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { isDefaultAssistantEnabled, DEFAULT_ASSISTANT_NAME } from '../defaultAssistant.js';
 // A batch owns its frozen target list and item results. Confirmation is supplied independently.
 export function createBatchTasks(repo, { validate, needsConfirmation, changes, execute }) {
   const { db } = repo;
@@ -14,9 +13,9 @@ export function createBatchTasks(repo, { validate, needsConfirmation, changes, e
     // 开关关掉时「所有人」不含默认助手：2026-11-08 用户的痛点就是
     // 对所有人下覆盖设置/批量命令时它被一起拉起来，实际又根本不用它。
     // 显式点名（character_ids）时仍按点名来，只在「所有人」这条路上过滤。
-    const all = db.prepare('SELECT id,name,display_name FROM characters ORDER BY id').all();
-    const useAll = Boolean(args.character_ids) || isDefaultAssistantEnabled(db);
-    const scope = useAll ? all : all.filter(c => c.name !== DEFAULT_ASSISTANT_NAME);
+    const all = db.prepare('SELECT id,name,display_name,COALESCE(is_system,0) AS sys FROM characters ORDER BY id').all();
+    // 系统内置角色永远不进「所有人」；显式点名时仍按点名来（用户就是要单独操作它）
+    const scope = args.character_ids ? all : all.filter(c => c.sys === 0);
     const targets = args.character_ids ? scope.filter(c => args.character_ids.includes(c.id)) : scope;
     if (!targets.length || targets.length > 1000 || (args.character_ids && targets.length !== args.character_ids.length)) throw new Error('角色范围无效或超过单批 1000 人');
     const common = JSON.parse(args.arguments_json);

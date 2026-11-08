@@ -236,7 +236,7 @@ export function resolveGroupImageLoras(prompt, speaker = null) {
   const characters = getDb().prepare(`
     SELECT id, name, display_name, loras, artist_override, base_prompt, short_prompt
     FROM characters
-    WHERE name IS NOT NULL AND trim(name) != ''
+    WHERE name IS NOT NULL AND trim(name) != '' AND COALESCE(is_system, 0) = 0
     ORDER BY id ASC
   `).all();
   const matchedCharacters = matchCharactersInImagePrompt(prompt, characters);

@@ -261,7 +261,7 @@ export function backfillIdentityAnchors({ limit = 500 } = {}) {
   try {
     const rows = getDb().prepare(
       `SELECT id, display_name, base_prompt, short_prompt FROM characters
-       WHERE COALESCE(identity_anchor, '') = '' LIMIT ?`
+       WHERE COALESCE(identity_anchor, '') = '' AND COALESCE(is_system, 0) = 0 LIMIT ?`
     ).all(limit);
     for (const row of rows) {
       try {

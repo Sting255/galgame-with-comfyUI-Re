@@ -133,7 +133,7 @@ function removeDnd(db) {
   // 找出所有被 DND 覆盖的角色
   const overridden = db.prepare(`
     SELECT id, dnd_original_state FROM characters
-    WHERE dnd_original_state IS NOT NULL
+    WHERE dnd_original_state IS NOT NULL AND COALESCE(is_system, 0) = 0
   `).all();
 
   if (overridden.length === 0) return;

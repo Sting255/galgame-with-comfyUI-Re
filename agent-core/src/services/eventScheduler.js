@@ -154,7 +154,7 @@ async function tick(opts = {}) {
     // 检查是否有角色符合条件：无活跃事件 + events_disabled=0 + 冷却已过
     const candidate = db.prepare(`
       SELECT c.* FROM characters c
-      WHERE c.events_disabled = 0
+      WHERE c.events_disabled = 0 AND COALESCE(c.is_system, 0) = 0
         AND (c.is_sleeping IS NULL OR c.is_sleeping = 0)
         AND (c.temporary_wake_until IS NULL OR c.temporary_wake_until <= datetime('now'))
         AND c.id NOT IN (
@@ -184,7 +184,7 @@ async function tick(opts = {}) {
         SELECT c.display_name, MIN(eh.ended_at) AS last_event
         FROM characters c
         LEFT JOIN event_history eh ON eh.character_id = c.id
-        WHERE c.events_disabled = 0
+        WHERE c.events_disabled = 0 AND COALESCE(c.is_system, 0) = 0
         GROUP BY c.id
         HAVING last_event IS NOT NULL
         ORDER BY last_event ASC LIMIT 1

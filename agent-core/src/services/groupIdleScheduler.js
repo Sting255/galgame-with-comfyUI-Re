@@ -186,7 +186,8 @@ async function maybeCreateGroup() {
     const initiators = db.prepare(`
       SELECT DISTINCT c.id, c.display_name FROM characters c
       JOIN character_relationships cr ON cr.from_character_id = c.id AND cr.relationship_text != ''
-      WHERE (c.is_sleeping IS NULL OR c.is_sleeping = 0)
+      WHERE COALESCE(c.is_system, 0) = 0
+        AND (c.is_sleeping IS NULL OR c.is_sleeping = 0)
     `).all().filter(c => loadAffinity(c.id) >= 60);
     if (initiators.length === 0) return;
 

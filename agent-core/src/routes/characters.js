@@ -37,7 +37,8 @@ import { ensureIdentityAnchor, getStoredIdentityAnchor, buildIdentityAnchorFromC
 import { applyAllTypesToCharacter } from '../services/globalOutfitTypes.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
-import { isDefaultAssistantEnabled, setDefaultAssistantEnabled, excludeDefaultAssistantClause } from '../services/defaultAssistant.js';
+import { isDefaultAssistantEnabled, setDefaultAssistantEnabled } from '../services/defaultAssistant.js';
+import { userVisibleScope } from '../services/characterScope.js';
 // 对话背景（上游 v3.9.0 合并）：工厂路由 + 沉浸背景生成（依赖注入便于单测）
 import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
@@ -181,7 +182,7 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
 router.get('/', (req, res) => {
   const db = getDb();
   // 默认助手开关关掉时，它不出现在列表里（2026-11-08 用户要求：用不上就别占位置）
-  const characters = db.prepare(`SELECT * FROM characters WHERE 1=1${excludeDefaultAssistantClause(db)}`).all();
+  const characters = db.prepare(`SELECT * FROM characters WHERE ${userVisibleScope(db)}`).all();
 
   // 聚合查询代替每角色 4 条子查询（N+1 → 固定 4 条，规模不随角色数增长）
   const lastByConv = db.prepare(`
@@ -381,7 +382,7 @@ router.get('/folders', (req, res) => {
     GROUP BY f.id
     ORDER BY f.sort_order ASC, f.id ASC
   `).all();
-  const { n } = db.prepare('SELECT COUNT(*) AS n FROM characters WHERE folder_id IS NULL').get();
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM characters WHERE folder_id IS NULL AND ' + userVisibleScope(db)).get();
   res.json({ folders, uncategorized: n || 0 });
 });
 

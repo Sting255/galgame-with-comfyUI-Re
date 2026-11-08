@@ -53,7 +53,7 @@ export function createStandingTouchSpeechService({ db, profile, requestSpeech, f
   }
   function fill() {
     const result = { started: 0, skipped: 0, failed: 0 };
-    for (const { id } of db.prepare('SELECT id FROM characters ORDER BY id').all()) {
+    for (const { id } of db.prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all()) {
       const state = read(id);
       if (!state.speech.enabled || !state.speech.configured || state.status === 'generating' || !Object.values(state.lines || {}).some(lines => lines.length)) { result.skipped++; continue; }
       const { summary } = generate(id, { expectedVersion: state.version });

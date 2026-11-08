@@ -312,7 +312,7 @@ export function getTimeState(extra = {}) {
 /** 启用日程的角色（与 refreshAllSleepStates 的筛选口径一致） */
 function listScheduleCharacters() {
   return getDb().prepare(
-    'SELECT id FROM characters WHERE schedule_enabled = 1 OR schedule_enabled IS NULL'
+    'SELECT id FROM characters WHERE (schedule_enabled = 1 OR schedule_enabled IS NULL) AND COALESCE(is_system, 0) = 0'
   ).all().map(row => row.id);
 }
 

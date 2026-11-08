@@ -511,7 +511,8 @@ export function pickActiveCharacters(count = 2) {
   return getDb().prepare(`
     SELECT id, display_name, avatar_path, short_prompt, base_prompt, loras, custom_workflow, artist_override
     FROM characters
-    WHERE (is_sleeping IS NULL OR is_sleeping = 0)
+    WHERE COALESCE(is_system, 0) = 0
+      AND (is_sleeping IS NULL OR is_sleeping = 0)
       AND (moments_disabled IS NULL OR moments_disabled = 0)
     ORDER BY RANDOM() LIMIT ?
   `).all(n);

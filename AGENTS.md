@@ -99,6 +99,18 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 7. **判「输出是否完整」必须容忍 ``` 围栏，但不容忍截断**：模型经常整段套 ` ```json … ``` `，裸 `JSON.parse` 会把它判成没写完，于是每轮生成都白烧 5 次续写（2026-11-08 真机：一个 327 tokens 的完整答案被重试 5 次）。判完整性一律走 `llm-client` 的 `isCompleteJsonText`（内部先剥围栏再严格 parse），**不要**用会补齐结构的 `repairJsonText` 去判——它会把半截 JSON 修成合法，截断续写就再也不会触发。
 8. **流式也有截断续写，别再各自兜**：`chatStream`（文本流）与 `chatAgentStream`（主聊天/神说的原生工具流）遇到 `finish_reason=length` 会自己追加「继续」把下半段接上，最多 2 次（`MAX_STREAM_CONTINUATIONS`，指令是 `STREAM_CONTINUE_INSTRUCTION`）。流式撤不回已推给用户的内容，所以口径是**只追加不重发**；`readAgentResponse` 的 `length` 也不再抛错（除非调用方没传 `softLength`）。调这两条链时不要另写一套截断续写。
 
+## 角色作用域（characters.is_system）
+
+内置角色（目前只有默认助手 `name='default'`）是 `characters` 表里的一行，所以任何「遍历所有角色」的链路都会顺手把它带上——批量覆盖设置、日程、朋友圈、事件、主动性、立绘台词……以前靠各调用点自己写 `name != 'default'`，加一条新链路就会漏一次（2026-11-08 用户因此要求根治）。
+
+口径：
+
+1. `characters.is_system = 1` = 系统内置角色，不属于用户的角色集合。迁移与标记在 `db/index.js` 的 `migrateCharacterScope`（在 `seedAll` 之后跑，幂等）。
+2. **面向用户的角色集合一律带作用域**：`import { USER_SCOPE, USER_SCOPE_ALIASED } from '../services/characterScope.js'`，拼进 WHERE。别再用 `name != 'default'` 这种按名字的特判。
+3. **按 id 取单个角色**（`WHERE id = ?`）不过滤：用户点到它时仍可查看/编辑/聊天。批量任务显式点名（`character_ids`）同样放行。
+4. 默认助手开关（`system_settings.default_assistant_enabled`，设置页「功能开关」）只决定它**是否出现在角色列表**（`userVisibleScope`）；后台自动化永远跳过系统角色，不受开关影响。
+5. 已知未覆盖：纯统计/选择器类查询（`COUNT(*)`、城镇 actor 注册、lorebook/presets 查找、表情与关系列表）目前没加作用域，它们不产生自动化副作用；要动那些地方时按同一口径补。
+
 ## 后台生成的角色状态校验（2026-11-08 用户定）
 
 凡是**后台自动产生内容、用户能在界面上看到**的入口（朋友圈、群聊、奇遇、媒体、报纸、信箱、日记、共同生活…），必须在落库前用**代码**校验参与角色此刻的状态；prompt 里写的「睡着的人不要说话」只负责自然，不负责正确。

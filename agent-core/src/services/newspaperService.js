@@ -350,7 +350,7 @@ export function pickFeaturedCharacter(db) {
   return db.prepare(`
     SELECT id, display_name, avatar_path, short_prompt, base_prompt, loras
     FROM characters
-    WHERE events_disabled = 0 AND (moments_disabled IS NULL OR moments_disabled = 0)
+    WHERE events_disabled = 0 AND (moments_disabled IS NULL OR moments_disabled = 0) AND COALESCE(is_system, 0) = 0
     ORDER BY RANDOM() LIMIT 1
   `).get() || null;
 }

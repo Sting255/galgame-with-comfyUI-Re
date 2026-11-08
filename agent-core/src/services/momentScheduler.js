@@ -145,6 +145,7 @@ async function tick() {
     const candidate = defaultCharacterMode ? db.prepare(`
       SELECT c.* FROM characters c
       WHERE c.moments_disabled = 0
+        AND COALESCE(c.is_system, 0) = 0
         AND (c.is_sleeping IS NULL OR c.is_sleeping = 0)
         AND (c.temporary_wake_until IS NULL OR c.temporary_wake_until <= datetime('now'))
         AND (c.next_moment_at IS NULL OR c.next_moment_at <= datetime('now'))
@@ -204,7 +205,7 @@ async function tick() {
       // 没有需要发帖的角色——给下一个最早发帖的角色估算时间
       const nextUp = db.prepare(`
         SELECT display_name, next_moment_at FROM characters
-        WHERE moments_disabled = 0 AND next_moment_at IS NOT NULL
+        WHERE moments_disabled = 0 AND COALESCE(is_system, 0) = 0 AND next_moment_at IS NOT NULL
         ORDER BY next_moment_at ASC LIMIT 1
       `).get();
       if (nextUp) {
@@ -212,7 +213,7 @@ async function tick() {
       } else {
         console.log('[momentScheduler] No active characters or all have NULL next_moment_at — initializing...');
         // 默认档首次启动：1~4 小时。
-        const chars = db.prepare('SELECT id FROM characters WHERE moments_disabled = 0 AND next_moment_at IS NULL').all();
+        const chars = db.prepare('SELECT id FROM characters WHERE moments_disabled = 0 AND COALESCE(is_system, 0) = 0 AND next_moment_at IS NULL').all();
         for (const c of chars) {
           const delay = getMomentDelay(config.features, { initial: true });
           const nextAt = new Date(Date.now() + delay).toISOString();
