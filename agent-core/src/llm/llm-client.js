@@ -524,6 +524,107 @@ async function _chatSyncFreeEgg(messages, opts) {
 }
 
 /**
+ * 输出不完整（被截断 / 被内容审核中断）时的自动重试上限。
+ *
+ * 2026-11-08 用户定：「被截断的时候就自动重试，最多五次，所有的地方都要，就像我给你打继续一样」。
+ * 只有**检测到没写完**才重试，正常输出零成本、不会多发一次请求。
+ */
+const MAX_INCOMPLETE_RETRIES = 5;
+/** 重试时放大输出额度：截断多半是额度不够，只改提示词不提额度等于白试 */
+const INCOMPLETE_RETRY_TOKEN_FACTOR = 1.6;
+const INCOMPLETE_RETRY_TOKEN_CAP = 8000;
+
+/** 上游把输出掐断后回填的拒绝语（出现在文本末尾，不是模型的正常正文） */
+const TAIL_REFUSAL_RE = /(sorry,?\s*i can'?t|i cannot (help|assist|respond|comply)|i can'?t (help|assist|respond|comply)|unable to (help|assist|comply)|无法(协助|回答|提供)|我不能(协助|回答|提供))[^。!！\n]{0,40}[。.!！]?\s*$/i;
+
+/** 统一取 {content, finishReason}：内部一律要 meta，对外契约由调用方决定 */
+function readCompletion(result) {
+  if (result && typeof result === 'object' && typeof result.content === 'string') {
+    return { content: result.content, finishReason: result.finishReason ?? null };
+  }
+  return { content: typeof result === 'string' ? result : '', finishReason: null };
+}
+
+/** 剥掉文本末尾由上游回填的拒绝语，只留真正写到的位置（拼接与续写都以它为准） */
+export function stripTailRefusal(text) {
+  const s = String(text || '');
+  const m = s.match(/(sorry,?\s*i can'?t|i cannot (help|assist|respond|comply)|i can'?t (help|assist|respond|comply)|unable to (help|assist|comply)|无法(协助|回答|提供)|我不能(协助|回答|提供))/i);
+  if (!m || m.index == null) return s;
+  if (m.index < s.length - 300) return s;   // 拒绝语在很早的位置：不是收尾回填，别乱删
+  return s.slice(0, m.index).replace(/[\s\u3000]+$/, '');
+}
+
+/**
+ * 把「继续」写出来的增量拼回原文（2026-11-08 用户要的效果）。
+ *
+ * 三种常见形态都要处理：
+ *   · 模型老老实实接着写 → 直接拼
+ *   · 模型把全文重写了一遍 → 用新的（更完整）
+ *   · 模型先复述上一句再接 → 按最长重叠把重复部分削掉
+ */
+export function mergeContinuationText(base, increment) {
+  const a = String(base || '').replace(/[\s\u3000]+$/, '');
+  const b = String(increment || '').replace(/^[\s\u3000]+/, '');
+  if (!a) return b;
+  if (!b) return a;
+  if (b.startsWith(a)) return b;
+  if (a.includes(b)) return a;
+  const max = Math.min(a.length, b.length, 300);
+  for (let k = max; k >= 8; k -= 1) {
+    if (a.slice(-k) === b.slice(0, k)) return a + b.slice(k);
+  }
+  return a + b;
+}
+
+/**
+ * 这次输出是不是「没写完」：'filtered' 被审核中断 / 'truncated' 被长度截断 / null 正常。
+ *
+ * 判据从上到下，命中即返回：
+ *   1. finish_reason = content_filter / length（上游给了就最准）
+ *   2. 文本末尾出现拒绝语（上游掐断后回填，真机 api.sz-yzg.vip 就是这种）
+ *   3. 请求了 JSON 却解析不了（半截 JSON 同样算没写完）
+ */
+export function classifyIncomplete(meta, { jsonMode = false } = {}) {
+  const text = String(meta?.content || '');
+  const finish = String(meta?.finishReason || '').toLowerCase();
+  if (finish === 'content_filter') return 'filtered';
+  if (finish === 'length') return 'truncated';
+  if (!text.trim()) return null;
+  if (TAIL_REFUSAL_RE.test(text.slice(-300))) return 'filtered';
+  if (jsonMode) {
+    try { JSON.parse(text); } catch { return 'truncated'; }
+  }
+  return null;
+}
+
+/**
+ * 构造「继续写」的重试消息。
+ *
+ * 纯文本场景必须把已写的部分当助手发言放回去再让它接写 —— 这就是用户手动敲「继续」的效果。
+ * JSON 场景反着来：半截 JSON 塞回去只会拼出坏结构，所以要求它重新输出完整的一份。
+ */
+export function buildIncompleteRetryMessages(baseMessages, meta, kind, attempt, jsonMode) {
+  const partial = String(meta?.content || '').trim();
+  const hint = kind === 'filtered'
+    ? '上一轮输出被内容审核中断了。请重新完整输出同一任务的结果：不要拒绝、不要说无法回答、不要解释；敏感表述可以换成含蓄说法，但结构必须写完整。'
+    : '上一轮输出因为长度上限只写了一半。请重新完整输出同一任务的结果，信息点不要减少，句子尽量精简，确保这次能完整收尾。';
+  const tail = attempt > 1 ? `\n这已经是第 ${attempt} 次尝试，请务必一口气写完。` : '';
+  if (jsonMode || !partial) {
+    return [...baseMessages, { role: 'user', content: `${hint}${tail}` }];
+  }
+  // 纯文本：把已写的部分当助手发言放回去，然后就像用户敲了一句「继续」
+  return [...baseMessages, { role: 'assistant', content: partial }, { role: 'user', content: `继续。${tail}` }];
+}
+
+/** 重试时放大输出额度（不低于原值，不超封顶） */
+function bumpMaxTokens(opts) {
+  const cur = Number(opts?.max_tokens ?? opts?.max_completion_tokens);
+  const base = Number.isFinite(cur) && cur > 0 ? cur : 2000;
+  const next = Math.min(Math.round(base * INCOMPLETE_RETRY_TOKEN_FACTOR), INCOMPLETE_RETRY_TOKEN_CAP);
+  return Math.max(next, base);
+}
+
+/**
  * 非流式聊天（用于摘要、实体抽取、情绪评估等任务）
  * 外层包装：免费鸡蛋全部模型失败触发时（错误带 __freeEggFailover 标记），
  * 立即用恢复后的自有配置把本次请求重发一遍（model/thinking 等默认值重新求值）
@@ -560,25 +661,28 @@ export async function chatSync(messages, opts = {}) {
   // 没配路由 / 免费鸡蛋模式 / label 认不出来 → 返回 null，行为与加这个功能前一致。
   const routedModel = opts.model ? null : resolveModelForLabel(opts.label || 'chatSync');
   if (routedModel) opts = { ...opts, model: routedModel };
-  // 所有非流式调用的唯一收口：网络失败由内层重试，**拒答**在这里兜一次。
-  // 之前只有 applyShield（注入破限词），拒答文本与正常结果同路径返回，上层无从分辨。
-  const runOnce = (msgs) => (config.llm.freeEgg
-    ? _chatSyncFreeEgg(msgs, opts)
-    : _chatSyncInner(msgs, opts));
+  // 所有非流式调用的唯一收口：网络失败由内层重试，**拒答**与**输出不完整**在这里兜。
+  // 内部一律要 finishReason（判断是否被截断），对外契约仍由 opts.returnMeta 决定。
+  const wantMeta = opts.returnMeta === true;
+  const runWith = (msgs, o) => (config.llm.freeEgg
+    ? _chatSyncFreeEgg(msgs, { ...o, returnMeta: true })
+    : _chatSyncInner(msgs, { ...o, returnMeta: true }));
+  const runOnce = (msgs, o = opts) => runWith(msgs, o);
   try {
     let result = await runOnce(messages);
+    let meta = readCompletion(result);
     if (opts.refusalRetry !== false) {
-      const firstText = opts.returnMeta ? result.content : result;
-      if (isRefusal(firstText)) {
+      if (isRefusal(meta.content)) {
         // 只重发一次：纠正指令贴在原消息之后，原有 system（角色/格式要求）继续生效。
         console.warn(`[refusal] ▸ 模型拒答，追加纠正指令重发一次 (${opts.label || 'chatSync'})`);
         try {
           const retried = await runOnce([...messages, REFUSAL_RETRY_INSTRUCTION]);
-          const retriedText = opts.returnMeta ? retried.content : retried;
-          if (isRefusal(retriedText)) {
+          const retriedMeta = readCompletion(retried);
+          if (isRefusal(retriedMeta.content)) {
             console.warn(`[refusal] ▸ 重发后仍是拒答，按原样返回 (${opts.label || 'chatSync'})`);
           } else {
             result = retried;
+            meta = retriedMeta;
           }
         } catch (retryErr) {
           // 重发失败不掩盖第一次的结果：上层拿到的仍是原始返回，行为与加检测前一致。
@@ -587,13 +691,55 @@ export async function chatSync(messages, opts = {}) {
         }
       }
     }
-    return opts.returnMeta ? result : result.content;
+
+    // 输出不完整（被截断 / 被审核中断）→ 自动重试，最多 MAX_INCOMPLETE_RETRIES 次。
+    // 2026-11-08 用户定：所有链路都要，像人工敲「继续」一样把没写完的内容补完。
+    const jsonMode = opts?.response_format?.type === 'json_object';
+    let attempt = 0;
+    let retryOpts = opts;
+    while (attempt < MAX_INCOMPLETE_RETRIES) {
+      const kind = classifyIncomplete(meta, { jsonMode });
+      if (!kind) break;
+      attempt += 1;
+      // 续写前先把上游回填的拒绝语剥掉：剩下那截才是真正写到的位置
+      const baseText = jsonMode ? String(meta.content || '') : stripTailRefusal(meta.content);
+      console.warn(`[incomplete] ▸ ${kind === 'filtered' ? '输出被审核中断' : '输出被长度截断'}（已写 ${baseText.length} 字），第 ${attempt}/${MAX_INCOMPLETE_RETRIES} 次自动续写 (${opts.label || 'chatSync'})`);
+      const retryMessages = buildIncompleteRetryMessages(messages, { ...meta, content: baseText }, kind, attempt, jsonMode);
+      retryOpts = { ...retryOpts, max_tokens: bumpMaxTokens(retryOpts) };
+      try {
+        const retried = await runWith(retryMessages, retryOpts);
+        const retriedMeta = readCompletion(retried);
+        if (jsonMode) {
+          // JSON 不拼接：半截 + 续写几乎必然拼出坏结构，直接采用这次重新输出的完整 JSON
+          result = retried;
+          meta = retriedMeta;
+        } else {
+          // 纯文本：像用户敲「继续」那样，把增量接回原文后面
+          const increment = stripTailRefusal(retriedMeta.content) || retriedMeta.content;
+          meta = {
+            content: mergeContinuationText(baseText, increment),
+            finishReason: retriedMeta.finishReason,
+          };
+          result = retried;
+        }
+      } catch (retryErr) {
+        throwIfSyncAborted(opts.signal, retryErr);
+        console.warn(`[incomplete] ▸ 重试失败，保留上一次结果 (${opts.label || 'chatSync'}): ${retryErr?.message || retryErr}`);
+        break;
+      }
+    }
+    if (attempt >= MAX_INCOMPLETE_RETRIES) {
+      const kind = classifyIncomplete(meta, { jsonMode });
+      if (kind) console.warn(`[incomplete] ▸ 连续 ${MAX_INCOMPLETE_RETRIES} 次仍不完整，按现状返回 (${opts.label || 'chatSync'})`);
+    }
+    return wantMeta ? meta : meta.content;
   } catch (err) {
     throwIfSyncAborted(opts.signal, err);
     if (err && err.__freeEggFailover && opts.freeEggFailover !== false) {
       console.warn(`[free-egg] ▸ 立即改用自有配置重发本次请求 (${opts.label || 'sync'})`);
-      const retried = await _chatSyncInner(messages, opts);
-      return opts.returnMeta ? retried : retried.content;
+      const retried = await _chatSyncInner(messages, { ...opts, returnMeta: true });
+      const retriedMeta = readCompletion(retried);
+      return wantMeta ? retriedMeta : retriedMeta.content;
     }
     throw err;
   }
