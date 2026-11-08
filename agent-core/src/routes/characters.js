@@ -742,7 +742,15 @@ router.delete('/:id', async (req, res, next) => {
   const db = getDb();
   const char = db.prepare('SELECT id, name, avatar_path FROM characters WHERE id = ?').get(req.params.id);
   if (!char) return res.status(404).json({ error: 'Character not found' });
-  if (char.name === 'default') return res.status(400).json({ error: '不能删除默认Agent' });
+  // 2026-11-08 用户要求：默认助手允许删除（它只是个生图助手，用不上还占位置）。
+  // 但 seedAll 每次启动都会 INSERT OR IGNORE 一遍，没有这道标记的话删完重启就复活，
+  // 所以删的时候落一个标记，种子数据看到它就不再创建。
+  if (char.name === 'default') {
+    db.prepare(
+      `INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at) VALUES ('default_assistant_skip','1',CURRENT_TIMESTAMP)`
+    ).run();
+    console.log('[characters] 默认助手已删除，并标记为不再自动创建');
+  }
 
   const conversationId = `char_${char.id}`;
 

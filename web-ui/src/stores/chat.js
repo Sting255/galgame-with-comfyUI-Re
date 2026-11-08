@@ -423,8 +423,7 @@ export const useChatStore = defineStore('chat', () => {
   async function deleteActiveCharacter() {
     imageRecovery.stopAll()
     const id = activeCharId.value
-    const char = characters.value.find(c => c.id === id)
-    if (!id || char?.name === 'default') return
+    if (!id) return
     cancelActiveStream()
     streaming.value = false
     streamingContent.value = ''

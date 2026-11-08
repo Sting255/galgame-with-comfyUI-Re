@@ -411,9 +411,9 @@
 
         <div class="sp-divider"></div>
 
-        <!-- 删除角色 -->
-        <div role="button" tabindex="0" class="sp-btn sp-btn-danger" :class="{ 'is-disabled': deleting || chat.activeChar?.name === 'default' }" :aria-disabled="deleting || chat.activeChar?.name === 'default'"
-          :title="chat.activeChar?.name === 'default' ? '不能删除默认Agent' : ''" @click="deleteChar" @keydown.enter.prevent="deleteChar" @keydown.space.prevent="deleteChar">
+        <!-- 删除角色（2026-11-08：默认助手也允许删除，删掉后种子数据不会再把它建回来） -->
+        <div role="button" tabindex="0" class="sp-btn sp-btn-danger" :class="{ 'is-disabled': deleting }" :aria-disabled="deleting"
+          :title="chat.activeChar?.name === 'default' ? '默认助手是个生图助手，没有用的话可以删掉' : ''" @click="deleteChar" @keydown.enter.prevent="deleteChar" @keydown.space.prevent="deleteChar">
           <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M512 179.2l390.4 627.2H128l384-627.2m0-64c-19.2 0-44.8 12.8-51.2 32l-390.4 627.2c-25.6 44.8 6.4 96 51.2 96H896c51.2 0 83.2-57.6 51.2-96l-384-627.2c-6.4-19.2-32-32-51.2-32z" fill="currentColor"/><path d="M512 640c-19.2 0-32-12.8-32-32v-192c0-19.2 12.8-32 32-32s32 12.8 32 32v192c0 19.2-12.8 32-32 32z" fill="currentColor"/><path d="M512 723.2m-32 0a32 32 0 1 0 64 0 32 32 0 1 0-64 0Z" fill="currentColor"/></svg>
           {{ deleting ? '删除中...' : '删除' + chat.activeChar?.display_name }}
         </div>
@@ -1748,7 +1748,7 @@ try { await chat.clearActiveMessages() } catch {} finally { clearing.value = fal
 
 // 设置面板中的删除角色（保留兼容）
 async function deleteChar() {
-if (deleting.value || chat.activeChar?.name === 'default') return
+if (deleting.value) return
 showSettings.value = false
 const ok = await confirmFn({
 title: '删除' + chat.activeChar?.display_name,

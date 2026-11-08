@@ -75,7 +75,9 @@ export function startScheduleBatch({ kind = 'manual', direction = '', resume = f
     if (resume && previous && !previous.invalidated && ['running', 'failed'].includes(previous.status) && previous.date === getLocalDateKey(now)) plan = previous;
     else {
       if (resume && previous) direction = previous.direction;
-      const characters = db.prepare(`SELECT * FROM characters ${kind === 'automatic' ? 'WHERE schedule_enabled=1' : ''} ORDER BY id`).all();
+      // 默认助手不排日程：它是个生图助手，没有自己的生活（2026-11-08 用户要求；
+      // 真机日志里 schedule-gen:默认助手 每隔几小时白烧一次几十秒的 LLM 调用）
+      const characters = db.prepare(`SELECT * FROM characters ${kind === 'automatic' ? "WHERE schedule_enabled=1 AND name != 'default'" : "WHERE name != 'default'"} ORDER BY id`).all();
       if (!characters.length) throw Object.assign(new Error('没有需要生成日程的角色'), { status: 404 });
       const rooms = listResidences(db);
       for (let i = rooms.length - 1; i > 0; i--) {
@@ -83,7 +85,7 @@ export function startScheduleBatch({ kind = 'manual', direction = '', resume = f
       }
       const characterIds = characters.map(c => c.id);
       // 关闭自动重排的角色沿用旧模板；已经与这些角色确认的共同活动也继续履行。
-      const frozenSchedules = kind === 'automatic' ? Object.fromEntries(db.prepare("SELECT id FROM characters WHERE schedule_enabled=0").all()
+      const frozenSchedules = kind === 'automatic' ? Object.fromEntries(db.prepare("SELECT id FROM characters WHERE schedule_enabled=0 AND name != 'default'").all()
         .map(c => [c.id, readTemplate(db, c.id)]).filter(([, schedule]) => schedule.length)) : {};
       const carried = new Map();
       for (const schedule of Object.values(frozenSchedules)) for (const event of schedule) {
@@ -94,7 +96,7 @@ export function startScheduleBatch({ kind = 'manual', direction = '', resume = f
       plan = { id: randomUUID(), kind, date: getLocalDateKey(now), direction, status: 'running', phase: 'cohabitation',
         characters, characterIds, rooms,
         frozenSchedules,
-        planningCharacters: db.prepare("SELECT id,display_name,short_prompt FROM characters ORDER BY id").all(),
+        planningCharacters: db.prepare("SELECT id,display_name,short_prompt FROM characters WHERE name != 'default' ORDER BY id").all(),
         relationships: db.prepare("SELECT from_character_id,to_character_id,relationship_text FROM character_relationships WHERE relationship_text!=''").all(),
         fixed: protectedScheduleActivities(db, characterIds, getLocalDateKey(now)), events: [...carried.values()], lockedSharedEventIds: [...carried.keys()], completedRoomIds: [], drafts: {} };
       db.transaction(() => {
@@ -239,7 +241,7 @@ export function maybeStartScheduledBatch({ db = getDb(), now = new Date(), start
 /** 新建失败后的补齐 / 显式重新启用：沿用已发布共同约定，仅生成一个人的日程。 */
 export function maybeInitializeSchedule({ db = getDb(), now = new Date(), generator = generateSchedule } = {}) {
   if (initialization || isScheduleBatchRunning() || config.features.schedule === false) return null;
-  const character = db.prepare(`SELECT c.* FROM characters c WHERE schedule_enabled=1
+  const character = db.prepare(`SELECT c.* FROM characters c WHERE schedule_enabled=1 AND c.name != 'default'
     AND (next_schedule_refresh_at IS NULL OR (next_schedule_refresh_at<=? AND
       NOT EXISTS(SELECT 1 FROM schedule_templates s WHERE s.character_id=c.id))) ORDER BY id LIMIT 1`).get(sqlTime(now));
   if (!character) return null;

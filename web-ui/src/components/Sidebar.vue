@@ -100,9 +100,9 @@
         </TransitionGroup>
       </template>
 
-      <!-- 新手引导：仅剩默认助手时显示，点击前往酒馆创建角色 -->
+      <!-- 新手引导：没有角色（或只剩默认助手）时显示，点击前往酒馆创建角色 -->
       <div
-        v-if="chat.characters.length === 1"
+        v-if="chat.characters.length <= 1"
         role="button"
         tabindex="0"
         class="char-onboard"

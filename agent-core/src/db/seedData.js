@@ -142,19 +142,27 @@ export function seedAll(db) {
   if (ruleCount > 0) console.log(`[seed] global_rules: ${ruleCount} rules seeded`);
 
   // 3. 默认角色
-  const seedChar = db.prepare(
-    `INSERT OR IGNORE INTO characters (name, display_name, base_prompt, emotion_baseline, moments_disabled, proactive_disabled, events_disabled, avatar_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  let charCount = 0;
-  for (const ch of DEFAULT_CHARACTERS) {
-    const result = seedChar.run(
-      ch.name, ch.display_name, ch.base_prompt, ch.emotion_baseline,
-      ch.moments_disabled, ch.proactive_disabled, ch.events_disabled, ch.avatar_path
+  // 2026-11-08：默认助手只在「用户没删过它」时才创建（删过 → setting 里留了标记，不再复活）。
+  // 它不排日程、不发朋友圈、不主动聊天 —— 那些开关在 seed 里本来就是关的，
+  // 日程那边另外按 name 排掉（见 scheduleBatch，避免每个角色每隔几小时白烧一次 LLM 调用）。
+  const defaultAssistantSkipped = !!db.prepare(
+    `SELECT 1 FROM system_settings WHERE setting_key = 'default_assistant_skip'`
+  ).get();
+  if (!defaultAssistantSkipped) {
+    const seedChar = db.prepare(
+      `INSERT OR IGNORE INTO characters (name, display_name, base_prompt, emotion_baseline, moments_disabled, proactive_disabled, events_disabled, avatar_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    if (result.changes > 0) charCount++;
+    let charCount = 0;
+    for (const ch of DEFAULT_CHARACTERS) {
+      const result = seedChar.run(
+        ch.name, ch.display_name, ch.base_prompt, ch.emotion_baseline,
+        ch.moments_disabled, ch.proactive_disabled, ch.events_disabled, ch.avatar_path
+      );
+      if (result.changes > 0) charCount++;
+    }
+    if (charCount > 0) console.log(`[seed] characters: ${charCount} character(s) seeded`);
   }
-  if (charCount > 0) console.log(`[seed] characters: ${charCount} character(s) seeded`);
 
   // 4. 默认助手好感度 100
   const defaultChar = db.prepare(`SELECT id FROM characters WHERE name = 'default'`).get();
