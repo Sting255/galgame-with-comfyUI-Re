@@ -1127,6 +1127,8 @@ router.post('/:id/gift', async (req, res) => {
         promptScene: 'gift',
         disableRAG: true,
         ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
+        // 礼物反应配图的主角就是她本人：身份锚点由 imageSkill 统一前置
+        identity: char,
         loras: _parseCharLoras(char.loras),
         characterNegative: char.negative_prompt || '',
         ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),

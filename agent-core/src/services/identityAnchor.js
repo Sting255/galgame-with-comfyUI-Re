@@ -364,6 +364,14 @@ export function getIdentityAnchorForPrompt(character) {
   if (id) {
     const row = getStoredIdentityAnchor(id);
     if (row.anchor) return row.anchor;
+    // 库里也没有：调用方有时只传了部分字段（如 schedule 的 `SELECT id, display_name`），
+    // 这时按 id 补一次整卡再现算，否则会静默不锚定。
+    if (!String(character?.base_prompt || '').trim()) {
+      try {
+        const full = getDb().prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(id);
+        if (full) return buildIdentityAnchorFromCard(full).anchor;
+      } catch { /* 查不到就当没有 */ }
+    }
   }
   return buildIdentityAnchorFromCard(character).anchor;
 }

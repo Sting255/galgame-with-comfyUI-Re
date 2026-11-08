@@ -324,6 +324,8 @@ async function generateDiaryImages({ character, content, prompts, onProgress }) 
       height,
       scene: 'moments',
       priority: 'high',
+      // 日记配图画的就是这个角色本人
+      identity: character,
       loras: charLoras,
       customWorkflow,
       onProgress: (p) => {

@@ -778,6 +778,8 @@ ${motiveName}
       ragQuery: greeting,
       promptScene: 'proactive',
       priority: 'low',
+      // 主动私聊配图的主角就是她本人
+      identity: character,
       ...loraOpts,
       width: config.comfyui.momentsWidth,
       height: config.comfyui.momentsHeight,

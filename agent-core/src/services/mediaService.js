@@ -1411,6 +1411,8 @@ async function generateMediaImage(prompt, character = null, priority = 'low') {
     height: config.comfyui.momentsHeight,
     scene: 'moments',
     priority,
+    // 媒体配图的角色可能为 null（纯场景/编辑插图），有角色时才锚定身份
+    ...(character ? { identity: character } : {}),
     ...(loras.length ? { customWorkflow: character?.custom_workflow || null, loras } : {}),
   });
   if (!result?.success || !result.images?.length) return null;

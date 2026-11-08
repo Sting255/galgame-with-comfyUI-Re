@@ -522,6 +522,8 @@ async function generateNewsImage(prompt, { ragQuery, loras, character, priority 
     // 用户看到的就是"日报一直不出图、要等很久"。
     // 现在默认 high：报纸一天只有一期、配图也就 4 张，抢这几秒换用户不用干等，值。
     priority,
+    // 报纸配图里出现的是这篇稿件的角色：身份锚点统一前置
+    ...(character ? { identity: character } : {}),
     ...(loras?.length ? { customWorkflow: character?.custom_workflow || null, loras } : {}),
   });
   if (!genResult?.success || !genResult.images?.length) return null;

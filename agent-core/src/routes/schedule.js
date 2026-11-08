@@ -297,6 +297,8 @@ router.post('/:characterId/peek/retake', async (req, res) => {
         scene: 'schedule',
         priority: 'high',
         ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
+        // 日程快照里出现的就是这个角色：身份锚点由 imageSkill 统一前置
+        identity: character,
         ...sceneContext.imageOptions,
         onProgress: (p) => {
           if (p.progress != null) {
@@ -546,6 +548,7 @@ router.post('/:characterId/peek', async (req, res) => {
         height: config.comfyui.eventHeight,
         scene: 'schedule',
         priority: 'high',
+        identity: character,
         ...sceneContext.imageOptions,
         onProgress: (p) => {
           if (p.progress != null) {

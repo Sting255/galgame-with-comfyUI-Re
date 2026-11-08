@@ -117,6 +117,9 @@ async function processReply(db, letter) {
     const genOverrides = {};
     const charArtist = charArtistOverride(letter);
     if (charArtist !== null) genOverrides.artist = charArtist;
+    // 信件配图（信纸/肖像/插图）的主角是她本人。⚠ letter 是 JOIN 行，id 是信件 id，
+    // 必须重映射成角色 id，否则身份锚点查不到（0 命中 → 静默不锚定）。
+    genOverrides.identity = { id: charId, base_prompt: letter.base_prompt };
     const [paperResult, portraitResult, illustrationResult] = await Promise.all([
       generateImageSafe(data.paperPrompt, charLoras, charCustomWorkflow, { width: 1200, height: 900, disableRAG: true, ...genOverrides }),
       generateImageSafe(data.portraitPrompt, charLoras, charCustomWorkflow, { width: 900, height: 1200, disableRAG: true, ...genOverrides }),

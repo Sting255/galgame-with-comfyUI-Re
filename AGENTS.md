@@ -119,6 +119,18 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 三步都过再说交付；哪一步没做，汇报时必须写明没做。
 
 
+## 角色身份锚点（2026-11-08 用户定）
+
+角色「是谁」有独立存储位，**不再寄生在服装表里**。起因：`character_outfits` 的 work（默认）那套同时被当作角色外观真源，任何一次「自动生成本套」都会把发色发型瞳色与 `Name (Series)` 识别 tag 换成一句衣服描述，冷门 / LoRA 角色随即画成路人，且污染会沿 base_prompt 扩散到聊天、亲密、立绘、朋友圈全部生图。
+
+1. **存储**：`characters.identity_anchor`（身份 tag + 身体特征，英文 tag 串）与 `identity_anchor_source`（`auto` 自动维护 / `manual` 用户手改过）。启动时按 `PRAGMA` + `ALTER TABLE` 惰性迁移，**不新增表**。
+2. **提取**：`services/identityAnchor.js` 是唯一入口。正则优先（`Name (Series) has ...` 与 danbooru tag 串两种形态），提不到时 LLM 抽一次；提取时剥掉身份 tag 前缀、过滤配饰/表情/构图/负面权重写法。**不要在各处另写正则截取**。
+3. **写入时机**：新建角色（异步，允许 LLM）、保存角色且 `base_prompt` 变化（只跑正则）、`POST /:id/identity-anchor/extract`（强制，可选 overwrite）、启动补齐（只处理空锚点行，不调 LLM，幂等）。`manual` 永不被自动覆盖。
+4. **注入**：唯一收口在 `imageSkill._execute`，调用方传 `opts.identity`（角色行，至少要 id）。传入后 `applyIdentityAnchorToPrompt` 把锚点前置；prompt 已有同名身份 tag 时不重复；梦境前缀插在冒号后。**新增生图入口必须传 identity，否则那个场景的角色会飘**（当前已接：聊天配图、触摸亲密、立绘、头像、梦话、朋友圈、礼物反应、日程拍照、日记、主动聊天、报纸、媒体、信箱）。
+5. **身体唯一真源**：`listSceneOutfits` 在读取层把 `body` 与 `text` 统一成「本体身体」（`getIdentityBody`），`character_outfits.body` 只在锚点缺失时回退。不要再从外观段反推身体（会把旧衣服带进 body）。
+6. **禁止**：work（默认那套）不可被任何生成覆盖（前后端双重拒绝）；场景服装注入 `bodyLocked`，只换衣服不换发型发色瞳色体型；换装道具 / 角色专属形态仍可整体替换。
+7. **前端**：角色详情卡三分区「人设提示词 / 角色本体 / 外观服装」，本区块可编辑、可一键重提取、显示 auto/manual 来源。手改随角色保存提交并标记 manual。
+
 ## 角色生图人格组装（characterPersona）
 
 所有「配合生图」的角色人格拼接——整卡 `base_prompt`，或 `short_prompt + ## 你的外观` 段——必须统一走 `agent-core/src/services/characterPersona.js`，禁止在各模块内写 `match(/##\s*你的外观/)` 之类的正则自行截取（历史上 16+ 处内联实现口径不一，已全部收口）。
