@@ -641,6 +641,24 @@ export function repairJsonText(text) {
   return '';
 }
 
+/** 剥掉整段外包的 ``` 围栏（模型常直接吐 ```json … ```，JSON.parse 会因此失败） */
+export function stripJsonFence(text) {
+  const s = String(text || '').trim();
+  const m = s.match(/^```[a-zA-Z]*\s*\n?([\s\S]*?)\n?\s*```$/);
+  return (m ? m[1] : s).trim();
+}
+
+/**
+ * 严格判断「这段是不是一份完整 JSON」：只容忍外围 ``` 围栏，不容忍截断。
+ * 与 repairJsonText 的区别是关键：修复器会把半截 JSON 补成合法结构，
+ * 用它判完整性等于永远判「完整」，截断续写就再也不会触发。
+ */
+function isCompleteJsonText(text) {
+  const s = stripJsonFence(text);
+  if (!s) return false;
+  try { JSON.parse(s); return true; } catch { return false; }
+}
+
 /**
  * JSON 续写：把「半截 + 增量」拼成合法 JSON（用户 2026-11-08 明确要求由我方拼接，而不是丢着重来）。
  *
@@ -651,8 +669,10 @@ export function repairJsonText(text) {
  * 都拼不出来返回 ''，外层会继续续写（最多 5 次）。
  */
 export function concatJsonContinuation(base, increment) {
-  const a = stripTailRefusal(base).trim();
-  const b = stripTailRefusal(increment).trim();
+  // 两侧都先脱掉围栏：真机 2026-11-08 的日志里，半截和重写各带一层 ```json，
+  // 不脱的话「增量是整份重写」这条判不出来，会拼成 ```json{…}``````json{…} 的垃圾。
+  const a = stripJsonFence(stripTailRefusal(base));
+  const b = stripJsonFence(stripTailRefusal(increment));
   const parseFull = (text) => {
     if (!text) return '';
     try { JSON.parse(text); return text; } catch { return ''; }
@@ -736,9 +756,7 @@ export function classifyIncomplete(meta, { jsonMode = false } = {}) {
   if (finish === 'length') return 'truncated';
   if (!text.trim()) return null;
   if (TAIL_REFUSAL_RE.test(text.slice(-300))) return 'filtered';
-  if (jsonMode) {
-    try { JSON.parse(text); } catch { return 'truncated'; }
-  }
+  if (jsonMode && !isCompleteJsonText(text)) return 'truncated';
   return null;
 }
 
@@ -862,15 +880,20 @@ export async function chatSync(messages, opts = {}) {
         const retriedMeta = readCompletion(retried);
         if (jsonMode) {
           // JSON：把「半截 + 增量」拼成合法结构（用户 2026-11-08 要求由我方拼接）。
-          // 拼得出来就直接收工；拼不出来把两次内容合并成下一轮起点，继续续写（最多 5 次）。
+          // 拼得出来就直接收工。
           const mergedJson = concatJsonContinuation(baseText, retriedMeta.content);
           if (mergedJson) {
             meta = { content: mergedJson, finishReason: 'stop' };
             result = retried;
             break;
           }
+          // 拼不出来 = 增量是「整份重写之后又被截断的 JSON」。
+          // 绝不把两份 JSON 正文粘成一段：真机 2026-11-08 就是这么粘成 9k 字的
+          // ```json{…}``````json{…}，连续判 5 次不完整、白烧 5 次调用，最后整段报废。
+          // 重写优先：以更新的一份作为下一轮起点。
+          const inc = stripJsonFence(stripTailRefusal(retriedMeta.content) || retriedMeta.content);
           meta = {
-            content: mergeContinuationText(baseText, stripTailRefusal(retriedMeta.content) || retriedMeta.content),
+            content: inc || baseText,
             finishReason: retriedMeta.finishReason || 'length',
           };
           result = retried;

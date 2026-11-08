@@ -96,6 +96,7 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 4. 新增或修改输出字段时，同步更新 prompt 中的 JSON 示例与解析代码，保持两者一致
 5. **输出被截断或审核中断时不要自己写兜底**：`llm-client.chatSync` 收口已经有「自动继续 + 拼接」循环（判据 `classifyIncomplete`、文本用 `mergeContinuationText`、JSON 用 `concatJsonContinuation`，最多 5 次、短任务 2 次、每次放大 1.6 倍额度）。业务层再包一层「格式不对请重新生成」只会让同一次失败被重试两轮。
 6. 需要「一定拿到合法 JSON」的调用，用 `response_format: { type: 'json_object' }` + 解析后做字段校验（如 `normalizeMediaOutletDraft`），不要靠提示词保证格式。
+7. **判「输出是否完整」必须容忍 ``` 围栏，但不容忍截断**：模型经常整段套 ` ```json … ``` `，裸 `JSON.parse` 会把它判成没写完，于是每轮生成都白烧 5 次续写（2026-11-08 真机：一个 327 tokens 的完整答案被重试 5 次）。判完整性一律走 `llm-client` 的 `isCompleteJsonText`（内部先剥围栏再严格 parse），**不要**用会补齐结构的 `repairJsonText` 去判——它会把半截 JSON 修成合法，截断续写就再也不会触发。
 
 ## 后台生成的角色状态校验（2026-11-08 用户定）
 
