@@ -98,6 +98,20 @@ function logResponse(label, content, reasoning) {
   if (outputLimit !== Infinity && outputText.length > outputLimit) console.log(`... (${outputText.length} chars total, truncated)`);
 }
 
+/**
+ * 流式自动续写的上限。
+ *
+ * 2026-11-08 用户要求：「流式也要兜」。流式的内容已经边生成边推给用户，撤不回来，
+ * 所以不能像 chatSync 那样丢掉重来 —— 只能在末尾追加「继续」，让模型接着往下写，
+ * 用户看到的就像她一直没停过。上限收得比同步链路小（2 次）：每多一次都是十几秒的额外等待，
+ * 而同步链路还有「不如上一轮就用上一轮」的兜底，流式没有。
+ */
+const MAX_STREAM_CONTINUATIONS = 2;
+
+/** 流式续写用的指令：要求接在已写内容之后，别重头再来 */
+const STREAM_CONTINUE_INSTRUCTION = '继续。紧接在你上一段话的最后一句之后往下写，'
+  + '不要重复已经写过的内容，不要重新开头，不要解释或道歉，直接续写。';
+
 /** 神说使用结构化原生工具流，不合并消息、不丢弃 tool 角色、不自动重放。 */
 export async function* chatAgentStream(messages, { tools = [], toolChoice = 'auto', signal, label = '神说', requestId, forceThinking = true, temperature = 0.72 } = {}) {
   // 按调用链路由模型：神说固定命中 angel（前缀表在 modelRouting），免费鸡蛋模式不路由。
@@ -111,17 +125,21 @@ export async function* chatAgentStream(messages, { tools = [], toolChoice = 'aut
     label,
     target: resolveShieldTarget(label),
   });
-  const params = buildAgentRequest(messages, tools, llm, { forceThinking, temperature, toolChoice });
-  // 同一份真机日志：设置里填的 300000 被原样发进这条链。
-  // 2026-11-07 修正：**只有上游明确声明过上限时才收敛**。硬编码表只是兜底估计
-  // （deepseek v4 族猜 32768，而中转站实际给 393216），拿它去砍用户额度会砍掉 92% 的空间。
-  // 拿不到上游信息 → 传 undefined，走 applyOutputTokenLimit 的默认参数（= 用户设置值）。
-  const knownCap = getUpstreamCapability(config.llm.baseURL, params.model)?.maxTokens;
-  applyOutputTokenLimit(params,
-    isValidMaxTokens(knownCap) && isValidMaxTokens(config.llm.maxTokens)
-      ? Math.min(config.llm.maxTokens, knownCap)
-      : undefined);
-  if (isDeepseek()) params.stream_options = { ...params.stream_options, include_usage: true };
+  // 每轮（含续写）都要重算请求体：消息变了，额度上限也要重新套一次
+  const buildRoundParams = (msgs) => {
+    const next = buildAgentRequest(msgs, tools, llm, { forceThinking, temperature, toolChoice });
+    // 同一份真机日志：设置里填的 300000 被原样发进这条链。
+    // 2026-11-07 修正：**只有上游明确声明过上限时才收敛**。硬编码表只是兜底估计
+    // （deepseek v4 族猜 32768，而中转站实际给 393216），拿它去砍用户额度会砍掉 92% 的空间。
+    // 拿不到上游信息 → 传 undefined，走 applyOutputTokenLimit 的默认参数（= 用户设置值）。
+    const cap = getUpstreamCapability(config.llm.baseURL, next.model)?.maxTokens;
+    applyOutputTokenLimit(next,
+      isValidMaxTokens(cap) && isValidMaxTokens(config.llm.maxTokens)
+        ? Math.min(config.llm.maxTokens, cap)
+        : undefined);
+    if (isDeepseek()) next.stream_options = { ...next.stream_options, include_usage: true };
+    return next;
+  };
   const logLabel = requestId ? `${label} [${requestId}]` : label;
   let usage;
   let stream;
@@ -129,29 +147,47 @@ export async function* chatAgentStream(messages, { tools = [], toolChoice = 'aut
   let reasoning = '';
   let response;
   let outcome = 'interrupted';
+  // 长度截断续写计数（2026-11-08 用户要求：流式被截断也要接着写完，见 STREAM_CONTINUE_INSTRUCTION）
+  let continued = 0;
   try {
-    signal?.throwIfAborted();
-    console.log(`\n══════════ [${providerLabel()} → ${logLabel}] ══════════`);
-    console.log(JSON.stringify(compressLogMessages(messages), null, 2));
-    console.log(`[${logLabel}] model=${params.model}, tools=${tools.length}, tool_choice=${params.tool_choice ?? 'none'}, max_tokens=${params.max_completion_tokens ?? params.max_tokens}`);
-    if (!forceThinking) {
-      const fingerprint = createHash('sha256').update(JSON.stringify({ tools, firstMessage: messages[0] })).digest('hex').slice(0, 16);
-      console.log(`[${logLabel}] local_prefix_fingerprint=${fingerprint}（仅本地字节指纹；服务商缓存命中见 usage）`);
-    }
-    console.log(`[${logLabel} 可用工具] ${tools.map(tool => tool.function?.name).filter(Boolean).join(', ')}`);
-    console.log('────────────────────────────────────────────────');
-    stream = await getClient().chat.completions.create(params, { signal, maxRetries: 0 });
-    console.log(`[${providerLabel()} ← ${logLabel} start]`);
-    for await (const event of readAgentResponse(stream, { signal, allowEmpty: !forceThinking })) {
-      if (event.type === 'usage') usage = event.usage;
-      else {
-        if (event.type === 'text_delta') content += event.text;
-        if (event.type === 'reasoning_delta') reasoning += event.text;
-        if (event.type === 'assistant_end') response = event.message;
-        yield event;
+    for (;;) {
+      let roundFinish = null;
+      let roundResponse;
+      const params = buildRoundParams(messages);
+      signal?.throwIfAborted();
+      console.log(`\n══════════ [${providerLabel()} → ${logLabel}] ══════════`);
+      console.log(JSON.stringify(compressLogMessages(messages), null, 2));
+      console.log(`[${logLabel}] model=${params.model}, tools=${tools.length}, tool_choice=${params.tool_choice ?? 'none'}, max_tokens=${params.max_completion_tokens ?? params.max_tokens}`);
+      if (!forceThinking) {
+        const fingerprint = createHash('sha256').update(JSON.stringify({ tools, firstMessage: messages[0] })).digest('hex').slice(0, 16);
+        console.log(`[${logLabel}] local_prefix_fingerprint=${fingerprint}（仅本地字节指纹；服务商缓存命中见 usage）`);
       }
+      console.log(`[${logLabel} 可用工具] ${tools.map(tool => tool.function?.name).filter(Boolean).join(', ')}`);
+      console.log('────────────────────────────────────────────────');
+      stream = await getClient().chat.completions.create(params, { signal, maxRetries: 0 });
+      console.log(`[${providerLabel()} ← ${logLabel} start]`);
+      // softLength：把「被额度截断」当成可续写的软结束，而不是抛错
+      for await (const event of readAgentResponse(stream, { signal, allowEmpty: !forceThinking, softLength: true })) {
+        if (event.type === 'usage') usage = event.usage;
+        else {
+          if (event.type === 'text_delta') content += event.text;
+          if (event.type === 'reasoning_delta') reasoning += event.text;
+          if (event.type === 'assistant_end') { roundResponse = event.message; roundFinish = event.finishReason ?? null; }
+          yield event;
+        }
+      }
+      stream?.controller?.abort?.();
+      response = roundResponse;
+      // 只有「被截断 + 确实写了正文 + 没在做工具调用」才续写
+      const canContinue = roundFinish === 'length'
+        && continued < MAX_STREAM_CONTINUATIONS
+        && !!content.trim()
+        && !roundResponse?.tool_calls?.length;
+      if (!canContinue) { outcome = 'completed'; break; }
+      continued += 1;
+      console.warn(`[stream] ▸ 输出被长度截断（已写 ${content.length} 字），第 ${continued}/${MAX_STREAM_CONTINUATIONS} 次自动续写 (${logLabel})`);
+      messages = [...messages, { role: 'assistant', content }, { role: 'user', content: STREAM_CONTINUE_INSTRUCTION }];
     }
-    outcome = 'completed';
   } catch (error) {
     outcome = signal?.aborted ? 'cancelled' : 'failed';
     console.error(`[${providerLabel()} ← ${logLabel}] ${outcome}:`, error.message);
@@ -1354,25 +1390,39 @@ export async function* chatStream(messages, opts = {}) {
   // 同 chatSync：按调用链路由模型，显式 opts.model 优先
   const streamRoutedModel = opts.model ? null : resolveModelForLabel(opts.label || 'chatStream');
   if (streamRoutedModel) opts = { ...opts, model: streamRoutedModel };
-  let anyYielded = false;
-  try {
-    if (config.llm.freeEgg) {
-      for await (const delta of _chatStreamFreeEgg(messages, opts)) {
-        anyYielded = true;
-        yield delta;
+
+  // 已产出的正文：续写时作为 assistant 发言放回去，模型才知道从哪里接
+  let emitted = '';
+  for (let round = 0; ; round += 1) {
+    let finishReason = null;
+    let anyYielded = false;
+    const onFinish = (reason) => { finishReason = reason; };
+    try {
+      if (config.llm.freeEgg) {
+        for await (const delta of _chatStreamFreeEgg(messages, { ...opts, onFinish })) {
+          anyYielded = true;
+          emitted += delta;
+          yield delta;
+        }
+      } else {
+        for await (const delta of _chatStreamInner(messages, { ...opts, onFinish })) {
+          anyYielded = true;
+          emitted += delta;
+          yield delta;
+        }
       }
-    } else {
-      for await (const delta of _chatStreamInner(messages, opts)) {
-        anyYielded = true;
+    } catch (err) {
+      if (!(err && err.__freeEggFailover && !anyYielded)) throw err;
+      console.warn(`[free-egg] ▸ 立即改用自有配置重发本次请求 (${opts.label || 'stream'})`);
+      for await (const delta of _chatStreamInner(messages, { ...opts, onFinish })) {
+        emitted += delta;
         yield delta;
       }
     }
-  } catch (err) {
-    if (!(err && err.__freeEggFailover && !anyYielded)) throw err;
-    console.warn(`[free-egg] ▸ 立即改用自有配置重发本次请求 (${opts.label || 'stream'})`);
-    for await (const delta of _chatStreamInner(messages, opts)) {
-      yield delta;
-    }
+    // 只有「被额度截断且确实写了东西」才续写；其余结束原因（stop / content_filter / 客户端中断）原样收场
+    if (finishReason !== 'length' || round >= MAX_STREAM_CONTINUATIONS || !emitted.trim()) return;
+    console.warn(`[stream] ▸ 输出被长度截断（已写 ${emitted.length} 字），第 ${round + 1}/${MAX_STREAM_CONTINUATIONS} 次自动续写 (${opts.label || 'chatStream'})`);
+    messages = [...messages, { role: 'assistant', content: emitted }, { role: 'user', content: STREAM_CONTINUE_INSTRUCTION }];
   }
 }
 
@@ -1384,6 +1434,7 @@ async function* _chatStreamInner(messages, {
   frequency_penalty: frequencyPenalty,
   label = 'stream',
   signal, // AbortSignal：客户端断开时中止上游请求，避免空烧 token
+  onFinish, // (finishReason) => void：回流上游给的结束原因，供外层判断是否被截断
 } = {}) {
   if (config.features.mergeMessages) messages = mergeConsecutiveRoles(messages);
   let slot;
@@ -1435,6 +1486,7 @@ async function* _chatStreamInner(messages, {
     console.log(`[${providerLabel()} ← ${label} start]`);
 
     let usage = null;
+    let finishReason = null;
     for await (const chunk of stream) {
       if (signal?.aborted) {
         // 客户端已断开：主动终止上游流，不再消耗后续 token
@@ -1442,12 +1494,16 @@ async function* _chatStreamInner(messages, {
         break;
       }
       if (chunk.usage) usage = chunk.usage;
+      const chunkFinish = chunk.choices?.[0]?.finish_reason;
+      if (chunkFinish) finishReason = chunkFinish;
       const delta = chunk.choices?.[0]?.delta?.content;
       if (delta) {
         total += delta;
         yield delta;
       }
     }
+    // 把结束原因回流给 chatStream：length = 被额度截断，外层据此自动续写
+    onFinish?.(finishReason);
 
     console.log(`[${providerLabel()} ← ${label} end]`);
     const outputText = total || '(empty)';

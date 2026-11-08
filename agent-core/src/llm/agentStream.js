@@ -93,7 +93,7 @@ export function buildAgentRequest(messages, tools, llm, { forceThinking = true, 
   return params;
 }
 
-export async function* readAgentResponse(stream, { signal, allowEmpty = false } = {}) {
+export async function* readAgentResponse(stream, { signal, allowEmpty = false, softLength = false } = {}) {
   const message = { role: 'assistant', content: '', reasoning_content: '' };
   const calls = new Map();
   const details = new Map();
@@ -183,14 +183,20 @@ export async function* readAgentResponse(stream, { signal, allowEmpty = false } 
     textBuf = '';
   }
   if (!finishReason) throw new Error('模型连接提前结束，未执行未完成的工具请求');
-  if (!['stop', 'tool_calls'].includes(finishReason)) {
+  // 长度截断（2026-11-08 用户要求）：调用方传 softLength 时不再抛错，把已写内容交出去，
+  // 由 chatAgentStream 追加「继续」把下半段写完 —— 已经推给用户的文字撤不回来，
+  // 与其报错收场，不如接着写。没传 softLength 的调用方保持旧行为（抛错）。
+  const softTruncated = softLength && finishReason === 'length'
+    && !!String(message.content || '').trim() && !calls.size;
+  if (!softTruncated && !['stop', 'tool_calls'].includes(finishReason)) {
     // 分开报：content_filter 是**内容被服务商拦了**，让用户去改输出额度纯属误导
     //（真机 2026-11-06 13:56 连续 5 次，用户看到的提示是"请检查输出额度与模型配置"）
     if (finishReason === 'content_filter') {
       throw new Error('模型拒绝了这次内容（服务商内容过滤 content_filter）：换一种说法或调整提示词后重试');
     }
     if (finishReason === 'length') {
-      throw new Error('回复被输出额度截断（length）：调小单次输出额度，或让它分段完成');
+      // 措辞纠正（2026-11-08）：length 是「写满了额度上限」，要调**大**，原文写成调小把人带反了
+      throw new Error('回复被输出额度截断（length）：请在设置里调大输出额度，或让它分段完成');
     }
     throw new Error(`模型未完成本轮回复（${finishReason}），请检查输出额度与模型配置`);
   }
@@ -206,5 +212,5 @@ export async function* readAgentResponse(stream, { signal, allowEmpty = false } 
   if (details.size) message.reasoning_details = [...details.values()];
   if (vertexParts.length) message.vertex_parts = vertexParts;
   if (!allowEmpty && !message.content && !message.tool_calls?.length) throw new Error('模型未返回回复或工具调用，请使用支持思考与工具的模型');
-  yield { type: 'assistant_end', message };
+  yield { type: 'assistant_end', message, finishReason };
 }
