@@ -121,8 +121,7 @@ export function buildIdentityAnchorFromCard(character) {
   return { tag, body, anchor };
 }
 
-/** 组装锚点文本：身份 tag 在最前，后面接身体特征；限长限项 */
-export function composeAnchor(tag, body) {
+/** 组装锚点文本：身份 tag 在最前，后面接身体特征；限长限项 */export function composeAnchor(tag, body) {
   const parts = [];
   const cleanTag = String(tag || '').trim();
   if (cleanTag) parts.push(cleanTag);
@@ -141,6 +140,54 @@ export function composeAnchor(tag, body) {
   return joined.length <= MAX_ANCHOR_CHARS
     ? joined
     : parts.slice(0, MAX_ANCHOR_ITEMS).join(', ').slice(0, MAX_ANCHOR_CHARS).replace(/[,\s]+$/, '');
+}
+
+/**
+ * 把锚点拆回「身份 tag」与「身体特征」两半。
+ *
+ * 锚点格式固定为 `Name (Series), 身体特征, 身体特征`；没有身份 tag 时整段都是身体。
+ * 这是「身体唯一真源」的拆解点：`character_outfits.body` 那份不再被优先读取。
+ */
+export function splitIdentityAnchor(anchor) {
+  const text = String(anchor || '').trim();
+  if (!text) return { tag: '', body: '' };
+  const lead = text.match(/^([^,]*\([^()]*\))\s*,\s*/);
+  if (lead) return { tag: lead[1].trim(), body: text.slice(lead[0].length).trim() };
+  const bare = text.match(/^([^,]*\([^()]*\))$/);
+  if (bare) return { tag: bare[1].trim(), body: '' };
+  return { tag: '', body: text };
+}
+
+/** 身体段最短可用长度：太短（如只剩 "bright green eyes"）时宁可用旧回退，别把身体锚窄了 */
+const MIN_BODY_CHARS = 12;
+
+/**
+ * 取某角色「此刻该用的身体描述」——**身体唯一真源**（2026-11-08 用户定）。
+ *
+ * 优先级：
+ *   ① 库里 `characters.identity_anchor` 拆出来的身体段（干净，不含衣服）
+ *   ② 落库为空时从卡里现算（不写库）
+ *   ③ 都拿不到 ⇒ 返回 ''，调用方自行回退到 character_outfits.body
+ *
+ * @param {number|string} characterId
+ * @param {object} [character] 已有角色行时传入，省一次查询
+ * @returns {string}
+ */
+export function getIdentityBody(characterId, character = null) {
+  const id = Number(characterId || character?.id);
+  const fromCard = () => {
+    if (!character) return '';
+    const built = buildIdentityAnchorFromCard(character);
+    return splitIdentityAnchor(built.anchor).body || '';
+  };
+  let anchor = String(character?.identity_anchor || '').trim();
+  if (!anchor && id) anchor = getStoredIdentityAnchor(id).anchor;
+  if (!anchor) anchor = buildIdentityAnchorFromCard(character || {}).anchor;
+  const body = splitIdentityAnchor(anchor).body;
+  if (body.length >= MIN_BODY_CHARS) return body;
+  // 锚点身体太窄：用卡里现算的那份兜一次
+  const fallback = fromCard();
+  return fallback.length > body.length ? fallback : body;
 }
 
 /** LLM 抽取的提示词（按仓内 LLM 输出规范：给出完整 JSON 示例与每字段约束） */
@@ -198,6 +245,38 @@ export async function extractIdentityAnchorWithLLM(character) {
     console.warn('[identityAnchor] LLM 提取失败:', err?.message || err);
     return { tag: '', body: '', anchor: '' };
   }
+}
+
+/**
+ * 启动补齐：给「还没有锚点」的角色建立正则锚点（不调 LLM）。
+ *
+ * 只为 `identity_anchor` 为空的行工作，所以是幂等的：第二次启动没有任何写入。
+ * 老库升级后第一次启动会补一次；之后新增/改卡走各自路径。
+ *
+ * @param {{limit?: number}} [opts]
+ * @returns {number} 本次建立的条数
+ */
+export function backfillIdentityAnchors({ limit = 500 } = {}) {
+  let built = 0;
+  try {
+    const rows = getDb().prepare(
+      `SELECT id, display_name, base_prompt, short_prompt FROM characters
+       WHERE COALESCE(identity_anchor, '') = '' LIMIT ?`
+    ).all(limit);
+    for (const row of rows) {
+      try {
+        const { anchor } = buildIdentityAnchorFromCard(row);
+        if (!anchor) continue;   // 原创/无外观的卡提不出来：留给前端「重新自动提取」走 LLM
+        saveIdentityAnchor(row.id, anchor, ANCHOR_SOURCE_AUTO);
+        built++;
+      } catch (err) {
+        console.warn(`[identityAnchor] backfill skip char ${row.id}:`, err?.message || err);
+      }
+    }
+  } catch (err) {
+    console.warn('[identityAnchor] backfill failed:', err?.message || err);
+  }
+  return built;
 }
 
 /** 读库里的锚点行（只取两列，避免调用方为了锚点去拉整张卡） */

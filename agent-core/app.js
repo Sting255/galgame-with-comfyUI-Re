@@ -427,6 +427,18 @@ runProgramDayRollover({ reason: 'startup' }).catch(error => {
 const server = app.listen(config.port, config.host, () => {
   console.log(`[agent-core] http://localhost:${config.port}`);
   console.log('============================================');
+  // 身份锚点存量补齐（2026-11-08）：老库升级后 identity_anchor 全是 NULL。
+  // 这里只跑正则（不调 LLM、不阻塞启动），也只为「还没建立锚点」的角色补一次，
+  // 于是升级后立刻是一次性的成本，之后新增/修改走各自的保存路径。
+  setImmediate(async () => {
+    try {
+      const { backfillIdentityAnchors } = await import('./src/services/identityAnchor.js');
+      const built = backfillIdentityAnchors();
+      if (built > 0) console.log(`[agent-core] identity anchor backfilled for ${built} character(s)`);
+    } catch (err) {
+      console.warn('[agent-core] identity anchor backfill failed:', err?.message || err);
+    }
+  });
 });
 server.on('error', error => {
   console.error(`[agent-core] 无法监听端口 ${config.port}: ${error.message}`);

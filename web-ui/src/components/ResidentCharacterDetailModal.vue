@@ -1030,6 +1030,7 @@ const identityAnchorMeta = computed(() => {
   if (identityAnchorBusy.value) return '正在从角色卡提取…'
   if (!String(detail.identityAnchor || '').trim()) return '尚未建立：生图时只能靠角色卡外观描述认人，冷门角色容易飘'
   if (detail.identityAnchorSource === 'manual') return '手动锚点：自动提取不再覆盖它（点「重新自动提取」会问一次）'
+  if (!detail.identityAnchorSource) return '自动预览（尚未落库）：保存角色或点「重新自动提取」后固定下来'
   return '自动维护：角色卡外观或人设变了会重新提取；也可直接改'
 })
 

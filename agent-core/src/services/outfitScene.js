@@ -31,6 +31,7 @@
 import { getDb, getSystemRules } from '../db/index.js';
 import { registerSceneOutfitProvider } from './sceneOutfitRegistry.js';
 import { splitAppearanceSection } from './characterPersona.js';
+import { getIdentityBody } from './identityAnchor.js';
 import { buildSceneOutfitMessages, normalizeDesignScenes, parseSceneOutfitDesign } from './sceneOutfitPrompt.js';
 import { pickFabricAndColors } from './clothingLibrary.js';
 import { getLocalDateKey } from '../utils/localDate.js';
@@ -195,15 +196,24 @@ export function listSceneOutfits(characterId) {
      WHERE character_id = ? AND scene IS NOT NULL AND scene != ''
      ORDER BY CASE scene WHEN 'nude' THEN 0 WHEN 'work' THEN 1 WHEN 'sleep' THEN 2 ELSE 9 END, id ASC`
   ).all(characterId).filter(r => isValidSceneKey(r.scene));
-  return rows.map(r => ({
-    ...r,
-    // 出口层兜底：存量数据里睡衣穿鞋的脏值，读出来就修好（不改库，避免迁移脚本）
-    description: enforceSceneFootwear(r.scene, r.description),
-    // 自定义类型没有固定标签，直接用用户起的名字
-    sceneLabel: LABEL_BY_KEY[r.scene] || r.name || r.scene,
-    // 注入用文本（自包含：身体 + 服装）
-    text: composeOutfitText(r.body, enforceSceneFootwear(r.scene, r.description)),
-  }));
+  // 身体唯一真源（2026-11-08 用户定）：角色本体（characters.identity_anchor 的身体段）优先，
+  // character_outfits.body 降级为回退 —— 那一列是早期整段外观拷贝，常带旧衣服；
+  // 两处各存一份身体迟早漂移，这里统一在读取层收口。
+  const identityBody = getIdentityBody(characterId);
+  return rows.map(r => {
+    const body = identityBody || r.body;
+    const description = enforceSceneFootwear(r.scene, r.description);
+    return {
+      ...r,
+      body,
+      // 出口层兜底：存量数据里睡衣穿鞋的脏值，读出来就修好（不改库，避免迁移脚本）
+      description,
+      // 自定义类型没有固定标签，直接用用户起的名字
+      sceneLabel: LABEL_BY_KEY[r.scene] || r.name || r.scene,
+      // 注入用文本（自包含：身体 + 服装）
+      text: composeOutfitText(body, description),
+    };
+  });
 }
 
 /**
@@ -295,6 +305,10 @@ export async function generateSceneOutfits(character, opts = {}) {
    * 刻意**不用 sleep 当锚** —— 它的 description 常常极短（如"一件宽松的白T恤"），信息量不够。
    */
   const pickBody = () => {
+    // 身体唯一真源（2026-11-08）：角色本体优先。以前从 seeds/外观段反推，
+    // 外观段里常带着旧衣服，于是 body 字段把旧衣服一起带进去了。
+    const identityBody = getIdentityBody(character.id, character);
+    if (identityBody) return identityBody;
     const byScene = new Map(seeds.map(s => [s.scene, s]));
     for (const k of [PRIVATE_SCENE, 'work']) {
       const b = byScene.get(k)?.body;
