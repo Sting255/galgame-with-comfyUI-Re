@@ -126,8 +126,10 @@ export async function getAppVersion() {
 }
 
 // ── Characters ──
-export async function listCharacters() {
-  return request(`/characters`)
+export async function listCharacters(options = {}) {
+  // 挑选类界面传 { scope: 'user' }：只要用户角色，别把系统内置角色（默认助手）带进来
+  const query = options?.scope ? `?scope=${encodeURIComponent(options.scope)}` : ''
+  return request(`/characters${query}`)
 }
 
 export async function getMessages(characterId) {
@@ -2220,8 +2222,12 @@ export function deleteGlobalOutfitType(id) {
 export function applyGlobalOutfitType(id) {
   return request(`/global-outfits/${id}/apply`, { method: 'POST', body: {} })
 }
-export function generateGlobalOutfitType(id, withStanding = true, skipExisting = false) {
-  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding, skipExisting } })
+export function generateGlobalOutfitType(id, withStanding = true, skipExisting = false, extra = {}) {
+  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding, skipExisting, ...extra } })
+}
+// 这套统一服装在每个用户角色上的现状（描述/立绘有没有）——「可选人物」与覆盖确认都用它
+export function listGlobalOutfitTypeCharacters(id) {
+  return request(`/global-outfits/${id}/characters`)
 }
 export function getGlobalOutfitTask(id) {
   return request(`/global-outfits/${id}/task`)

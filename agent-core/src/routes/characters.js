@@ -38,7 +38,7 @@ import { applyAllTypesToCharacter } from '../services/globalOutfitTypes.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
 import { isDefaultAssistantEnabled, setDefaultAssistantEnabled } from '../services/defaultAssistant.js';
-import { userVisibleScope } from '../services/characterScope.js';
+import { userVisibleScope, USER_SCOPE } from '../services/characterScope.js';
 // 对话背景（上游 v3.9.0 合并）：工厂路由 + 沉浸背景生成（依赖注入便于单测）
 import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
@@ -181,8 +181,11 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
 // GET /api/characters — 列出角色，含最近消息摘要
 router.get('/', (req, res) => {
   const db = getDb();
-  // 默认助手开关关掉时，它不出现在列表里（2026-11-08 用户要求：用不上就别占位置）
-  const characters = db.prepare(`SELECT * FROM characters WHERE ${userVisibleScope(db)}`).all();
+  // 默认 scope：跟「默认助手」开关走（停用后列表里不出现系统角色）。
+  // ?scope=user 强制只取用户角色 —— 批量/挑选类界面用这个，别把系统内置角色带进来。
+  const onlyUser = String(req.query?.scope || '') === 'user';
+  const scopeClause = onlyUser ? USER_SCOPE : userVisibleScope(db);
+  const characters = db.prepare(`SELECT * FROM characters WHERE ${scopeClause}`).all();
 
   // 聚合查询代替每角色 4 条子查询（N+1 → 固定 4 条，规模不随角色数增长）
   const lastByConv = db.prepare(`

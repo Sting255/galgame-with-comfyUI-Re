@@ -49,20 +49,27 @@ function baseAppearanceOf(character) {
   return idx >= 0 ? raw.slice(idx).trim() : raw.trim();
 }
 
-async function runBatch(typeId, withStanding, skipExisting) {
+async function runBatch(typeId, { withStanding = true, skipExisting = false, overwrite = false, characterIds = null } = {}) {
   const db = getDb();
   const type = db.prepare('SELECT id, name FROM global_outfit_types WHERE id = ?').get(typeId);
   const task = tasks.get(typeId);
   if (!type || !task) return;
   const scene = sceneKeyOf(typeId);
-  const characters = db.prepare('SELECT * FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all();
+  // 处理范围：只取用户角色（系统内置角色不参与，见 services/characterScope.js 口径）；
+  // 传了 characterIds 时只处理这几个人（前端「可选人物」）。
+  const all = db.prepare('SELECT * FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all();
+  const wanted = Array.isArray(characterIds)
+    ? new Set(characterIds.map(Number).filter(Number.isFinite))
+    : null;
+  const characters = wanted ? all.filter(c => wanted.has(c.id)) : all;
 
   for (const character of characters) {
     if (task.cancelled) break;
     task.current = character.display_name || `角色 ${character.id}`;
     try {
-      // 跳过已有描述：保护用户手写/改过的这一套，不被批量覆盖
-      if (skipExisting) {
+      // 跳过已有描述：保护用户手写/改过的这一套，不被批量覆盖。
+      // overwrite=true 时明确覆盖（前端在动手前已经问过用户）。
+      if (!overwrite && skipExisting) {
         const existing = db.prepare(
           'SELECT description FROM character_outfits WHERE character_id = ? AND scene = ?'
         ).get(character.id, scene);
@@ -124,7 +131,8 @@ router.post('/:id/apply', (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
-// POST /api/global-outfits/:id/generate — Body: { withStanding?: boolean }
+// POST /api/global-outfits/:id/generate — Body: { withStanding?, skipExisting?, overwrite?, characterIds? }
+// characterIds 空/缺省 = 全部用户角色；overwrite=true 时连已有描述的一起重做（前端会先问过用户）
 // 已在跑时直接返回当前任务，不重复启动
 router.post('/:id/generate', (req, res) => {
   try {
@@ -135,18 +143,54 @@ router.post('/:id/generate', (req, res) => {
     if (existing?.running) return res.json({ task: publicTask(existing), started: false });
     const withStanding = req.body?.withStanding !== false;
     const skipExisting = req.body?.skipExisting === true;
-    const total = getDb().prepare('SELECT COUNT(*) AS n FROM characters WHERE COALESCE(is_system, 0) = 0').get()?.n || 0;
+    const overwrite = req.body?.overwrite === true;
+    const characterIds = Array.isArray(req.body?.characterIds) ? req.body.characterIds : null;
+    const all = getDb().prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0').all().map(r => r.id);
+    // 传了数组就按数组来（空数组 = 一个都没选 → 400，不是「全部」）；
+    // 只有没传（null/undefined）才表示「全部用户角色」。
+    const wanted = characterIds ? new Set(characterIds.map(Number).filter(Number.isFinite)) : null;
+    const total = wanted ? all.filter(id2 => wanted.has(id2)).length : all.length;
+    if (!total) return res.status(400).json({ error: '没有选中要处理的角色' });
     const task = {
-      running: true, withStanding, skipExisting, total, done: 0, skipped: 0, current: '', failed: [],
+      running: true, withStanding, skipExisting, overwrite,
+      total, done: 0, skipped: 0, current: '', failed: [],
       startedAt: new Date().toISOString(), finishedAt: null,
     };
     tasks.set(id, task);
-    runBatch(id, withStanding, skipExisting).catch(error => {
+    runBatch(id, { withStanding, skipExisting, overwrite, characterIds }).catch(error => {
       task.running = false;
       task.finishedAt = new Date().toISOString();
       console.error('[global-outfits] 批量生成异常:', error?.message || error);
     });
     res.status(202).json({ task: publicTask(task), started: true });
+  } catch (err) { fail(res, err); }
+});
+
+// GET /api/global-outfits/:id/characters — 这套服装在每个用户角色上的现状
+// 前端用它做「可选人物」列表，并在动手前判断谁已经有同名服装（要不要覆盖）
+router.get('/:id/characters', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const type = getDb().prepare('SELECT id, name FROM global_outfit_types WHERE id = ?').get(id);
+    if (!type) return res.status(404).json({ error: '服装类型不存在' });
+    const db = getDb();
+    const scene = sceneKeyOf(id);
+    const characters = db.prepare('SELECT id, display_name FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all();
+    const described = new Map(db.prepare(
+      'SELECT character_id, description FROM character_outfits WHERE scene = ?'
+    ).all(scene).map(row => [row.character_id, String(row.description || '').trim()]));
+    const standing = new Set(db.prepare(
+      "SELECT character_id FROM character_standings WHERE scene = ? AND COALESCE(image_url, '') <> ''"
+    ).all(scene).map(row => row.character_id));
+    res.json({
+      type: { id, name: type.name, scene },
+      characters: characters.map(c => ({
+        id: c.id,
+        display_name: c.display_name,
+        described: !!(described.get(c.id) || ''),
+        hasStanding: standing.has(c.id),
+      })),
+    });
   } catch (err) { fail(res, err); }
 });
 

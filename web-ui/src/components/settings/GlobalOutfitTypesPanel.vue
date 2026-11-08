@@ -24,6 +24,23 @@ const busyId = ref(0)
 const skipExisting = ref(true)
 let timer = null
 
+// ── 可选人物（2026-11-08 用户要求）──
+// 默认全选；用户可以只挑几个角色做这一套。系统内置角色不会出现在这里（后端已按作用域过滤）。
+const characters = ref([])
+const selectedIds = ref([])
+const allSelected = computed(() => characters.value.length > 0 && selectedIds.value.length === characters.value.length)
+function toggleAllCharacters() {
+  selectedIds.value = allSelected.value ? [] : characters.value.map(c => c.id)
+}
+async function loadCharacters() {
+  try {
+    // scope:'user' —— 统一服装只对用户角色生效，系统内置角色（默认助手）不该出现在这里
+    const res = await api.listCharacters({ scope: 'user' })
+    characters.value = (res.characters || []).map(c => ({ id: c.id, display_name: c.display_name }))
+    selectedIds.value = characters.value.map(c => c.id)
+  } catch { /* 读不到就当成没有角色，点生成时会提示 */ }
+}
+
 async function confirmRemoval(title, message, okText = '确定') {
   return confirmFn
     ? await confirmFn({ title, message, okText, danger: true })
@@ -104,14 +121,42 @@ function ensurePolling() {
 
 async function generate(type, withStanding) {
   if (busy(type.id)) return
+  if (!selectedIds.value.length) {
+    toastFn?.('先选至少一个角色', 'error')
+    return
+  }
+  // 覆盖确认（2026-11-08 用户要求：角色已有同名服装时要先问）
+  // 先查这套在选中角色里的现状：有描述的算「已有同名服装」。
+  // 跳过已写好的开关开着 = 直接跳过它们，不打扰；关着 = 问一句要不要覆盖。
+  let overwrite = false
+  try {
+    const res = await api.listGlobalOutfitTypeCharacters(type.id)
+    const picked = new Set(selectedIds.value)
+    const conflicts = (res.characters || []).filter(c => picked.has(c.id) && c.described)
+    if (conflicts.length && !skipExisting.value) {
+      const names = conflicts.slice(0, 5).map(c => c.display_name).join('、')
+      const ok = confirmFn
+        ? await confirmFn({
+            title: `覆盖 ${conflicts.length} 个角色的同名服装？`,
+            message: `${names}${conflicts.length > 5 ? ' 等' : ''} 已经有「${type.name}」这套的描述。\n覆盖会用新生成的描述替换它们${withStanding ? '，立绘也会重新出图' : ''}。`,
+            okText: '覆盖',
+            danger: true,
+          })
+        : window.confirm(`覆盖 ${conflicts.length} 个角色已有的「${type.name}」？`)
+      if (!ok) return
+      overwrite = true
+    }
+  } catch { /* 现状查不到就不问，按原行为继续 */ }
+
   busyId.value = type.id
   try {
-    const res = await api.generateGlobalOutfitType(type.id, withStanding, skipExisting.value)
+    const res = await api.generateGlobalOutfitType(type.id, withStanding, skipExisting.value, {
+      characterIds: selectedIds.value,
+      overwrite,
+    })
     tasks.value = { ...tasks.value, [type.id]: res.task }
     toastFn?.(
-      withStanding
-        ? `已开始为 ${res.task.total} 个角色生成描述与立绘，可以离开这个页面`
-        : `已开始为 ${res.task.total} 个角色生成描述`,
+      `已开始为 ${res.task.total} 个角色${withStanding ? '生成描述与立绘' : '生成描述'}${overwrite ? '（覆盖已有）' : ''}，可以离开这个页面`,
       'success'
     )
     ensurePolling()
@@ -155,7 +200,7 @@ async function remove(type) {
 }
 
 onMounted(async () => {
-  await load()
+  await Promise.all([load(), loadCharacters()])
   // 进入设置页时把还在跑的任务接上（页面刷新过也能看到进度）
   for (const type of types.value) {
     const running = await pollOnce(type.id)
@@ -174,9 +219,32 @@ const runningTask = computed(() => Object.values(tasks.value).find(t => t?.runni
       <span class="got-count">{{ types.length }} 个类型</span>
     </div>
     <p class="got-hint">
-      这里添加的服装类型对<b>所有角色</b>生效：每个角色都会多出这套（描述与立绘各自生成）。
-      一键生成在后台跑，离开本页也会继续。
+      这里添加的服装类型对所有角色生效：每个角色都会多出这套（描述与立绘各自生成）。
+      一键生成只处理下面<b>选中的角色</b>，在后台跑，离开本页也会继续。
     </p>
+
+    <!-- 可选人物（2026-11-08）：默认全选，也可以只给几个角色做这一套 -->
+    <div class="got-chars">
+      <div class="got-chars-head">
+        <span class="got-chars-title">本次处理</span>
+        <linshe-button size="sm" variant="ghost" :disabled="!characters.length" @click="toggleAllCharacters">
+          {{ allSelected ? '全不选' : '全选' }}
+        </linshe-button>
+        <span class="got-chars-count">{{ selectedIds.length }}/{{ characters.length }}</span>
+      </div>
+      <div v-if="!characters.length" class="got-hint">还没有角色</div>
+      <div v-else class="got-chars-list">
+        <label
+          v-for="c in characters"
+          :key="c.id"
+          class="got-char"
+          :class="{ 'is-off': !selectedIds.includes(c.id) }"
+        >
+          <input v-model="selectedIds" type="checkbox" :value="c.id" />
+          <span>{{ c.display_name }}</span>
+        </label>
+      </div>
+    </div>
 
     <div class="got-create">
       <linshe-input
@@ -267,6 +335,51 @@ const runningTask = computed(() => Object.values(tasks.value).find(t => t?.runni
 }
 .got-hint-run {
   color: var(--color-primary, inherit);
+}
+/* 可选人物：默认全选的复选清单（2026-11-08） */
+.got-chars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.03));
+}
+.got-chars-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.got-chars-title {
+  font-size: var(--fs-xs);
+  color: var(--text-bright);
+}
+.got-chars-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.got-chars-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.got-char {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  color: var(--text-bright);
+  cursor: pointer;
+}
+.got-char.is-off {
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+.got-char input {
+  accent-color: var(--color-primary, currentColor);
 }
 .got-create {
   display: flex;
