@@ -782,7 +782,7 @@ export function mergeContinuationText(base, increment) {
  *
  * 判据从上到下，命中即返回：
  *   1. finish_reason = content_filter / length（上游给了就最准）
- *   2. 文本末尾出现拒绝语（上游掐断后回填，真机 api.sz-yzg.vip 就是这种）
+ *   2. 文本末尾出现拒绝语（上游掐断后回填，真机上的中转站就是这种）
  *   3. 请求了 JSON 却解析不了（半截 JSON 同样算没写完）
  */
 export function classifyIncomplete(meta, { jsonMode = false } = {}) {

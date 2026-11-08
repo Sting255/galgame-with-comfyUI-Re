@@ -2,7 +2,7 @@
 //
 // 2026-11-07：上游 `/v1/models` 本来就带 `max_output_tokens` / `context_length`，
 // 但后端只把 id 列表返回给前端，能力字段全丢了，前端那套 llmModelCapabilities 永远是空的，
-// 于是额度只能退回下面这张硬编码表猜。真机实测（中转站 sz-yzg）：
+// 于是额度只能退回下面这张硬编码表猜。真机实测（某中转站）：
 //   cn:deepseek-v4.1-flash → 输出上限 393216、上下文 1000000
 //   cn:deepseek-v4-pro     → 输出上限 393216、上下文 1000000
 // 而硬编码表给 deepseek v4 族猜的是 32768 —— 少了 92%，还让日志打出
