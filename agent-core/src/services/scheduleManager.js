@@ -1013,6 +1013,7 @@ export function getAllOverview(programNow = getProgramNow()) {
   const chars = db.prepare(`
     SELECT id, display_name, avatar_path, is_sleeping, sleep_until, wake_attempts, was_door_woken, temporary_wake_until, wake_mode, pinned
     FROM characters
+    WHERE COALESCE(is_system, 0) = 0
     ORDER BY display_name ASC
   `).all();
 

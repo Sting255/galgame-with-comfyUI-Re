@@ -166,7 +166,7 @@ export function buildAssetPlan({ characterIds = null, kinds = ASSET_KINDS, skipE
   const db = getDb();
   const ids = Array.isArray(characterIds) && characterIds.length
     ? characterIds.map(Number).filter(Number.isSafeInteger)
-    : db.prepare('SELECT id FROM characters ORDER BY id').all().map(r => Number(r.id));
+    : db.prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all().map(r => Number(r.id));
   const wanted = kinds.filter(k => ASSET_KINDS.includes(k));
   const units = [];
   let skipped = 0;

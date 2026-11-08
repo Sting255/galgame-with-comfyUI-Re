@@ -44,7 +44,7 @@ function assertUniqueName(name, exceptId = null) {
 export function applyTypeToAllCharacters(typeRow) {
   const db = getDb();
   const scene = sceneKeyOf(typeRow.id);
-  const characters = db.prepare('SELECT id FROM characters').all();
+  const characters = db.prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0').all();
   const exists = db.prepare('SELECT id FROM character_outfits WHERE character_id = ? AND scene = ?');
   const insert = db.prepare('INSERT INTO character_outfits (character_id, name, description, scene) VALUES (?, ?, ?, ?)');
   let added = 0;
@@ -62,7 +62,7 @@ export function applyTypeToAllCharacters(typeRow) {
 export function listGlobalOutfitTypes() {
   const db = getDb();
   const rows = db.prepare('SELECT id, name, created_at FROM global_outfit_types ORDER BY id').all();
-  const characters = db.prepare('SELECT COUNT(*) AS n FROM characters').get()?.n || 0;
+  const characters = db.prepare('SELECT COUNT(*) AS n FROM characters WHERE COALESCE(is_system, 0) = 0').get()?.n || 0;
   return rows.map(row => {
     const scene = sceneKeyOf(row.id);
     const outfits = db.prepare(

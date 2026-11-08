@@ -314,7 +314,7 @@ function listPendingCharacterProfiles(db) {
     FROM characters c
     JOIN town_characters tc ON tc.character_id = c.id AND tc.town_enabled = 1
     LEFT JOIN town_character_capabilities cc ON cc.character_id = c.id
-    WHERE NOT EXISTS (SELECT 1 FROM town_npcs n WHERE n.character_id = c.id)
+    WHERE COALESCE(c.is_system, 0) = 0 AND NOT EXISTS (SELECT 1 FROM town_npcs n WHERE n.character_id = c.id)
     ORDER BY c.id
   `).all();
   return rows.map(row => ({

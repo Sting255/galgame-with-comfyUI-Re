@@ -95,7 +95,7 @@ export function createGodTools(repo, world, services) {
       case 'update_character': character(args.character_id); return services.api({ method: 'PUT', path: `/api/characters/${args.character_id}`, body: { ...(args.base_prompt !== undefined ? { base_prompt: args.base_prompt } : {}), ...(args.display_name !== undefined ? { display_name: args.display_name } : {}) } }, ctx);
       case 'inspect_neighbors': {
         const q = `%${args.query || ''}%`;
-        return { characters: db.prepare('SELECT id,display_name FROM characters WHERE display_name LIKE ? OR name LIKE ? ORDER BY id LIMIT 100').all(q, q),
+        return { characters: db.prepare('SELECT id,display_name FROM characters WHERE (display_name LIKE ? OR name LIKE ?) AND COALESCE(is_system, 0) = 0 ORDER BY id LIMIT 100').all(q, q),
           groups: db.prepare('SELECT id,name,topic FROM group_chats WHERE name LIKE ? ORDER BY id LIMIT 60').all(q),
           events: world.list().slice(0, 5), localDate: services.localDate(), angelDate: repo.day() };
       }

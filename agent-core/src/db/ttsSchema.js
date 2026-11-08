@@ -93,7 +93,7 @@ export function migrateTtsSchema(db) {
   if (!db.prepare('PRAGMA table_info(voices)').all().some(column => column.name === 'character_id')) {
     db.transaction(() => {
       db.exec('ALTER TABLE voices ADD COLUMN character_id INTEGER REFERENCES characters(id) ON DELETE SET NULL');
-      const characters = db.prepare('SELECT * FROM characters').all();
+      const characters = db.prepare('SELECT * FROM characters WHERE COALESCE(is_system, 0) = 0').all();
       const bindings = db.prepare('SELECT character_id FROM character_voices WHERE voice_id=? ORDER BY character_id');
       const assign = db.prepare('UPDATE voices SET character_id=? WHERE id=?');
       for (const voice of db.prepare('SELECT id,name FROM voices').all()) {
@@ -114,7 +114,7 @@ export function migrateTtsSchema(db) {
   // Every character with saved voices has a current voice; no separate setup step.
   db.exec(`INSERT INTO character_voices(character_id,voice_id,enabled)
     SELECT c.id,(SELECT v.id FROM voices v WHERE v.character_id=c.id ORDER BY v.created_at DESC,v.rowid DESC LIMIT 1),1
-    FROM characters c WHERE EXISTS (SELECT 1 FROM voices v WHERE v.character_id=c.id)
+    FROM characters c WHERE COALESCE(c.is_system, 0) = 0 AND EXISTS (SELECT 1 FROM voices v WHERE v.character_id=c.id)
       AND NOT EXISTS (SELECT 1 FROM character_voices cv WHERE cv.character_id=c.id)`);
 }
 

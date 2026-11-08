@@ -4,7 +4,7 @@ let registry = [];
 
 export function refresh() {
   const db = getDb();
-  const rows = db.prepare('SELECT id, name, display_name FROM characters').all();
+  const rows = db.prepare('SELECT id, name, display_name FROM characters WHERE COALESCE(is_system, 0) = 0').all();
   registry = rows
     .map(r => ({ id: r.id, name: r.name, display_name: r.display_name, len: r.display_name.length }))
     .sort((a, b) => b.len - a.len);

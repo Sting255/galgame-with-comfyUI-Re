@@ -21,7 +21,7 @@ export async function prepareLorebook(messages, options = {}) {
   const text = m => typeof m.content === 'string' ? m.content : (m.content || []).filter(p=>p.type==='text').map(p=>p.text).join('\n');
   // Match actual saved persona text, not display names guessed from prose. This
   // also supplies character filters/macros to generic creative integrations.
-  const characters = db.prepare('SELECT id,name,display_name,base_prompt,short_prompt FROM characters').all();
+  const characters = db.prepare('SELECT id,name,display_name,base_prompt,short_prompt FROM characters WHERE COALESCE(is_system, 0) = 0').all();
   const present = characters.filter(c => [c.base_prompt,c.short_prompt].some(p => p?.length >= 16 && messages.some(m => text(m).includes(p))));
   const personaTexts = options.personaTexts || [options.characterDescription, ...present.flatMap(c => [c.base_prompt,c.short_prompt]).filter(p=>p?.length>=16)].filter(Boolean);
   const worldText = world.content?.trim() ? `<world_setting>\n${world.content}\n</world_setting>` : '';

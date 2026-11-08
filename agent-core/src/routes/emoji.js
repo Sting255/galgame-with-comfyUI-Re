@@ -83,7 +83,7 @@ router.get('/overview', (req, res) => {
   const db = getDb();
   const characters = db.prepare(`
     SELECT id, display_name, name, short_prompt, base_prompt, artist_override, custom_workflow, loras
-    FROM characters ORDER BY id
+    FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id
   `).all();
   const sets = db.prepare(`
     SELECT id, character_id, name, is_active, created_at FROM emoji_sets ORDER BY character_id, id

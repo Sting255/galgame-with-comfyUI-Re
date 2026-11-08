@@ -2852,6 +2852,7 @@ export function listTownCharacters() {
     LEFT JOIN town_characters tc ON tc.character_id = c.id
     LEFT JOIN town_character_capabilities cc ON cc.character_id = c.id
     LEFT JOIN town_npcs n ON n.id = (SELECT id FROM town_npcs WHERE character_id = c.id ORDER BY id LIMIT 1)
+    WHERE COALESCE(c.is_system, 0) = 0
     ORDER BY c.id
   `).all();
   const assets = listAssets({});

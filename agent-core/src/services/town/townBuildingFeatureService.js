@@ -79,7 +79,7 @@ export function compiledConfig(profile) {
  * avatarPath 供选人界面出缩略图，没有头像的角色卡由前端退回首字占位。 */
 export function selectableTargets(db) {
   return db.prepare(
-    `SELECT c.id, c.display_name, c.avatar_path FROM characters c ORDER BY c.id`).all()
+    `SELECT c.id, c.display_name, c.avatar_path FROM characters c WHERE COALESCE(c.is_system, 0) = 0 ORDER BY c.id`).all()
     .map(row => ({ actorKey: `char:${row.id}`, id: row.id, displayName: row.display_name,
       avatarPath: row.avatar_path || null }));
 }

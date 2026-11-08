@@ -485,7 +485,7 @@ export async function handleUserComment({ post, content, replyToCommentId = null
   };
 
   // 3. 决定谁要回复：@ 点名优先（替代默认帖主回复），楼中楼由被回复者接话
-  const mentioned = parseMentionedCharacters(trimmed, db.prepare('SELECT * FROM characters').all());
+  const mentioned = parseMentionedCharacters(trimmed, db.prepare('SELECT * FROM characters WHERE COALESCE(is_system, 0) = 0').all());
   const repliers = [];
   const pushReplier = (char) => {
     if (char && !repliers.some(r => r.id === char.id)) repliers.push(char);

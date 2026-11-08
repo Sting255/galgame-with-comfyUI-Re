@@ -76,7 +76,7 @@ export function createTownActorRegistry(db) {
   }
   function refresh() {
     const npcs = new Map(db.prepare('SELECT * FROM town_npcs').all().map(n => [n.id, n]));
-    const characters = new Set(db.prepare('SELECT id FROM characters').all().map(c => c.id));
+    const characters = new Set(db.prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0').all().map(c => c.id));
     const members = new Map(db.prepare('SELECT character_id, town_enabled FROM town_characters').all().map(c => [c.character_id, c.town_enabled]));
     const update = db.prepare('UPDATE town_actors SET participating = ?, archived = ? WHERE actor_id = ?');
     for (const actor of db.prepare('SELECT * FROM town_actors WHERE merged_into IS NULL').all()) {
@@ -116,7 +116,7 @@ export function createTownActorRegistry(db) {
     ensure('player_id', 'me'); // Identity exists before a map or player sprite does.
     const npcs = db.prepare('SELECT * FROM town_npcs ORDER BY id').all();
     for (const npc of npcs) ensure('npc_id', npc.id);
-    for (const character of db.prepare('SELECT id FROM characters ORDER BY id').all()) ensure('character_id', character.id);
+    for (const character of db.prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all()) ensure('character_id', character.id);
     for (const npc of npcs) {
       if (source('characters', npc.character_id)) merge(npc.id, npc.character_id);
     }

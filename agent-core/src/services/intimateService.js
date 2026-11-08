@@ -874,7 +874,7 @@ export function setInjectEnabled(characterId, enabled) {
  */
 export function getInjectAllStatus() {
   const db = getDb();
-  const total = db.prepare('SELECT COUNT(*) AS n FROM characters').get()?.n || 0;
+  const total = db.prepare('SELECT COUNT(*) AS n FROM characters WHERE COALESCE(is_system, 0) = 0').get()?.n || 0;
   const enabled = db.prepare(
     `SELECT COUNT(*) AS n FROM character_body_profile p
      JOIN characters c ON c.id = p.character_id
@@ -900,7 +900,8 @@ export function setAllInjectEnabled(enabled) {
     db.prepare(
       `INSERT INTO character_body_profile (character_id, inject_enabled, updated_at)
        SELECT c.id, 1, ? FROM characters c
-       WHERE NOT EXISTS (SELECT 1 FROM character_body_profile p WHERE p.character_id = c.id)`
+       WHERE COALESCE(c.is_system, 0) = 0
+         AND NOT EXISTS (SELECT 1 FROM character_body_profile p WHERE p.character_id = c.id)`
     ).run(ts);
   })();
   return getInjectAllStatus();

@@ -109,7 +109,7 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 2. **面向用户的角色集合一律带作用域**：`import { USER_SCOPE, USER_SCOPE_ALIASED } from '../services/characterScope.js'`，拼进 WHERE。别再用 `name != 'default'` 这种按名字的特判。
 3. **按 id 取单个角色**（`WHERE id = ?`）不过滤：用户点到它时仍可查看/编辑/聊天。批量任务显式点名（`character_ids`）同样放行。
 4. 默认助手开关（`system_settings.default_assistant_enabled`，设置页「功能开关」）只决定它**是否出现在角色列表**（`userVisibleScope`）；后台自动化永远跳过系统角色，不受开关影响。
-5. 已知未覆盖：纯统计/选择器类查询（`COUNT(*)`、城镇 actor 注册、lorebook/presets 查找、表情与关系列表）目前没加作用域，它们不产生自动化副作用；要动那些地方时按同一口径补。
+5. 已全量覆盖（2026-11-08 收尾）：除下列**写法例外**，其余 `FROM characters` 的集合查询都带作用域。例外都是无害的：按 id 取单体（`WHERE id = ?`）、按名取单体（`WHERE name = ?`）、`NOT IN (SELECT id FROM characters)` 这种只用 id 集合的清理、以及同居房间成员 id→名字的映射表。新增查询请照口径带作用域。
 
 ## 后台生成的角色状态校验（2026-11-08 用户定）
 

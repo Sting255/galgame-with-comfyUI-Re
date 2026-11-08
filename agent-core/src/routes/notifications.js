@@ -48,7 +48,7 @@ router.get('/unread', (_req, res) => {
         WHERE conversation_id = 'char_' || c.id AND role = 'assistant' AND is_proactive = 1
         ORDER BY id DESC LIMIT 1
       )
-      WHERE c.proactive_disabled = 0
+      WHERE c.proactive_disabled = 0 AND COALESCE(c.is_system, 0) = 0
         AND m.created_at > COALESCE(c.proactive_last_read_at, '1970-01-01 00:00:00')
       ORDER BY m.created_at DESC
     `).all();

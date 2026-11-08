@@ -55,7 +55,7 @@ async function runBatch(typeId, withStanding, skipExisting) {
   const task = tasks.get(typeId);
   if (!type || !task) return;
   const scene = sceneKeyOf(typeId);
-  const characters = db.prepare('SELECT * FROM characters ORDER BY id').all();
+  const characters = db.prepare('SELECT * FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all();
 
   for (const character of characters) {
     if (task.cancelled) break;
@@ -135,7 +135,7 @@ router.post('/:id/generate', (req, res) => {
     if (existing?.running) return res.json({ task: publicTask(existing), started: false });
     const withStanding = req.body?.withStanding !== false;
     const skipExisting = req.body?.skipExisting === true;
-    const total = getDb().prepare('SELECT COUNT(*) AS n FROM characters').get()?.n || 0;
+    const total = getDb().prepare('SELECT COUNT(*) AS n FROM characters WHERE COALESCE(is_system, 0) = 0').get()?.n || 0;
     const task = {
       running: true, withStanding, skipExisting, total, done: 0, skipped: 0, current: '', failed: [],
       startedAt: new Date().toISOString(), finishedAt: null,

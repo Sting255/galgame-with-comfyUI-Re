@@ -94,7 +94,7 @@ function applyDnd(db, characterIds) {
 function removeDndExcept(db, placeholders, ids) {
   const overridden = db.prepare(`
     SELECT id, dnd_original_state FROM characters
-    WHERE dnd_original_state IS NOT NULL
+    WHERE dnd_original_state IS NOT NULL AND COALESCE(is_system, 0) = 0
       AND id NOT IN (${placeholders})
   `).all(...ids);
 

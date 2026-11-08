@@ -13,7 +13,7 @@ async function requestContext(messages, opts) {
   const { config } = await import('../../config.js');
   const metadata = opts.lorebook || {};
   const texts = messages.map(messageText);
-  const character = db.prepare('SELECT name,display_name,base_prompt,short_prompt FROM characters').all().find(c => [c.base_prompt,c.short_prompt].some(p => p?.length >= 16 && texts.some(t => t.includes(p))));
+  const character = db.prepare('SELECT name,display_name,base_prompt,short_prompt FROM characters WHERE COALESCE(is_system, 0) = 0').all().find(c => [c.base_prompt,c.short_prompt].some(p => p?.length >= 16 && texts.some(t => t.includes(p))));
   const history = metadata.history || messages.filter(m => m.role !== 'system');
   return {
     userName:config.user.nickname || '用户', personaDescription:config.user.persona || '',

@@ -48,7 +48,7 @@ router.get('/', (req, res) => {
 router.get('/characters', (req, res) => {
   const db = getDb();
   const characters = db.prepare(
-    `SELECT id, name, display_name, base_prompt, short_prompt, avatar_path FROM characters ORDER BY id`
+    `SELECT id, name, display_name, base_prompt, short_prompt, avatar_path FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id`
   ).all();
   res.json({ characters });
 });

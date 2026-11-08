@@ -1273,6 +1273,11 @@ function initSchema(db) {
   // 迁移: 角色身份锚点 — characters 表新增 identity_anchor / identity_anchor_source 列
   migrateIdentityAnchorSchema(db);
 
+  // 迁移: 角色作用域列（characters.is_system）必须在城镇注册表之前建好 ——
+  // 城镇的 synchronize 会按作用域筛选角色，列不存在就会 no such column 直接崩启动。
+  // 这里只建列；把内置角色标成 is_system=1 的那步在 seedAll 之后（见 migrateCharacterScope）。
+  ensureCharacterScopeColumn(db);
+
   // 迁移: AI 小镇 v2 — town_maps/locations/players 加列（新表由上方 CREATE IF NOT EXISTS 覆盖）
   migrateTownV2Schema(db);
   migrateTownSchema(db);
@@ -2004,6 +2009,19 @@ function migrateDisturbSchema(db) {
   }
 }
 
+/** 只建列（幂等）：initSchema 早期调用，保证城镇/其它迁移能安全引用 is_system */
+export function ensureCharacterScopeColumn(db) {
+  try {
+    const cols = db.prepare('PRAGMA table_info(characters)').all();
+    if (!cols.find(c => c.name === 'is_system')) {
+      db.exec('ALTER TABLE characters ADD COLUMN is_system INTEGER DEFAULT 0');
+      console.log('[db] Added characters.is_system column (default 0)');
+    }
+  } catch (err) {
+    console.log('[db] ensureCharacterScopeColumn skipped:', err.message);
+  }
+}
+
 /**
  * 迁移: 角色作用域（characters.is_system）
  *
@@ -2016,12 +2034,8 @@ function migrateDisturbSchema(db) {
  * 幂等：列已存在不重建，标记每次都按 name 校正一遍。
  */
 export function migrateCharacterScope(db) {
+  ensureCharacterScopeColumn(db);
   try {
-    const cols = db.prepare('PRAGMA table_info(characters)').all();
-    if (!cols.find(c => c.name === 'is_system')) {
-      db.exec('ALTER TABLE characters ADD COLUMN is_system INTEGER DEFAULT 0');
-      console.log('[db] Added characters.is_system column (default 0)');
-    }
     // 内置角色清单：默认助手（生图助手）。以后再加内置角色，往这里加 name。
     const SYSTEM_CHARACTER_NAMES = ['default'];
     const mark = db.prepare('UPDATE characters SET is_system = 1 WHERE name = ?');
