@@ -427,6 +427,11 @@ function syncDir(from, to) {
       // 只有**仓库自己的日志目录**该跳过，第三方包里的同名目录是代码。
       const isThirdParty = s.includes('site-packages')
       if (!isThirdParty && ['node_modules', '.git', '目标', 'logs', '.claude',
+        // `.mimosa/`：第三方编辑器插件的 hook 状态（hook-state/hook-status），
+        // 里面记着**本机绝对路径**（2026-11-08 复查发现它混进了待发包，
+        // 内容形如「盘符:\网盘下载目录\……\web-ui\src\...」）。顶层名单里有它，
+        // 但嵌套目录（web-ui/.mimosa）走的是这里，以前漏了。
+        '.mimosa',
         // `.pai/` 是项目级临时资产目录（计划/报告/工作树/临时副本），
         // 里面还留着上游合并时的 node_modules junction —— 被当文件复制会 EPERM，且绝不该进包。
         '.pai'].includes(e.name)) continue

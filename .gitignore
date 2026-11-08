@@ -118,3 +118,6 @@ tts-service/logs/
 
 # 浏览器自动化快照缓存（playwright-cli 产生，不入库）
 .playwright-cli/
+
+# 编辑器插件 hook 状态（mimosa 产生，含本机绝对路径；2026-11-08 发现混进待发包）
+.mimosa/
