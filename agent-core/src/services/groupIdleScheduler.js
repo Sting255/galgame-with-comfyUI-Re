@@ -18,6 +18,7 @@ import { config } from '../config.js';
 import { chatSync } from '../llm/llm-client.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { getGroupWithMembers, runGroupRound } from './groupChatEngine.js';
+import { isSleeping } from './scheduleManager.js';
 import { loadAffinity } from './emotionEngine.js';
 
 const IDLE_CHECK_INTERVAL = 10 * 60 * 1000;       // 10 分钟
@@ -75,6 +76,34 @@ function scheduleNextIdle(db, groupId, minHours = 0, maxHours = 24) {
   db.prepare(`UPDATE group_chats SET next_idle_at = ? WHERE id = ?`).run(next, groupId);
 }
 
+/**
+ * 群里此刻醒着的成员数（2026-11-08 真机：13 人全睡着，后台闲聊照样生成台词）。
+ *
+ * 判定用 `isSleeping`（与私聊/群聊 prompt 里的「此刻的作息」同源），判定失败按醒着算 ——
+ * 宁可多跑一轮，也不要因为一次查询异常让群永远不说话。
+ *
+ * @param {number} groupId
+ * @returns {number}
+ */
+export function countAwakeMembers(groupId) {
+  try {
+    const group = getGroupWithMembers(groupId);
+    const members = group?.members || [];
+    // 取不到成员（群被删/查询异常）时返回 1 而不是 0：跳过是「确定全员在睡」才做的事，
+    // 拿不到名单就按旧行为放行，避免把一个正常群永久冻结。
+    if (members.length === 0) return 1;
+    let awake = 0;
+    for (const member of members) {
+      try { if (!isSleeping(member.id).sleeping) awake += 1; }
+      catch { awake += 1; }
+    }
+    return awake;
+  } catch (err) {
+    console.warn('[groupIdle] awake check failed:', err?.message || err);
+    return 1;   // 查不到就当作有人醒着，保持旧行为
+  }
+}
+
 async function idleTick() {
   if (!config.features.groupChat) return;
   if (processing) return;
@@ -89,6 +118,15 @@ async function idleTick() {
       LIMIT 1
     `).get();
     if (!candidate) return;
+
+    // 全员睡眠时不发起（2026-11-08 真机）：没人能开口，模型只会替睡着的角色编台词。
+    // 放在扣预算之前 —— 没跑就不该花额度；推迟 1~3 小时，等有人醒了再说。
+    const awakeCount = countAwakeMembers(candidate.id);
+    if (awakeCount === 0) {
+      scheduleNextIdle(db, candidate.id, 1, 3);
+      console.log(`[groupIdle] skip group ${candidate.id}「${candidate.name}」: all members asleep, deferred 1-3h`);
+      return;
+    }
 
     // 预算检查（当天已满 → 本次不触发，随机推迟 0~24 小时；跨天或用户发言重置后自动恢复）
     if (!consumeIdleBudget(db, candidate)) {
@@ -208,7 +246,10 @@ async function maybeCreateGroup() {
     });
 
     // 开场暖场一轮（消耗一次当日预算）
-    if (consumeIdleBudget(db, db.prepare('SELECT * FROM group_chats WHERE id = ?').get(groupId))) {
+    // 全员睡眠时不暖场：与 idle 同口径（睡着的成员不会在开场里说话，跑了也是空轮）。
+    if (countAwakeMembers(groupId) === 0) {
+      console.log(`[groupIdle] skip opening for group ${groupId}: all members asleep`);
+    } else if (consumeIdleBudget(db, db.prepare('SELECT * FROM group_chats WHERE id = ?').get(groupId))) {
       await runGroupRound(groupId, {
         trigger: 'opening',
         emit: (event, data) => {

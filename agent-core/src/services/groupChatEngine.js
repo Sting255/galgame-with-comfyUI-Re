@@ -990,6 +990,35 @@ export function applyGroupWake(group, { userMessage = '', speakerLines = [] } = 
   return woken;
 }
 
+/**
+ * 睡着的角色能否在本轮开口（2026-11-08）。
+ *
+ * 与 `applyGroupWake` 完全同口径，只有两种例外：
+ *   · 用户本轮点了她的名 —— 她开口＝被回应，落库后会被真正唤醒
+ *   · 本轮已写台词里有人喊她的名 + 带唤醒动作（叫醒/摇醒/掀被子…）
+ *
+ * @param {{name: string, rawLines?: string[], userMessage?: string}} o
+ * @returns {boolean} true = 可以开口
+ */
+export function canAsleepSpeakerTalk({ name, rawLines = [], userMessage = '' } = {}) {
+  const target = String(name || '').trim();
+  if (!target) return true;
+  if (String(userMessage || '').includes(target)) return true;
+  // 逐行判断：必须同一条台词里既点了她的名、又带唤醒动作，避免别人喊"醒醒"就误放行
+  return (rawLines || []).some(line => typeof line === 'string' && line.includes(target) && WAKE_CALL_RE.test(line));
+}
+
+/** 把某成员 id 映射成「睡着」的显示名（不在名单里 = 醒着） */
+export function buildSleepingNameMap(members = []) {
+  const names = new Map();
+  for (const member of members || []) {
+    try {
+      if (isSleeping(member.id).sleeping) names.set(Number(member.id), member.display_name);
+    } catch { /* 判定失败按醒着处理：宁可多一句台词，也不误吞正常发言 */ }
+  }
+  return names;
+}
+
 // ── 核心：跑一轮群聊 ──
 
 // 每群同时只允许一轮生成（用户发言/后台闲聊/冷场续聊互斥）
@@ -1354,6 +1383,24 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   let seq = 0;
   let lineCount = 0;        // 剧本行计数（MAX_ROUND_MESSAGES 按行限制，不受分句膨胀影响）
 
+  // ── 睡眠硬过滤（2026-11-08 真机）──
+  // 现场：13 个成员全部在睡（界面显示「13 人睡眠中」），后台闲聊仍然生成了台词；
+  // prompt 里的「睡着（本轮不要替她们写台词）」是软约束，模型不遵守，系统也照单全收。
+  // 这里做确定性过滤：睡着的人默认不出声，只有下面两种例外放行，口径与 applyGroupWake 完全一致
+  //   · 用户本轮点了她的名（她开口＝被回应，落库后 applyGroupWake 会真的把她唤醒）
+  //   · 本轮已写台词里有人喊她的名 + 带唤醒动作（叫醒/摇醒/掀被子…）
+  // 神说/世界事件是「神直接安排」的口径，不拦。
+  const sleepingNames = new Map();   // characterId -> display_name
+  if (trigger !== 'god_command' && trigger !== 'world_event') {
+    const map = buildSleepingNameMap(group.members || []);
+    for (const [id, name] of map) sleepingNames.set(id, name);
+  }
+  const shouldSkipAsleepSpeaker = (speaker) => {
+    const name = sleepingNames.get(Number(speaker?.id));
+    if (!name) return false;
+    return !canAsleepSpeakerTalk({ name, rawLines, userMessage });
+  };
+
   const insertMsg = stmt(
     `INSERT INTO messages (conversation_id, raw_id, role, content, images, seq, speaker_character_id) VALUES (?, ?, 'assistant', ?, ?, ?, ?)`
   );
@@ -1361,6 +1408,13 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   const handleParsed = (parsed) => {
     if (!parsed || ended) return;
     if (parsed.end) { ended = true; return; }
+
+    // 睡着的人不许自己开口（见上方 sleepingNames 注释）。跳过时 raw 也不写，
+    // 保证 LLM 视角与界面展示一致 —— 下一轮它不会以为「她刚才已经说过话」。
+    if (parsed.speaker && shouldSkipAsleepSpeaker(parsed.speaker)) {
+      console.log(`[group] skip message: ${parsed.speaker.display_name} is asleep in group ${groupId}`);
+      return;
+    }
 
     // 模型偶尔把台词和 {...} 粘在同一行：台词照常落库，花括号内容单独生图。
     if (parsed.imagePrompt && parsed.text) {
