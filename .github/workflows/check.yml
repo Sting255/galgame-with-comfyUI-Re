@@ -21,7 +21,13 @@ jobs:
           cache-dependency-path: |
             agent-core/package-lock.json
             web-ui/package-lock.json
-      - run: npm ci --prefix agent-core
+      # 2026-11-08：`npm ci --prefix agent-core` 在 windows-latest 上编 better-sqlite3 时失败
+      # （runner 镜像升到 VS 18，node-gyp 解析其版本号失败 → "unknown version \"undefined\" found at
+      #  C:\Program Files\Microsoft Visual Studio\18\Enterprise" → "Could not find any Visual Studio"）。
+      # 2026-11-08 06:44 那次还是绿的：同一份 lockfile，纯粹是 runner 镜像在当天变了。
+      # 这一步只跑静态检查（文档清单 / 未定义符号 / lint / 构建），用不到原生绑定，
+      # 所以跳过 install scripts —— 别让 runner 镜像波动把检查卡红。
+      - run: npm ci --prefix agent-core --ignore-scripts
       - run: npm ci --prefix web-ui
       - name: Documentation and source inventory
         run: npm run check
