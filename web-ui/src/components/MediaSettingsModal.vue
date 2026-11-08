@@ -44,26 +44,30 @@
             <strong>按当前世界观规划 {{ planDrafts.length }} 家媒体</strong>
             <linshe-button size="sm" variant="ghost" :disabled="applyingPlan" @click="planDrafts = []">收起</linshe-button>
           </div>
-          <label v-for="(draft, index) in planDrafts" :key="draft.name + index" class="ms-plan-item">
-            <input v-model="planPicked" type="checkbox" :value="index" :disabled="applyingPlan" />
-            <span class="ms-plan-text">
-              <strong>{{ draft.icon }} {{ draft.name }}</strong>
-              <span>{{ draft.tagline }}</span>
-              <span class="ms-plan-boards">{{ (draft.boards || []).map(b => b.name).join(' · ') }}</span>
-            </span>
-          </label>
+          <div class="ms-plan-items">
+            <label v-for="(draft, index) in planDrafts" :key="draft.name + index" class="ms-plan-item">
+              <input v-model="planPicked" type="checkbox" :value="index" :disabled="applyingPlan" />
+              <span class="ms-plan-text">
+                <strong>{{ draft.icon }} {{ draft.name }}</strong>
+                <span>{{ draft.tagline }}</span>
+                <span class="ms-plan-boards">{{ (draft.boards || []).map(b => b.name).join(' · ') }}</span>
+              </span>
+            </label>
+          </div>
           <label class="ms-plan-disable">
             <input v-model="planDisableOld" type="checkbox" :disabled="applyingPlan" />
             <span>创建后停用原有媒体（不删除，旧帖子保留）</span>
           </label>
           <div class="ms-plan-actions">
-            <linshe-button size="sm" :loading="applyingPlan" :disabled="!planPicked.length" @click="applyLineup">
+            <linshe-button size="md" variant="primary" :loading="applyingPlan" :disabled="!planPicked.length" @click="applyLineup">
               {{ applyingPlan ? '创建中…' : `创建选中的 ${planPicked.length} 家` }}
             </linshe-button>
             <linshe-button size="sm" variant="ghost" :disabled="applyingPlan" @click="planLineup">重新规划</linshe-button>
           </div>
         </div>
-        <div class="ms-list">
+        <!-- 规划进行中把左栏整段让给规划结果：这时候用户要选的是"哪几家"，
+             媒体列表可以等收起规划后再看（2026-11-08 真机：两者挤在一起时按钮和列表都露不全） -->
+        <div v-if="!planDrafts.length" class="ms-list">
           <div v-if="isNew" class="ms-item active ms-draft-item" aria-current="step">
             <span class="ms-item-icon">＋</span>
             <span class="ms-item-main"><strong>{{ form?.name || '正在新建媒体' }}</strong><span>新建草稿 · 尚未保存</span></span>
@@ -773,6 +777,7 @@ async function removeBoard(b) {
 .ms-list {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
   gap: 8px;
   padding: 0 4px 6px 0;
@@ -848,6 +853,21 @@ async function removeBoard(b) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 2026-11-08 真机：规划结果把左栏撑满后，「创建选中的 N 家」被挤到盒外只露半截。
+     规划期间媒体列表会隐藏，这里用 flex 占满剩余高度（不再用百分比 max-height，
+     百分比会让盒子比可用空间高一点点，底部按钮正好被父级 overflow 裁掉）；
+     内部勾选列表自己滚，头与底部按钮始终可见。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ms-plan-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .ms-plan-head {
   display: flex;
@@ -871,6 +891,13 @@ async function removeBoard(b) {
   color: var(--text-dim);
   min-width: 0;
 }
+/* 定位说明最多两行：5 家规划时每项太高会把列表挤成只看得到一两家（2026-11-08） */
+.ms-plan-text > span:not(.ms-plan-boards) {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .ms-plan-text strong { color: var(--text-bright); }
 .ms-plan-boards { opacity: 0.8; }
 .ms-plan-disable {
@@ -885,6 +912,7 @@ async function removeBoard(b) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .ms-form-head {
   display: flex;
@@ -1067,6 +1095,21 @@ async function removeBoard(b) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 2026-11-08 真机：规划结果把左栏撑满后，「创建选中的 N 家」被挤到盒外只露半截。
+     规划期间媒体列表会隐藏，这里用 flex 占满剩余高度（不再用百分比 max-height，
+     百分比会让盒子比可用空间高一点点，底部按钮正好被父级 overflow 裁掉）；
+     内部勾选列表自己滚，头与底部按钮始终可见。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ms-plan-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .ms-plan-head {
   display: flex;
@@ -1090,6 +1133,13 @@ async function removeBoard(b) {
   color: var(--text-dim);
   min-width: 0;
 }
+/* 定位说明最多两行：5 家规划时每项太高会把列表挤成只看得到一两家（2026-11-08） */
+.ms-plan-text > span:not(.ms-plan-boards) {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .ms-plan-text strong { color: var(--text-bright); }
 .ms-plan-boards { opacity: 0.8; }
 .ms-plan-disable {
@@ -1104,6 +1154,7 @@ async function removeBoard(b) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .ms-form-head {
     margin-bottom: 18px;
