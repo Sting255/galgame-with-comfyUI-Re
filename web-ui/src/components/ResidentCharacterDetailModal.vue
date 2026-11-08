@@ -130,9 +130,10 @@
                     >
                       <span class="persona-section-emblem" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <template v-if="section.key === 'persona'"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M8 13h8M8 17h6" /></template>
+                        <template v-else-if="section.key === 'identity'"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" /></template>
                         <template v-else><path d="m8 3-6 4 3 5 3-2v11h8V10l3 2 3-5-6-4a4 4 0 0 1-8 0Z" /></template>
                       </svg></span>
-                      <span class="persona-section-title">{{ section.label }}<span class="persona-section-subtitle">{{ section.key === 'persona' ? '身份 · 性格 · 经历' : outfitSceneSummary }}</span></span>
+                      <span class="persona-section-title">{{ section.label }}<span class="persona-section-subtitle">{{ section.key === 'persona' ? '身份 · 性格 · 经历' : section.key === 'identity' ? '身份 tag · 身体特征' : outfitSceneSummary }}</span></span>
                       <svg class="persona-section-chevron" :class="{ open: editorSection === section.key }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
                     </div>
                   </h4>
@@ -159,23 +160,26 @@
                           <p class="negative-adv-count">{{ (detail.editNegativePrompt || '').length }} / 200</p>
                         </details>
                       </template>
-                      <div v-else class="scene-block">
-                        <!-- 身份锚点（2026-11-08）：决定「这个角色是谁」的独立一层。
-                             身份 tag + 身体特征落库在 characters.identity_anchor，所有生图入口自动前置；
-                             服装生成只改衣服，永远不碰它。 -->
-                        <div v-if="!profileAdapter" class="identity-anchor">
+                      <template v-else-if="section.key === 'identity'">
+                        <!-- 角色本体（2026-11-08）：决定「这个角色是谁」的独立分区，与衣服彻底分开。
+                             数据在 characters.identity_anchor，所有生图入口自动前置；服装生成只改衣服。 -->
+                        <div v-if="!profileAdapter" class="identity-body">
                           <div class="identity-anchor-head">
-                            <p class="split-hint">身份锚点：角色识别 tag + 身体特征。生图时自动前置，服装生成永远不改它。</p>
-                            <linshe-button size="sm" variant="ghost" :loading="identityAnchorBusy" :disabled="identityAnchorBusy || outfitBatchRunning" @click="reextractIdentityAnchor">重新自动提取</linshe-button>
+                            <p class="split-hint">这里只放「她是谁」：角色识别 tag + 身体特征（发色、发型、瞳色、肤色、体型、身体标记）。生图时自动前置到画面描述最前面。</p>
+                            <linshe-button size="sm" variant="secondary" :loading="identityAnchorBusy" :disabled="identityAnchorBusy" @click="reextractIdentityAnchor">重新自动提取</linshe-button>
                           </div>
                           <linshe-input
-                            v-model="detail.identityAnchor" type="textarea" rows="2" maxlength="600"
-                            aria-label="角色身份锚点"
+                            v-model="detail.identityAnchor" type="textarea" rows="5" maxlength="600"
+                            aria-label="角色本体（身份锚点）"
                             placeholder="尚未建立。点「重新自动提取」从角色卡里抽，或手填，例：Huohuo (Honkai: Star Rail), long mint-green hair, jade green eyes, petite"
                             @input="onIdentityAnchorInput"
                           />
                           <p class="identity-anchor-meta">{{ identityAnchorMeta }}</p>
+                          <p class="identity-anchor-note">只写身体，不写衣服。改衣服不会动到这里，改这里也不会覆盖任何一套衣服。</p>
                         </div>
+                        <p v-else class="split-hint">角色本体由系统统一维护，这里不提供编辑。</p>
+                      </template>
+                      <div v-else class="scene-block">
                         <div class="scene-block-head">
                           <p class="split-hint">默认造型作为常态外观，其余服装随日程切换。</p>
                           <!-- 一键（2026-11-07 用户选 C）：描述 + 立绘一路走到底；旁边的 Ghost 按钮只出描述 -->
@@ -845,7 +849,7 @@ function effectiveAppearance() {
 }
 
 /** 当前编辑中的整卡（供「修正外观」弹窗读取，口径与保存完全一致） */
-const editorSections = [{ key: 'persona', label: '人设提示词' }, { key: 'outfits', label: '外观服装' }]
+const editorSections = [{ key: 'persona', label: '人设提示词' }, { key: 'identity', label: '角色本体' }, { key: 'outfits', label: '外观服装' }]
 const editorSection = ref('persona')
 function selectEditorSection(key) {
   if (editorSection.value === key) return
@@ -2696,15 +2700,12 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .scene-stand-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
 .scene-stand-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .scene-stand-upload { display: inline-flex; }
-/* 身份锚点（2026-11-08）：凹陷浅底，和下面的服装区区分开，但不抢视觉重心 */
-.identity-anchor {
-  display: flex; flex-direction: column; gap: 6px;
-  margin: 0 0 12px; padding: 10px 12px;
-  border-radius: 12px; background: var(--bg-sunken); border: 1px solid var(--border);
-}
+/* 角色本体（2026-11-08）：独立分区，无卡片外壳 —— 和下面的服装区在结构上就分开 */
+.identity-body { display: flex; flex-direction: column; gap: 8px; }
 .identity-anchor-head { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
 .identity-anchor-head .split-hint { flex: 1; margin: 0; }
 .identity-anchor-meta { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.identity-anchor-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); opacity: 0.85; }
 .scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }/* 默认外观（身份锚点）的锁定说明：占满一行，语气克制，不抢立绘的视觉重心 */
 .scene-edit-locked { flex: 1 1 100%; margin: 0 0 2px; font-size: 12px; line-height: 1.6; color: var(--text-secondary, #8a7f76); }
 /* 「我想要什么样的衣服」：一句话需求 + 生成按钮，紧贴在描述框上方 */
