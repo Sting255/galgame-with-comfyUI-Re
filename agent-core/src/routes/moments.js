@@ -550,7 +550,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
           continue;
         }
 
-        const usedPrompt = genResult.promptRefined || promptWithIdentity;
+        const usedPrompt = genResult.promptRefined || imagePrompts[i];
         usedPrompts.push(usedPrompt);
 
         const batchUrls = [];
@@ -563,7 +563,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
         }
         recordCompletedImageTask({
           conversationId: `char_${character.id}_moments`,
-          promptOriginal: promptWithIdentity,
+          promptOriginal: imagePrompts[i],
           promptRefined: usedPrompt,
           outputPaths: batchUrls,
           style: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
