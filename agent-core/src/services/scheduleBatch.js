@@ -219,12 +219,12 @@ export function startScheduleBatch({ kind = 'manual', direction = '', resume = f
 /** 仅由到期调度调用；不阻塞回复队列。新角色缺失模板仍由原创建流程补齐。 */
 export function maybeStartScheduledBatch({ db = getDb(), now = new Date(), start = startScheduleBatch } = {}) {
   if (config.features.schedule === false || isScheduleBatchRunning()) return null;
-  if (!db.prepare("SELECT id FROM characters WHERE schedule_enabled=1 LIMIT 1").get()) return null;
+  if (!db.prepare("SELECT id FROM characters WHERE schedule_enabled=1 AND name != 'default' LIMIT 1").get()) return null;
   const nowSql = sqlTime(now);
   let state = db.prepare('SELECT * FROM schedule_refresh_cycle WHERE id=1').get();
   if (state?.retry_at && state.retry_at > nowSql) return null;
   if (!state) {
-    const earliest = db.prepare("SELECT MIN(next_schedule_refresh_at) AS at FROM characters WHERE schedule_enabled=1").get()?.at || nowSql;
+    const earliest = db.prepare("SELECT MIN(next_schedule_refresh_at) AS at FROM characters WHERE schedule_enabled=1 AND name != 'default'").get()?.at || nowSql;
     db.prepare('INSERT INTO schedule_refresh_cycle(id,next_refresh_at) VALUES(1,?)').run(earliest);
     state = { next_refresh_at: earliest };
   }

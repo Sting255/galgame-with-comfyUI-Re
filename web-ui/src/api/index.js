@@ -143,6 +143,15 @@ export async function togglePin(characterId, pinned) {
   return request(`/characters/${characterId}/pin`, { method: 'PUT', body: { pinned } })
 }
 
+// ── 默认助手（生图助手）总开关（2026-11-08）──
+// 关掉后它不进角色列表，也不会被「对所有人」的批量覆盖/命令带上
+export function getDefaultAssistantSetting() {
+  return request('/characters/default-assistant')
+}
+export function setDefaultAssistantSetting(enabled) {
+  return request('/characters/default-assistant', { method: 'PUT', body: { enabled } })
+}
+
 // ── 角色身份锚点（2026-11-08）──
 // 身份 tag（Name (Series)）+ 身体特征，独立于服装与人设正文；所有生图入口自动前置。
 export function getIdentityAnchor(characterId) {

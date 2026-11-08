@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDefaultAssistantEnabled, DEFAULT_ASSISTANT_NAME } from '../defaultAssistant.js';
 // A batch owns its frozen target list and item results. Confirmation is supplied independently.
 export function createBatchTasks(repo, { validate, needsConfirmation, changes, execute }) {
   const { db } = repo;
@@ -10,8 +11,13 @@ export function createBatchTasks(repo, { validate, needsConfirmation, changes, e
   const list = session => db.prepare('SELECT b.* FROM god_batches b JOIN god_runs r ON r.id=b.run_id WHERE r.session_id=? AND r.deleted_at IS NULL ORDER BY b.created_at,b.id').all(session).map(decode);
   const save = row => db.prepare('UPDATE god_batches SET status=?,items_json=? WHERE id=?').run(row.status, JSON.stringify(row.items), row.id);
   async function start(args, ctx) {
-    const all = db.prepare('SELECT id,display_name FROM characters ORDER BY id').all();
-    const targets = args.character_ids ? all.filter(c => args.character_ids.includes(c.id)) : all;
+    // 开关关掉时「所有人」不含默认助手：2026-11-08 用户的痛点就是
+    // 对所有人下覆盖设置/批量命令时它被一起拉起来，实际又根本不用它。
+    // 显式点名（character_ids）时仍按点名来，只在「所有人」这条路上过滤。
+    const all = db.prepare('SELECT id,name,display_name FROM characters ORDER BY id').all();
+    const useAll = Boolean(args.character_ids) || isDefaultAssistantEnabled(db);
+    const scope = useAll ? all : all.filter(c => c.name !== DEFAULT_ASSISTANT_NAME);
+    const targets = args.character_ids ? scope.filter(c => args.character_ids.includes(c.id)) : scope;
     if (!targets.length || targets.length > 1000 || (args.character_ids && targets.length !== args.character_ids.length)) throw new Error('角色范围无效或超过单批 1000 人');
     const common = JSON.parse(args.arguments_json);
     const overrides = args.per_character_json ? JSON.parse(args.per_character_json) : {};

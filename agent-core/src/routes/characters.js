@@ -37,6 +37,7 @@ import { ensureIdentityAnchor, getStoredIdentityAnchor, buildIdentityAnchorFromC
 import { applyAllTypesToCharacter } from '../services/globalOutfitTypes.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
+import { isDefaultAssistantEnabled, setDefaultAssistantEnabled, excludeDefaultAssistantClause } from '../services/defaultAssistant.js';
 // 对话背景（上游 v3.9.0 合并）：工厂路由 + 沉浸背景生成（依赖注入便于单测）
 import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
@@ -45,6 +46,19 @@ import { pickReactionMarker } from '../services/emojiService.js';
 import { getClothingLibrary, getFabricLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms, pickCombinationTags, pickFabricAndColors } from '../services/clothingLibrary.js';
 
 const router = Router();
+
+// 默认助手（生图助手）总开关（2026-11-08 用户要求）。
+// 必须声明在 PUT /:id 之前 —— 否则 "default-assistant" 会被当成角色 id 命中更新角色那条，
+// 返回 {"error":"No fields to update"}（这个坑本轮踩过一次）。
+router.get('/default-assistant', (req, res) => {
+  res.json({ enabled: isDefaultAssistantEnabled(getDb()) });
+});
+
+router.put('/default-assistant', (req, res) => {
+  const raw = req.body?.enabled;
+  const enabled = !(raw === false || raw === 0 || raw === '0' || raw === 'false');
+  res.json({ enabled: setDefaultAssistantEnabled(getDb(), enabled) });
+});
 
 router.get('/clothing-library', (_req, res) => res.json(getClothingLibrary()));
 
@@ -166,7 +180,8 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
 // GET /api/characters — 列出角色，含最近消息摘要
 router.get('/', (req, res) => {
   const db = getDb();
-  const characters = db.prepare('SELECT * FROM characters').all();
+  // 默认助手开关关掉时，它不出现在列表里（2026-11-08 用户要求：用不上就别占位置）
+  const characters = db.prepare(`SELECT * FROM characters WHERE 1=1${excludeDefaultAssistantClause(db)}`).all();
 
   // 聚合查询代替每角色 4 条子查询（N+1 → 固定 4 条，规模不随角色数增长）
   const lastByConv = db.prepare(`

@@ -754,6 +754,14 @@ type="range" min="1" max="10" step="1"
 
         <div class="toggle-row">
           <div>
+            <div class="tl">默认助手</div>
+            <div class="td">那个生图助手人格。关掉后它不进角色列表，也不会被「对所有人」的批量覆盖/命令带上</div>
+          </div>
+          <linshe-switch v-model="defaultAssistantEnabled" @change="saveDefaultAssistant" />
+        </div>
+
+        <div class="toggle-row">
+          <div>
             <div class="tl">好感度系统</div>
             <div class="td">每轮对话后评估 AI 情绪变化，影响回复语气</div>
           </div>
@@ -1723,6 +1731,8 @@ import UpdateTag from '../components/UpdateTag.vue'
 import GlobalOutfitTypesPanel from '../components/settings/GlobalOutfitTypesPanel.vue'
 import { CHANGELOG_ENTRIES } from '../data/changelog.js'
 import { getIntimateInjectAll, setIntimateInjectAll } from '../api/intimate.js'
+import { getDefaultAssistantSetting, setDefaultAssistantSetting } from '../api/index.js'
+import { useChatStore } from '../stores/chat.js'
 
 
 const settingsStore = useSettingsStore()
@@ -2049,6 +2059,27 @@ watch(() => showAddNovelaiProfile.value, async (visible) => {
 })
 const connDirty = ref(false)
 const connSaved = ref(false)
+// 默认助手（生图助手）开关：关掉后它不进角色列表、不被「对所有人」的批量指令带上（2026-11-08）
+const chat = useChatStore()
+const defaultAssistantEnabled = ref(true)
+async function loadDefaultAssistant() {
+  try {
+    const res = await getDefaultAssistantSetting()
+    if (res && typeof res.enabled === 'boolean') defaultAssistantEnabled.value = res.enabled
+  } catch { /* 读失败就按启用显示，不弹错 */ }
+}
+async function saveDefaultAssistant(val) {
+  const next = val === undefined ? defaultAssistantEnabled.value : val
+  try {
+    await setDefaultAssistantSetting(next)
+    toastFn?.(next ? '已启用默认助手' : '已停用默认助手：它不再出现在角色列表，也不会被批量指令带上', 'success')
+    // 列表变化要重新拉一次，否则侧栏还挂着已停用的那个
+    try { await chat.loadCharacters() } catch { /* 忽略 */ }
+  } catch (err) {
+    defaultAssistantEnabled.value = !next
+    toastFn?.(err?.message || '保存失败', 'error')
+  }
+}
 const features = reactive({ emotion: false, memory: false, replyGuesses: false, realtimeAffinityDisplay: false, serializeBackgroundLLM: false, backgroundLLMMaxConcurrency: 3, mergeMessages: false, weather: true, intimate: true, intimateBackfill: true, antiRepetition: true, antiRepetitionLock: true, antiRepetitionEscalation: true, antiRepetitionReroll: false, hiresQuality: DEFAULT_HIRES_QUALITY, toys: false, touch: true, touchInstant: true, touchGroupAdult: false, touchImageMode: DEFAULT_TOUCH_IMAGE_MODE, touchReactionMode: DEFAULT_TOUCH_REACTION_MODE, touchBystanderChance: 0.3, jailbreak: true })
 
 /**
@@ -2891,6 +2922,7 @@ onMounted(async () => {
   loadPoseControl()
   // 按用途分配模型同样独立加载，读失败只影响这一块
   loadModelRoutes()
+  loadDefaultAssistant()
   try {
     const data = await getConfig()
     // 画师串口径（与后端 routes/images.js 一致）：空串 '' ＝ 用户明确要「不要画师串」，
