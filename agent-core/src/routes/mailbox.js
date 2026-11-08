@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../db/index.js';
+import { isSleeping } from '../services/scheduleManager.js';
 
 const router = Router();
 
@@ -65,7 +66,22 @@ router.post('/send', (req, res) => {
     if (!character) return res.status(404).json({ error: '角色不存在' });
 
     // 计算回信时间：3~10 分钟后（UTC 格式，与系统其他模块一致）
-    const replyDelayMs = 180000 + Math.random() * 420000;
+    // 2026-11-08 修：她要是正在睡，就把回信推到**睡醒之后**（醒来 5~15 分钟），
+    // 否则半夜写信会得到“睡着的角色三分钟后回信”这种明显不对的画面。
+    let replyDelayMs = 180000 + Math.random() * 420000;
+    try {
+      const sleep = isSleeping(character.id);
+      if (sleep.sleeping && sleep.sleepUntil) {
+        // sleepUntil 与 reply_at 同为 UTC 无时区串，parsed 后可直接比较
+        const wakeMs = new Date(`${String(sleep.sleepUntil).replace(' ', 'T')}Z`).getTime();
+        if (Number.isFinite(wakeMs) && wakeMs > Date.now()) {
+          replyDelayMs = (wakeMs - Date.now()) + 300000 + Math.random() * 600000;
+          console.log(`[mailbox] "${character.display_name}" 正在睡眠，回信推迟到醒后 ${Math.round(replyDelayMs / 60000)} 分钟`);
+        }
+      }
+    } catch (err) {
+      console.warn('[mailbox] sleep check failed, keep default delay:', err?.message || err);
+    }
     const replyAt = new Date(Date.now() + replyDelayMs).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
 
     const autoRead = auto_read === true || auto_read === 1 || auto_read === '1' ? 1 : 0;

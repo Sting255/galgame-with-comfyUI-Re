@@ -499,6 +499,11 @@ function claimPostForImage(postId) {
 /**
  * 抽参与本次生成的活跃角色。
  * 返回带人格与头像的行，供提示词与落库使用。
+ *
+ * 2026-11-08 修：原来是无条件 `ORDER BY RANDOM() LIMIT ?`，于是**睡着的角色也会被拉来发帖**
+ * （真机日志：全员睡眠中，媒体批次照样出现“角色参与 三月七”）。同理也尊重 moments_disabled ——
+ * 用户关掉她的朋友圈，就是不想看到她主动发东西，换个媒体发同样违背这个意图。
+ * 抽不到人就返回空数组，调用方会自动降级成「全匿名帖」（buildFormatPrompt 已有该分支）。
  */
 export function pickActiveCharacters(count = 2) {
   const n = Math.max(0, Math.min(3, count));
@@ -506,6 +511,8 @@ export function pickActiveCharacters(count = 2) {
   return getDb().prepare(`
     SELECT id, display_name, avatar_path, short_prompt, base_prompt, loras, custom_workflow, artist_override
     FROM characters
+    WHERE (is_sleeping IS NULL OR is_sleeping = 0)
+      AND (moments_disabled IS NULL OR moments_disabled = 0)
     ORDER BY RANDOM() LIMIT ?
   `).all(n);
 }
