@@ -2224,16 +2224,48 @@ export function listMediaOutlets() {
 export function createMediaOutlet(body) {
   return request('/media/outlets', { method: 'POST', body })
 }
+// 媒体草稿生成已改成后台任务（2026-11-08）：POST 只回 jobId，结果靠轮询。
+// 三个原同步接口的返回值形状保持不变（{ draft } / { outlets }），调用点不用改。
+export function getMediaJob(jobId, signal) {
+  return request(`/media/jobs/${encodeURIComponent(jobId)}`, { signal })
+}
+
+/** 提交后台任务并轮询到出结果；失败/超时抛人话错误，signal 取消时抛 AbortError */
+async function runMediaJob(submitPath, body, { signal, timeoutMs = 5 * 60 * 1000, intervalMs = 1200 } = {}) {
+  const submitted = await request(submitPath, { method: 'POST', body, signal })
+  const jobId = submitted?.jobId
+  if (!jobId) throw new Error('后台任务没有返回任务号（后端可能是旧版本）')
+  const startedAt = Date.now()
+  for (;;) {
+    const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' })
+    if (signal?.aborted) throw abortError()
+    // 轮询间隔也要能被取消，否则用户点了取消还得等这一轮 sleep 走完
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, intervalMs)
+      const onAbort = () => { clearTimeout(timer); reject(abortError()) }
+      if (signal?.addEventListener) {
+        signal.addEventListener('abort', onAbort, { once: true })
+        setTimeout(() => signal.removeEventListener?.('abort', onAbort), intervalMs + 50)
+      }
+    })
+    const job = await getMediaJob(jobId, signal)
+    if (job?.status === 'done') return job.result
+    if (job?.status === 'failed') throw new Error(job.error || '生成失败')
+    if (Date.now() - startedAt > timeoutMs) throw new Error('生成超时（后台还在跑，稍后再点一次即可）')
+  }
+}
 export function generateMediaOutletDraft(body, signal) {
-  return request('/media/outlets/draft', { method: 'POST', body, signal })
+  return runMediaJob('/media/outlets/draft', body, { signal }).then(draft => ({ draft }))
 }
 // 按当前世界观重写一家已有媒体的设定与板块（只回草稿，不落库）
 export function redesignMediaOutlet(id, signal) {
-  return request(`/media/outlets/${id}/redesign`, { method: 'POST', body: {}, signal })
+  return runMediaJob(`/media/outlets/${id}/redesign`, {}, { signal }).then(draft => ({ draft }))
 }
 // 按当前世界观规划一批新媒体（只回草稿），以及把这批草稿真正创建出来
 export function planMediaLineup(body, signal) {
-  return request('/media/outlets/plan', { method: 'POST', body, signal })
+  return runMediaJob('/media/outlets/plan', body, { signal }).then(result => (
+    result && Array.isArray(result.outlets) ? result : { outlets: [] }
+  ))
 }
 export function applyMediaPlan(body) {
   return request('/media/outlets/plan/apply', { method: 'POST', body })

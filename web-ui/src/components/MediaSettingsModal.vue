@@ -26,7 +26,7 @@
               :loading="planning"
               :disabled="saving || planning"
               @click="planLineup"
-            >{{ planning ? '规划中…' : '✦ 按世界观规划' }}</linshe-button>
+            >{{ planning ? `规划中 ${busyElapsed}s…` : '✦ 按世界观规划' }}</linshe-button>
             <linshe-button
               size="sm"
               variant="secondary"
@@ -120,7 +120,7 @@
                   :loading="rewriting"
                   :disabled="saving || rewriting"
                   @click="redesignByWorld"
-                >{{ rewriting ? '正在重写…' : '✦ 按世界观重写' }}</linshe-button>
+                >{{ rewriting ? `正在重写 ${busyElapsed}s…` : '✦ 按世界观重写' }}</linshe-button>
                 <linshe-switch
                   v-model="form.enabled"
                   on-text="已启用"
@@ -136,7 +136,7 @@
                 <p class="ms-hint">描述主题、读者和语气，助手会结合当前世界观设计名称、介绍、编辑风格和四个板块。</p>
                 <linshe-input ref="assistantInput" v-model="assistantBrief" type="textarea" :rows="3" maxlength="2000" aria-label="栏目想法" placeholder="例如：一家面向小镇居民的深夜电台，温柔又有点幽默，聊生活烦恼、街坊故事和匿名来信。" :disabled="designing" />
                 <linshe-select v-model="assistantLayout" :options="layoutOptions" aria-label="生成的媒体类型" :disabled="designing" />
-                <div class="ms-assistant-actions"><linshe-button size="sm" :loading="designing" :disabled="!assistantBrief.trim()" @click="generateDraft">{{ designing ? '正在构思…' : assistantDraft ? '重新生成草稿' : '生成栏目草稿' }}</linshe-button><span v-if="designing" class="ms-hint" role="status">正在设计，通常需要几十秒…</span></div>
+                <div class="ms-assistant-actions"><linshe-button size="sm" :loading="designing" :disabled="!assistantBrief.trim()" @click="generateDraft">{{ designing ? `正在构思 ${busyElapsed}s…` : assistantDraft ? '重新生成草稿' : '生成栏目草稿' }}</linshe-button><span v-if="designing" class="ms-hint" role="status">后台仍在生成，不会中断；等太久可以直接关掉弹窗</span></div>
                 <p v-if="assistantError" class="ms-assistant-error" role="alert">{{ assistantError }}</p>
                 <Transition name="ms-fade" mode="out-in">
                   <div v-if="assistantDraft" :key="draftVersion" class="ms-draft-preview">
@@ -403,6 +403,21 @@ const planDisableOld = ref(false)
 const applyingPlan = ref(false)
 const redesignBoards = ref([])
 const applyingBoards = ref(false)
+
+// 生成类操作现在跑在后台任务里（最坏 1~2 分钟），光转圈用户不知道是死是活。
+// 统一在这里数秒，写进按钮文案，看起来就是在正常干活（2026-11-08）。
+const busyElapsed = ref(0)
+let busyTimer = null
+watch(
+  () => planning.value || rewriting.value || designing.value,
+  (busy) => {
+    if (busyTimer) { clearInterval(busyTimer); busyTimer = null }
+    busyElapsed.value = 0
+    if (!busy) return
+    busyTimer = setInterval(() => { busyElapsed.value += 1 }, 1000)
+  }
+)
+onBeforeUnmount(() => { if (busyTimer) clearInterval(busyTimer) })
 
 async function planLineup() {
   if (planning.value || saving.value) return
@@ -880,26 +895,33 @@ async function removeBoard(b) {
 .ms-plan-item {
   display: flex;
   gap: 8px;
-  align-items: flex-start;
+  align-items: center;
   font-size: var(--fs-xs);
   cursor: pointer;
 }
+/* 一行显示：名称 · 定位 · 板块。5 家规划要一眼看全，所以默认单行省略；
+   指针落上去（或键盘聚焦）再展开成完整文字（2026-11-08 用户要求）。
+   注意：单行是硬要求，别改回两行/多行 —— 之前两行 clamp 时列表一次只能露出两家。 */
 .ms-plan-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--text-dim);
+  display: block;
+  flex: 1 1 auto;
   min-width: 0;
-}
-/* 定位说明最多两行：5 家规划时每项太高会把列表挤成只看得到一两家（2026-11-08） */
-.ms-plan-text > span:not(.ms-plan-boards) {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  color: var(--text-dim);
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-plan-text > span:not(.ms-plan-boards) {
+  margin-left: 6px;
+}
+.ms-plan-item:hover .ms-plan-text,
+.ms-plan-item:focus-within .ms-plan-text {
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.55;
 }
 .ms-plan-text strong { color: var(--text-bright); }
-.ms-plan-boards { opacity: 0.8; }
+.ms-plan-boards { opacity: 0.8; margin-left: 6px; }
 .ms-plan-disable {
   display: flex;
   gap: 6px;
@@ -1122,26 +1144,33 @@ async function removeBoard(b) {
 .ms-plan-item {
   display: flex;
   gap: 8px;
-  align-items: flex-start;
+  align-items: center;
   font-size: var(--fs-xs);
   cursor: pointer;
 }
+/* 一行显示：名称 · 定位 · 板块。5 家规划要一眼看全，所以默认单行省略；
+   指针落上去（或键盘聚焦）再展开成完整文字（2026-11-08 用户要求）。
+   注意：单行是硬要求，别改回两行/多行 —— 之前两行 clamp 时列表一次只能露出两家。 */
 .ms-plan-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--text-dim);
+  display: block;
+  flex: 1 1 auto;
   min-width: 0;
-}
-/* 定位说明最多两行：5 家规划时每项太高会把列表挤成只看得到一两家（2026-11-08） */
-.ms-plan-text > span:not(.ms-plan-boards) {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  color: var(--text-dim);
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-plan-text > span:not(.ms-plan-boards) {
+  margin-left: 6px;
+}
+.ms-plan-item:hover .ms-plan-text,
+.ms-plan-item:focus-within .ms-plan-text {
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.55;
 }
 .ms-plan-text strong { color: var(--text-bright); }
-.ms-plan-boards { opacity: 0.8; }
+.ms-plan-boards { opacity: 0.8; margin-left: 6px; }
 .ms-plan-disable {
   display: flex;
   gap: 6px;

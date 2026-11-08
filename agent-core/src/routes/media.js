@@ -21,6 +21,7 @@ import {
 } from '../services/mediaService.js';
 import { config, updateMediaAutoMinutes } from '../config.js';
 import { generateMediaOutletDraft, redesignMediaOutlet, planMediaLineup } from '../services/mediaOutletDesigner.js';
+import { startMediaJob, getMediaJob } from '../services/mediaDraftJobs.js';
 import { mediaAvatarLibrary } from '../services/mediaAvatarLibrary.js';
 import { getDb } from '../db/index.js';
 import { setMediaPostFavorite } from '../db/mediaFavorites.js';
@@ -50,18 +51,18 @@ router.post('/avatars/:id/regenerate', (req, res) => {
 });
 
 // 仅生成表单草稿，不创建媒体、不触发出刊或生图。
-router.post('/outlets/draft', async (req, res) => {
-  try {
-    res.json({ draft: await generateMediaOutletDraft(req.body || {}) });
-  } catch (err) { fail(res, err); }
+// 2026-11-08：改成后台任务 —— 生成可能被截断后自动续写，最坏 1~2 分钟，不能挂着同步请求干转。
+router.post('/outlets/draft', (req, res) => {
+  const body = { ...(req.body || {}) };
+  res.status(202).json(startMediaJob('draft', () => generateMediaOutletDraft(body)));
 });
 
 // POST /api/media/outlets/plan — 按当前世界观规划一批媒体（只回草稿，不创建）
-router.post('/outlets/plan', async (req, res) => {
-  try {
-    const count = Number(req.body?.count) || 4;
-    res.json(await planMediaLineup({ count, existing: listOutlets() }));
-  } catch (err) { fail(res, err); }
+// 2026-11-08：同上，后台任务 + 前端轮询 GET /media/jobs/:id
+router.post('/outlets/plan', (req, res) => {
+  const count = Number(req.body?.count) || 4;
+  const existing = listOutlets();
+  res.status(202).json(startMediaJob('plan', () => planMediaLineup({ count, existing })));
 });
 
 // POST /api/media/outlets/plan/apply — 把选中的草稿创建出来；disableOld=true 时把原有媒体停用
@@ -94,18 +95,21 @@ router.post('/outlets/plan/apply', (req, res) => {
 });
 
 // POST /api/media/outlets/:id/redesign — 按当前世界观重写这家媒体的设定与板块（只回草稿，不落库）
-router.post('/outlets/:id/redesign', async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const outlet = getOutlet(id);
-    if (!outlet) return res.status(404).json({ error: '媒体不存在' });
-    const draft = await redesignMediaOutlet({
-      outlet,
-      boards: listBoards(id),
-      layout: outlet.layout === 'feed' ? 'feed' : 'portal',
-    });
-    res.json({ draft });
-  } catch (err) { fail(res, err); }
+// 2026-11-08：同样是后台任务（重写是最容易撞审核/截断的一条，见 mediaOutletDesigner 的缩短说明）
+router.post('/outlets/:id/redesign', (req, res) => {
+  const id = Number(req.params.id);
+  const outlet = getOutlet(id);
+  if (!outlet) return res.status(404).json({ error: '媒体不存在' });
+  const boards = listBoards(id);
+  const layout = outlet.layout === 'feed' ? 'feed' : 'portal';
+  res.status(202).json(startMediaJob('redesign', () => redesignMediaOutlet({ outlet, boards, layout })));
+});
+
+// GET /api/media/jobs/:jobId — 查后台草稿任务的状态（status: running / done / failed）
+router.get('/jobs/:jobId', (req, res) => {
+  const job = getMediaJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: '任务不存在或已过期' });
+  res.json(job);
 });
 
 // GET /api/media/outlets — 全部媒体（含板块数/帖子数）
