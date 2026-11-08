@@ -530,6 +530,14 @@ async function _chatSyncFreeEgg(messages, opts) {
  * 只有**检测到没写完**才重试，正常输出零成本、不会多发一次请求。
  */
 const MAX_INCOMPLETE_RETRIES = 5;
+/**
+ * 短任务（判断/分类这类 max_tokens 很小的调用）单独限次。
+ *
+ * 它们本来就不需要长输出，返回的 JSON 若不合法是「模型答非所问」，再发 5 次只是白烧额度、
+ * 还拖慢每一次交互。这类最多重试 2 次。
+ */
+const SHORT_TASK_MAX_TOKENS = 256;
+const SHORT_TASK_RETRY_LIMIT = 2;
 /** 重试时放大输出额度：截断多半是额度不够，只改提示词不提额度等于白试 */
 const INCOMPLETE_RETRY_TOKEN_FACTOR = 1.6;
 const INCOMPLETE_RETRY_TOKEN_CAP = 8000;
@@ -833,9 +841,14 @@ export async function chatSync(messages, opts = {}) {
     // 输出不完整（被截断 / 被审核中断）→ 自动重试，最多 MAX_INCOMPLETE_RETRIES 次。
     // 2026-11-08 用户定：所有链路都要，像人工敲「继续」一样把没写完的内容补完。
     const jsonMode = opts?.response_format?.type === 'json_object';
+    // 短任务单独限次（见 SHORT_TASK_MAX_TOKENS 注释）
+    const tokenBudget = Number(opts?.max_tokens ?? opts?.max_completion_tokens) || 0;
+    const retryLimit = tokenBudget > 0 && tokenBudget <= SHORT_TASK_MAX_TOKENS
+      ? SHORT_TASK_RETRY_LIMIT
+      : MAX_INCOMPLETE_RETRIES;
     let attempt = 0;
     let retryOpts = opts;
-    while (attempt < MAX_INCOMPLETE_RETRIES) {
+    while (attempt < retryLimit) {
       const kind = classifyIncomplete(meta, { jsonMode });
       if (!kind) break;
       attempt += 1;
@@ -876,9 +889,9 @@ export async function chatSync(messages, opts = {}) {
         break;
       }
     }
-    if (attempt >= MAX_INCOMPLETE_RETRIES) {
+    if (attempt >= retryLimit) {
       const kind = classifyIncomplete(meta, { jsonMode });
-      if (kind) console.warn(`[incomplete] ▸ 连续 ${MAX_INCOMPLETE_RETRIES} 次仍不完整，按现状返回 (${opts.label || 'chatSync'})`);
+      if (kind) console.warn(`[incomplete] ▸ 连续 ${retryLimit} 次仍不完整，按现状返回 (${opts.label || 'chatSync'})`);
     }
     return wantMeta ? meta : meta.content;
   } catch (err) {
