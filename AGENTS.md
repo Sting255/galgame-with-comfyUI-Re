@@ -94,6 +94,18 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 2. 示例中每个字段的值要写明该字段的内容要求与约束（如字数、语气、格式、禁止项），让模型照着填，参考 `agent-core/src/services/eventGenerator.js` 中 `formatPrompt` 的写法
 3. 必须明确要求模型严格按示例格式输出，不要输出任何解释或 JSON 以外的文字
 4. 新增或修改输出字段时，同步更新 prompt 中的 JSON 示例与解析代码，保持两者一致
+5. **输出被截断或审核中断时不要自己写兜底**：`llm-client.chatSync` 收口已经有「自动继续 + 拼接」循环（判据 `classifyIncomplete`、文本用 `mergeContinuationText`、JSON 用 `concatJsonContinuation`，最多 5 次、短任务 2 次、每次放大 1.6 倍额度）。业务层再包一层「格式不对请重新生成」只会让同一次失败被重试两轮。
+6. 需要「一定拿到合法 JSON」的调用，用 `response_format: { type: 'json_object' }` + 解析后做字段校验（如 `normalizeMediaOutletDraft`），不要靠提示词保证格式。
+
+## 后台生成的角色状态校验（2026-11-08 用户定）
+
+凡是**后台自动产生内容、用户能在界面上看到**的入口（朋友圈、群聊、奇遇、媒体、报纸、信箱、日记、共同生活…），必须在落库前用**代码**校验参与角色此刻的状态；prompt 里写的「睡着的人不要说话」只负责自然，不负责正确。
+
+1. 睡眠判定一律用 `scheduleManager.isSleeping()`（全仓唯一判定点），不要自己拿时间算睡眠；角色开关看 `characters` 行的 `moments_disabled` / `proactive_disabled` / `events_disabled` / `schedule_enabled`。
+2. 调度层先拦：全员睡眠/全部关闭时不该发起这一轮（参考 `groupIdleScheduler.countAwakeMembers`，0 人醒着就跳过并把下次时间推迟，**不扣当日额度**）。
+3. 解析层再拦一次：多角色同场的入口（群聊）要按说话人过滤，睡着的人不许自己开口，只有「被点名」或「本轮有人喊她+带唤醒动作」才放行（`groupChatEngine.canAsleepSpeakerTalk`，与 `applyGroupWake` 同口径）。
+4. 异步交互要排队而不是丢弃：她睡着时被私聊/被评论，进延迟队列，醒后 5~15 分钟补上（`reply_queue` 与 `moment_comment_queue` 各一套）。
+5. 新增入口照抄现有实现，不要重新发明：`momentScheduler`（候选筛选 SQL）、`proactiveChatScheduler`（`is_sleeping = 0`）、`momentInteractionService`（逐个好友判定）、`mediaService.pickActiveCharacters`（排除睡眠与关朋友圈）。
 
 ## 临时测试脚本
 
