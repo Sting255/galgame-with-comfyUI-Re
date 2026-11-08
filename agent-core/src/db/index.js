@@ -426,6 +426,23 @@ function initSchema(db) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- 朋友圈评论「等角色睡醒再回」队列（2026-11-08 用户定）
+    -- 你在她睡觉时评论了她的帖子：那一刻她不回（睡着的人不会回消息），
+    -- 到点（醒来后 1~10 分钟）由 replyQueueScheduler 生成回复并落库 + 广播 new_comment。
+    CREATE TABLE IF NOT EXISTS moment_comment_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      post_id INTEGER NOT NULL,
+      user_comment_id INTEGER NOT NULL,
+      scheduled_reply_at DATETIME NOT NULL,
+      status TEXT DEFAULT 'waiting' CHECK(status IN ('waiting','processing','done','cancelled')),
+      retry_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      processed_at DATETIME
+    );
+    CREATE INDEX IF NOT EXISTS idx_moment_comment_queue_due
+      ON moment_comment_queue(status, scheduled_reply_at);
+
     -- 朋友圈点赞表（单用户：每个帖子最多一个赞，UNIQUE 约束 + toggle）
     CREATE TABLE IF NOT EXISTS moment_likes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

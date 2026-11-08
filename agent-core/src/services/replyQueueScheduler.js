@@ -24,6 +24,7 @@ import {
   stateToPrompt, affinityToPrompt, loadAffinity,
 } from './emotionEngine.js';
 import { broadcast } from './unifiedStreamBus.js';
+import { processDeferredCommentReplies } from './momentCommentService.js';
 import { getStandingDisplay } from './standingDisplay.js';
 import { getFreshUnsharedDream, markDreamShared } from './dreamService.js';
 // 用户信息块的唯一构造器：与"叫醒"链共用，避免两处各写一份再漂移（persona 曾被丢掉，见该函数注释）
@@ -95,6 +96,14 @@ async function tick() {
 
     // 2. 回复队列处理（每次 tick 最多 1 个角色）
     await processReplyQueue();
+
+    // 3. 朋友圈评论「等醒再回」（2026-11-08）：她睡觉时被评论的帖子，醒来后补上回复。
+    //    独立 try：这条链路的失败绝不能影响私聊回复队列。
+    try {
+      await processDeferredCommentReplies({ limit: 3 });
+    } catch (err) {
+      console.warn('[replyQueue] deferred moment comment failed:', err?.message || err);
+    }
   } catch (err) {
     console.error('[replyQueue] tick error:', err.message);
   } finally {

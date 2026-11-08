@@ -20,6 +20,8 @@ import { MOMENT_COMMENT_RULES, firstMomentImagePrompt } from './momentForms.js';
 import { extractMomentImageRequest, stripMomentImageRequest } from './momentImageRequest.js';
 import { userNickname, loadCommentHistory, isCharacterSleeping } from './momentUserPostService.js';
 import { recallMomentMemories, formatMomentMemories } from './momentMemoryRecall.js';
+import { isSleeping } from './scheduleManager.js';
+import { broadcast as broadcastToUnified } from './unifiedStreamBus.js';
 
 /** 单条用户评论最多触发几个角色回复（@ 多人时截断，防止 LLM 调用失控） */
 const MAX_REPLIERS_PER_COMMENT = 4;
@@ -275,6 +277,142 @@ ${commentHistory ? `\n\n评论区目前的对话：\n---\n${commentHistory}\n---
  * 用户评论主流程：写入用户评论 → 决定谁回复 → 逐个生成 → 返回 { comment, replies }
  * @param {{ post: object, content: string, replyToCommentId?: number|null, deps?: object }} params
  */
+/**
+ * 「等醒再回」的定时时刻（2026-11-08 用户定）：她醒来后 1~10 分钟。
+ * 拿不到睡醒时间（临时唤醒窗口 / 日程异常）时兜底 30 分钟后。
+ */
+function scheduleDeferredReplyAt(characterId) {
+  try {
+    const st = isSleeping(characterId);
+    if (st.sleeping && st.sleepUntil) {
+      // sleepUntil 与库里的 DATETIME 同为 UTC 无时区串，直接按 UTC 解析
+      const wakeMs = new Date(`${String(st.sleepUntil).replace(' ', 'T')}Z`).getTime();
+      if (Number.isFinite(wakeMs) && wakeMs > Date.now()) {
+        return new Date(wakeMs + 60000 + Math.random() * 9 * 60000)
+          .toISOString().slice(0, 19).replace('T', ' ');
+      }
+    }
+  } catch { /* 落兜底 */ }
+  return new Date(Date.now() + 30 * 60000).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/** 入队一条「等醒再回」；同一条用户评论同一个人只排一次 */
+export function enqueueDeferredCommentReply({ characterId, postId, userCommentId }) {
+  const db = getDb();
+  const exists = db.prepare(
+    `SELECT id FROM moment_comment_queue
+     WHERE character_id = ? AND user_comment_id = ? AND status IN ('waiting','processing') LIMIT 1`
+  ).get(characterId, userCommentId);
+  if (exists) return exists.id;
+  const r = db.prepare(
+    `INSERT INTO moment_comment_queue (character_id, post_id, user_comment_id, scheduled_reply_at) VALUES (?, ?, ?, ?)`
+  ).run(characterId, postId, userCommentId, scheduleDeferredReplyAt(characterId));
+  return Number(r.lastInsertRowid);
+}
+
+/** 失败重试（最多 3 次，间隔 5 分钟），到上限就作废，避免卡在队列里反复烧 LLM */
+function retryOrCancelDeferred(row) {
+  const db = getDb();
+  const tries = Number(row.retry_count || 0) + 1;
+  if (tries >= 3) {
+    db.prepare(`UPDATE moment_comment_queue SET status = 'cancelled', retry_count = ? WHERE id = ?`).run(tries, row.id);
+    console.log(`[momentComment] 等醒再回放弃（重试 ${tries} 次）：queue #${row.id}`);
+    return;
+  }
+  db.prepare(
+    `UPDATE moment_comment_queue SET status = 'waiting', retry_count = ?, scheduled_reply_at = ? WHERE id = ?`
+  ).run(tries, new Date(Date.now() + 5 * 60000).toISOString().slice(0, 19).replace('T', ' '), row.id);
+}
+
+/**
+ * 处理到期的「等醒再回」评论（replyQueueScheduler 每分钟调用一次）。
+ *
+ * 你为什么会在她睡醒后收到一条新的评论回复：你在她睡觉时评论了她的帖子，
+ * 那一刻当场不回（睡着的人不会回消息），醒来后由这里补上并广播 new_comment，
+ * 前端 moments store 已经在监听该事件，会直接追加到评论区。
+ *
+ * @param {{limit?: number, deps?: object}} [opts]
+ * @returns {Promise<number>} 本轮成功补上的条数
+ */
+export async function processDeferredCommentReplies({ limit = 3, deps = {} } = {}) {
+  const db = getDb();
+  let due = [];
+  try {
+    due = db.prepare(
+      `SELECT * FROM moment_comment_queue
+       WHERE status = 'waiting' AND scheduled_reply_at <= datetime('now')
+       ORDER BY scheduled_reply_at ASC LIMIT ?`
+    ).all(limit);
+  } catch (err) {
+    console.warn('[momentComment] deferred queue read failed:', err?.message || err);
+    return 0;
+  }
+  let handled = 0;
+  for (const row of due) {
+    db.prepare(`UPDATE moment_comment_queue SET status = 'processing' WHERE id = ?`).run(row.id);
+    try {
+      // 又睡了（临时唤醒到期 / 日程重算）→ 顺延，不算失败
+      if (await isCharacterSleeping(row.character_id)) {
+        db.prepare(`UPDATE moment_comment_queue SET status = 'waiting', scheduled_reply_at = ? WHERE id = ?`)
+          .run(scheduleDeferredReplyAt(row.character_id), row.id);
+        continue;
+      }
+      const post = db.prepare('SELECT * FROM moment_posts WHERE id = ?').get(row.post_id);
+      const userComment = db.prepare('SELECT * FROM moment_comments WHERE id = ?').get(row.user_comment_id);
+      const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(row.character_id);
+      if (!post || !userComment || !character) {
+        db.prepare(`UPDATE moment_comment_queue SET status = 'cancelled' WHERE id = ?`).run(row.id);
+        continue;
+      }
+
+      const threadRootId = userComment.thread_root_id ?? userComment.id;
+      const history = loadCommentHistory(db, post.id);
+      const replyText = await generateCharacterCommentReply(character, post, history, {
+        isMentioned: false,
+        isThreadReply: true,
+        deps,
+        userComment: { id: userComment.id, content: userComment.content },
+        targetComment: null,
+      });
+      if (!replyText) { retryOrCancelDeferred(row); continue; }
+
+      const createdAt = new Date().toISOString();
+      const ins = db.prepare(
+        `INSERT INTO moment_comments (post_id, author_type, author_id, content, thread_root_id, reply_to_comment_id)
+         VALUES (?, 'character', ?, ?, ?, ?)`
+      ).run(post.id, character.id, replyText, threadRootId, userComment.id);
+      db.prepare('UPDATE moment_comments SET created_at = ? WHERE id = ?').run(createdAt, ins.lastInsertRowid);
+
+      db.prepare(`UPDATE moment_comment_queue SET status = 'done', processed_at = datetime('now') WHERE id = ?`).run(row.id);
+      handled++;
+      broadcastToUnified('new_comment', {
+        post_id: post.id,
+        comment: {
+          id: ins.lastInsertRowid,
+          post_id: post.id,
+          author_type: 'character',
+          author_id: character.id,
+          content: replyText,
+          char_display_name: character.display_name || character.name,
+          char_avatar_path: character.avatar_path || null,
+          reply_to_name: userNickname(),
+          reply_to_author_type: 'user',
+          reply_to_avatar_path: null,
+          reply_to_comment_id: userComment.id,
+          thread_root_id: threadRootId,
+          auto_trigger: 0,
+          created_at: createdAt,
+        },
+      });
+      console.log(`[momentComment] 醒来补回：${character.display_name || character.name} → post #${post.id}`);
+    } catch (err) {
+      console.error('[momentComment] deferred reply failed:', err?.message || err);
+      retryOrCancelDeferred(row);
+    }
+  }
+  return handled;
+}
+
 export async function handleUserComment({ post, content, replyToCommentId = null, deps = {} }) {
   const db = getDb();
   const userName = userNickname();
@@ -368,7 +506,20 @@ export async function handleUserComment({ post, content, replyToCommentId = null
   // 4. 逐个生成回复（后回复的人能看到前面的回复，形成自然接话）
   const replies = [];
   for (const character of capped) {
-    if (await isCharacterSleeping(character.id)) continue;
+    if (await isCharacterSleeping(character.id)) {
+      // 睡着的人不会当场回消息（2026-11-08 用户定）：不跳过，改为排到醒来后 1~10 分钟补回。
+      // 真机现象是「半夜评论一条，睡着的角色几秒后就回了」，两种做法（不回 / 醒后回）用户选了后者。
+      try {
+        enqueueDeferredCommentReply({
+          characterId: character.id,
+          postId: post.id,
+          userCommentId: Number(userCommentData.id),
+        });
+      } catch (err) {
+        console.warn('[momentComment] 排「等醒再回」失败:', err?.message || err);
+      }
+      continue;
+    }
     try {
       const history = loadCommentHistory(db, post.id);
       const replyText = await generateCharacterCommentReply(character, post, history, {
