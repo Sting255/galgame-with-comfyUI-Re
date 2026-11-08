@@ -160,6 +160,22 @@
                         </details>
                       </template>
                       <div v-else class="scene-block">
+                        <!-- 身份锚点（2026-11-08）：决定「这个角色是谁」的独立一层。
+                             身份 tag + 身体特征落库在 characters.identity_anchor，所有生图入口自动前置；
+                             服装生成只改衣服，永远不碰它。 -->
+                        <div v-if="!profileAdapter" class="identity-anchor">
+                          <div class="identity-anchor-head">
+                            <p class="split-hint">身份锚点：角色识别 tag + 身体特征。生图时自动前置，服装生成永远不改它。</p>
+                            <linshe-button size="sm" variant="ghost" :loading="identityAnchorBusy" :disabled="identityAnchorBusy || outfitBatchRunning" @click="reextractIdentityAnchor">重新自动提取</linshe-button>
+                          </div>
+                          <linshe-input
+                            v-model="detail.identityAnchor" type="textarea" rows="2" maxlength="600"
+                            aria-label="角色身份锚点"
+                            placeholder="尚未建立。点「重新自动提取」从角色卡里抽，或手填，例：Huohuo (Honkai: Star Rail), long mint-green hair, jade green eyes, petite"
+                            @input="onIdentityAnchorInput"
+                          />
+                          <p class="identity-anchor-meta">{{ identityAnchorMeta }}</p>
+                        </div>
                         <div class="scene-block-head">
                           <p class="split-hint">默认造型作为常态外观，其余服装随日程切换。</p>
                           <!-- 一键（2026-11-07 用户选 C）：描述 + 立绘一路走到底；旁边的 Ghost 按钮只出描述 -->
@@ -742,6 +758,9 @@ const detail = reactive({
   editNegativePrompt: '', // 角色级负面提示词（只在单人生图链路注入）
   appearanceTail: '',     // 外观段之后的内容（罕见；保留以免重组时丢段）
   originalAppearance: '', // 打开时的原外观段：工装被误清空时用它兜底，避免生图链路失去外观
+  identityAnchor: '',     // 身份锚点（2026-11-08）：角色识别 tag + 身体特征，独立列，服装生成不碰
+  identityAnchorSource: '', // auto = 自动维护；manual = 用户手改过（自动流程不再覆盖）
+  identityAnchorDirty: false, // 本次会话里用户动过锚点 —— 只有动过才随角色保存提交（避免把预览值写成手改）
   sceneOutfits: [],       // 四套场景服装 [{ scene, sceneLabel, name, description }]
   // 用**场景 key**（work/sleep 或自定义 custom_*）而不是数组索引：
   // 重新加载/接口失败后数组长度会变，索引会指错项甚至落空
@@ -999,6 +1018,67 @@ const standingBatchRunning = computed(() => standingBatch.value.total > 0)
 // 「我想要什么样的衣服」：一句话 → 后端在衣服库里模糊筛候选 tag → 模型挑 tag 写英文描述
 const outfitBrief = ref('')
 const outfitBriefGenerating = ref(false)
+
+// ── 身份锚点（2026-11-08）──
+// 身份 tag + 身体特征的独立存储位。生图时由 imageSkill 统一前置；服装生成永远不写它。
+const identityAnchorBusy = ref(false)
+const identityAnchorMeta = computed(() => {
+  if (identityAnchorBusy.value) return '正在从角色卡提取…'
+  if (!String(detail.identityAnchor || '').trim()) return '尚未建立：生图时只能靠角色卡外观描述认人，冷门角色容易飘'
+  if (detail.identityAnchorSource === 'manual') return '手动锚点：自动提取不再覆盖它（点「重新自动提取」会问一次）'
+  return '自动维护：角色卡外观或人设变了会重新提取；也可直接改'
+})
+
+function onIdentityAnchorInput() {
+  // 手改即视为 manual：保存时后端写 identity_anchor_source = manual，自动流程不再覆盖
+  detail.identityAnchorSource = String(detail.identityAnchor || '').trim() ? 'manual' : ''
+  detail.identityAnchorDirty = true
+  detail.dirty = true
+}
+
+async function loadIdentityAnchor(characterId) {
+  try {
+    const res = await api.getIdentityAnchor(characterId)
+    if (props.character?.id !== characterId) return
+    detail.identityAnchor = res?.anchor || ''
+    detail.identityAnchorSource = res?.source || ''
+    // 库里还没建立、但正则能现算出来时，把预览值展示出来（保存或点按钮才会真正落库）
+    if (!detail.identityAnchor && res?.preview) detail.identityAnchor = res.preview
+  } catch (err) {
+    console.warn('loadIdentityAnchor failed:', err?.message || err)
+  }
+}
+
+async function reextractIdentityAnchor() {
+  const c = props.character
+  if (!c || identityAnchorBusy.value) return
+  const isManual = detail.identityAnchorSource === 'manual'
+  if (isManual) {
+    const ok = await confirmFn({
+      title: '覆盖手动锚点？',
+      message: '当前锚点是你手改过的。重新提取会用角色卡里的内容覆盖它。',
+      okText: '重新提取', danger: true,
+    })
+    if (!ok) return
+  }
+  identityAnchorBusy.value = true
+  try {
+    const res = await api.extractIdentityAnchor(c.id, isManual)
+    if (!res?.anchor) {
+      toastFn('没能从角色卡里提取出身份信息，可以手动填', 'warning')
+      return
+    }
+    detail.identityAnchor = res.anchor
+    detail.identityAnchorSource = res.source || 'auto'
+    detail.identityAnchorDirty = true
+    detail.dirty = true
+    toastFn(`已提取：${res.anchor.slice(0, 60)}${res.anchor.length > 60 ? '…' : ''}`, 'success')
+  } catch (err) {
+    toastFn('提取失败：' + (err?.message || '未知错误'), 'error')
+  } finally {
+    identityAnchorBusy.value = false
+  }
+}
 // 折叠标题的副标题：跟着角色实际的服装套数走，别再写死「私服 · 居家」（这两个场景已删）
 const outfitSceneSummary = computed(() => {
   const list = Array.isArray(detail.sceneOutfits) ? detail.sceneOutfits : []
@@ -1380,6 +1460,10 @@ function init(c) {
   detail.originalAppearance = split.appearance
   detail.sceneTab = 'work'     // 每次打开都停在「常服/默认」（用户最常改的那套）
   detail.sceneOutfits = []     // 换角色先清空，避免上一个角色的服装串到面板上
+  // 身份锚点：先用列表行里带的值占位，再拉一次接口拿准确值（含未落库时的正则预览）
+  detail.identityAnchor = c.identity_anchor || ''
+  detail.identityAnchorSource = c.identity_anchor_source || ''
+  detail.identityAnchorDirty = false
   detail.sceneOutfitsError = ''
   detail.sceneOutfitsLoading = false
   detail.relOpen = false       // 关系列表默认折叠，把纵向空间让给人设与外观
@@ -1395,6 +1479,7 @@ function init(c) {
   loadSceneOutfits(c.id, split.appearance)
   loadSceneStandings(c.id)
   loadCurrentOutfit(c.id)
+  loadIdentityAnchor(c.id)
   detail.momentsDisabled = !!c.moments_disabled
   detail.proactiveDisabled = !!c.proactive_disabled
   detail.eventsDisabled = !!c.events_disabled
@@ -1463,6 +1548,8 @@ async function saveCharDetail() {
     display_name: detail.editName,
     base_prompt: composed,
     negative_prompt: detail.editNegativePrompt,
+    // 身份锚点只有用户动过才提交：渲染出来的「预览值」不该被悄悄记成手改（否则自动维护就停了）
+    ...(detail.identityAnchorDirty ? { identity_anchor: detail.identityAnchor } : {}),
     moments_disabled: detail.momentsDisabled,
     proactive_disabled: detail.proactiveDisabled,
     events_disabled: detail.eventsDisabled,
@@ -1470,6 +1557,12 @@ async function saveCharDetail() {
   c.name = detail.editCharName
   c.display_name = detail.editName
   c.base_prompt = composed
+  if (detail.identityAnchorDirty) {
+    c.identity_anchor = String(detail.identityAnchor || '').trim() || null
+    c.identity_anchor_source = c.identity_anchor ? 'manual' : null
+    detail.identityAnchorSource = c.identity_anchor ? 'manual' : ''
+    detail.identityAnchorDirty = false
+  }
 
   // 四套场景服装一并保存（只提交填了描述的；工装内容与 base_prompt 外观段一致）。
   // 名称由前端自动补（沿用已有 / 场景默认名）—— 界面不暴露该字段，它只服务日程标注的匹配。
@@ -2603,8 +2696,16 @@ const displayStandingPanel = computed(() => props.profileAdapter?.standing || st
 .scene-stand-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
 .scene-stand-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .scene-stand-upload { display: inline-flex; }
-.scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-/* 默认外观（身份锚点）的锁定说明：占满一行，语气克制，不抢立绘的视觉重心 */
+/* 身份锚点（2026-11-08）：凹陷浅底，和下面的服装区区分开，但不抢视觉重心 */
+.identity-anchor {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 0 0 12px; padding: 10px 12px;
+  border-radius: 12px; background: var(--bg-sunken); border: 1px solid var(--border);
+}
+.identity-anchor-head { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
+.identity-anchor-head .split-hint { flex: 1; margin: 0; }
+.identity-anchor-meta { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.scene-edit-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }/* 默认外观（身份锚点）的锁定说明：占满一行，语气克制，不抢立绘的视觉重心 */
 .scene-edit-locked { flex: 1 1 100%; margin: 0 0 2px; font-size: 12px; line-height: 1.6; color: var(--text-secondary, #8a7f76); }
 /* 「我想要什么样的衣服」：一句话需求 + 生成按钮，紧贴在描述框上方 */
 .scene-brief-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }

@@ -456,27 +456,10 @@ export function extractCharacterIdentityTag(character) {
   return '';
 }
 
-/**
- * 生图 prompt 兜底：确认主角色身份标签已经出现，缺失时补在开头。
- * 梦境配图要求以 "A surreal dreamscape scene:" 开头，此时把标签插在冒号后，
- * 不破坏梦境前缀。原创角色/无标签时原样返回。
- * @param {string} prompt
- * @param {object} character
- * @returns {string}
- */
-export function ensureImagePromptIdentity(prompt, character) {
-  const text = String(prompt || '').trim();
-  const tag = extractCharacterIdentityTag(character);
-  if (!text || !tag) return text;
-  const bareName = tag.replace(/\s*\([^)]*\)\s*$/, '').trim();
-  const lower = text.toLowerCase();
-  if (lower.includes(tag.toLowerCase()) || (bareName && lower.includes(bareName.toLowerCase()))) return text;
-  const dreamPrefix = 'A surreal dreamscape scene:';
-  if (text.startsWith(dreamPrefix)) {
-    return `${dreamPrefix} ${tag}.${text.slice(dreamPrefix.length)}`;
-  }
-  return `${tag}. ${text}`;
-}
+// 注：原先的 `ensureImagePromptIdentity`（prompt 缺身份 tag 时补在最前）已于 2026-11-08
+// 被 services/identityAnchor.js 取代 —— 身份现在是可落库、可手改、可重算的独立锚点
+// （`applyIdentityAnchorToPrompt` + `getIdentityAnchorForPrompt`），并在 imageSkill._execute
+// 统一前置。保留两套补齐口径只会再次分叉，所以直接删掉旧入口。
 
 /**
  * 多人同框的「服装归属」硬规则（2026-11-07 真机：A 的衣服穿到 B 身上）。

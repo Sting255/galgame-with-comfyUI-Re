@@ -32,7 +32,8 @@ import {
   readOutfitOverride, setOutfitOverride,
 } from '../services/outfitScene.js';
 import { listSceneStandings, upsertSceneStanding, deleteSceneStanding, getSceneStandingRow, STANDING_SCENE_KEYS, STANDING_SCENE_LABELS } from '../services/characterStanding.js';
-import { buildCharacterPersona, ensureImagePromptIdentity, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
+import { buildCharacterPersona, extractAppearanceIdentityCorpus, extractAppearanceSection, replaceAppearanceSection, splitAppearanceSection, isAppearanceOnlyPromptChange } from '../services/characterPersona.js';
+import { ensureIdentityAnchor, getStoredIdentityAnchor, buildIdentityAnchorFromCard } from '../services/identityAnchor.js';
 import { applyAllTypesToCharacter } from '../services/globalOutfitTypes.js';
 import { getWorldIntegrationRule, STANDING_IMAGE_PROMPT_RULE, STANDING_PROMPT_MODES, STANDING_ROLE_PROMPTS } from '../builtinRules.js';
 import { collectCharacterImageUrls } from '../services/characterImages.js';
@@ -240,6 +241,19 @@ router.post('/', (req, res) => {
     refreshCharSearch();
     // 新建角色自动带上设置里的「全角色统一服装」类型（空描述，等生成）
     try { applyAllTypesToCharacter(newCharId); } catch (err) { console.warn('[char] apply global outfits failed:', err.message); }
+
+    // 身份锚点（2026-11-08）：新卡进来就建立一次。正则提得到就不调模型；提不到才让 LLM 抽一次。
+    // 异步执行，不阻塞建档响应；失败也不影响角色可用，前端「身份锚点」区块还能手动重算。
+    setImmediate(async () => {
+      try {
+        const fresh = db.prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(newCharId);
+        if (!fresh) return;
+        const anchorResult = await ensureIdentityAnchor(fresh, { allowLLM: true });
+        if (anchorResult.anchor) console.log(`[char] identity anchor built for "${fresh.display_name}" (from ${anchorResult.from})`);
+      } catch (err) {
+        console.warn('[char] identity anchor build failed:', err.message);
+      }
+    });
 
     // 异步选择手写字体（不阻塞响应）
     assignFontForNewCharacter(newCharId, base_prompt).catch(err =>
@@ -544,6 +558,14 @@ router.put('/:id', (req, res) => {
     updates.push('negative_prompt = ?');
     params.push(typeof negative_prompt === 'string' ? negative_prompt.trim().slice(0, 200) : '');
   }
+  // 身份锚点（2026-11-08）：前端「身份锚点」区块手改后随角色一起保存。
+  // 非空 = 记为 manual（自动流程永不再覆盖）；空串 = 清空，下次保存或点按钮时重新建立。
+  const identityAnchorInput = req.body?.identity_anchor;
+  if (identityAnchorInput !== undefined) {
+    const cleanAnchor = String(identityAnchorInput || '').trim().slice(0, 600);
+    updates.push('identity_anchor = ?'); params.push(cleanAnchor || null);
+    updates.push('identity_anchor_source = ?'); params.push(cleanAnchor ? 'manual' : '');
+  }
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
   params.push(req.params.id);
   db.prepare(`UPDATE characters SET ${updates.join(', ')} WHERE id = ?`).run(...params);
@@ -569,6 +591,23 @@ router.put('/:id', (req, res) => {
   res.json({ ok: true });
   refreshCharSearch();
 
+  // 身份锚点维护（2026-11-08）：卡变了就重算，只跑正则、不调模型。
+  // 保存请求不能被一次 LLM 调用拖住；LLM 兜底留给「重新自动提取」按钮。
+  // 用户在这一轮显式提交了 identity_anchor（手改）时不重算 —— 手改优先。
+  if (base_prompt !== undefined && identityAnchorInput === undefined) {
+    const anchorCharId = parseInt(req.params.id, 10);
+    setImmediate(async () => {
+      try {
+        const anchorChar = db.prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(anchorCharId);
+        if (!anchorChar) return;
+        const anchorResult = await ensureIdentityAnchor(anchorChar, { allowLLM: false });
+        if (anchorResult.changed) console.log(`[char] identity anchor refreshed for "${anchorChar.display_name}" (from ${anchorResult.from})`);
+      } catch (err) {
+        console.warn('[char] identity anchor refresh failed:', err.message);
+      }
+    });
+  }
+
   // 若 base_prompt 变更（非纯外观修改，LLM 浓缩明确排除外观描写），异步优化 short_prompt
   if (base_prompt !== undefined && !appearanceOnlyEdit) {
     const charId = parseInt(req.params.id, 10);
@@ -586,6 +625,32 @@ router.put('/:id', (req, res) => {
         console.warn(`[char] short_prompt LLM optimization failed for char ${charId}:`, err.message);
       }
     });
+  }
+});
+
+// ── 角色身份锚点（2026-11-08）：身份 tag + 身体特征的独立存储位 ──
+// 与服装、人设正文互不影响：服装生成不许碰它，生图时前置，冷门/LoRA 角色靠它锚定。
+router.get('/:id/identity-anchor', (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const stored = getStoredIdentityAnchor(char.id);
+  const preview = stored.anchor ? null : buildIdentityAnchorFromCard(char).anchor || null;
+  res.json({ ok: true, anchor: stored.anchor, source: stored.source, preview });
+});
+
+// POST /api/characters/:id/identity-anchor/extract — 重新自动提取（正则优先，提不到才调 LLM）
+// Body: { overwrite?: true } —— 手改过的锚点要显式 overwrite 才会被覆盖
+router.post('/:id/identity-anchor/extract', async (req, res) => {
+  const db = getDb();
+  const char = db.prepare('SELECT id, display_name, base_prompt, short_prompt FROM characters WHERE id = ?').get(req.params.id);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  try {
+    const result = await ensureIdentityAnchor(char, { force: req.body?.overwrite === true, allowLLM: true });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[identity-anchor] extract failed:', err.message);
+    res.status(500).json({ error: '身份锚点提取失败：' + (err.message || '未知错误') });
   }
 });
 
@@ -1224,15 +1289,14 @@ ${buildCharacterPersona(char, { variant: 'full', outfitScene: 'base' })}
 
     // Step 2: 调用 ComfyUI 生图（1024x1024）
     console.log(`[generate-avatar] Step 2/2: generating image at 1024x1024...`);
-    // 身份锚点兜底（2026-11-08）：LLM 输出的英文 prompt 不一定带 `Name (Series)`。
-    // 带了模型才走 IP 先验，冷门/LoRA 角色才不会因为服装描述换了一版就变人。
-    promptText = ensureImagePromptIdentity(promptText, char);
     const charLoras = _parseCharLoras(char.loras);
     const avatarArtist = charArtistOverride(char);
     const result = await generateImageRaw(promptText, {
       promptScene: 'avatar',
       disableRAG: true,
       ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
+      // 身份锚点：头像永远是本角色，统一由 imageSkill 前置 `Name (Series)` + 身体特征
+      identity: char,
       artist: avatarArtist !== null ? avatarArtist : config.comfyui.momentsArtist,
       width: 768,
       height: 768,
@@ -1380,9 +1444,6 @@ router.post('/:id/generate-standing', async (req, res) => {
 async function runStandingGeneration(char, promptText, { stageBase, onProgress }) {
   // 出图：朋友圈画师串口径（角色单独画师串优先），固定 1:2 竖幅 768x1536
   console.log(`[generate-standing] Step 2/2: generating image at 768x1536...`);
-  // 身份锚点兜底（2026-11-08）：见 generate-avatar 同名注释。立绘是角色招牌形象，
-  // 一旦外观段被换成只写衣服的描述，模型就只剩「一串衣服 tag + 一点身体词」可用。
-  promptText = ensureImagePromptIdentity(promptText, char);
   const charLoras = _parseCharLoras(char.loras);
   const standingArtist = charArtistOverride(char);
   let lastStage = '';
@@ -1394,6 +1455,8 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
     priority: 'high',
     disableRAG: true,
     ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
+    // 身份锚点：立绘是招牌形象，绝不能因为外观描述换了一版就变成另一个人
+    identity: char,
     artist: standingArtist !== null ? standingArtist : config.comfyui.momentsArtist,
     width: 768,
     height: 1536,

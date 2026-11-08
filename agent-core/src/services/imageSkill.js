@@ -25,6 +25,7 @@ import { acquireSlot, releaseSlot } from './llmConcurrency.js';
 import { prepareImagePrompt } from './imagePromptPreparer.js';
 import { createSoftState } from './softStateStore.js';
 import { stripImagePromptRuleEcho } from '../utils/groupImagePrompt.js';
+import { getIdentityAnchorForPrompt, applyIdentityAnchorToPrompt } from './identityAnchor.js';
 import { resolveComfySubdir } from '../utils/comfyPaths.js';
 
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
@@ -722,7 +723,18 @@ async function _execute(rawPrompt, opts) {
       // 整条都是规范原文 ⇒ 送进去只会得到一张和剧情毫无关系的图，不如明确失败。
       throw Object.assign(new Error('画面描述里只有生图规范原文，没有可用的场景内容'), { code: 'image_prompt_rule_echo_only' });
     }
-    const prompt = sanitized.prompt;
+    let prompt = sanitized.prompt;
+
+    // 0a. 身份锚点前置（2026-11-08）：调用方传了 `opts.identity`（角色行）时，把该角色的
+    //     「Name (Series) + 身体特征」锚点补在 prompt 最前。放在这里而不是各调用点，
+    //     是为了让 chat / touch(亲密) / 立绘 / 头像 / 梦话 / 事件 / 朋友圈 **所有**入口一次生效。
+    //     不传 identity 与改动前逐字节一致（场景图、道具图、路人图都不受影响）。
+    //     幂等：prompt 里已有同名身份 tag 时不重复前置。
+    if (opts.identity) {
+      prompt = applyIdentityAnchorToPrompt(prompt, getIdentityAnchorForPrompt(opts.identity));
+      // identity 只服务这一层，别让它跟着 opts 流进工作流构造
+      delete opts.identity;
+    }
 
     // 0b. 连一个英文字母都没有 ⇒ 这是「模型把中文要求当成了画面描述」那类退化
     //     （全仓有多处 `text.length >= 5` 的弱校验：schedule.js / proactiveChatScheduler.js /

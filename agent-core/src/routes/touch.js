@@ -87,7 +87,6 @@ import { getSensitivity } from '../services/sensitivityService.js';
 // task-30 新喂料块：复用聊天轮/群聊轮的既有 builder，一行不重写
 import { buildHypnosisStateBlock } from '../services/hypnosisPrompt.js';
 import { buildIntimateProfileBlock } from '../services/intimatePrompt.js';
-import { ensureImagePromptIdentity } from '../services/characterPersona.js';
 import { isAiEditAllowed, recordIntimateActs } from '../services/intimateService.js';
 import { broadcastProactiveMessage } from '../services/notificationBus.js';
 import { writeProactiveMessage } from '../services/proactiveChatScheduler.js';
@@ -177,15 +176,14 @@ async function defaultTouchImageGenerator(character, prompt, { scene = 'chat' } 
   } catch (err) {
     console.warn('[touch] 体位骨架跳过:', err?.message || err);
   }
-  // 身份锚点兜底（2026-11-08）：触摸/亲密图也走同一个 LLM 出英文 prompt，缺 `Name (Series)`
-  // 时模型只能靠先验认人，冷门/LoRA 角色会画成路人；缺字段时函数原样返回，不影响其它角色。
-  const anchorPrompt = ensureImagePromptIdentity(prompt, character);
-  const result = await generateImage(anchorPrompt, {
+  // 身份锚点由 imageSkill._execute 统一前置（opts.identity）：触摸/亲密图也走同一条链路
+  const result = await generateImage(prompt, {
     scene,
     // 同一次亲密/触摸过程的连续几张图共用种子基准（30 分钟窗口，与 resolveSceneSeed 对齐）
     sceneKey: `touch:${character.id}:${Math.floor(Date.now() / (30 * 60 * 1000))}`,
     // 角色级负面词：触摸/亲密图里的主角就是她本人
     characterNegative: character.negative_prompt || '',
+    identity: character,
     ...opts,
   });
   if (!result?.success || !result.images?.length) {

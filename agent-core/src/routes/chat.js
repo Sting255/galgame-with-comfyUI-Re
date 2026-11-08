@@ -65,7 +65,7 @@ import {
 } from '../services/emotionEngine.js';
 import { generateImage, getLastWorkflowMode, captureImageGenerationConfig } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
-import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock, ensureImagePromptIdentity, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
+import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
 import { getActiveBuffBlock } from '../services/itemService.js';
 import { getWorldStateBlock, getCharacterEventBlockFor } from '../services/newspaperService.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
@@ -2563,9 +2563,9 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
   }
 
   try {
-    // 身份锚点兜底：只补在「角色本人在画面里」的图上（分享图 includeCharacter=false 时不补）
-    const finalPrompt = identitySource ? ensureImagePromptIdentity(prompt, identitySource) : prompt;
-    const result = await generateImage(finalPrompt, {
+    // 身份锚点由 imageSkill._execute 统一前置（opts.identity），这里不再各自拼 tag；
+    // 分享图 includeCharacter=false 时不传，锚点自然不注入。
+    const result = await generateImage(prompt, {
       scene: 'chat',
       ragQuery,
       ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
@@ -2579,6 +2579,8 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
       ...frozenImageConfig,
       ...loraOpts,
       characterNegative,
+      // 身份锚点：角色本人在画面里才传（imageSkill 统一前置，缺锚点时会从卡里现算）
+      ...(identitySource ? { identity: identitySource } : {}),
     });
     if (result.success && result.images.length > 0) {
       const urls = [];
@@ -3251,7 +3253,7 @@ async function handleDreamTalkReply(res, characterId, conversationId, userMsgId,
     send('bubble_break', {});
 
     // 4. 现场生成梦境配图：完整 generate_start/progress/done 推送流（用户正在等图，走高优先级队列）
-    const finalPrompt = ensureImagePromptIdentity(decorateDreamImagePrompt(imagePrompt), character);
+    const finalPrompt = decorateDreamImagePrompt(imagePrompt);
     if (finalPrompt) {
       genTaskId = db.prepare(
         'INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status) VALUES (?, ?, ?, ?)'
@@ -3282,6 +3284,8 @@ async function handleDreamTalkReply(res, characterId, conversationId, userMsgId,
           }
         },
         ...loraOpts,
+        // 梦话配图的主角就是她本人：身份锚点统一由 imageSkill 前置（梦境前缀会被正确保留）
+        identity: character,
       });
 
       if (!result.success || !result.images?.length) {

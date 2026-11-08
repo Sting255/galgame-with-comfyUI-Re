@@ -1253,6 +1253,9 @@ function initSchema(db) {
   // 迁移: 角色立绘 — characters 表新增 standing_url 列
   migrateStandingSchema(db);
 
+  // 迁移: 角色身份锚点 — characters 表新增 identity_anchor / identity_anchor_source 列
+  migrateIdentityAnchorSchema(db);
+
   // 迁移: AI 小镇 v2 — town_maps/locations/players 加列（新表由上方 CREATE IF NOT EXISTS 覆盖）
   migrateTownV2Schema(db);
   migrateTownSchema(db);
@@ -2181,6 +2184,32 @@ function migrateDeepThinkSchema(db) {
     }
   } catch (err) {
     console.log('[db] migrateDeepThinkSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 角色身份锚点（2026-11-08 用户定）—— characters 表新增两列
+ *
+ * 背景：角色身份（`Name (Series)` + 身体特征）原先只存在于 `base_prompt` 的「## 你的外观」段，
+ * 而这段同时被当成 work（默认）那套衣服的描述 ⇒ 任何对 work 的生成都会换掉角色，
+ * 冷门/LoRA 角色直接飘成别人。现在身份有独立存储位，生图时前置，服装生成永远不碰。
+ *
+ *   identity_anchor        锚点正文（英文 tag 串），空 = 未建立
+ *   identity_anchor_source auto = 自动维护（卡变了会被重算）；manual = 用户手改过（自动流程不动）
+ */
+function migrateIdentityAnchorSchema(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(characters)`).all();
+    if (!cols.find(c => c.name === 'identity_anchor')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN identity_anchor TEXT`);
+      console.log('[db] Added characters.identity_anchor column');
+    }
+    if (!cols.find(c => c.name === 'identity_anchor_source')) {
+      db.exec(`ALTER TABLE characters ADD COLUMN identity_anchor_source TEXT`);
+      console.log('[db] Added characters.identity_anchor_source column');
+    }
+  } catch (err) {
+    console.log('[db] migrateIdentityAnchorSchema error:', err.message);
   }
 }
 

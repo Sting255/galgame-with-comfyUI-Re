@@ -143,6 +143,17 @@ export async function togglePin(characterId, pinned) {
   return request(`/characters/${characterId}/pin`, { method: 'PUT', body: { pinned } })
 }
 
+// ── 角色身份锚点（2026-11-08）──
+// 身份 tag（Name (Series)）+ 身体特征，独立于服装与人设正文；所有生图入口自动前置。
+export function getIdentityAnchor(characterId) {
+  return request(`/characters/${characterId}/identity-anchor`)
+}
+
+/** 重新自动提取（正则优先，提不到时后端会调一次 LLM）。overwrite=true 时覆盖手改过的锚点。 */
+export function extractIdentityAnchor(characterId, overwrite = false) {
+  return request(`/characters/${characterId}/identity-anchor/extract`, { method: 'POST', body: { overwrite } })
+}
+
 // ── 角色专属外观/形态 ──
 export function listCharacterOutfits(characterId) {
   return request(`/characters/${characterId}/outfits`)

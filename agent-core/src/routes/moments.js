@@ -10,7 +10,7 @@ import { config } from '../config.js';
 import { getMomentDelay } from '../services/momentTiming.js';
 import { generateImageRaw } from '../services/imageSkill.js';
 import { charArtistOverrideWithFallback } from '../services/characterImageOpts.js';
-import { buildCharacterPersona, ensureImagePromptIdentity } from '../services/characterPersona.js';
+import { buildCharacterPersona } from '../services/characterPersona.js';
 import { getGodWorldContext } from '../services/godSays/worldContext.js';
 import { createCharacterTownLifeContext } from '../services/characterTownLifeContext.js';
 import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
@@ -516,19 +516,17 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
     // 多图模式串行出图：单张失败只丢那一张，不影响其他张和发帖
     for (let i = 0; i < imagePrompts.length; i++) {
       try {
-        // 兜底身份锚定：规则要求模型写 'Name (Series)'，但偶发只写外观/身份代称；
-        // 出图前统一校验并补全，保证 IP 角色名一定进入最终 prompt。
-        const promptWithIdentity = ensureImagePromptIdentity(imagePrompts[i], character);
-        if (promptWithIdentity !== imagePrompts[i]) {
-          console.log(`[moments] restored character identity tag for image ${i + 1}/${imagePrompts.length}: ${promptWithIdentity.slice(0, 80)}`);
-        }
-        const genResult = await generateImageRaw(promptWithIdentity, {
+        // 身份锚点：规则要求模型写 'Name (Series)'，但偶发只写外观/身份代称。
+        // 2026-11-08 起统一由 imageSkill._execute 前置（opts.identity），这里不再自己补。
+        const genResult = await generateImageRaw(imagePrompts[i], {
           ragQuery: text,
           artist: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
           width,
           height,
           scene: 'moments',
           priority: manual ? 'high' : 'low',
+          // 发帖角色本人一定在画面里；多人同框时其余角色走交叉参考，不注入别人的锚点
+          identity: character,
           ...loraOpts,
           // 角色级负面词只在「画面里只有发帖者本人」时注入：多人同框没有唯一主角，
           // 拿谁的负面词都可能在排斥别人身上的正常元素
