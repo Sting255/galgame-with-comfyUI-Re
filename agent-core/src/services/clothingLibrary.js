@@ -10,10 +10,32 @@ const fabricCatalog = JSON.parse(readFileSync(new URL('../../resources/fabric-li
 export function getFabricLibrary() { return fabricCatalog; }
 
 /** 按种子做确定性洗牌：同一次生成可复现，不同角色抽到的组合不同。 */
+/**
+ * 按 seed 打乱一份列表（确定性：同一 seed 永远同一结果）。
+ *
+ * 2026-11-09 修：原实现是
+ *   `j = Math.abs(seed * 31 + salt * 17 + i * 7) % (i + 1)`
+ * seed 在循环里是**常量**，j 几乎只随 i 变化，Fisher-Yates 退化成近线性模式 ——
+ * 实测 400 个 seed 下，材质池前 5 个（正好是 sheer / see through / translucent /
+ * mesh / fishnet 这些透视系）被选中 130/124/123/125/106 次（均匀应约 46），
+ * 而池子末尾 8 个（knit / sequins / tulle …）**一次都没被选中过**。
+ *
+ * 这正是用户看到「每个角色的衣服都像同一类」的底层原因：材质永远从那几个里抽。
+ *
+ * 现在换成 mulberry32：把 seed 与 salt 真正混进每一步，分布均匀、仍然确定可复现。
+ */
 function shuffleBySeed(list, seed, salt = 0) {
   const array = [...list];
+  let a = (Math.round(seed) * 2654435761 + salt * 40503) >>> 0;
+  const rand = () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
   for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.abs(Math.round(seed) * 31 + salt * 17 + i * 7) % (i + 1);
+    const j = Math.floor(rand() * (i + 1));
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;
