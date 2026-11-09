@@ -193,8 +193,20 @@ export async function listCharacters(options = {}) {
   return request(`/characters${query}`)
 }
 
-export async function getMessages(characterId) {
-  return request(`/characters/${characterId}/messages`)
+/**
+ * 取角色对话消息。
+ *
+ * 不传 page 时行为与改动前完全一致（后端返回全部），既有调用方零改动。
+ * 传 `{ limit, before }` 走分页：`before` 是上一页返回的 `page.beforeCursor`。
+ */
+export async function getMessages(characterId, page = null) {
+  if (!page || (!page.limit && page.before == null)) {
+    return request(`/characters/${characterId}/messages`)
+  }
+  const params = new URLSearchParams()
+  if (page.limit) params.set('limit', String(page.limit))
+  if (page.before != null) params.set('before', String(page.before))
+  return request(`/characters/${characterId}/messages?${params}`)
 }
 
 export async function updateCharacter(id, data) {

@@ -386,19 +386,104 @@ router.delete('/characters/:id/messages/last-round', (req, res, next) => {
   }
 });
 
-// GET /api/characters/:id/messages — 获取角色全部对话消息（本地 SQLite，数据量可控，无需分页）
+/**
+ * 逻辑消息组（轮）边界 —— 2026-11-09 方案 B04。
+ *
+ * ⚠️ **不是**按 `raw_id` 分组：一轮对话在库里是「user 一条 raw + assistant 若干条 raw（逐句）」，
+ * 按 raw_id 分组会把同一轮切成两半，翻页时用户会看到「自己发的话在、她的回复不在」——
+ * 那比不分页更糟。
+ *
+ * 这里按**轮**分组：一条消息归属于「在它之前（含自己）的最后一条 user 原文」。
+ * 一轮里的 user 与全部 assistant 分句因此共用同一个 turn key。
+ * 开场白（第一条 user 之前的内容）没有归属，退回自己的 raw_id 自成一组；
+ * 无 raw_id 的独立消息用 -id。
+ *
+ * 依赖 `raw_messages.id` 单调递增（AUTOINCREMENT），同一轮里 user raw 先于 assistant raw 写入。
+ */
+const TURN_KEY_SQL = (alias = 'm') => `
+  COALESCE(
+    (SELECT MAX(turn_u.id) FROM raw_messages turn_u
+     WHERE turn_u.conversation_id = ${alias}.conversation_id
+       AND turn_u.role = 'user'
+       AND turn_u.id <= ${alias}.raw_id),
+    ${alias}.raw_id,
+    -${alias}.id
+  )`;
+
+// GET /api/characters/:id/messages — 获取角色对话消息
+//
+// 2026-11-09（方案 B04）：新增 `limit` / `before` 分页。
+// **不传参数时行为与改动前逐字节一致**（返回全部消息），既有调用方零改动。
+//
+// 分页以「轮」为边界：一轮 = 一条 user + 她的全部分句，先选轮再取整轮，
+// 绝不把一轮切在两页。游标是该轮内首条消息的 id（服务端稳定标识），
+// 不让前端猜 created_at 或拿简单 messages.id 当顺序依据。
 router.get('/characters/:id/messages', (req, res) => {
   const db = getDb();
   const conversationId = convId(req.params.id);
 
+  const rawLimit = req.query.limit;
+  const limit = rawLimit !== undefined ? Math.max(1, Math.min(200, parseInt(rawLimit, 10) || 0)) : null;
+  const beforeId = req.query.before !== undefined ? (parseInt(req.query.before, 10) || 0) : null;
+
+  // 组排序键：同一轮所有消息共享同一个 key，用它排序与游标比较
+  const groupOrder = `COALESCE((SELECT MIN(part.id) FROM messages part WHERE part.raw_id=m.raw_id),m.id)`;
+  const turnKey = TURN_KEY_SQL('m');
+
+  let selectClause;
+  let params;
+  let page = null;
+  let hasMoreOlder = false;
+
+  if (limit === null) {
+    // 兼容路径：不分页，返回全部（默认行为，调用方不变）
+    selectClause = `
+      SELECT m.id, m.conversation_id, m.raw_id, m.role, m.content, m.images, m.created_at, m.event_id, r.client_msg_id
+      FROM messages m
+      LEFT JOIN raw_messages r ON r.id = m.raw_id
+      WHERE m.conversation_id = ?
+      ORDER BY ${groupOrder}, m.seq, m.id`;
+    params = [conversationId];
+  } else {
+    // 分页路径：先按「轮」倒序取 limit+1 轮，多取一轮用来判断是否还有更早内容
+    const turnRows = db.prepare(`
+      SELECT ${turnKey} AS turn_key
+      FROM messages m
+      WHERE m.conversation_id = ?
+        ${beforeId !== null ? `AND ${turnKey} < ?` : ''}
+      GROUP BY ${turnKey}
+      ORDER BY turn_key DESC
+      LIMIT ?
+    `).all(...(beforeId !== null ? [conversationId, beforeId] : [conversationId]), limit + 1);
+
+    hasMoreOlder = turnRows.length > limit;
+    const pageTurns = hasMoreOlder ? turnRows.slice(0, limit) : turnRows;
+    const turnKeys = pageTurns.map(t => t.turn_key);
+
+    if (turnKeys.length === 0) {
+      selectClause = null;
+      params = [];
+    } else {
+      const placeholders = turnKeys.map(() => '?').join(',');
+      selectClause = `
+        SELECT m.id, m.conversation_id, m.raw_id, m.role, m.content, m.images, m.created_at, m.event_id, r.client_msg_id
+        FROM messages m
+        LEFT JOIN raw_messages r ON r.id = m.raw_id
+        WHERE m.conversation_id = ?
+          AND COALESCE(${turnKey}, 0) IN (${placeholders})
+        ORDER BY ${groupOrder}, m.seq, m.id`;
+      params = [conversationId, ...turnKeys];
+    }
+    // beforeCursor = 本页最早那轮的 key；前端下次带上它取更早的一页
+    page = {
+      hasMoreOlder,
+      beforeCursor: pageTurns.length > 0 ? pageTurns[pageTurns.length - 1].turn_key : null,
+      limit,
+    };
+  }
+
   // 上游 v4.2.0：深度思考链路下线，消息不再带思考原文；改带 client_msg_id 供前端幂等对齐
-  const messages = stmt(`
-    SELECT m.id, m.conversation_id, m.raw_id, m.role, m.content, m.images, m.created_at, m.event_id, r.client_msg_id
-    FROM messages m
-    LEFT JOIN raw_messages r ON r.id = m.raw_id
-    WHERE m.conversation_id = ?
-    ORDER BY COALESCE((SELECT MIN(part.id) FROM messages part WHERE part.raw_id=m.raw_id),m.id), m.seq, m.id
-  `).all(conversationId).map(m => ({
+  const messages = (selectClause ? stmt(selectClause).all(...params) : []).map(m => ({
     ...m,
     created_at: toISODate(m.created_at),
   }));
@@ -453,6 +538,8 @@ router.get('/characters/:id/messages', (req, res) => {
     } : null,
     completedClientMsgIds,
     imageTasks,
+    // 分页信息（B04）：不分页时为 null，保持旧响应形状不变
+    page: page,
   });
 });
 

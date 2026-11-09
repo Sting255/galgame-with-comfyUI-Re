@@ -1879,6 +1879,8 @@ function timeLabel(iso) {
 
 let userScrolledUp = false
 let scrollTimer = null
+// 加载更早一页时的重入锁（B04）：滚动事件连续触发时不并发请求同一页
+let loadingOlderLock = false
 let imageScrollFrame = null
 
 function onChatImageLoaded(message) {
@@ -1917,13 +1919,18 @@ function onScroll() {
     if (distToBottom < 60) userScrolledUp = false
   }, 2000)
 
-  // 滚动到顶部 → 展开渲染窗口显示更早消息
-  if (el.scrollTop < 40 && chat.hasMoreOlder) {
+  // 滚动到顶部 → 展开渲染窗口；窗口已展开完则向服务端取更早一页（B04）
+  if (el.scrollTop < 40 && chat.hasMoreOlder && !loadingOlderLock) {
     const prevHeight = el.scrollHeight
-    chat.expandWindow()
-    nextTick(() => {
-      if (msgList.value) msgList.value.scrollTop += msgList.value.scrollHeight - prevHeight
-    })
+    loadingOlderLock = true
+    Promise.resolve(chat.expandWindow()).then((hasMore) => {
+      nextTick(() => {
+        if (msgList.value) msgList.value.scrollTop += msgList.value.scrollHeight - prevHeight
+        // 一次滚动只拉一页，等用户下次再滑到顶
+        setTimeout(() => { loadingOlderLock = false }, 300)
+      })
+      if (!hasMore) loadingOlderLock = false
+    }).catch(() => { loadingOlderLock = false })
   }
 }
 

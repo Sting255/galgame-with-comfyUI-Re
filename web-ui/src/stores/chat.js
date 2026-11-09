@@ -158,8 +158,20 @@ export const useChatStore = defineStore('chat', () => {
   })
 
   // 客户端渲染窗口：messages 已全量加载，窗口策略统一由 useMessageWindow 提供
-  const { visibleMessages, hasMoreOlder, expandOlder, resetToLatest, anchorToLatest, keepTailPinned } =
-    useMessageWindow(messages)
+  const {
+    visibleMessages, hasMoreOlder: windowHasMoreOlder, expandOlder, resetToLatest, anchorToLatest, keepTailPinned,
+  } = useMessageWindow(messages)
+
+  // ── 服务端分页（2026-11-09 方案 B04）────────────────────────────────
+  // 首屏只取一页（按「轮」分组），滑到顶部且内存窗口已展开完时再向服务端要更早的一页。
+  // `olderCursor` 是服务端给的稳定游标；`serverHasMoreOlder` 表示还有没有更早的轮。
+  const SERVER_PAGE_TURNS = 40
+  const olderCursor = ref(null)
+  const serverHasMoreOlder = ref(false)
+  let olderLoading = false
+
+  // 对外暴露的"还有更早" = 内存窗口还能展开 或 服务端还有更早页
+  const hasMoreOlder = computed(() => windowHasMoreOlder.value || serverHasMoreOlder.value)
 
   async function loadCharacters() {
     try { const d = await api.listCharacters(); characters.value = d.characters || [] } catch {}
@@ -183,10 +195,13 @@ export const useChatStore = defineStore('chat', () => {
     const request = ++historySeq
     const revision = imageRevision
     try {
-      const d = await api.getMessages(charId);
+      const d = await api.getMessages(charId, { limit: SERVER_PAGE_TURNS });
       if (request !== historySeq || activeCharId.value !== charId) return false;
       if (revision !== imageRevision) return loadMessages(charId)
       if (!Array.isArray(d.messages)) return false;
+      // 分页游标（B04）：记住本页最早那轮，供后续「加载更早」接着翻
+      olderCursor.value = d.page?.beforeCursor ?? null;
+      serverHasMoreOlder.value = d.page?.hasMoreOlder === true;
       const raw = d.messages || [];
       const result = rawToMessages(raw);
       let recovery = readChatRecovery(charId)
@@ -270,9 +285,54 @@ export const useChatStore = defineStore('chat', () => {
       return result;
   }
 
-  // 向上展开渲染窗口（无需网络请求，数据已全量在内存中）
-  function expandWindow() {
-    expandOlder()
+  // 向上加载更早的消息（2026-11-09 方案 B04）。
+// 内存窗口里还有 → 直接展开（零网络）；窗口已到顶且服务端还有更早 → 取一页前插。
+// 返回 true 表示"确实还能给更多"，供视图决定要不要保留顶部提示。
+  async function expandWindow() {
+    if (expandOlder()) return true
+    if (!serverHasMoreOlder.value || olderLoading) return false
+    const charId = activeCharId.value
+    if (!charId || olderCursor.value == null) return false
+    const seq = historySeq
+    olderLoading = true
+    try {
+      const d = await api.getMessages(charId, { limit: SERVER_PAGE_TURNS, before: olderCursor.value })
+      // 切了角色 / 触发了重新加载 → 丢弃这次结果
+      if (seq !== historySeq || activeCharId.value !== charId) return false
+      if (!Array.isArray(d.messages) || d.messages.length === 0) {
+        serverHasMoreOlder.value = false
+        return false
+      }
+      // 按 id 去重后再前插：分页边界那一轮可能已在列表里（发送新消息等场景会重叠）
+      const existing = new Set(messages.value.map(m => m.id))
+      const older = rawToMessages(d.messages).filter(m => !existing.has(m.id))
+      if (older.length > 0) {
+        messages.value = [...older, ...messages.value]
+        // 前插后把渲染窗口起点往后挪，保持用户正在看的那批消息不动
+        renderStartShift(older.length)
+      }
+      olderCursor.value = d.page?.beforeCursor ?? null
+      serverHasMoreOlder.value = d.page?.hasMoreOlder === true
+      return older.length > 0
+    } catch (err) {
+      console.warn('[chat] 加载更早消息失败:', err?.message || err)
+      return false
+    } finally {
+      olderLoading = false
+    }
+  }
+
+  /** 前插 N 条后，把渲染窗口起点同步后移，避免顶部内容跳动 */
+  function renderStartShift(n) {
+    // useMessageWindow 的 renderStart 是展开条数而非绝对下标，
+    // 前插后原本"已展开更早"的语义不变，这里只需保持贴尾状态。
+    keepTailPinned()
+  }
+
+  /** 清空分页状态（切角色 / 清空记录 / 删角色时必须调用，否则会拿旧游标翻新会话） */
+  function resetPaging() {
+    olderCursor.value = null
+    serverHasMoreOlder.value = false
   }
 
   // 后台图片编辑任务确认覆盖后，刷新消息里的图片 URL（避免浏览器缓存旧图）
@@ -302,6 +362,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     activeCharId.value = charId
     messages.value = []
+    resetPaging()
     resetToLatest()
     guesses.value = null  // 切角色时清除候选词
     guessSourceRawId.value = null
@@ -342,6 +403,7 @@ export const useChatStore = defineStore('chat', () => {
     writeChatRecovery(id, null)
     failedTurn.value = null
     messages.value = []
+    resetPaging()
     resetToLatest()
   }
 
@@ -432,6 +494,7 @@ export const useChatStore = defineStore('chat', () => {
     writeChatRecovery(id, null)
     failedTurn.value = null
     messages.value = []
+    resetPaging()
     resetToLatest()
     activeCharId.value = null
     await loadCharacters()
