@@ -283,7 +283,22 @@ export function startStandingBatch(id, { slotIds, requirement = '', outfitScene 
     }
   };
   control.run = run;
-  control.restart = () => {
+  /**
+   * 按（可能是新的）要求从头重跑整批。
+   *
+   * 2026-11-09（方案 A08）：接收 next，让"暂停后改方向/服装再重新开始"真正生效。
+   * · 要求或服装场景变了 → 重新算 persona（服装换了，外观段也得跟着换）
+   * · missingOutfitPolicy='generate' 时 persona 置 null，run 里会重新走自动补全服装
+   * · 旧图保留到新结果 commit 为止，重开失败也不会把已有成果清空
+   */
+  control.restart = (next = {}) => {
+    const sceneChanged = next.outfitScene !== undefined && next.outfitScene !== outfitScene;
+    if (next.requirement !== undefined) requirement = next.requirement;
+    if (next.outfitScene !== undefined) outfitScene = next.outfitScene;
+    if (next.missingOutfitPolicy !== undefined) missingOutfitPolicy = next.missingOutfitPolicy;
+    if (sceneChanged || next.missingOutfitPolicy === 'generate') {
+      persona = missingOutfitPolicy === 'generate' ? null : buildStandingPersona(char, outfitScene);
+    }
     // Restart the whole batch, including slots already rendered before the pause.
     // Keep existing images until their replacements have been committed.
     db.transaction(() => {
@@ -313,7 +328,16 @@ export function startStandingBatch(id, { slotIds, requirement = '', outfitScene 
   return { jobId };
 }
 
-export function controlStandingBatch(id, jobId, action, dependencies) {
+/**
+ * 控制一次立绘任务：stop / resume / restart。
+ *
+ * 2026-11-09（方案 A08）：新增 `options`，**只在 restart 生效**。
+ * 暂停后用户可以改生成方向 / 服装，再按新要求从头出图；resume 仍是"接着跑剩下的旧任务"，
+ * 忽略 options。这样两种语义清清楚楚，不会出现"改了要求点继续却什么都没变"。
+ *
+ * @param {object} [options] restart 时使用：{ requirement, outfitScene, missingOutfitPolicy }
+ */
+export function controlStandingBatch(id, jobId, action, dependencies, options = {}) {
   id = Number(id);
   const control = batchControls.get(id);
   if (!control && action === 'resume') {
@@ -347,7 +371,28 @@ export function controlStandingBatch(id, jobId, action, dependencies) {
     if (!control.paused) getDb().prepare(`UPDATE expression_standing_jobs SET status='stopping' WHERE id=?`).run(jobId);
   } else if (action === 'resume' || action === 'restart') {
     if (!control.paused) throw fail('请等待当前步骤完成后继续任务', 409);
-    if (action === 'restart') control.restart();
+    if (action === 'restart') {
+      // A08：restart 允许带新要求。改了方向/服装就按新的重新 preflight（缺服装策略在这里
+      // 重新校验一次），没传的字段沿用任务快照里的旧值 —— 用户只改了一项不会把另一项清空。
+      const job = getDb().prepare('SELECT request_json FROM expression_standing_jobs WHERE id=?').get(jobId);
+      const prev = JSON.parse(job?.request_json || '{}');
+      const nextRequirement = options.requirement !== undefined
+        ? String(options.requirement).trim().slice(0, 2000)
+        : (prev.requirement ?? '');
+      const nextScene = options.outfitScene !== undefined ? options.outfitScene : (prev.outfitScene ?? 'work');
+      const nextPolicy = options.missingOutfitPolicy !== undefined
+        ? options.missingOutfitPolicy
+        : prev.missingOutfitPolicy;
+      // 改服装场景时重新走一次「有没有这套服装」的判定，与 startStandingBatch 同口径：
+      // 缺服装又没给策略要当场拒绝，不能静默退回默认外观。
+      normalizeStandingOutfitScene(nextScene);
+      validateMissingOutfitPolicy(nextPolicy);
+      const missingOutfit = !hasStandingOutfit(id, nextScene);
+      if (missingOutfit && !nextPolicy) {
+        throw fail('角色缺少所选服装，请在本次重新开始里确认补全或使用默认外观', 409);
+      }
+      control.restart({ requirement: nextRequirement, outfitScene: nextScene, missingOutfitPolicy: nextPolicy });
+    }
     control.pauseRequested = false;
     control.paused = false;
     getDb().prepare(`UPDATE expression_standing_jobs SET status='queued' WHERE id=?`).run(jobId);

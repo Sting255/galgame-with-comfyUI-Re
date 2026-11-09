@@ -40,7 +40,11 @@ router.put(`${base}/:slot/interaction-regions`, (req, res) => res.json(interacti
 router.get(base, (req, res) => res.json(listExpressionStandings(req.params.id)));
 router.post(`${base}/preflight`, (req, res) => res.json(previewCharacterStandingBatch(req.params.id, req.body)));
 router.post(`${base}/generate`, (req, res) => res.status(202).json(startStandingBatch(req.params.id, req.body)));
-router.post(`${base}/jobs/:jobId/:action`, (req, res) => res.json(controlStandingBatch(req.params.id, req.params.jobId, req.params.action)));
+// 控制任务的暂停 / 继续 / 重新开始。2026-11-09（方案 A08）：接收请求体 ——
+// 「暂停后改要求再重新开始」必须能把新的 requirement / outfitScene / 缺服装策略传下去，
+// 否则 restart 只能按旧快照重跑，用户改了方向也不会生效。
+// resume 继续原任务未完成部分，忽略这些新参数（那是 restart 的语义）。
+router.post(`${base}/jobs/:jobId/:action`, (req, res) => res.json(controlStandingBatch(req.params.id, req.params.jobId, req.params.action, undefined, req.body || {})));
 router.patch(`${base}/:slot/prompt`, (req, res) => {
   updateStandingPrompt(req.params.id, req.params.slot, req.body.prompt, req.body.generation);
   res.json({ ok: true });

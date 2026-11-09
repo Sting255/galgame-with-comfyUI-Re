@@ -6,9 +6,22 @@ import path from 'node:path';
 import { LOCAL_TTS_MODELS, localTtsModel } from './localTtsModels.js';
 import { getSpeechSettings, setSpeechSettings } from './speechService.js';
 import { restartSpeechService } from './speechServiceProcess.js';
+import { speechComfyUrl } from './speechGpuPolicy.js';
 
 const root = fileURLToPath(new URL('../../../tts-service/', import.meta.url));
 const execute = promisify(execFile);
+
+/**
+ * 本次安装/检查要使用的 ComfyUI 地址。
+ *
+ * 优先用环境变量里显式配置的值（用户可能单独指定一台机器跑显存调度），
+ * 否则用项目当前生效的 config.comfyui.url —— 而不是让子进程去猜默认值。
+ * 导出一份纯函数便于验证：安装器拿到的一定是"此刻实际在用"的那个地址。
+ */
+function __comfyUrlForSpeech(env = process.env) {
+  return String(env.TTS_COMFYUI_URL || '').trim() || speechComfyUrl();
+}
+export const resolveSpeechComfyUrl = __comfyUrlForSpeech;
 export async function inspectLocalModels() {
   let python;
   try {
@@ -35,7 +48,48 @@ export function createLocalSpeechModelManager({ inspect = inspectLocalModels, la
   restart = restartSpeechService, settings = getSpeechSettings, configure = setSpeechSettings,
   platform = process.platform, env = process.env } = {}) {
   let installation = { status: 'idle', model: null, log: '', error: '' }, using = null;
-  const status = async () => ({ selected: settings().local_model || '2.0', models: await inspect(), installation: { ...installation }, using });
+  /**
+ * 本地语音现状（A10）：除了逐模型的 installed/error，再给出一个**诊断结论**，
+ * 让前端能区分「没装」「装了但服务没重启」「装了但连不上」「版本不匹配」这四种，
+ * 而不是统一显示一句"不可用"。
+ *
+ * 判定顺序按用户能自己解决的成本从低到高：
+ *   not_installed → 运行环境或模型缺失
+ *   service_offline → 装了但声音服务没起（多半是没重启）
+ *   version_mismatch → 服务在跑但不是所选模型
+ *   ok
+ */
+const status = async () => {
+  const selected = settings().local_model || '2.0';
+  let models = [];
+  let modelsError = '';
+  try { models = await inspect(); } catch (err) { modelsError = err?.message || String(err); }
+  const target = models.find(m => m.id === selected);
+  const anyInstalled = models.some(m => m.installed);
+  let diagnosis = 'ok';
+  if (!target?.installed) {
+    diagnosis = anyInstalled ? 'not_installed' : 'runtime_missing';
+  }
+  return {
+    selected,
+    models,
+    installation: { ...installation },
+    using,
+    diagnosis,
+    diagnosisHint: diagnosisHint(diagnosis, selected, modelsError),
+    // 显式报出本次会用的 ComfyUI 地址，排查"语音装好了却调度到别处"时一眼能看出来
+    comfyUrl: __comfyUrlForSpeech(),
+  };
+};
+
+function diagnosisHint(diagnosis, selected, modelsError) {
+  if (modelsError) return `无法检查本地安装：${modelsError}`;
+  switch (diagnosis) {
+    case 'runtime_missing': return '尚未安装本地语音运行环境，请先执行一键安装';
+    case 'not_installed': return `所选模型 ${selected} 尚未安装，请在一键安装里选择它`;
+    default: return '';
+  }
+}
   function install(model) {
     localTtsModel(model);
     if (platform !== 'win32') throw new Error('一键安装目前支持 Windows，请运行对应的部署脚本');
@@ -45,7 +99,15 @@ export function createLocalSpeechModelManager({ inspect = inspectLocalModels, la
     const active = installation;
     try {
       const child = launch('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'setup.ps1'), '-ModelVersion', model],
-        { windowsHide: true, cwd: root, env: { ...env, TTS_LOCAL_MODEL: model }, stdio: ['ignore', 'pipe', 'pipe'] });
+        {
+          windowsHide: true,
+          cwd: root,
+          // A10：把实际配置的 ComfyUI 地址传给安装器。不传的话，本地语音侧的
+          // speechGpuPolicy 读不到 TTS_COMFYUI_URL 会退回 config 默认值 —— 用户在设置里
+          // 改了 ComfyUI 端口/主机，安装与显存调度判断就会指向一个不存在的地址。
+          env: { ...env, TTS_LOCAL_MODEL: model, TTS_COMFYUI_URL: __comfyUrlForSpeech(env) },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
       const append = chunk => { if (installation === active) installation.log = (installation.log + String(chunk)).slice(-12000); };
       child.stdout?.on('data', append); child.stderr?.on('data', append);
       child.once('error', error => { if (installation === active) { installation.status = 'failed'; installation.error = `安装启动失败：${error.message}`; } });

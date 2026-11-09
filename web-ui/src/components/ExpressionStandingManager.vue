@@ -41,7 +41,7 @@ v-if="editing.image_url" :key="editing.image_url" :src="editing.image_url" :asse
         <input ref="fileInput" class="es-file" type="file" accept="image/png,image/jpeg,image/webp" @change="upload">
       </section>
       <section v-else key="grid" class="es-overview">
-        <StandingGenerationDirection v-model="requirement" v-model:outfit-scene="outfitScene" input-id="standing-character-direction" :disabled="locked" />
+        <StandingGenerationDirection v-model="requirement" v-model:outfit-scene="outfitScene" input-id="standing-character-direction" :disabled="directionLocked" />
         <div class="es-toolbar">
           <linshe-button variant="primary" :disabled="(paused ? submitting || !!working : locked) || controlling || !targets.length" :loading="submitting || (paused && controlling)" @click="paused ? controlTask('restart') : generate()">{{ paused ? '重新生成' : busy ? '正在生成…' : imageCount > 0 ? '重新生成立绘' : '一键生成立绘' }}</linshe-button>
           <linshe-button v-if="busy || job?.resumable" size="sm" :loading="controlling" :disabled="job?.status === 'stopping' || controlling || submitting" @click="controlTask()">{{ paused || job?.resumable ? '继续任务' : job?.status === 'stopping' ? '正在停止…' : '停止任务' }}</linshe-button>
@@ -112,6 +112,9 @@ const touchLines = ref({ status: 'empty' })
 const touchLineText = computed(() => ({ empty: '全身触摸默认开启；没有台词时，生成整套立绘会同步生成专属反应。', generating: '正在后台生成全身触摸台词，不影响立绘出图…', ready: '全身触摸台词已就绪 · 10 个部位，每处 3 句', failed: '触摸台词生成失败；保留已有台词，下次生成整套立绘时重试。' })[touchLines.value.status])
 const editing = computed({ get: () => slots.value.find(s => s.id === editingId.value), set: value => { editingId.value = value?.id || null } })
 const locked = computed(() => busy.value || submitting.value || !!working.value)
+// 暂停时（A08）方向与服装要可编辑 —— 那正是"改要求再重新开始"的前提。
+// 用单独的 directionLocked：任务在跑时锁住，停下（paused）就放开。
+const directionLocked = computed(() => locked.value && !paused.value)
 const job = computed(() => jobs.value[0])
 const paused = computed(() => job.value?.status === 'paused')
 const controlling = ref(false)
@@ -123,7 +126,15 @@ async function controlTask(action = paused.value || job.value?.resumable ? 'resu
   if (controlling.value || submitting.value || !job.value) return
   error.value = ''
   controlling.value = true
-  try { await api.controlExpressionStandingTask(props.character.id, job.value.id, action); await refresh() }
+  try {
+    // A08：restart 时把当前编辑框里的方向与服装一起提交 —— 用户停下来改的就是这些，
+    // 不带上去等于"改了要求点重新生成却按旧要求重画"。resume 不带（那是接着跑旧任务）。
+    const body = action === 'restart'
+      ? { requirement: requirement.value, outfitScene: outfitScene.value }
+      : null
+    await api.controlExpressionStandingTask(props.character.id, job.value.id, action, body)
+    await refresh()
+  }
   catch (e) { error.value = e.message }
   finally { controlling.value = false }
 }

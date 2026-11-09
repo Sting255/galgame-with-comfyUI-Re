@@ -31,6 +31,21 @@
                 {{ generating ? '幻想中…' : '开始幻想' }}
               </linshe-button>
             </div>
+            <!-- A09：从参考图识别场景方向。识别只回填输入框，用户确认后再点「开始幻想」，
+                 不自动建条目 —— 识错了他能直接改，不会被塞进一堆不需要的类型。 -->
+            <div class="gen-row gen-image-row">
+              <linshe-button size="sm" variant="ghost" :disabled="generating || describing" :loading="describing" @click="pickReferenceImage">
+                {{ describing ? '识别中…' : '从图片识别方向' }}
+              </linshe-button>
+              <input
+                ref="imageInput"
+                class="lib-file"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+                @change="onReferenceImagePicked"
+              >
+              <span v-if="describeHint" class="gen-hint">{{ describeHint }}</span>
+            </div>
 
             <!-- 生成结果预览 -->
             <div v-if="previewVisible" class="preview-section">
@@ -213,6 +228,59 @@ const direction = ref('')
 const directionInput = ref(null)
 const generating = ref(false)
 const saving = ref(false)
+// A09：参考图识别场景方向（只回填输入框，不直接建条目）
+const imageInput = ref(null)
+const describing = ref(false)
+const describeHint = ref('')
+// 请求代际：关闭弹窗 / 换图时递增，旧响应不写进草稿
+let describeSeq = 0
+const MAX_REFERENCE_BYTES = 6 * 1024 * 1024
+
+function pickReferenceImage() {
+  if (describing.value) return
+  imageInput.value?.click()
+}
+
+async function onReferenceImagePicked(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''   // 允许连续选同一张图
+  if (!file) return
+  if (file.size > MAX_REFERENCE_BYTES) {
+    toastFn?.('图片不能超过 6MB', 'error')
+    return
+  }
+  const seq = ++describeSeq
+  describing.value = true
+  describeHint.value = ''
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result || ''))
+      reader.onerror = () => reject(new Error('读取图片失败'))
+      reader.readAsDataURL(file)
+    })
+    if (seq !== describeSeq) return
+    const res = await api.describeLibraryImage({
+      image: dataUrl,
+      type: props.type,
+      direction: direction.value.trim(),
+    })
+    // 识别期间用户关了弹窗 / 又选了别的图 → 丢弃这次结果，不覆盖他正在写的内容
+    if (seq !== describeSeq) return
+    const text = String(res?.direction || '').trim()
+    if (!text) { describeHint.value = '没识别出场景，换张图试试'; return }
+    direction.value = text
+    describeHint.value = '已回填，可直接修改后点「开始幻想」'
+    nextTick(() => directionInput.value?.focus?.())
+  } catch (err) {
+    if (seq === describeSeq) {
+      describeHint.value = `识别失败：${err?.message || err}`
+      toastFn?.(`识别失败：${err?.message || err}`, 'error')
+    }
+  } finally {
+    if (seq === describeSeq) describing.value = false
+  }
+}
 const previewItems = ref([])
 const previewVisible = ref(false)
 const previewLeavingCount = ref(0)
@@ -303,6 +371,10 @@ async function load() {
 watch(() => props.modelValue, async (v) => {
   if (v) {
     direction.value = ''
+    // 关闭/重开时让在途的识别结果失效，不把上一次的识别结果写进新草稿
+    describeSeq++
+    describing.value = false
+    describeHint.value = ''
     previewItems.value = []
     previewVisible.value = false
     previewLeavingCount.value = 0
@@ -553,6 +625,10 @@ function addItem() {
 /* 生成器 */
 .gen-section { margin-bottom: 20px; }
 .gen-row { display: flex; gap: 10px; align-items: stretch; }
+/* A09：参考图识别行 —— 与主生成行分开，避免挤压输入框 */
+.gen-image-row { align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.gen-image-row .gen-hint { font-size: 12px; color: var(--text-3, #8a8a8a); }
+.lib-file { display: none; }
 .gen-input-wrap { position: relative; flex: 1; min-width: 0; }
 .gen-input-wrap .gen-input { width: 100%; box-sizing: border-box; }
 .gen-input {
