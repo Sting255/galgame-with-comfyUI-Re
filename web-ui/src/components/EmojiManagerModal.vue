@@ -1,5 +1,5 @@
 <template>
-  <linshe-modal :model-value="show && !outfitConfirmation.open" title="表情包管理" full panel-class="emoji-manager-modal" body-class="emoji-manager-body" @close="close">
+  <linshe-modal :model-value="show && !outfitConfirmation.open" title="表情包管理" full panel-class="emoji-manager-modal" body-class="emoji-manager-body" @close="close" @after-leave="onModalAfterLeave">
 
           <div class="emoji-body">
             <!-- 生成 prompt 时的全局扫描遮罩 -->
@@ -488,7 +488,17 @@ function close() {
   batchPaused.value = false
   batchCompleted.value = 0
   stopPolling()
-  setTimeout(() => emit('close'), 180)
+  // 不再用 setTimeout 猜离场时长：父层是 v-if 挂载，卸载早了动画被掐断、
+  // 晚了窗口闪一下。真正的卸载交给 LinsheModal 的 after-leave。
+}
+
+/**
+ * 离场动画结束才通知父层卸载。但要排除「主弹窗因为要露出服装确认子弹窗而收起」
+ * 这种情况 —— 那只是暂时让位，整个表情包管理器还开着，不能把它一起卸掉。
+ */
+function onModalAfterLeave() {
+  if (show.value || outfitConfirmation.open) return
+  emit('close')
 }
 
 function charName(id) {

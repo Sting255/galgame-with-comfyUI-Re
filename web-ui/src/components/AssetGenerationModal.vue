@@ -1,5 +1,5 @@
 <template>
-  <linshe-modal :model-value="true" full title="一键生成全部角色资产" @update:model-value="onRequestClose">
+  <linshe-modal :model-value="open" full title="一键生成全部角色资产" @update:model-value="onRequestClose" @after-leave="onModalAfterLeave">
     <div class="ag-body">
       <!-- ── 配置态 / 运行态：0.3s 交叉淡入（AGENTS.md：切换不许生硬跳变）── -->
       <Transition name="ag-fade" mode="out-in">
@@ -152,6 +152,9 @@ const picked = ref({})
 const kindOn = ref({ standing: true, emoji: true, expressionStanding: true })
 const skipExisting = ref(true)
 const starting = ref(false)
+// 组件由父层 v-if 挂载，默认就是打开状态；关闭时先置 false 让离场动画跑完，
+// 再在 after-leave 里通知父层卸载（否则动画被 v-if 掐断）。
+const open = ref(true)
 const error = ref('')
 const job = ref(null)
 
@@ -232,6 +235,12 @@ async function onControl(action) {
 
 function onRequestClose() {
   stopPolling()
+  // 先只收起窗口，等离场动画真正结束再通知父层卸载（父层是 v-if 挂载）
+  open.value = false
+}
+
+function onModalAfterLeave() {
+  if (open.value) return
   emit('close')
 }
 
