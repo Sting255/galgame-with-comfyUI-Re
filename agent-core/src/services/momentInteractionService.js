@@ -21,6 +21,7 @@ import { broadcast as broadcastToUnified } from './unifiedStreamBus.js';
 import { cropPersonalityForEmotion } from './emotionEngine.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 import { MOMENT_COMMENT_RULES, buildMomentImagePromptNote } from './momentForms.js';
+import { checkCharacterPublishable } from './publishGate.js';
 
 // Sigmoid 参数（与 moments.js 多人模式一致）
 const MULTI_P_MIN = 0.30;
@@ -338,16 +339,16 @@ async function runInteractionThread(post, posterChar, friend) {
     return;
   }
 
-  // 检查睡眠（朋友角色不回复）
-  try {
-    if (config.features.schedule !== false) {
-      const { isSleeping } = await import('./scheduleManager.js');
-      if (isSleeping(friend.other_id)?.sleeping) {
-        console.log(`[momentInteraction] ${friendName} 在睡觉，跳过`);
-        return;
-      }
+  // 检查发布闸门（朋友角色不回复）：睡眠 + 朋友圈开关统一走 publishGate
+  // （原来只判 isSleeping，漏了 moments_disabled —— 用户关掉她的朋友圈，
+  //  她不该继续在这条帖子里出现。口径统一到 publishGate，别各写一套。）
+  {
+    const gate = checkCharacterPublishable(db, friend.other_id, { flag: 'moments_disabled' });
+    if (!gate.allowed) {
+      console.log(`[momentInteraction] ${friendName} 不可发布（${gate.reason}），跳过`);
+      return;
     }
-  } catch { /* schedule not available */ }
+  }
 
   // 检查已用轮数
   if (countUsedRounds(db, post.id, posterId) >= 3) {

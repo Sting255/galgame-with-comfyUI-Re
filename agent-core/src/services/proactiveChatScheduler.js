@@ -45,6 +45,7 @@ import { buildWornToysBlock } from './toyService.js';
 // 2026-10-02 敏感度（用户：「性爱的频率也会越频繁」）：主动聊天的动机池按她有多敏感加权 ——
 // 敏感度是叶子模块（只依赖 db），直接 import 不成环。
 import { getSensitivity } from './sensitivityService.js';
+import { checkCharacterPublishable } from './publishGate.js';
 
 const CHECK_INTERVAL = 5 * 60 * 1000; // 5 分钟
 
@@ -969,6 +970,20 @@ async function tick() {
 
     // 7. 写入消息到 DB
     if (!automaticChatEnabled(generation)) return;
+
+    // ── 发布闸门（落库前复查，A03）──────────────────────────────────────
+    // 候选是开跑前挑的（SQL 只看 is_sleeping 缓存列），而 generateGreeting 是一次 LLM 调用，
+    // 几十秒里她可能刚睡下 / 用户关掉了主动聊天。睡着的人不该"主动找你聊天"。
+    // 可恢复 → 顺延下一次（updateNextProactiveAt 有随机抖动），不扣 streak、不落库、不广播。
+    {
+      const gate = checkCharacterPublishable(db, candidate.id, { flag: 'proactive_disabled' });
+      if (!gate.allowed) {
+        console.log(`⚡ ${candidate.display_name}: blocked before publish (${gate.reason}), 顺延下一次`);
+        updateNextProactiveAt(candidate.id, 0);
+        return;
+      }
+    }
+
     const { rawId, firstMsgId, lastMsgId, msgIds, segments } = writeProactiveMessage(candidate, greeting);
 
     // 7.4 **先发文本**（2026-10-02 结构性改造）：原来这一步在出图**之后**，
@@ -1309,6 +1324,18 @@ export async function forceProactiveNow(targetCharacterId, { automatic = false, 
   const greeting = await generateGreeting(candidate, affinity, compositeVad, lastMessageAt, recentSummary, motive, relationshipContext, userProfile, streak, { hypnosisBlocks });
 
   if (automatic && !automaticChatEnabled(generation)) return null;
+
+  // ── 发布闸门（落库前复查，A03）──────────────────────────────────────
+  // 只拦**自动**线路（B 频率线 / C 启动线）：生成开场白是一次 LLM 调用，几十秒里她可能刚睡下。
+  // 用户手点（automatic=false）不拦 —— 那是他要她现在说话，与「自动发东西」是两回事。
+  if (automatic) {
+    const gate = checkCharacterPublishable(db, candidate.id, { flag: 'proactive_disabled' });
+    if (!gate.allowed) {
+      console.log(`⚡ force: ${candidate.display_name} blocked before publish (${gate.reason}), skip`);
+      return null;
+    }
+  }
+
   const { rawId, firstMsgId, lastMsgId, msgIds, segments } = writeProactiveMessage(candidate, greeting);
 
   stmt('UPDATE characters SET proactive_streak = ? WHERE id = ?')

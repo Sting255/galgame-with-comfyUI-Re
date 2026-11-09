@@ -20,6 +20,7 @@ import { getTimeTag, getLightNoteWithWeather } from '../services/timeLight.js';
 import { getCurrentActivity } from '../services/scheduleManager.js';
 import { triggerFriendComments } from '../services/momentInteractionService.js';
 import { publishUserMoment } from '../services/momentUserPostService.js';
+import { checkCharacterPublishable } from '../services/publishGate.js';
 import { handleUserComment } from '../services/momentCommentService.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 import { DEFAULT_MOMENT_IMAGE_PROMPT, parseMomentResponse, sanitizeMomentContent } from '../services/momentResponseParser.js';
@@ -1123,6 +1124,22 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
   if (usedPrompts.length > 0) imagePrompt = usedPrompts.join('\n---\n');
 
   // 4. 更新帖子
+  // ── 发布闸门（A03）：生成耗时几十秒到几分钟，这期间她可能已睡下 / 被关掉朋友圈 ──
+  // 候选 SQL 是开跑前判的，不覆盖这段空档。
+  // 只拦**纯自动调度**：用户手点（manual）、补发（backfill）、神说投递（godDeliveryKey）
+  // 都是用户明确要这些内容，此刻必须出现，不能因为他不在场就拦掉。
+  const isAutoPublish = !opts.manual && !opts.backfill && !opts.godDeliveryKey;
+  if (isAutoPublish) {
+    const gate = checkCharacterPublishable(db, character.id, { flag: 'moments_disabled' });
+    if (!gate.allowed) {
+      console.log(`[moments] Post ${postId} blocked before publish (${gate.reason})`);
+      // 落 failed 让调度器 30 分钟后重试，不保留半成品「generating」
+      db.prepare('UPDATE moment_posts SET status = ?, error_message = ? WHERE id = ?')
+        .run('failed', `publish_blocked:${gate.reason}`, postId);
+      throw new Error(`PUBLISH_BLOCKED:${gate.reason}`);
+    }
+  }
+
   db.prepare(`
     UPDATE moment_posts
     SET content = ?, prompt = ?, images = ?, status = 'done'
@@ -1322,6 +1339,19 @@ imagePrompt 中${userName}的外观以上述描述为准。`,
       postId,
     });
     const imagePrompt = usedPrompts.length > 0 ? usedPrompts.join('\n---\n') : imagePrompts[0];
+
+    // ── 发布闸门（落库前复查，A03）────────────────────────────────────
+    // collectDueSpecialMoments 判过一次，但生成+出图要几十秒，这期间她可能睡下。
+    // 不可发布就落 failed 让队列下轮重试（processSpecialMoments 会退回 pending），不公开。
+    {
+      const gate = checkCharacterPublishable(db, character.id, { flag: 'moments_disabled' });
+      if (!gate.allowed) {
+        console.log(`[moments] Special schedule post ${postId} blocked before publish (${gate.reason})`);
+        db.prepare('UPDATE moment_posts SET status = ?, error_message = ? WHERE id = ?')
+          .run('failed', `publish_blocked:${gate.reason}`, postId);
+        throw new Error(`PUBLISH_BLOCKED:${gate.reason}`);
+      }
+    }
 
     db.prepare(`
       UPDATE moment_posts

@@ -12,6 +12,7 @@
 import { getDb } from '../db/index.js';
 import { getProgramDateKey, getProgramNow } from './programTime.js';
 import { updateSpecialMomentStatus, ensurePendingScheduleChanges } from './scheduleEditor.js';
+import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
 
 const CHECK_INTERVAL = 5 * 60 * 1000; // 5 分钟
 
@@ -60,6 +61,19 @@ export function collectDueSpecialMoments(now = getProgramNow()) {
     let schedule;
     try { schedule = JSON.parse(row.schedule_json); } catch { continue; }
     if (!Array.isArray(schedule)) continue;
+
+    // ── 发布闸门（A03）────────────────────────────────────────────────
+    // 日程赴约帖是「她正在做这件事」的即时分享，睡着的人不该发。
+    // 不可发布就整条跳过，**不改状态**：保持在 pending，醒来后仍在窗口内就发，
+    // 出窗后由下面的 endMin 分支自动判 expired（过时不候）。
+    // 放在逐条目循环外：一个角色的状态判一次就够。
+    const gate = checkCharacterPublishable(db, row.character_id, { flag: 'moments_disabled' });
+    if (!gate.allowed) {
+      if (gate.reason !== GATE_REASON.SLEEPING) {
+        console.log(`[specialMoment] Skip ${row.display_name}: ${gate.reason}`);
+      }
+      continue;
+    }
 
     let changed = false;
     for (const act of schedule) {

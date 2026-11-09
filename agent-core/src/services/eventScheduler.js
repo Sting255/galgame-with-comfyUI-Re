@@ -21,6 +21,7 @@ import { isRefusal } from './refusalDetector.js';
 import { config } from '../config.js';
 import { splitText } from '../utils/sentenceSplitter.js';
 import { getCoreDialogueRules } from '../builtinRules.js';
+import { checkCharacterPublishable } from './publishGate.js';
 
 const BASE_INTERVAL_MIN = 30; // 基准间隔 30 分钟（freq=1）
 const HALF_TIME_CHECK_MS = 3 * 60 * 1000; // 半程通知独立检查间隔 3 分钟
@@ -249,6 +250,16 @@ async function checkHalfTimeNotifications() {
 
     for (const event of halfTimeEvents) {
       try {
+        // ── 发布闸门（生成前，A03）──────────────────────────────────────
+        // 事件候选是开跑前挑的，半程提醒可能是几十分钟后才触发 —— 那时她可能已经睡下。
+        // 睡着的人发「事情过半了快来帮我」是最出戏的一种。不可发布就直接跳过，
+        // 不置 half_time_notified，下一个 3 分钟周期再判（醒来自动补上）。
+        const preGate = checkCharacterPublishable(db, event.character_id, { flag: 'events_disabled' });
+        if (!preGate.allowed) {
+          console.log(`[eventScheduler] half-time #${event.id} skipped (${preGate.reason})`);
+          continue;
+        }
+
         // 根据 urgency 生成不同语气的主动消息
         const isUrgent = event.event_type_key ? getUrgencyLevel(event.event_type_key) : 1;
         const userName = config.user?.nickname || '用户';
@@ -294,6 +305,15 @@ ${eventRules}`;
         // 注意不能只清空 greeting —— 下面会照常落库并广播空消息。
         if (isRefusal(greeting)) {
           console.warn(`[eventScheduler] 半程提醒被模型拒答，跳过本次（${event.display_name}）`);
+          continue;
+        }
+
+        // ── 发布闸门（落库前复查，A03）──────────────────────────────────
+        // LLM 调用几十秒，这期间她可能睡下了 / 用户关掉了奇遇开关。
+        // 已经生成的文案不落库、不广播；不置 half_time_notified，下个周期重判。
+        const finalGate = checkCharacterPublishable(db, event.character_id, { flag: 'events_disabled' });
+        if (!finalGate.allowed) {
+          console.log(`[eventScheduler] half-time #${event.id} blocked before publish (${finalGate.reason})`);
           continue;
         }
 

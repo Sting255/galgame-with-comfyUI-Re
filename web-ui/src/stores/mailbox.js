@@ -16,6 +16,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
   let _unsubProcessing = null
   let _unsubReady = null
   let _unsubFailed = null
+  let _unsubDeferred = null
   let _pollingRefs = 0
   let listRequest = 0
   let listRevision = 0
@@ -130,6 +131,17 @@ export const useMailboxStore = defineStore('mailbox', () => {
     fetchUnread()
   }
 
+  // 发布闸门延期（A03）：后端生成完发现她已睡下 / 被关开关，把信退回 pending 并顺延。
+  // 这里把列表里那封从「回信中」回退成 pending，别让用户盯着一个不动的状态。
+  function _onReplyDeferred(data) {
+    listRevision++
+    const letter = letters.value.find(l => l.id === data.letter_id)
+    if (letter) {
+      letter.status = 'pending'
+    }
+    fetchUnread()
+  }
+
   function _onReplyFailed(data) {
     listRevision++
     const letterId = data.letter_id
@@ -156,6 +168,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
     _unsubProcessing = onEvent('reply_processing', _onReplyProcessing)
     _unsubReady = onEvent('reply_ready', _onReplyReady)
     _unsubFailed = onEvent('reply_failed', _onReplyFailed)
+    _unsubDeferred = onEvent('reply_deferred', _onReplyDeferred)
 
     pollTimer = setInterval(() => {
       fetchUnread()
@@ -176,6 +189,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
     if (_unsubProcessing) { _unsubProcessing(); _unsubProcessing = null }
     if (_unsubReady) { _unsubReady(); _unsubReady = null }
     if (_unsubFailed) { _unsubFailed(); _unsubFailed = null }
+    if (_unsubDeferred) { _unsubDeferred(); _unsubDeferred = null }
   }
 
   return {

@@ -22,8 +22,13 @@ import {
   isGroupSourcedMemory, groupOriginPrefix, loadGroupNameMap,
 } from './groupMemoryLink.js';
 import { speakLetter } from './speechService.js';
+import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
+import { toSqlUtc } from './programTime.js';
 
 const CHECK_INTERVAL = 60 * 1000;
+
+/** 角色开关关闭时，多久重新过闸门看一次（不烧生成，只判状态）。 */
+const FLAG_RECHECK_MS = 5 * 60 * 1000;
 
 /** 连续失败到几次就落 `failed` 终态、不再自动重试（2026-10-17 §P2-1：防毒信件无限烧额度）。 */
 export const MAX_RETRY_COUNT = 5;
@@ -92,6 +97,16 @@ async function processReply(db, letter) {
   const charLoras = safeJSON(letter.loras, []);
   const charCustomWorkflow = letter.custom_workflow || null;
 
+  // ── 发布闸门（生成前）────────────────────────────────────────────────
+  // 回信要跑 1 次 LLM + 3 张图（真机约 1~3 分钟）。候选 SQL 只看 reply_at 到点，
+  // 不看角色此刻状态 —— 她睡着/被删时照样会开跑，白烧一次生成。
+  // 这里先判一次；生成完、落库前再判一次（步骤 3.5），防「生成时醒着、公开时已睡着」。
+  const preGate = checkCharacterPublishable(db, charId);
+  if (!preGate.allowed) {
+    deferOrDropLetter(db, letter, charName, preGate, 'pre');
+    return;
+  }
+
   // 标记 processing + 广播
   db.prepare('UPDATE mailbox_letters SET status = ? WHERE id = ?').run('processing', letterId);
   broadcast('reply_processing', {
@@ -132,6 +147,19 @@ async function processReply(db, letter) {
       if (!portraitResult) f.push('portrait');
       if (!illustrationResult) f.push('illustration');
       throw new Error(`Image generation failed: ${f.join(', ')}`);
+    }
+
+    // ── 步骤 2.5: 发布闸门（落库前复查）────────────────────────────────
+    // 生成耗时 1~3 分钟，这段时间里她可能已经睡下 / 被关掉信箱 / 被删除。
+    // 图已经烧掉了（无法退回），但**不能公开**：睡着的角色不该在你面前"刚写完信"。
+    // 放在保存文件与 recordCompletedImageTask 之前 —— 被拦下的这一轮不留图库记录。
+    // 可恢复（睡眠/关开关）→ 整封退回 pending 并顺延，不扣重试次数；
+    // 终态（删除/系统角色）→ 落 failed，别让它在队列里空转。
+    const finalGate = checkCharacterPublishable(db, charId);
+    if (!finalGate.allowed) {
+      console.log(`[mailboxScheduler] letter #${letterId} blocked before publish: ${finalGate.reason}`);
+      deferOrDropLetter(db, letter, charName, finalGate, 'post');
+      return;
     }
 
     // ── 步骤3: 保存 ──
@@ -246,6 +274,57 @@ async function processReply(db, letter) {
       .run('pending', retryCount, nextRetry, letterId);
     console.log(`[mailboxScheduler] letter #${letterId} retry ${retryCount}/${MAX_RETRY_COUNT} → backoff ${backoffMs / 1000}s`);
   }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  发布闸门拦截后的处理：可恢复 → 延期，终态 → 落 failed
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 发布闸门判定为「不可发布」时的统一处置。
+ *
+ * · 可恢复（睡着 / 用户关了对应开关）：退回 pending 并把 reply_at 顺延，**不扣重试次数**
+ *   —— 这不是失败，只是时机不对，醒来后接着写。
+ * · 终态（角色已删除 / 系统内置角色）：落 failed，广播给前端，别在队列里空转。
+ *
+ * 延期时间：睡眠用闸门给的 `sleepUntil`（醒来那一刻）；开关关闭没有明确恢复时间，
+ * 按 5 分钟后再看一眼（到点重新过闸门，仍然关着就再顺延，不烧生成）。
+ *
+ * @param {'pre'|'post'} stage 生成前 / 落库前，只用于日志区分
+ */
+function deferOrDropLetter(db, letter, charName, gate, stage) {
+  const letterId = letter.id;
+  const where = stage === 'post' ? '生成完成、落库前' : '生成前';
+
+  const terminal = gate.reason === GATE_REASON.NOT_FOUND || gate.reason === GATE_REASON.SYSTEM;
+  if (terminal) {
+    db.prepare('UPDATE mailbox_letters SET status = ?, retry_count = ? WHERE id = ?')
+      .run('failed', MAX_RETRY_COUNT, letterId);
+    console.warn(`[mailboxScheduler] letter #${letterId} ${where} dropped (${gate.reason}) → status=failed`);
+    broadcast('reply_failed', {
+      letter_id: letterId,
+      character_id: letter.character_id,
+      character_name: charName,
+      retry_count: MAX_RETRY_COUNT,
+      reason: gate.reason,
+    });
+    return;
+  }
+
+  // 可恢复：算下次尝试时间。睡眠用醒来的瞬间，开关关闭按 5 分钟轮询。
+  const nextAt = gate.retryAt || toSqlUtc(new Date(Date.now() + FLAG_RECHECK_MS));
+  db.prepare('UPDATE mailbox_letters SET status = ?, reply_at = ? WHERE id = ?')
+    .run('pending', nextAt, letterId);
+  console.log(`[mailboxScheduler] letter #${letterId} ${where} deferred (${gate.reason}) → retry at ${nextAt}`);
+
+  // 之前广播过 reply_processing，前端那封会停在「回信中」；这里回退成 pending 让它别卡住。
+  broadcast('reply_deferred', {
+    letter_id: letterId,
+    character_id: letter.character_id,
+    character_name: charName,
+    reason: gate.reason,
+    retry_at: nextAt,
+  });
 }
 
 // ══════════════════════════════════════════════════════════════

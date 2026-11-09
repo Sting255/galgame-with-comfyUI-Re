@@ -94,6 +94,9 @@ function _connect() {
     // 信箱失败终态（2026-10-17 §P2-1）：连续失败到上限后后端不再自动重试并广播它，
     // mailbox store 订阅它把那一封立刻改成「回信失败 · 可重新投递」。漏放行 = 用户要等 60s 轮询。
     reply_failed:      d => _dispatch('reply_failed', d),
+    // 发布闸门延期（A03）：生成完发现她已睡下 / 被关开关，退回 pending 顺延。
+    // 不广播的话前端那封会停在「回信中」，要等 60s 轮询才回退。
+    reply_deferred:    d => _dispatch('reply_deferred', d),
     delayed_reply:     d => _dispatch('delayed_reply', d),
     // 世界翻篇（程序日期变了）：后端 programDayRollover 广播，newspaper store 收到立刻拉新一期；
     // 2026-10-02 补进白名单 —— 此前广播发得出来、这里没放行 ⇒ 订阅方永远收不到（死订阅）。

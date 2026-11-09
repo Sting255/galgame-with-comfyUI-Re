@@ -38,6 +38,7 @@ import { invalidateGalleryCache } from './galleryCache.js';
 import { recordCompletedImageTask } from './imageTaskRecorder.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { MEDIA_PUBLICATION_ORDER, publishMediaPostIfReady, isMediaPostPublished } from './mediaPublication.js';
+import { filterPublishable } from './publishGate.js';
 import { config } from '../config.js';
 import { extractFirstJson } from './jsonExtract.js';
 import { repairJson } from './eventGenerator.js';
@@ -508,14 +509,22 @@ function claimPostForImage(postId) {
 export function pickActiveCharacters(count = 2) {
   const n = Math.max(0, Math.min(3, count));
   if (!n) return [];
-  return getDb().prepare(`
+  const db = getDb();
+  // 先按「系统角色 / 关朋友圈」粗筛并随机取一批，再逐个过发布闸门。
+  // 为什么不在 SQL 里直接判 is_sleeping：那是**缓存列**，睡块刚开始时可能还没同步
+  // （真机踩过：睡块 10:30 结束，整点 cron 到 11:xx 才清 → 白天一小时"睡觉中"）。
+  // 睡眠的唯一判定点是 scheduleManager.isSleeping，publishGate 内部调的正是它。
+  const pool = db.prepare(`
     SELECT id, display_name, avatar_path, short_prompt, base_prompt, loras, custom_workflow, artist_override
     FROM characters
     WHERE COALESCE(is_system, 0) = 0
-      AND (is_sleeping IS NULL OR is_sleeping = 0)
       AND (moments_disabled IS NULL OR moments_disabled = 0)
     ORDER BY RANDOM() LIMIT ?
-  `).all(n);
+  `).all(Math.max(n * 4, n + 4));
+
+  const { allowed } = filterPublishable(db, pool.map(r => r.id), { flag: 'moments_disabled' });
+  const byId = new Map(pool.map(r => [Number(r.id), r]));
+  return allowed.map(id => byId.get(id)).filter(Boolean).slice(0, n);
 }
 
 /** 提示词：让 LLM 产出 { posts: [...] } */
