@@ -5,13 +5,15 @@
        document.querySelector 与真实 DOM 的 parentNode，在 node --test 的假 renderer 下
        永远解析不到宿主（遮罩退到 body），而且那套轮询把测试文件挂死过 —— 已按上游退回。 -->
   <Teleport :to="anchor || 'body'" defer>
-    <Transition name="modal-fade" :duration="transitionMs">
-      <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating }" :style="transitionMs ? {'--linshe-modal-duration':`${transitionMs}ms`} : undefined" @click.self="!floating && close()">
-        <div class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic' }, panelClass]" @click.stop>
+    <Transition name="modal-fade" :duration="transitionMs" @after-leave="afterLeave">
+      <div v-if="isOpen" ref="overlay" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating }" :style="overlayStyle" @pointerdown="onBackdropPointerDown" @click.self="onBackdropClick">
+        <div ref="panel" class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic' }, panelClass]" role="dialog" :aria-modal="floating ? undefined : true" :aria-label="title || undefined" tabindex="-1" @click.stop>
           <div class="modal-header">
-            <h3 class="modal-title">{{ title }}</h3>
+            <slot name="title"><h3 class="modal-title">{{ title }}</h3></slot>
             <span v-if="$slots['header-extra']" class="modal-header-extra"><slot name="header-extra" /></span>
-            <slot name="close" :close="close"><linshe-button variant="icon" aria-label="关闭" @click="close">✕</linshe-button></slot>
+            <slot v-if="showClose" name="close" :close="close" :disabled="closeDisabled || checkingClose">
+              <linshe-button variant="icon" :disabled="closeDisabled || checkingClose" aria-label="关闭" @click="close()">✕</linshe-button>
+            </slot>
           </div>
           <!-- 白色内衬：浮于暖纸外壳之上，标题栏留在外壳上（与 LoRA 设置窗一致） -->
           <div class="linshe-modal-lining" :class="{ 'has-footer': !!$slots.footer }">
@@ -32,10 +34,18 @@
 // 统一弹窗基座（Linshe 基础窗体组件）：Teleport + 遮罩 + 面板 + 头部/关闭键，
 // 视觉走全局 modal 家族类 + 本组件的白色内衬（--modal-lining-*）。
 // 暖色沿用 v3.2 人物详情卡口径（暖纸外壳 + 白色内衬），暗夜保持 Cel Glow 深色玻璃。
-// 内容用 #default 插槽；需要自定义底部操作区时用 #footer；头部右侧附加内容用 #header-extra。
-import { computed, onBeforeUnmount, watch } from 'vue'
+// 内容用 #default 插槽；需要自定义底部操作区时用 #footer；头部右侧附加内容用 #header-extra；
+// 需要自定义标题结构时用 #title（插槽优先于 title prop）。
+//
+// 关闭契约（2026-11-09 W01）：
+// 按钮 / Escape / 点遮罩 / 父层改 visible 四条路统一走 requestClose，先过 closeDisabled
+// 与 beforeClose。`close` 只表示"用户要求关闭"，**不等于已经离场**；真正卸载完要听
+// `after-leave`（Transition 的离场动画结束点），父层用 v-if 卸载时必须听它，不要用
+// setTimeout 猜时长 —— 猜早了卸早了，猜晚了闪一下。
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 
 import LinsheButton from './LinsheButton.vue'
+import { registerModal, nextModalLayer } from './modalStack.js'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -49,6 +59,17 @@ const props = defineProps({
   floating: { type: Boolean, default: false }, // 右下角无阻挡工具窗，复用统一面板皮肤
   panelClass: { type: [String, Array, Object], default: '' },
   bodyClass: { type: [String, Array, Object], default: '' },
+  showClose: { type: Boolean, default: true },
+  /** 为真时按钮 / Escape / 遮罩三条路都不关闭（提交中、生成中） */
+  closeDisabled: { type: Boolean, default: false },
+  closeOnBackdrop: { type: Boolean, default: true },
+  closeOnEscape: { type: Boolean, default: true },
+  /** 返回 false（或 reject）可拒绝关闭；允许异步确认。检查期间禁止重复请求。 */
+  beforeClose: { type: Function, default: null },
+  /** 被子弹窗 / 独立灯箱接管键盘时置真：不响应 Escape，也不再处理关闭 */
+  suspended: { type: Boolean, default: false },
+  /** 遮罩层级。不传时按 modalStack 的当前最上层 +10 算 */
+  zIndex: { type: Number, default: undefined },
   /**
    * 宿主选择器（如 '.page-modal-host'）：遮罩 Teleport 进该元素并铺满它，面板相对宿主居中，
    * 而不是相对整个视口居中（页面两侧有导航 / 侧栏时，视口居中的面板看着是偏的）。
@@ -58,27 +79,97 @@ const props = defineProps({
   anchor: { type: String, default: '' },
 })
 
-const emit = defineEmits(['update:modelValue', 'close'])
+const emit = defineEmits(['update:modelValue', 'close', 'after-leave', 'close-error'])
 const isOpen = computed(() => props.modelValue || props.visible)
 const isAnchored = computed(() => !!props.anchor)
+const overlay = ref(null), panel = ref(null), checkingClose = ref(false)
+const activeLayer = ref(undefined)
+const overlayStyle = computed(() => ({
+  ...(props.transitionMs !== undefined ? { '--linshe-modal-duration': `${props.transitionMs}ms` } : {}),
+  ...(activeLayer.value !== undefined ? { zIndex: activeLayer.value } : {}),
+}))
+let unregister = null, previousFocus = null, opening = 0, backdropStarted = false, disposed = false
 
-function close() {
-  emit('update:modelValue', false)
-  emit('close')
+/**
+ * 唯一关闭入口。`reason` 只用于区分来源（button / escape / backdrop / programmatic）。
+ * 注意：emit('close') 是"请求已通过"，离场完成另发 `after-leave`。
+ */
+async function close(reason = 'button') {
+  if (!isOpen.value || props.closeDisabled || checkingClose.value || props.suspended) return
+  const version = opening
+  checkingClose.value = true
+  try {
+    if (props.beforeClose && await props.beforeClose(reason) === false) return
+    // 守卫期间可能被重新打开 / 卸载 / 改成 disabled：任一条都不再关闭
+    if (disposed || version !== opening || !isOpen.value || props.closeDisabled) return
+    emit('update:modelValue', false)
+    emit('close', reason)
+  } catch (error) {
+    // 守卫抛错 = 拒绝关闭，窗口保持原状；把错误交给父层决定怎么提示
+    emit('close-error', error)
+  } finally {
+    checkingClose.value = false
+  }
 }
 
-// Esc 关闭
-function onKeydown(e) {
-  if (e.key === 'Escape' && isOpen.value) close()
+// 遮罩关闭要区分"在遮罩上按下并抬起"：在面板里拖选文字、松手落到遮罩上不该关窗
+function onBackdropPointerDown(event) { backdropStarted = event.target === event.currentTarget }
+function onBackdropClick(event) {
+  if ((backdropStarted || event.detail === 0) && props.closeOnBackdrop && !props.floating) void close('backdrop')
+  backdropStarted = false
 }
-watch(isOpen, (v) => {
-  if (v) window.addEventListener('keydown', onKeydown)
-  else window.removeEventListener('keydown', onKeydown)
-}, { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+
+// 离场动画真正结束（Transition 的 after-leave，只触发一次）：
+// 注销弹窗栈、把焦点还给打开前的元素，然后通知父层"可以卸载了"
+function afterLeave() {
+  if (isOpen.value) return
+  unregister?.(); unregister = null
+  const doc = previousFocus?.ownerDocument
+  if (previousFocus?.isConnected && (doc.activeElement === doc.body || !doc.activeElement?.isConnected)) previousFocus.focus({ preventScroll: true })
+  previousFocus = null
+  emit('after-leave')
+}
+
+watch(isOpen, async value => {
+  const version = ++opening
+  if (!value) return // 退出动画完成前保留栈位，不让 Esc 穿透到底层
+  activeLayer.value = undefined
+  previousFocus = panel.value?.ownerDocument?.activeElement || globalThis.document?.activeElement
+  await nextTick()
+  if (disposed || version !== opening || !panel.value?.ownerDocument) return
+  unregister?.()
+  const cssLayer = overlay.value ? Number.parseInt(getComputedStyle(overlay.value).zIndex) || 10000 : 10000
+  activeLayer.value = nextModalLayer(panel.value.ownerDocument, props.zIndex ?? cssLayer)
+  unregister = registerModal({
+    panel: panel.value,
+    floating: props.floating,
+    layer: () => activeLayer.value || 0,
+    suspended: () => props.suspended,
+    escape: () => { if (props.closeOnEscape) void close('escape') },
+  })
+  if (!props.floating) panel.value.focus({ preventScroll: true })
+}, { immediate: true, flush: 'post' })
+
+onBeforeUnmount(() => {
+  disposed = true
+  unregister?.()
+})
 </script>
 
 <style scoped>
+/* 时长仍由全局 animations.css 的 .modal-fade-* 决定（淡入 250ms / 淡出 180ms），
+   这里不覆盖 —— 离场结束点由 Transition 的 after-leave 给，不靠猜时长。
+   注意：AGENTS.md 写的是进出各 300ms，与实际 250/180 不一致，待统一后再动这一处。 */
+.modal-header { gap: 12px; }
+/* #title 插槽的调用方都传 <div class="modal-heading-content">：让标题区撑满、关闭键靠右，
+   长标题可换行而不是把关闭键顶出面板 */
+:slotted(.modal-heading-content) { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1; min-width: 0; flex-wrap: wrap; }
+.modal-title { min-width: 0; overflow-wrap: anywhere; }
+.modal-header-extra { flex-wrap: wrap; }
+.linshe-modal:focus { outline: none; }
+.linshe-modal .modal-body.modal-workspace-body { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.linshe-modal .modal-body.modal-form-body { display: flex; flex-direction: column; gap: 12px; }
+.modal-form-body :deep(> *) { flex-shrink: 0; }
 .modal-header-extra {
   display: inline-flex;
   align-items: center;
@@ -106,13 +197,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   scrollbar-width: thin;
   scrollbar-color: rgba(var(--accent-rgb), 0.28) transparent;
 }
-
-/* 撑满型工作区（关系图 / 背包）：body 自己变成 flex 容器，里面的画布才能用 flex:1 拿到高度。
-   上游 4.2.1 在 LinsheModal 里加了这条，本地文件没跟上 ⇒ 关系图/背包画布高度 0，只剩顶部提示条。 */
-.linshe-modal .modal-body.modal-workspace-body { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
-.linshe-modal .modal-body.modal-form-body { display: flex; flex-direction: column; gap: 12px; }
-.modal-form-body :deep(> *) { flex-shrink: 0; }
-.linshe-modal .modal-body::-webkit-scrollbar { width: 6px; height: 6px; }.linshe-modal .modal-body::-webkit-scrollbar-track { background: transparent; }
+.linshe-modal .modal-body::-webkit-scrollbar { width: 6px; height: 6px; }
+.linshe-modal .modal-body::-webkit-scrollbar-track { background: transparent; }
 .linshe-modal .modal-body::-webkit-scrollbar-thumb {
   background: rgba(var(--accent-rgb), 0.28);
   border-radius: 999px;
@@ -163,4 +249,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     overflow: hidden;
   }
 }
+
+/* 操作区自带底部留白；有 footer 时不再叠加内衬的底部间距。 */
+.linshe-modal-lining.has-footer { margin-bottom: 0; }
 </style>
