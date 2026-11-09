@@ -345,6 +345,7 @@ async function generateDiaryImages({ character, content, prompts, onProgress }) 
       image: result.images[0],
       promptRefined: result.promptRefined || prompt,
       wfMode: result.wfMode,
+      provenance: result.provenance,
     };
   })()));
 
@@ -515,6 +516,7 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
         style: config.comfyui.momentsArtist,
         resolution: `${item.width}x${item.height}`,
         workflowTemplate: item.wfMode,
+        provenance: item.provenance,
         db,
       });
     }

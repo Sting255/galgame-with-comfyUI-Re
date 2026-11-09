@@ -320,6 +320,7 @@ ${worldPenetrationLine}
         style: config.comfyui.eventArtist,
         resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
         workflowTemplate: genResult.wfMode,
+        provenance: genResult.provenance,
         db,
       });
       console.log(`[townNpcEventGen] Image generated for ${npc.display_name}: ${imageUrl}`);
@@ -593,6 +594,7 @@ ${npcPersonaBlock(npc, playerName, playerAppearance)}` },
           style: config.comfyui.eventArtist,
           resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
           workflowTemplate: genResult.wfMode,
+          provenance: genResult.provenance,
           db,
         });
         console.log(`[townNpcEventGen] Branch image generated: ${imageUrl}`);

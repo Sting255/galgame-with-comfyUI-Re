@@ -194,7 +194,7 @@ async function defaultTouchImageGenerator(character, prompt, { scene = 'chat' } 
     const filename = Date.now() + '_' + (img.filename || 'comfy.png');
     urls.push(saveBase64Image('chat', filename, img.base64));
   }
-  return { urls, promptRefined: result.promptRefined || prompt };
+  return { urls, promptRefined: result.promptRefined || prompt, provenance: result.provenance };
 }
 
 let touchImageGenerator = defaultTouchImageGenerator;
@@ -266,7 +266,7 @@ async function generateTouchImageForReaction({ character, action, reactionText, 
       console.warn('[touch] 出图失败（不影响动作）:', result?.error || 'no images');
       return null;
     }
-    return { urls: result.urls, prompt, promptRefined: result.promptRefined || prompt };
+    return { urls: result.urls, prompt, promptRefined: result.promptRefined || prompt, provenance: result.provenance };
   } catch (err) {
     console.warn('[touch] 出图异常（不影响动作）:', err?.message || err);
     return null;
@@ -291,7 +291,7 @@ function attachImagesToMessage(msgId, urls) {
 }
 
 /** 记账到 image_tasks（style='touch-action'）：相册能看到这次出图，统计端点也据此数「出图数」 */
-function recordTouchImageTask({ conversationId, prompt, promptRefined, urls }) {
+function recordTouchImageTask({ conversationId, prompt, promptRefined, urls, provenance }) {
   try {
     recordCompletedImageTask({
       conversationId,
@@ -299,6 +299,7 @@ function recordTouchImageTask({ conversationId, prompt, promptRefined, urls }) {
       promptRefined,
       outputPaths: urls,
       style: TOUCH_IMAGE_TASK_STYLE,
+      provenance,
     });
   } catch (err) {
     console.warn('[touch] 出图记账失败（不影响图片本身）:', err?.message || err);
@@ -1425,7 +1426,7 @@ router.post('/:id/touch/:action', async (req, res) => {
         });
         if (shot) {
           images = attachImagesToMessage(groupWritten.msgId, shot.urls);
-          recordTouchImageTask({ conversationId: `group_${normalized.groupId}`, prompt: shot.prompt, promptRefined: shot.promptRefined, urls: shot.urls });
+          recordTouchImageTask({ conversationId: `group_${normalized.groupId}`, prompt: shot.prompt, promptRefined: shot.promptRefined, urls: shot.urls, provenance: shot.provenance });
           // 事件名/载荷口径统一走 services/reactionImageUpdate.js（群聊 store 只认 group_message_update）
           const update = reactionImageUpdate({
             scene: 'group',
@@ -1480,7 +1481,7 @@ router.post('/:id/touch/:action', async (req, res) => {
             .then(shot => {
               if (!shot || !Array.isArray(shot.urls) || shot.urls.length === 0) return;
               const attached = attachImagesToMessage(pendingMessage.lastMsgId, shot.urls);
-              recordTouchImageTask({ conversationId: `char_${id}`, prompt: shot.prompt, promptRefined: shot.promptRefined, urls: shot.urls });
+              recordTouchImageTask({ conversationId: `char_${id}`, prompt: shot.prompt, promptRefined: shot.promptRefined, urls: shot.urls, provenance: shot.provenance });
               // 新事件（**别复用 group_message_update** —— 那是群聊 store 的契约）：前端按 msg_id 找到那条气泡挂图。
               // 口径统一走 services/reactionImageUpdate.js（私聊 = proactive_message_update）
               // ⚠️ 2026-10-03 复查：图写进的是**最后一条**（上面那行 attachImagesToMessage 用的 lastMsgId），

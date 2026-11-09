@@ -570,6 +570,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
           style: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
           resolution: `${width}x${height}`,
           workflowTemplate: genResult.wfMode,
+          provenance: genResult.provenance,
           db,
         });
       } catch (err) {
@@ -650,6 +651,7 @@ async function generateTownNpcMomentImages(npc, imagePrompts, opts = {}) {
           style: config.comfyui.momentsArtist,
           resolution: `${width}x${height}`,
           workflowTemplate: genResult.wfMode,
+          provenance: genResult.provenance,
           db,
         });
       } catch (err) {

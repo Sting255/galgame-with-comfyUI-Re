@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getDb, getSystemRulesWithWorld, getWorldSetting } from '../db/index.js';
-import { generateImage, generateImageRaw, getLastWorkflowMode } from '../services/imageSkill.js';
+import { generateImage, generateImageRaw, getLastWorkflowMode, getComfyLorasRoot } from '../services/imageSkill.js';
 import { refineImage } from '../services/imageRefine.js';
 import { startEditTask, listEditTasks, applyEditTask, discardEditTask, rerunEditTask } from '../services/imageEditTasks.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
@@ -27,6 +27,18 @@ import path from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const IMAGES_DIR = resolve(__dirname, '../../data/images');
+// 工作流目录与 imageSkill.js 的 WORKFLOW_DIR 同一推导口径（agent-core/workflow）
+const PROV_WORKFLOW_DIR = resolve(__dirname, '../../workflow');
+
+/** 来源快照里记录的 LoRA 此刻是否还在 ComfyUI 的 loras 目录下 */
+function loraPathExists(loraPath) {
+  const root = getComfyLorasRoot();
+  if (!root || !loraPath) return true;   // 路径解析不出来时不误报缺失
+  const p = String(loraPath);
+  // 记录里存的是「ComfyUI 模型根目录相对名」，绝对路径没法直接判
+  if (path.isAbsolute(p)) return true;
+  return fs.existsSync(path.join(root, p));
+}
 
 const router = Router();
 
@@ -39,7 +51,11 @@ const FOLDER_LABEL = {
 let lastStyleTest = null;
 
 // ── 相册缓存已下沉到 services/galleryCache.js（服务层/路由层统一从这里导入）──
-import { galleryCache, refreshGalleryCache, invalidateGalleryCache } from '../services/galleryCache.js';
+import { getGallerySnapshot, invalidateGalleryCache } from '../services/galleryCache.js';
+import {
+  readImageProvenance, buildRegenerateOptions, describeProvenanceGaps,
+  deleteImageProvenance, saveImageProvenance,
+} from '../services/imageProvenance.js';
 // 兼容再导出：characters.js 等历史调用方仍从本模块导入
 export { invalidateGalleryCache };
 
@@ -83,12 +99,12 @@ router.post('/pose-reference', (req, res) => {
 
 router.get('/gallery', async (req, res) => {
   try {
-    if (!galleryCache.data || Date.now() - galleryCache.mtime > galleryCache.ttl) {
-      await refreshGalleryCache();
-    }
+    // 缓存读取收口到 getGallerySnapshot（共享刷新 Promise + 失效 generation，方案 B09）：
+    // 并发首屏请求不再各扫一遍全目录；扫描期间有图变动时该批结果不入缓存。
+    const snapshot = await getGallerySnapshot();
 
     const { folder, character } = req.query;
-    let images = galleryCache.data.images;
+    let images = snapshot.images;
 
     // 按角色筛选：与该角色全部渠道登记的图片 URL 求交集（磁盘扫描结果保证文件都存在）
     if (character) {
@@ -531,10 +547,8 @@ async function pickLatestTestImage() {
   }
 
   if (!saved) {
-    if (!galleryCache.data || Date.now() - galleryCache.mtime > galleryCache.ttl) {
-      await refreshGalleryCache();
-    }
-    const latest = galleryCache.data?.images?.[0];
+    const snapshot = await getGallerySnapshot();
+    const latest = snapshot.images?.[0];
     if (latest) {
       saved = { type: 'saved', url: latest.url, at: latest.mtime, promptFallback: '' };
     }
@@ -645,13 +659,44 @@ function parseImageTarget(cleanUrl) {
 /**
  * 按文件名反查这张图片的完整生成参数（prompt / 画风 / 分辨率 / 工作流模式 / 角色配置）
  * 查找顺序: image_tasks → moment_posts → raw_messages → character_events → choice_history
+ *
+ * 2026-11-09（方案 A04）：额外接收**规范完整 URL**，优先读来源快照。
+ * 旧图没有来源记录时（reason=no_record / version_mismatch / corrupt_payload）回退到原来的
+ * 数据库反查，只用能恢复的数据，并在 `params.provenanceReason` 里说明原因，
+ * 不假装能精确重放。
  */
-function lookupImageGenerationParams(filename) {
+function lookupImageGenerationParams(filename, cleanUrl) {
   const db = getDb();
   const params = {
     promptText: null, taskStyle: null, taskResolution: null, taskWorkflowTemplate: null,
     charLoras: null, charCustomWorkflow: null, charArtist: null,
+    provenance: null, provenanceReason: null, regenerate: null, gaps: [],
   };
+
+  // ── 0. 来源快照（A04）：有记录且版本兼容就优先用它 ──
+  const prov = readImageProvenance(cleanUrl, db);
+  if (prov.compatible) {
+    const snap = prov.snapshot;
+    params.provenance = snap;
+    params.provenanceReason = 'ok';
+    params.promptText = snap.prompt?.refined || snap.prompt?.original || null;
+    params.taskStyle = snap.params?.artist ?? null;
+    params.taskResolution = snap.params?.width && snap.params?.height
+      ? `${snap.params.width}x${snap.params.height}` : null;
+    params.taskWorkflowTemplate = snap.workflow?.mode || null;
+    params.regenerate = buildRegenerateOptions(snap);
+    // 缺文件要明说，不能静默换成当前角色/默认工作流
+    params.gaps = describeProvenanceGaps(snap, {
+      loraExists: (p) => loraPathExists(p),
+      workflowExists: (f) => fs.existsSync(path.join(PROV_WORKFLOW_DIR, f)),
+    });
+    if (params.gaps.length) {
+      console.warn(`[images] 来源快照引用的资源已缺失 ${params.gaps.length} 项，沿用原图模式可能出图不同：`
+        + params.gaps.map(g => `${g.kind}:${g.name}`).join('、'));
+    }
+    return params;   // 有完整快照就不再走下面的按名反查（那套依赖文件名字符串匹配，跨目录会串）
+  }
+  params.provenanceReason = prov.reason || 'no_record';
 
   // 辅助：从 conversation_id 提取角色 lora/workflow
   function tryGetCharConfig(conversationId) {
@@ -785,8 +830,9 @@ async function startImageEditTask(action, url) {
   const target = parseImageTarget(cleanUrl);
   if (!target) throw taskHttpError(`invalid image url format: ${url}`, 400);
   const { category, filename } = target;
+  const db = getDb();
 
-  const params = lookupImageGenerationParams(filename);
+  const params = lookupImageGenerationParams(filename, cleanUrl);
   const promptText = params.promptText;
   if (!promptText || promptText.trim().length === 0) {
     throw taskHttpError('prompt not found for this image', 404);
@@ -813,8 +859,34 @@ async function startImageEditTask(action, url) {
         persistPreparation: false,
         onProgress,
       };
-      if (params.charLoras?.length > 0) genOpts.loras = params.charLoras;
-      if (params.charCustomWorkflow) genOpts.customWorkflow = params.charCustomWorkflow;
+
+      // ── 来源快照重放（A04）────────────────────────────────────────
+      // 有兼容快照时，用记录里的角色 LoRA / 全局 LoRA / 负面词 / 宽高 / 工作流，
+      // 不拿「当前」配置顶替。角色身份锚点从库里按 characterId 回查（锚点可能已被用户手改）。
+      if (params.regenerate) {
+        const r = params.regenerate;
+        if (r.width) genOpts.width = r.width;
+        if (r.height) genOpts.height = r.height;
+        if (r.negativePrompt) genOpts.negativePrompt = r.negativePrompt;
+        if (r.qualityPrompt) genOpts.qualityPrompt = r.qualityPrompt;
+        if (r.customWorkflow) genOpts.customWorkflow = r.customWorkflow;
+        if (r.characterLoras?.length) genOpts.loras = r.characterLoras;
+        // 关键：沿用时把快照里的全局 LoRA 显式传进去，buildWorkflow 就不会再读当前全局配置；
+        // 用户明确切换「使用当前画风」时不传，让它自然读当前配置。
+        if (r.globalLoraSnapshot) genOpts.globalLoraSnapshot = r.globalLoraSnapshot;
+        if (r.characterId) {
+          const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(r.characterId);
+          if (char) genOpts.identity = char;
+        }
+        console.log(`[images] 重生成沿用原图配置：来源=${params.provenanceReason}`
+          + `、缺口=${params.gaps.length}、角色=${r.characterId || '无'}`);
+      } else {
+        // 旧图无来源记录：只能用可恢复数据（数据库里反查到的角色配置），如实说明
+        console.log(`[images] 旧图无来源记录（${params.provenanceReason}），按可恢复数据重生成，不承诺精确还原`);
+        if (params.charLoras?.length > 0) genOpts.loras = params.charLoras;
+        if (params.charCustomWorkflow) genOpts.customWorkflow = params.charCustomWorkflow;
+      }
+
       const result = await generateImageRaw(promptText, genOpts);
       if (!result.success || !result.images?.length) {
         throw new Error(result.error || 'Image generation failed');
@@ -844,7 +916,23 @@ async function startImageEditTask(action, url) {
     return { filename: path.basename(outPath) };
   };
 
-  return startEditTask({ action, url: cleanUrl, targetPath: filePath, run });
+  // 任务提交时记下源图的指纹（mtimeMs + size）：生成可能跑几分钟，期间若另一任务
+  // 已把这张图覆盖掉，确认时指纹对不上就拒绝，保留预览而不是盖掉较新的结果。
+  // 源图此刻不存在时（旧 PNG 地址对应 AVIF 实体）改按孪生文件取指纹。
+  const fingerprintSource = (() => {
+    if (fs.existsSync(filePath)) return filePath;
+    const twin = filePath.replace(/\.png$/i, '.avif');
+    return fs.existsSync(twin) ? twin : null;
+  })();
+  const sourceStat = fingerprintSource ? fs.statSync(fingerprintSource) : null;
+  const sourceFingerprint = sourceStat
+    ? () => {
+      const cur = fs.existsSync(fingerprintSource) ? fs.statSync(fingerprintSource) : null;
+      return !!cur && cur.mtimeMs === sourceStat.mtimeMs && cur.size === sourceStat.size;
+    }
+    : null;
+
+  return startEditTask({ action, url: cleanUrl, targetPath: filePath, run, sourceFingerprint });
 }
 
 function sendTaskError(res, err) {
@@ -881,7 +969,25 @@ router.post('/edit-tasks/:id/apply', async (req, res) => {
   try {
     const task = await applyEditTask(req.params.id, req.body?.token);
     const cleanUrl = task.url.replace(/\?.*$/, '');
-    const url = task.appliedUrl || `${cleanUrl}?t=${Date.now()}`;
+    let url = task.appliedUrl || `${cleanUrl}?t=${Date.now()}`;
+
+    // A04：扩展名按真实编码改写后，返回的新 URL 也必须指向新的扩展名。
+    // 同时把来源快照迁移到新路径、清掉旧路径那条，别让两处真源打架。
+    if (!task.appliedUrl && task.appliedPath && task.appliedPath !== task.targetPath) {
+      const newExt = path.extname(task.appliedPath);
+      const baseUrl = cleanUrl.replace(/\.[a-z0-9]+$/i, '');
+      const newUrl = baseUrl + newExt;
+      url = `${newUrl}?t=${Date.now()}`;
+      try {
+        const prov = readImageProvenance(cleanUrl, getDb());
+        if (prov.compatible) {
+          saveImageProvenance(newUrl, prov.snapshot, getDb());
+          deleteImageProvenance(cleanUrl, getDb());
+        }
+      } catch (e) {
+        console.warn('[images] 迁移来源快照失败（不影响覆盖结果）:', e?.message || e);
+      }
+    }
     res.json({ success: true, url, task_id: task.id });
   } catch (err) { sendTaskError(res, err); }
 });
@@ -1045,6 +1151,9 @@ function deleteOneImage(imageUrl) {
         console.error('[delete] DB cleanup error:', e.message);
       }
     }
+
+    // 图片没了，来源快照也不该留孤儿行（A04）
+    try { deleteImageProvenance(cleanUrl, db); } catch { /* 清理失败不影响删除结果 */ }
 
     return removed ? { ok: true } : { ok: true, missing: true };
   } catch (err) {

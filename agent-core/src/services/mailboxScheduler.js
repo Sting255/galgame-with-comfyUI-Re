@@ -182,6 +182,7 @@ async function processReply(db, letter) {
         style: config.comfyui.momentsArtist,
         resolution,
         workflowTemplate: generated.wfMode,
+        provenance: generated.provenance,
         db,
       });
     }
@@ -663,6 +664,7 @@ async function generateImageSafe(prompt, charLoras, charCustomWorkflow, override
         image: result.images[0],
         promptRefined: result.promptRefined || prompt,
         wfMode: result.wfMode,
+        provenance: result.provenance,
       };
     }
     console.error(`[mailboxScheduler] image fail: ${result?.error || 'unknown'}`);

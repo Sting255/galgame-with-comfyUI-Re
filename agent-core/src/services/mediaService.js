@@ -1225,6 +1225,7 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
           style: result.artist,
           resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
           workflowTemplate: result.wfMode,
+          provenance: result.provenance,
           db,
         });
         if (isMediaPostPublished(row.id)) broadcast('media_image_ready', { postId: row.id, image: result.url, sectionKey: section.key });
@@ -1438,6 +1439,7 @@ async function generateMediaImage(prompt, character = null, priority = 'low') {
     url: saveBase64Image('media', `media_${Date.now()}_${img.filename || 'comfy.png'}`, img.base64),
     refinedPrompt: result.promptRefined || prompt,
     wfMode: result.wfMode,
+    provenance: result.provenance,
     artist: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
   };
 }
@@ -1502,6 +1504,7 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
         style: result.artist,
         resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
         workflowTemplate: result.wfMode,
+        provenance: result.provenance,
         db,
       });
       publishMediaPostIfReady(p.id);
@@ -1566,6 +1569,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
           style: result.artist,
           resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
           workflowTemplate: result.wfMode,
+          provenance: result.provenance,
           db,
         });
         publishMediaPostIfReady(row.id);

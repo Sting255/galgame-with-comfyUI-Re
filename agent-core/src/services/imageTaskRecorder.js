@@ -1,4 +1,33 @@
 import { getDb } from '../db/index.js';
+import { saveImageProvenance, captureProvenance } from './imageProvenance.js';
+
+/**
+ * 来源快照落库的唯一入口（2026-11-09 方案 A04）。
+ *
+ * 优先用调用方传来的 `provenance`（来自 imageSkill._execute 的采集结果，含真实全局/角色
+ * LoRA、身份锚点、负面提示词）；拿不到时用本函数已有的字段构造一份基础版。
+ * 两者都写进**同一张表、同一个字段**，不产生互相冲突的第二真源。
+ *
+ * 绑定在 `outputPaths[0]`（规范完整资源路径）上，与图库唯一键、删除结果集合同一口径。
+ */
+function persistProvenance({ provenance, outputPaths, promptOriginal, promptRefined, style, resolution, workflowTemplate, conversationId }, db) {
+  const url = Array.isArray(outputPaths) ? outputPaths.find(Boolean) : null;
+  if (!url) return;
+  let snapshot = provenance;
+  if (!snapshot) {
+    const charMatch = String(conversationId || '').match(/^char_(\d+)/);
+    snapshot = captureProvenance({
+      promptOriginal,
+      promptRefined,
+      workflowMode: workflowTemplate,
+      artist: style,
+      width: Number(String(resolution || '').split('x')[0]) || null,
+      height: Number(String(resolution || '').split('x')[1]) || null,
+      identity: charMatch ? { characterId: Number(charMatch[1]) } : null,
+    });
+  }
+  saveImageProvenance(url, snapshot, db);
+}
 
 export function recordCompletedImageTask({
   conversationId = null,
@@ -8,6 +37,7 @@ export function recordCompletedImageTask({
   style = null,
   resolution = null,
   workflowTemplate = null,
+  provenance = null,
   db = getDb(),
 }) {
   const paths = Array.isArray(outputPaths) ? outputPaths.filter(Boolean) : [];
@@ -26,23 +56,20 @@ export function recordCompletedImageTask({
     workflowTemplate,
     JSON.stringify(paths),
   );
+  // 来源快照记账失败不能反过来把业务链路带崩（saveImageProvenance 内部已 try/catch）
+  try {
+    persistProvenance({ provenance, outputPaths: paths, promptOriginal, promptRefined, style, resolution, workflowTemplate, conversationId }, db);
+  } catch { /* 忽略 */ }
   return Number(result.lastInsertRowid);
 }
 
 /**
  * 记录一次**失败**的生图任务（2026-10-01 补）。
  *
- * ## 为什么必须有这个
- * 奇遇 / 朋友圈 / 镇民奇遇的出图失败原来只打一行 `console.warn`，**库里一条痕迹都不留**：
- * 真机实测 `image_tasks` 里 events 相关 **120 条全部 done、0 条 failed**，而同一时段的日志里
- * 明明有两次 `All ComfyUI submit attempts exhausted`。后果是事后完全分不出这三件事：
- *   ① 根本没触发配图   ② 触发了但生成失败   ③ 生成成功但图片文件后来被弄丢了
- * 用户报「有时候生不出来」时，这三种原因的修法完全不同，却长得一模一样。
+ * 出图失败原来只打一行 console.warn，库里一条痕迹都不留，事后分不出
+ * ①根本没触发 ②触发了但失败 ③成功但文件后来丢了。代价只有一行 INSERT。
  *
- * 代价只有一行 INSERT；`output_paths` 写 `'[]'`（没有产物），`error_message` 截断到 500 字
- * 免得把 ComfyUI 的整段报错塞进库里。
- *
- * @returns {number|null} 新行 id；没有 prompt 可记时返回 null（不制造无意义的空行）
+ * @returns {number|null} 新行 id；没有 prompt 可记时返回 null
  */
 export function recordFailedImageTask({
   conversationId = null,

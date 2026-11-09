@@ -124,17 +124,19 @@ export function startBackgroundTask({ action, meta }) {
  * @param {Function} [spec.finalize] - async (task) => string；自定义落库钩子，返回新图 URL（自带存储语义的场景用，
  *                                     提供后不再做原地 rename，上面的 targetPath 可省略）
  * @param {Function} [spec.restart]  - () => object：重新生成时自定义重启钩子
+ * @param {Function} [spec.sourceFingerprint] - () => boolean：确认时复核源资源是否仍是同一份；
+ *                                     返回 false 就拒绝覆盖并保留预览（方案 A04，防覆盖较新的图）
  * @param {object}   [spec.meta]     - 透传给 finalize / restart 的上下文数据
  * @returns {object} 任务记录
  */
-export function startEditTask({ action, url, targetPath, run, finalize, restart, meta }) {
+export function startEditTask({ action, url, targetPath, run, finalize, restart, sourceFingerprint, meta }) {
   const id = randomUUID();
   const token = randomBytes(12).toString('hex');
   const stageBase = path.join(getPendingDir(), `${id}-${token}`);
   fs.mkdirSync(path.dirname(stageBase), { recursive: true });
 
   const task = {
-    id, action, url, targetPath, finalize, restart, meta, token, stageBase,
+    id, action, url, targetPath, finalize, restart, sourceFingerprint, meta, token, stageBase,
     status: 'running', progress: null, previewUrl: null, error: null, createdAt: Date.now(),
   };
   tasks.set(id, task);
@@ -183,11 +185,37 @@ export async function applyEditTask(id, token) {
   if (task.token !== token) throw httpError('任务凭证无效', 403);
   if (!task.pendingPath || !fs.existsSync(task.pendingPath)) throw httpError('暂存文件不存在', 404);
 
+  // ── 确认前的两项复核（2026-11-09 方案 A04 / M04）────────────────────
+  // 1) 源资源是否已被另一任务替换：任务生成期间原图可能被重新生成/删除又重建。
+  //    指纹对不上就拒绝覆盖，保留预览让用户可以先看图，绝不盖掉较新的那张。
+  // 2) 扩展名与真实编码一致：暂存文件按 result 的实际 dataUri 扩展名落盘，
+  //    目标是 .png 但结果是 AVIF（或反之）时，改写到同名的正确扩展名，
+  //    并删掉旧实体与 .avif 孪生，避免出现「.png 后缀的 AVIF 字节」。
+  if (typeof task.sourceFingerprint === 'function' && !task.sourceFingerprint()) {
+    throw httpError('原图在生成期间已被其它任务替换，已保留预览，请重新打开确认', 409);
+  }
+
   if (typeof task.finalize === 'function') {
     task.appliedUrl = await task.finalize(task);
   } else {
-    fs.mkdirSync(path.dirname(task.targetPath), { recursive: true });
-    fs.renameSync(task.pendingPath, task.targetPath);
+    const stagedExt = path.extname(task.pendingPath).toLowerCase();
+    const targetExt = path.extname(task.targetPath).toLowerCase();
+    let finalPath = task.targetPath;
+
+    if (stagedExt && targetExt && stagedExt !== targetExt) {
+      // 把结果写到「目标同名 + 真实扩展名」，原目标实体清掉（含 .avif 孪生），
+      // URL 由 applyEditTask 调用方按 appliedUrl 更新。
+      finalPath = task.targetPath.replace(new RegExp(`${targetExt.replace('.', '\\.')}$`, 'i'), stagedExt);
+    }
+    fs.mkdirSync(path.dirname(finalPath), { recursive: true });
+    fs.renameSync(task.pendingPath, finalPath);
+    task.appliedPath = finalPath;
+    if (finalPath !== task.targetPath) {
+      // 清掉旧扩展名实体及其 .avif 孪生，别让回退中间件再返回一张旧图
+      for (const p of [task.targetPath, task.targetPath.replace(/\.png$/i, '.avif')]) {
+        if (p !== finalPath && fs.existsSync(p)) { try { fs.unlinkSync(p); } catch {} }
+      }
+    }
   }
   task.status = 'applied';
   tasks.delete(id);

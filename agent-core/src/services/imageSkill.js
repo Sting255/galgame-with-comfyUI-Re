@@ -26,6 +26,7 @@ import { prepareImagePrompt } from './imagePromptPreparer.js';
 import { createSoftState } from './softStateStore.js';
 import { stripImagePromptRuleEcho } from '../utils/groupImagePrompt.js';
 import { getIdentityAnchorForPrompt, applyIdentityAnchorToPrompt } from './identityAnchor.js';
+import { captureProvenance } from './imageProvenance.js';
 import { resolveComfySubdir } from '../utils/comfyPaths.js';
 
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
@@ -710,6 +711,8 @@ function scheduleLowRetry(ms) {
 async function _execute(rawPrompt, opts) {
   activeTaskCount++;
   let slotAcquired = false;
+  // 来源快照要记「这张图锚了谁、锚了什么」（方案 A04）
+  let identityForProvenance = null;
   try {
     // 0. 送进 CLIP 之前先剥掉模型回显的生图规范原文（2026-10-01 修，见 groupImagePrompt.js 长注释）。
     //    放在这里而不是各调用点，是为了让 event / newspaper / moments / schedule / group / chat /
@@ -734,7 +737,15 @@ async function _execute(rawPrompt, opts) {
     if (opts.identity) {
       // 逐个应用：每个角色独立判幂等，prompt 里已有的那个不会被重复前置
       for (const char of (Array.isArray(opts.identity) ? opts.identity : [opts.identity])) {
-        prompt = applyIdentityAnchorToPrompt(prompt, getIdentityAnchorForPrompt(char));
+        const anchor = getIdentityAnchorForPrompt(char);
+        if (anchor) {
+          prompt = applyIdentityAnchorToPrompt(prompt, anchor);
+          // 来源快照要记「这张图锚了谁、锚了什么」——这是重生成时还原角色身份的依据
+          identityForProvenance = {
+            characterId: Number(char?.id) || null,
+            anchor: identityForProvenance ? `${identityForProvenance.anchor}, ${anchor}` : anchor,
+          };
+        }
       }
       // identity 只服务这一层，别让它跟着 opts 流进工作流构造
       delete opts.identity;
@@ -760,6 +771,25 @@ async function _execute(rawPrompt, opts) {
     if (_limitEnabled()) {
       slotAcquired = await acquireSlot();
     }
+    // ── 来源快照（2026-11-09 方案 A04）────────────────────────────────
+    // 在**提交前**采集：此刻的全局配置就是本次实际要用的那套，排队期间用户再改设置
+    // 也不会污染这张图的记录。identityAnchor 在 0a 段已被消费并从 opts 删除，
+    // 所以锚点串要在这里单独取一次（只读，不改变生成行为）。
+    const provenance = captureProvenance({
+      promptOriginal: preparation.promptOriginal,
+      promptRefined: preparation.promptRefined,
+      workflowMode: null,               // 由 submitWithRetry 回填实际用的工作流
+      customWorkflow: !!opts.customWorkflow,
+      artist: opts.artist ?? config.comfyui.artist,
+      width: opts.width ?? config.comfyui.width,
+      height: opts.height ?? config.comfyui.height,
+      negativePrompt: opts.negativePrompt ?? config.comfyui.negativePrompt,
+      qualityPrompt: opts.qualityPrompt ?? config.comfyui.qualityPrompt,
+      identity: identityForProvenance,
+      characterLoras: opts.loras || [],
+      globalLoras: filterGlobalLoras(config.comfyui.globalLora || [], opts.scene),
+      provider: config.comfyui.imageProvider,
+    });
     const result = await submitWithRetry(preparation.promptRefined, opts);
     return {
       ...result,
@@ -770,6 +800,8 @@ async function _execute(rawPrompt, opts) {
       promptKnowledgeVersion: preparation.retrieval.knowledgeVersion,
       promptRetrievalMode: preparation.retrieval.mode,
       promptOptimizationStatus: preparation.status,
+      // 实际使用的工作流模式回填进快照，调用方据此落库
+      provenance: result.wfMode ? { ...provenance, workflow: { ...provenance.workflow, mode: result.wfMode } } : provenance,
     };
   } finally {
     activeTaskCount--;

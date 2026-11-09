@@ -622,6 +622,7 @@ ${directorPrompt}`
         style: charArtist !== null ? charArtist : config.comfyui.eventArtist,
         resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
         workflowTemplate: genResult.wfMode,
+        provenance: genResult.provenance,
         db,
       });
       console.log(`[eventGen] Image generated for ${character.display_name}: ${imageUrl}`);
@@ -829,6 +830,7 @@ export async function regenerateEventImage(eventId, { db = getDb(), generate = g
         style: artist,
         resolution: `${width}x${height}`,
         workflowTemplate: genResult.wfMode,
+        provenance: genResult.provenance,
         db,
       });
       console.log(`[eventGen] 补图成功 event#${eventId} -> ${imageUrl}`);
@@ -1212,6 +1214,7 @@ ${directorPrompt2}${prevSceneBlock}`
         style: charArtist !== null ? charArtist : config.comfyui.eventArtist,
         resolution: `${config.comfyui.eventWidth}x${config.comfyui.eventHeight}`,
         workflowTemplate: genResult.wfMode,
+        provenance: genResult.provenance,
         db,
       });
       console.log(`[eventGen] Branch image generated: ${imageUrl}`);

@@ -241,6 +241,7 @@ ${weatherHint}`;
         style: config.comfyui.momentsArtist,
         resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
         workflowTemplate: genResult.wfMode,
+        provenance: genResult.provenance,
         db,
       });
     } else {

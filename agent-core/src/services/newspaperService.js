@@ -533,6 +533,7 @@ async function generateNewsImage(prompt, { ragQuery, loras, character, priority 
     url,
     refinedPrompt: genResult.promptRefined || prompt,
     wfMode: genResult.wfMode,
+    provenance: genResult.provenance,
     artist: charArtist !== null ? charArtist : config.comfyui.momentsArtist,
   };
 }
@@ -621,6 +622,7 @@ async function generateAndStorePaperImage(row, task) {
       style: result.artist,
       resolution,
       workflowTemplate: result.wfMode,
+      provenance: result.provenance,
       db,
     });
     if (task.key === 'character_event') {

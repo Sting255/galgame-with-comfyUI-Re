@@ -811,6 +811,7 @@ ${motiveName}
       style: loraOpts.artist !== undefined ? loraOpts.artist : config.comfyui.artist,
       resolution: `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`,
       workflowTemplate: result.wfMode,
+      provenance: result.provenance,
       db,
     });
 
