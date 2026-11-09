@@ -97,7 +97,7 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
  * 锚点优先级 bodySource：**nude → work/casual → 角色卡外观段**。
  * 优先 nude 是因为它"只有身体、没有衣服"，是身体描述最纯的来源。
  */
-function buildDeriveLayer(seeds, bodySource, scenes) {
+function buildDeriveLayer(seeds, bodySource, scenes, { crossCharacter = false } = {}) {
   const labels = scenes.map(s => SCENE_LABELS[s] || s).join('、');
   const seedText = seeds.map(s => {
     const scene = s.scene ? `【${SCENE_LABELS[s.scene] || s.scene}】` : '';
@@ -107,6 +107,16 @@ function buildDeriveLayer(seeds, bodySource, scenes) {
   const sleepNote = scenes.includes('sleep')
     ? '\n5. **睡衣那一套要赤脚**：不要写任何鞋袜（shoes / slippers / socks 等），只交代 barefoot。'
     : '';
+
+  // 2026-11-09：跨角色批量做同一类服装时，第 3 条必须换口径。
+  // 原来那条「同一套审美体系、相近配色材质」是给**同一个角色的多套**写的 —— 那时确实该相近；
+  // 但在「全角色统一服装」里，基准是各自的工装，照它做只会让所有人的新衣服继续趋同，
+  // 这正是用户看到「衣服都一样」的直接原因。跨角色时只沿用身体，服装按本次气质重新设计。
+  const styleRule = crossCharacter
+    ? '3. **服装不要向上面那套靠拢**：上面只是这个角色的日常装，不作为本次的配色/材质/款式基准。'
+      + '本次这套要**独立设计**，由她的气质与这类衣服本身的要求决定。'
+    : '3. 服装要与已确定那套处在**同一套审美体系**里（相近的配色偏好、材质与气质），\n'
+      + '   看得出是同一个人换了衣服，而不是换了一个人。';
 
   return `【已确定的基准（最高优先级，必须原样沿用）】
 以下是这个角色**已经确定好**的外观，请把它们当作事实基准：
@@ -120,9 +130,8 @@ ${bodySource}
 1. **body 字段必须逐字照抄上面的「身体真源」**（含 nude 那一套在内，五套身体必须完全一致）——
    发色、发型、瞳色、肤色、体型、身高等一个字都不要改写、不要重新描述。
 2. **只设计 description**（这一套的服装），不要动身体。
-3. 服装要与已确定那套处在**同一套审美体系**里（相近的配色偏好、材质与气质），
-   看得出是同一个人换了衣服，而不是换了一个人。
-4. 不要把已确定的那套衣服原样再写一遍 —— 新补的几套必须和它明显不同。${sleepNote}`;
+${styleRule}
+4. 不要把已确定的那套衣服原样再写一遍 —— 新补的这必须和它明显不同。${sleepNote}`;
 }
 
 /** 场景 key → 中文标签（本文件自含一份，避免与 outfitScene 循环依赖） */
@@ -153,13 +162,22 @@ export function normalizeDesignScenes(scenes = GENERATED_OUTFIT_SCENES) {
  * @param {Array<{scene,name,body,description}>} [o.seeds] 已填分项（反推锚点）
  * @param {string} [o.bodySource] 身体真源（由调用方按锚点优先级挑好）
  */
-export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {}, fabricLayer = '' }) {
+export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {}, fabricLayer = '', avoidNote = '', crossCharacter = false }) {
   const targets = normalizeDesignScenes(scenes);
   // 自定义类型（custom_*）模型不认识 key，必须把用户起的名字告诉它，否则只能瞎编
   const labelOf = scene => sceneLabels[scene] || SCENE_LABELS[scene] || scene;
+  // 2026-11-09 修：原来这里写「角色的职业与人设只用来决定配色、材质偏好与细节气质」，
+  // 而配色与材质在 fabricLayer 里已经**硬指定**了 —— 人设的唯一出口被堵死，
+  // 于是不同角色穿同一类衣服（如「婚纱」）必然收敛到最典型的那一款，用户看到的就是
+  // 「所有角色的衣服都一样」。现在明确要求人设决定**形制**（剪裁/长度/领口/袖型/配饰风格），
+  // 并且要具体到能一眼看出是哪个人穿的。
   const customLines = targets
     .filter(scene => String(scene).startsWith(CUSTOM_SCENE_PREFIX))
-    .map(scene => `- ${scene}（${labelOf(scene)}）：名字就是这套衣服的类型。按名字本身的语义设计（写「泳装」就画泳装，不是潜水服或运动训练服；写「婚纱」就画婚纱），角色的职业与人设只用来决定配色、材质偏好与细节气质，不要改写成职业装。`)
+    .map(scene => `- ${scene}（${labelOf(scene)}）：名字就是这套衣服的类型。按名字本身的语义设计（写「泳装」就画泳装，不是潜水服或运动训练服；写「婚纱」就画婚纱），不要改写成职业装。
+  但**款式必须由这个角色的气质决定**，不能只换配色：从她的人设推出这套衣服的具体形制 ——
+  剪裁与轮廓（A 字 / 鱼尾 / 蓬裙 / 直筒 / 高开衩）、长度、领口、袖型、腰线、裙摆层次、
+  以及贴合她身份的标志性配饰（蕾丝/绑带/金属件/花饰/缎带/刺绣/披纱等）。
+  两个气质不同的角色穿同一类衣服，出来的样子应当**一眼就是两个不同的人**，而不是同一件的改色版。`)
     .join('\n');
   const summary = String(shortPrompt || '').trim();
   const seedList = (Array.isArray(seeds) ? seeds : []).filter(s => s?.body || s?.description);
@@ -179,13 +197,16 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
   ];
   // 反推层放在人设之后、user 之前：它是本次生成的锚点，权重比人设更直接
   if (seedList.length || bodySource) {
-    msgs.push({ role: 'system', content: buildDeriveLayer(seedList, bodySource, targets) });
+    msgs.push({ role: 'system', content: buildDeriveLayer(seedList, bodySource, targets, { crossCharacter }) });
   }
   msgs.push({
     role: 'user',
     content: `请设计 ${targets.map(labelOf).join('、')}，严格按规定 JSON 输出，仅包含这些场景。`
       + (customLines ? `\n\n【角色自定义的服装类型（scene 字段照抄左边的 key）】\n${customLines}` : '')
       + (fabricLayer ? `\n\n${fabricLayer}` : '')
+      // 2026-11-09：同一类型批量发给多个角色时，逐个角色独立生成、互相不知道对方做了什么，
+      // 于是每个都会挑「最典型的那一款」。把已经定下来的样子摆出来，明确要求错开。
+      + (avoidNote ? `\n\n${avoidNote}` : '')
       + (bodySource ? '\n\n⚠ 每套的 body 字段都必须逐字照抄「身体描述的唯一真源」，不得改写。' : ''),
   });
   return msgs;

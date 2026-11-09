@@ -329,6 +329,25 @@ export async function generateSceneOutfits(character, opts = {}) {
     return `- ${label}（${scene}）：材质 ${fabrics.materials.map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}；配色 ${fabrics.colors.map(c => `${c.tag}（${c.label}）`).join('、')}`;
   }).join('\n');
 
+  // ── 跨角色错开形制（2026-11-09）──────────────────────────────────
+  // 批量给多个角色做同一类服装时，每个角色都是一次独立调用，彼此不知道对方生成了什么，
+  // 结果都收敛到「这类衣服最典型的那一款」。
+  //
+  // ⚠ 不要把这些人的**完整描述**摆出来：实测把那几段原文喂给模型后，它直接学会了
+  // 里面的高频词（sheer mesh / faint grid pattern / shadow of her skin），
+  // 三角色两两重合反而从 24~31% 升到 39~45% —— 示例比约束更容易被模仿。
+  // 这里只给「已用过的形制关键词」，并要求像避开禁词一样避开它们。
+  const avoidStyles = (Array.isArray(opts.avoidStyles) ? opts.avoidStyles : []).slice(0, 12);
+  const usedForms = avoidStyles
+    .map(s => (Array.isArray(s?.forms) ? s.forms.filter(Boolean).join('、') : ''))
+    .filter(Boolean);
+  const avoidNote = usedForms.length
+    ? '【同类型服装已用过的形制，本次一个都不要用】\n'
+      + usedForms.map(f => `- ${f}`).join('\n')
+      + '\n\n⚠ 上面这些形制（轮廓/领口/袖型/裙摆/标志性配饰）**本次全部避开**，'
+      + '不要换个颜色再用一遍。请从当前角色自己的气质出发，选一组明显不同的形制。'
+    : '';
+
   const msgs = buildSceneOutfitMessages({
     systemRules: getSystemRules({ roleplay: false }),
     persona,
@@ -341,6 +360,9 @@ export async function generateSceneOutfits(character, opts = {}) {
     // 自定义类型的标签存在 character_outfits.name —— 生成时必须把名字给到模型，否则它不认识 custom_xxx
     sceneLabels,
     fabricLayer: fabricLayer ? `【本次每套可用的材质与配色（每套各不相同，别几套都用同一组）】\n${fabricLayer}` : '',
+    avoidNote,
+    // 跨角色批量（表单里传了 avoidStyles）时，基准那套的衣服不能当审美参照
+    crossCharacter: Array.isArray(opts.avoidStyles),
   });
   // 上游 v4.2.0：神说/用户对服装提出修改要求时，要求必须作为独立 user 消息投递，
   // 否则模型只看到「反推未填分项」的指令、收不到本次要改什么（真机上表现为「说了但没改」）。

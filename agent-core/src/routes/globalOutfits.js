@@ -12,6 +12,7 @@ import {
   applyTypeToAllCharacters, sceneKeyOf,
 } from '../services/globalOutfitTypes.js';
 import { generateSceneOutfits, upsertSceneOutfits, listSceneOutfits } from '../services/outfitScene.js';
+import { BODY_TRAIT_RE, WEARABLE_RE } from '../services/sceneOutfitPrompt.js';
 import { generateSceneStandingForCharacter } from './characters.js';
 
 const router = Router();
@@ -49,6 +50,32 @@ function baseAppearanceOf(character) {
   return idx >= 0 ? raw.slice(idx).trim() : raw.trim();
 }
 
+/** 颜色词：形制摘要里要把它们剥掉 —— 配色本来就按角色 seed 区分，不该进"已用形制"清单 */
+const COLOR_WORDS = /\b(off[-\s]?white|sky[-\s]?blue|ivory|beige|purple|crimson|brown|black|white|rose|yellow|gold|silver|blue|red|green|pink|grey|gray|burgundy|navy|teal|aqua|cream|peach|lavender|maroon|turquoise)\b/gi;
+
+/**
+ * 从一条服装描述里提取「形制关键词」（2026-11-09）。
+ *
+ * 用途：给后续角色列"已用过的形制，别再用"。
+ *
+ * ⚠ 必须剥掉颜色词，也不能整段照搬 —— 实测把别人的完整描述喂进提示词，
+ * 模型会直接复制里面的高频短语，重合度不降反升。这里只留结构与部件（轮廓/领口/袖型/裙摆/配饰），
+ * 并且不带颜色，才是真正的"形制"约束。
+ */
+function extractOutfitForms(description) {
+  const segs = String(description || '').split(/[,，;；]/).map(s => s.trim()).filter(Boolean);
+  const forms = [];
+  for (const seg of segs) {
+    // 纯身体特征段（不是穿戴物）跳过
+    if (BODY_TRAIT_RE.test(seg) && !WEARABLE_RE.test(seg)) continue;
+    const cleaned = seg.replace(COLOR_WORDS, '').replace(/\s{2,}/g, ' ').trim();
+    if (cleaned.length < 8) continue;      // 剥完颜色只剩 "sheer" 这种，没信息量
+    forms.push(cleaned);
+    if (forms.length >= 5) break;
+  }
+  return forms;
+}
+
 async function runBatch(typeId, { withStanding = true, skipExisting = false, overwrite = false, characterIds = null } = {}) {
   const db = getDb();
   const type = db.prepare('SELECT id, name FROM global_outfit_types WHERE id = ?').get(typeId);
@@ -62,6 +89,10 @@ async function runBatch(typeId, { withStanding = true, skipExisting = false, ove
     ? new Set(characterIds.map(Number).filter(Number.isFinite))
     : null;
   const characters = wanted ? all.filter(c => wanted.has(c.id)) : all;
+
+  // 已定下来的款式（2026-11-09）：逐角色累积，后面的人必须明显错开。
+  // 只取本轮新建/重做的，不含历史上已存在的 —— 那可能是用户手写的，不该拿来限制模型。
+  const usedStyles = [];
 
   for (const character of characters) {
     if (task.cancelled) break;
@@ -79,10 +110,15 @@ async function runBatch(typeId, { withStanding = true, skipExisting = false, ove
       const outfits = await generateSceneOutfits(character, {
         scenes: [scene],
         baseAppearance: baseAppearanceOf(character),
+        avoidStyles: usedStyles,
       });
       const target = (Array.isArray(outfits) ? outfits : []).find(item => item.scene === scene);
       if (!target?.description) throw new Error('模型没有返回这一套的描述');
       upsertSceneOutfits(character.id, [{ scene, name: type.name, description: target.description }]);
+      usedStyles.push({
+        name: character.display_name || `角色 ${character.id}`,
+        forms: extractOutfitForms(target.description),
+      });
 
       // ② 立绘：按刚写好的描述出图
       if (withStanding) await generateSceneStandingForCharacter(character.id, scene);
