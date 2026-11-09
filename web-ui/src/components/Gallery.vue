@@ -64,12 +64,12 @@
         <div class="gallery-grid stagger">
           <div
             v-for="img in group.images"
-            :key="img.name"
+            :key="img.url"
             class="gallery-item sheen"
-            :class="{ 'is-selectable': selectMode, 'is-selected': selected.has(img.name) }"
+            :class="{ 'is-selectable': selectMode, 'is-selected': selected.has(img.url) }"
             @click="selectMode ? toggleSelect(img) : onPreview(img.flatIndex)"
           >
-            <span v-if="selectMode" class="select-check" :class="{ on: selected.has(img.name) }" aria-hidden="true">✓</span>
+            <span v-if="selectMode" class="select-check" :class="{ on: selected.has(img.url) }" aria-hidden="true">✓</span>
             <!-- 用 img + loading=lazy 取代 background-image：浏览器可延迟加载视口外缩略图 -->
             <img
               class="img-wrapper"
@@ -106,6 +106,7 @@
       @regenerated="onRegenerated"
       @upscaled="onRegenerated"
       @deleted="onDeleted"
+      @on-index-change="onLightboxIndexChange"
     />
   </div>
 </template>
@@ -220,6 +221,22 @@ function onPreview(flatIndex) {
   lightboxVisible.value = true
 }
 
+// ── 灯箱连续浏览（2026-11-09 方案 A11）────────────────────────────
+// 原来灯箱只拿到「已加载的图」，翻到末尾就停住了 —— 用户不知道下面还有图，
+// 必须关掉灯箱、回列表上滑加载、再点开。现在翻到接近末尾就自动拉下一页。
+//
+// 边界：只在**同一筛选条件**下拉页。翻页期间用户切换文件夹/角色时 loadSeq 会变，
+// 旧响应被丢弃（loadPage 已有该守卫），不会把别的筛选结果拼进当前列表。
+const PRELOAD_AHEAD = 5   // 离末尾还剩几张就开始加载
+
+function onLightboxIndexChange(oldIndex, newIndex) {
+  if (!lightboxVisible.value) return
+  if (!hasMore.value || loadingMore.value) return
+  const totalLoaded = images.value.length
+  if (totalLoaded === 0) return
+  if (newIndex >= totalLoaded - PRELOAD_AHEAD) loadMore()
+}
+
 function onRegenerated(newUrl) {
   const base = newUrl.replace(/\?.*$/, '')
   for (const img of images.value) {
@@ -242,7 +259,11 @@ const selectMode = ref(false)
 const selected = ref(new Set())
 const deleting = ref(false)
 const selectedCount = computed(() => selected.value.size)
-const allSelected = computed(() => images.value.length > 0 && images.value.every(img => selected.value.has(img.name)))
+// 选中集合与删除结果统一用**规范完整 URL** 作标识（2026-11-09 方案 B02）。
+// 原来用 img.name：不同目录可以有同名文件（chat/1.png 与 moments/1.png），
+// 一旦同名，选中一个会连带勾上另一个、删除结果也会按 name 误删另一张。
+// URL 里带目录前缀，天然唯一。
+const allSelected = computed(() => images.value.length > 0 && images.value.every(img => selected.value.has(img.url)))
 
 function toggleSelectMode() {
   selectMode.value = !selectMode.value
@@ -250,16 +271,16 @@ function toggleSelectMode() {
 }
 function toggleSelect(img) {
   const next = new Set(selected.value)
-  if (next.has(img.name)) next.delete(img.name)
-  else next.add(img.name)
+  if (next.has(img.url)) next.delete(img.url)
+  else next.add(img.url)
   selected.value = next
 }
 function toggleSelectAll() {
-  selected.value = allSelected.value ? new Set() : new Set(images.value.map(img => img.name))
+  selected.value = allSelected.value ? new Set() : new Set(images.value.map(img => img.url))
 }
 const stripQuery = u => String(u || '').replace(/\?.*$/, '')
 async function deleteSelected() {
-  const items = images.value.filter(img => selected.value.has(img.name))
+  const items = images.value.filter(img => selected.value.has(img.url))
   if (!items.length || deleting.value) return
   const ok = confirmFn
     ? await confirmFn({
@@ -272,17 +293,19 @@ async function deleteSelected() {
   deleting.value = true
   try {
     const res = await deleteImagesBatch(items.map(img => img.url))
-    // 失败项按 URL 保留（后端会把非法/不存在的 URL 列进 failedItems）
+    // 失败项按 URL 保留（后端会把非法/不存在的 URL 列进 failedItems）。
+    // 这里也按 URL 比对而不是 name —— 同名文件分在不同目录时，按 name 会把
+    // 没删成功的另一张一起从列表里抹掉，用户以为删了但文件还在。
     const failed = new Set((res?.failedItems || []).map(f => stripQuery(f.url)))
-    const removedNames = new Set(items
+    const removedUrls = new Set(items
       .filter(img => !failed.has(stripQuery(img.url)))
-      .map(img => img.name))
-    images.value = images.value.filter(img => !removedNames.has(img.name))
-    total.value = Math.max(0, total.value - (res?.deleted ?? removedNames.size))
+      .map(img => stripQuery(img.url)))
+    images.value = images.value.filter(img => !removedUrls.has(stripQuery(img.url)))
+    total.value = Math.max(0, total.value - (res?.deleted ?? removedUrls.size))
     selected.value = new Set()
     selectMode.value = false
     const failedCount = res?.failed || 0
-    toastFn?.(`已删除 ${res?.deleted ?? removedNames.size} 张${failedCount ? `，${failedCount} 张失败` : ''}`, failedCount ? 'warning' : 'success')
+    toastFn?.(`已删除 ${res?.deleted ?? removedUrls.size} 张${failedCount ? `，${failedCount} 张失败` : ''}`, failedCount ? 'warning' : 'success')
   } catch (err) {
     toastFn?.('删除失败: ' + (err?.message || err), 'error')
   } finally {
@@ -329,7 +352,16 @@ async function loadPage(offset) {
       images.value = data.images || []
       if (data.folders) folders.value = data.folders
     } else {
-      images.value.push(...(data.images || []))
+      // 追加时按**规范完整 URL** 去重（方案 A11 / B02）：
+      // 列表按 mtime 倒序，offset 分页在「加载期间有新图插入」时会错位 ——
+      // 第二页开头会重复出现第一页末尾那几张。同名不同目录的图不能按 name 判重。
+      const seen = new Set(images.value.map(img => stripQuery(img.url)))
+      for (const img of (data.images || [])) {
+        const key = stripQuery(img.url)
+        if (seen.has(key)) continue
+        seen.add(key)
+        images.value.push(img)
+      }
     }
     total.value = data.total || images.value.length
     hasMore.value = data.hasMore ?? false

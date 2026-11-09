@@ -249,6 +249,19 @@ function getCurrentUrl() {
 // 浏览器：fetch → blob → <a download>；Android 壳内 WebView 不处理下载，
 // 检测到注入的 AndroidBridge 时改为 base64 交给原生存相册（见 android-shell MainActivity）。
 
+// blob.type → 扩展名。AVIF 是本地压缩后的实际落盘格式：PNG 被压缩替换后磁盘上
+// 是 .avif 实体，但 URL 仍可能是 .png（由 imageAvifFallback 中间件兜底返回）。
+// 所以**扩展名必须以实际响应内容为准**，不能照抄 URL（2026-11-09 方案 C03）。
+const MIME_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/avif': 'avif',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+}
+
 function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -258,17 +271,31 @@ function blobToDataURL(blob) {
   })
 }
 
+/**
+ * 决定下载文件名。
+ *
+ * 关键口径（2026-11-09 方案 C03）：**扩展名以实际内容为准，不照抄 URL**。
+ * 本地有 AVIF 压缩链：原 PNG 会被同名 .avif 替换，而历史 URL 仍写着 .png，
+ * 由 imageAvifFallback 中间件兜底返回 AVIF 字节。若按 URL 的 .png 命名，
+ * 用户下载到的就是「.png 后缀的 AVIF 文件」—— 多数看图软件打不开，也看不出原因。
+ *
+ * 优先取 blob.type（服务端 Content-Type，反映真实编码）；拿不到才退回 URL 后缀。
+ */
 function deriveFilename(url, blob) {
+  const mimeExt = MIME_EXT[String(blob?.type || '').toLowerCase()] || ''
+
   let name = ''
   if (!String(url).startsWith('data:')) {
     try { name = decodeURIComponent(new URL(url, location.href).pathname.split('/').pop() || '') } catch { /* 解析失败用默认名 */ }
   }
-  if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
-    const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
-    const ext = extMap[blob?.type] || String(url).match(/\.([a-z0-9]+)(?:\?|$)/i)?.[1]?.toLowerCase() || 'png'
-    name = (name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'image') + '.' + ext
-  }
-  return name
+  const urlExt = String(url).match(/\.([a-z0-9]+)(?:\?|$)/i)?.[1]?.toLowerCase() || ''
+
+  // 真实编码已知 → 一律按真实编码重命名（含「URL 是 png、实体是 avif」的情况）
+  const ext = mimeExt || urlExt || 'png'
+  const base = (name.replace(/\.[a-z0-9]{2,5}$/i, '') || 'image')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .slice(0, 60) || 'image'
+  return `${base}.${ext}`
 }
 
 async function fetchImageBlob(url) {
