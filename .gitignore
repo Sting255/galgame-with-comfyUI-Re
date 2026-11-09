@@ -6,6 +6,11 @@ node_modules/
 # （scripts/发布-校验并打包.mjs 的 assetsFrom），不依赖 git。
 agent-core/public/assets/
 
+# 同一次构建还会改写入口页里的 assets 哈希引用（index-XXXX.js / index-YYYY.css）。
+# 2026-11-09：这个文件被 12 次提交带着改过，每次内容都只是两个哈希变了，和上面
+# assets 是同一个问题，当时漏了它。打包脚本同样从工作区同步，不依赖 git。
+agent-core/public/index.html
+
 # 姿势控制随包资产（自定义节点 + 姿态 LoRA + 检测模型，约 405MB 二进制）
 # 2026-11-03：这些是"用户换机器不用单独装"的随包文件，但没必要进 git 历史。
 # 交付包仍会带上它们 —— 打包脚本是从**工作区**同步的，不看 git。
