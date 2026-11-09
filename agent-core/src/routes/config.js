@@ -371,12 +371,18 @@ router.put('/hires', (req, res) => {
 });
 
 // PUT /api/config/features — 更新功能开关
+// 写库失败必须报出来：以前 updateFeatureFlag 吞掉异常照常回 ok，前端拿到成功但重启即丢。
 router.put('/features', (req, res) => {
   const { key, value } = req.body;
   if (!key || !(key in config.features)) {
     return res.status(400).json({ error: `Invalid feature key: ${key}` });
   }
-  updateFeatureFlag(key, value);
+  try {
+    updateFeatureFlag(key, value);
+  } catch (error) {
+    console.error(`[config] PUT /features persist failed (${key}):`, error.message);
+    return res.status(500).json({ error: 'persist_failed', message: error.message });
+  }
   if (key === 'proactiveChat') restartProactiveFreq();
   if (key === 'serializeBackgroundLLM') {
     applyFromConfig(config);

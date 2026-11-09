@@ -887,12 +887,24 @@ export function updateAntiRepetitionPenalty({ presence, frequency } = {}) {
   return { ok: true, presence: config.llm.antiRepetitionPenalty, frequency: config.llm.antiRepetitionFrequency };
 }
 
+// 先改内存再写库，写库失败把内存改回去并把异常抛给调用方。
+// 不吞异常是刻意的：设置页必须能看见「没存上」，否则进程内值与库不一致，要重启才发现。
+function commitFeature(prop, value, settingKey, settingValue) {
+  const previous = config.features[prop];
+  config.features[prop] = value;
+  try {
+    setSetting(settingKey, settingValue);
+  } catch (error) {
+    config.features[prop] = previous;
+    throw error;
+  }
+}
+
 export function updateFeatureFlag(key, value) {
   // 三态字符串开关：'off' | 'smart' | 'force'，不走布尔强转
   if (key === 'imageGenMode') {
     const mode = ['off', 'smart', 'force'].includes(value) ? value : 'smart';
-    config.features.imageGenMode = mode;
-    persistSettingSync('feature_imageGenMode', mode);
+    commitFeature('imageGenMode', mode, 'feature_imageGenMode', mode);
     console.log(`[config] imageGenMode = ${mode}`);
     return;
   }
@@ -900,38 +912,33 @@ export function updateFeatureFlag(key, value) {
   if (key === 'touchBystanderChance') {
     const raw = (value === null || value === false || value === 'off' || value === '') ? null : Number(value);
     const chance = raw === null ? null : (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0.3);
-    config.features.touchBystanderChance = chance;
-    persistSettingSync('feature_touchBystanderChance', chance === null ? '' : String(chance));
+    commitFeature('touchBystanderChance', chance, 'feature_touchBystanderChance', chance === null ? '' : String(chance));
     console.log(`[config] touchBystanderChance = ${chance}`);
     return;
   }
   // 二态字符串开关：反应风格 'conversation' | 'quick'（task-30），不走布尔强转
   if (key === 'touchReactionMode') {
     const style = value === 'quick' ? 'quick' : 'conversation';
-    config.features.touchReactionMode = style;
-    persistSettingSync('feature_touchReactionMode', style);
+    commitFeature('touchReactionMode', style, 'feature_touchReactionMode', style);
     console.log(`[config] touchReactionMode = ${style}`);
     return;
   }
   // 三态字符串开关：HiresFix 细化精度 'high' | 'medium' | 'low'（D1），不走布尔强转；非法值回落 low
   if (key === 'hiresQuality') {
     const quality = normalizeHiresQuality(value);
-    config.features.hiresQuality = quality;
-    persistSettingSync('feature_hiresQuality', quality);
+    commitFeature('hiresQuality', quality, 'feature_hiresQuality', quality);
     console.log(`[config] hiresQuality = ${quality}`);
     return;
   }
   // 三态字符串开关：动作出图档位 'always' | 'smart' | 'never'（task-19），同样不走布尔强转
   if (key === 'touchImageMode') {
     const level = ['always', 'smart', 'never'].includes(value) ? value : 'smart';
-    config.features.touchImageMode = level;
-    persistSettingSync('feature_touchImageMode', level);
+    commitFeature('touchImageMode', level, 'feature_touchImageMode', level);
     console.log(`[config] touchImageMode = ${level}`);
     return;
   }
   const boolVal = value === true || value === 'true';
-  config.features[key] = boolVal;
-  persistSettingSync(`feature_${key}`, String(boolVal));
+  commitFeature(key, boolVal, `feature_${key}`, String(boolVal));
   console.log(`[config] Feature ${key} = ${boolVal}`);
 }
 
