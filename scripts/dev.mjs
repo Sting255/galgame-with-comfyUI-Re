@@ -7,7 +7,8 @@
  *   0. 清理残留进程（全部本项目 node/python：老服务 + 不占端口的幽灵 + 遗留的 nodemon 监督进程）
  *   1. 检查 Node.js / Python 环境
  *   2. vector-service  (:8765) — Python uvicorn
- *   3. agent-core       (:3099) — Express (nodemon)
+ *   3. agent-core       (:API_PORT) — Express (nodemon)。端口取自 agent-core/.env 的 PORT
+ *                        （经 resolveServicePort 解析），不是写死的 3099，以启动日志显示为准
  *   4. web-ui           (:5173) — Vite HMR
  *
  * Ctrl+C 一键停止全部子进程。

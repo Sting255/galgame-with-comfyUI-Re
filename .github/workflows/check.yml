@@ -31,6 +31,11 @@ jobs:
       - run: npm ci --prefix web-ui
       - name: Documentation and source inventory
         run: npm run check
+      # 2026-11-09（方案 A12）：CI 原来只跑文档清单，而 check.yml 自己的注释写着
+      # 「未定义符号检查」——实际从没调用过 scripts/check-imports.mjs。
+      # 这项检查在发布脚本里是有的，于是出现「本地打包会拦、CI 一路绿」的落差。
+      - name: Undefined symbol check
+        run: node scripts/check-imports.mjs
       - name: Frontend lint
         run: npm --prefix web-ui run lint
       - name: Production build

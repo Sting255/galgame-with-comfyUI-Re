@@ -47,8 +47,11 @@ router.get('/export', asyncHandler(async (req, res) => {
     backup = await createBackup({ includeConfig });
   } catch (err) {
     console.error('[data] 导出失败:', err.message);
-    return res.status(500).json({
-      error: '导出失败，没有生成任何归档',
+    // 429 = 已经有一份在导出了（重内存操作不并发），要如实告诉用户"稍后再试"，
+    // 而不是笼统的"导出失败"让人以为功能坏了
+    const status = err?.status === 429 ? 429 : 500;
+    return res.status(status).json({
+      error: status === 429 ? err.message : '导出失败，没有生成任何归档',
       detail: err.message,
     });
   }

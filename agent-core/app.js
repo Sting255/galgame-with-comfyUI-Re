@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { config, autoDetectWorkflowMode } from './src/config.js';
 import { getDb, closeDb } from './src/db/index.js';
 import { errorHandler } from './src/middleware/errorHandler.js';
+import { requestDiagnostics } from './src/middleware/requestDiagnostics.js';
 import { asyncHandler, wrapRouterAsync } from './src/middleware/asyncHandler.js';
 import { imageAvifFallback } from './src/middleware/imageAvifFallback.js';
 import { healthCheck as vectorHealth } from './src/services/vectorClient.js';
@@ -49,6 +50,7 @@ import streamRoutes from './src/routes/stream.js';
 import expressionStandingRoutes from './src/routes/expressionStandings.js';
 import assetGenerationRoutes from './src/routes/assetGeneration.js';
 import { recoverInterruptedAssetJobs } from './src/services/assetGenerationQueue.js';
+import { pruneStaleBackupTemp } from './src/services/dataBackup.js';
 import scheduleRoutes from './src/routes/schedule.js';
 import diaryRoutes from './src/routes/diary.js';   // 上游 v3.9.0 合并：角色日记 /api/diaries/*
 import mediaRoutes from './src/routes/media.js';   // 上游 v3.9.0 合并：媒体内容页 /api/media/*
@@ -145,6 +147,9 @@ app.use('/api', (req, res, next) => {
 // （另需 import zlib from 'node:zlib'）：
 //   compression({ level: 1, brotli: { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 1 } } })
 //   （gzip 263→134ms、brotli 194→58ms，平衡点抬到 ≈134 MB/s）
+// 请求诊断（2026-11-09 方案 B11）：给每个请求分配短 id、写响应头、只记 4xx/5xx/慢请求。
+// 必须挂在最前面 —— 放在后面的话，中途抛错或早退的请求就记不到 id 与耗时了。
+app.use(requestDiagnostics());
 app.use(express.json({ limit: '10mb' }));
 
 // 静态文件（Vue 前端，构建后）
@@ -416,6 +421,14 @@ try {
 } catch (error) {
   console.warn('[assetGen] 中断任务恢复失败（不影响启动）:', error.message);
 }
+
+// 2026-11-09（方案 B12）：清掉备份功能遗留的过期暂存目录。
+// 导出/导入都会在系统 temp 建 linshe-export-* / linshe-import-*，正常路径自己清；
+// 进程崩溃/断电时会留下几百 MB 到 GB 级的残骸。只动这两个前缀、只删超龄目录，
+// 不扫系统 temp 其它内容，也不碰玩家的 data 目录。fire-and-forget，不挡启动。
+pruneStaleBackupTemp().catch(error => {
+  console.warn('[backup] 过期暂存清理失败（不影响启动）:', error?.message || error);
+});
 
 // 2026-10-01：世界翻篇检查（程序日切换）——关机跨天 / 上次调时后没跑完的日常任务，启动时补一次。
 // 首次运行只记录基准不补跑（见 programDayRollover 的说明）；fire-and-forget，绝不挡启动。

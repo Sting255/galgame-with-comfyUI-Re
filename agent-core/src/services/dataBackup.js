@@ -78,6 +78,76 @@ let lastExportAt = null;
 /** 导入串行队列（见 importBackup 注释） */
 let importQueue = Promise.resolve();
 
+/**
+ * 本功能创建的临时目录前缀。
+ *
+ * 只清理**这两个前缀**下的过期目录 —— 别去扫系统 temp 或玩家的 data 目录：
+ * 那可能是别的程序、别的功能正在用的东西，误删的后果不可逆（方案 B12 明确要求）。
+ */
+const OUR_TEMP_PREFIXES = ['linshe-export-', 'linshe-import-'];
+/** 崩溃残留的临时目录超过这个年龄才清（正在跑的一次导入/导出可能就要几分钟） */
+const STALE_TEMP_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * 清掉本功能遗留的过期暂存目录（启动时调用一次即可）。
+ *
+ * 导出/导入都会 mkdtemp 出 `linshe-export-*` / `linshe-import-*`，正常路径下自己 rm 掉；
+ * 但进程崩溃、断电、被强杀时它们会留在系统 temp 里，每个可能有几百 MB 到 GB 级。
+ *
+ * 安全边界：
+ *  · 只动这两个前缀，且只删**目录**（不删文件，避免误伤同名文件）
+ *  · 只看 mtime，超龄才删
+ *  · 任何单个目录删除失败都跳过，不影响其它，也不抛给调用方
+ *
+ * @returns {Promise<{scanned:number, removed:number, freedBytes:number}>}
+ */
+export async function pruneStaleBackupTemp(maxAgeMs = STALE_TEMP_MS) {
+  const tmpRoot = os.tmpdir();
+  const result = { scanned: 0, removed: 0, freedBytes: 0 };
+  let entries;
+  try {
+    entries = await fs.promises.readdir(tmpRoot, { withFileTypes: true });
+  } catch {
+    return result;   // 读不到系统 temp 就算了，不影响主流程
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!OUR_TEMP_PREFIXES.some(prefix => entry.name.startsWith(prefix))) continue;
+    result.scanned++;
+    const full = path.join(tmpRoot, entry.name);
+    try {
+      const st = await fs.promises.stat(full);
+      if (now - st.mtimeMs < maxAgeMs) continue;
+      // 估算大小只为汇报，失败不影响删除
+      let size = 0;
+      try { size = await dirSize(full); } catch { /* 忽略 */ }
+      await fs.promises.rm(full, { recursive: true, force: true });
+      result.removed++;
+      result.freedBytes += size;
+    } catch (err) {
+      console.warn(`[backup] 清理过期暂存失败（跳过）${full}:`, err?.message || err);
+    }
+  }
+  if (result.removed > 0) {
+    console.log(`[backup] 清理过期暂存 ${result.removed} 个（约 ${(result.freedBytes / 1048576).toFixed(1)} MB）`);
+  }
+  return result;
+}
+
+async function dirSize(dir) {
+  let total = 0;
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) total += await dirSize(full);
+    else {
+      try { total += (await fs.promises.stat(full)).size; } catch { /* 忽略 */ }
+    }
+  }
+  return total;
+}
+
 /** 带 HTTP 状态码的领域错误：路由层直接照搬 status/message/detail */
 export class BackupError extends Error {
   constructor(message, { status = 400, detail = '', backupPath = null } = {}) {
@@ -291,18 +361,36 @@ async function snapshotDbTo(file) {
  * @param {{includeConfig?:boolean, roots?:object, outDir?:string}} options
  * @returns {Promise<{file:string, workDir:string, fileName:string, bytes:number, manifest:object, cleanup:Function}>}
  */
-export async function createBackup({ includeConfig = false, roots = resolveRoots(), outDir = null } = {}) {
-  const started = new Date();
-  // 每次都用新的临时子目录：snapshot 目标必须不存在（VACUUM INTO 会拒绝覆盖已有文件）
-  const workDir = await fs.promises.mkdtemp(path.join(outDir || os.tmpdir(), 'linshe-export-'));
-  const cleanup = async () => { await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {}); };
+/**
+ * 导出并发闸门（2026-11-09 方案 B12）。
+ *
+ * 导出要 VACUUM INTO 一份完整库 + 打包全部图片，是**重内存**操作。原来没有上限，
+ * 用户连点几下「导出」或两个标签页同时导，就会同时起几份库快照与压缩流，
+ * 内存峰值成倍上涨。这里限制同一时刻只跑一个，后来的直接告诉他在导出了。
+ */
+let exportRunning = false;
 
+export async function createBackup({ includeConfig = false, roots = resolveRoots(), outDir = null } = {}) {
+  if (exportRunning) {
+    throw new BackupError('已经在导出一份备份了，请等它完成', { status: 429, detail: '导出是重内存操作，同时跑多份会显著抬高内存峰值' });
+  }
+  exportRunning = true;
+  const started = new Date();
   try {
-    return await buildBackupInto(workDir, { includeConfig, roots, started, cleanup });
-  } catch (err) {
-    // 生成中途失败：临时目录不留尸体（成功的归档由调用方 cleanup）
-    await cleanup();
-    throw err;
+    // 每次都用新的临时子目录：snapshot 目标必须不存在（VACUUM INTO 会拒绝覆盖已有文件）
+    const workDir = await fs.promises.mkdtemp(path.join(outDir || os.tmpdir(), 'linshe-export-'));
+    const cleanup = async () => { await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {}); };
+
+    try {
+      return await buildBackupInto(workDir, { includeConfig, roots, started, cleanup });
+    } catch (err) {
+      // 生成中途失败：临时目录不留尸体（成功的归档由调用方 cleanup）
+      await cleanup();
+      throw err;
+    }
+  } finally {
+    // 无论成功失败都要放闸，否则一次失败会让「导出」永久点不动
+    exportRunning = false;
   }
 }
 
