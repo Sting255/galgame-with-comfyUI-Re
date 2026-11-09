@@ -1200,22 +1200,26 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
     Object.assign(params, extraBody);
   }
   // 日程等业务明确要求关闭时，不能被全局自定义请求体重新开启。
+  //
+  // 2026-11-09（方案 A06）：原来这里只手写 `thinking.type='disabled'` 并删
+  // `generationConfig.thinkingConfig` —— 但 extraBody 里可能还留着 `reasoning_effort`、
+  // `enable_thinking`、`chat_template_kwargs`、`reasoning` 这些**互斥字段**，
+  // 它们各自都能把思考重新打开（不同供应商认的字段不一样）。现在统一交给
+  // applyForcedThinking 清理，与业务显式指定的 forceThinkingMode 走同一条适配器，
+  // 「强制关闭」的含义在所有供应商下一致。
   if (forceDisableThinking) {
-    params.thinking = { type: 'disabled' };
-    if (params.generationConfig?.thinkingConfig) {
-      params.generationConfig = { ...params.generationConfig };
-      delete params.generationConfig.thinkingConfig;
-    }
+    applyForcedThinking(params, 'disabled', config.llm);
   }
   // 上游 v3.10.0：最后统一确定输出额度（会删掉 extraBody 里的额度字段，
   // 再按 config.llm.maxTokens / 模型能力填一个）。放在 extraBody 之后是有意的 ——
   // 上游的口径是「数值始终以 MAX_tokens 设置为准」，见 applyOutputTokenLimit 注释。
   const configuredParams = { ...params };
-  if (forceThinkingMode === 'enabled' || forceThinkingMode === 'disabled') {
+  // 唯一有效模式：forceDisableThinking 优先于显式 forceThinkingMode（关闭不能被开启覆盖）。
+  if (!forceDisableThinking && (forceThinkingMode === 'enabled' || forceThinkingMode === 'disabled')) {
     applyForcedThinking(params, forceThinkingMode, config.llm);
   }
   applyOutputTokenLimit(params);
-  let canFallbackThinking = forceThinkingMode === 'enabled' && fallbackToConfiguredThinking;
+  let canFallbackThinking = !forceDisableThinking && forceThinkingMode === 'enabled' && fallbackToConfiguredThinking;
 
   // 日志打印时压缩 ANIMA3 模板内容，避免刷屏
   const logMsgs = compressLogMessages(messages);

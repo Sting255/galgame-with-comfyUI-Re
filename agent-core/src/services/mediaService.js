@@ -161,32 +161,63 @@ function safeParse(text, fallback = null) {
  * @returns {Promise<any>} normalize 的返回值
  */
 async function generateIssueJson({ messages, normalize, label, temperature, retryTemperature, max_tokens, what = '出刊' }) {
+  // 2026-11-09（方案 A07）：原来这里把三类失败混成一个 catch，统一再发一遍整轮请求 ——
+  // 「被截断」「JSON 坏了」「JSON 合法但业务字段非法」的修法完全不同，混着重试既可能
+  // 白烧预算，也可能把该修的数据当成格式问题放过。
+  //
+  // 现在的分工：
+  //   · 截断 / 审核中断 → 由公共 llm-client 的续写循环处理（到这里还缺就是真没了）；
+  //   · JSON 语法坏（未转义引号等）→ 这才是本函数该重试的：公共续写修不了坏引号；
+  //   · JSON 合法但 normalize 抛错（字段缺失/取值越界）→ 领域修正，同样值得整轮重问。
+  // 总预算固定 2 次调用（初次 + 至多一次修正），不会乘上公共客户端的 5 次续写。
   const retryHint = {
     role: 'user',
     content: '上次输出不是合法 JSON（多半是某个字符串值里有没转义的引号或换行）。请重新输出完整结果：'
       + '所有字符串内部的引号一律转义成 \\"，字符串里不要出现裸引号、不要出现真实换行（换成 \\n）。',
   };
+  const domainHint = (msg) => ({
+    role: 'user',
+    content: `上次输出是合法 JSON，但内容没通过校验：${msg}。请按格式要求修正后重新输出完整结果。`,
+  });
+
   let lastErr = null;
+  let lastKind = null;   // 'syntax' | 'domain'
   for (let attempt = 0; attempt < 2; attempt++) {
-    const attemptMsgs = attempt === 0 ? messages : [...messages, retryHint];
+    let attemptMsgs = messages;
+    if (attempt > 0) {
+      attemptMsgs = [...messages, lastKind === 'domain' ? domainHint(lastErr?.message || '字段不符合要求') : retryHint];
+    }
     const raw = await chatSync(attemptMsgs, {
       temperature: attempt === 0 ? temperature : (retryTemperature ?? 0.7),
       max_tokens,
       response_format: { type: 'json_object' },
       label,
     });
+
+    // 先尽力解析（repairJson 只用于**解析**，不用它判断输出是否完整）
     let parsed = null;
     try {
       const jsonStr = extractFirstJson(raw);
       if (!jsonStr) throw new Error('LLM 未返回完整 JSON');
-      // 【上游 v3.9.1】合法 JSON 优先直接解析，避免修复逻辑改变本来正确的转义内容。
       try { parsed = JSON.parse(jsonStr); } catch { parsed = JSON.parse(repairJson(jsonStr)); }
+    } catch (err) {
+      lastErr = err;
+      lastKind = 'syntax';
+      console.warn(`[media] ${label} 第 ${attempt + 1} 次输出 JSON 语法不合法：${err.message}`);
+      continue;
+    }
+
+    // JSON 已合法 → 交给业务校验。字段非法属于领域修正，日志区分开
+    try {
       return normalize(parsed);
     } catch (err) {
       lastErr = err;
+      lastKind = 'domain';
+      console.warn(`[media] ${label} 第 ${attempt + 1} 次输出字段未通过校验：${err.message}`);
     }
   }
-  throw new Error(`${what}生成结果解析失败（已重试 1 次）：图文输出不完整：${lastErr?.message || '未知错误'}`);
+  const kindLabel = lastKind === 'domain' ? '字段校验未通过' : 'JSON 语法不合法';
+  throw new Error(`${what}生成结果解析失败（已重试 1 次，最后一次原因：${kindLabel}）：图文输出不完整：${lastErr?.message || '未知错误'}`);
 }
 
 function clampText(v, max) {
