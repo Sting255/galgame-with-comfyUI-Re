@@ -410,6 +410,40 @@ router.get('/characters/:id/messages', (req, res) => {
     ORDER BY id DESC LIMIT 1
   `).get(conversationId);
 
+  // 恢复对账（B01）：前端错过 dialogue_saved / 配图事件时，靠这两个字段清本地恢复记录与补配图等待态。
+  // 只回最近 20 轮用户消息窗口内的结果，不为清一条失败记录吐出全部历史。
+  const RECENT_TURNS = 20;
+  const recentUserRaws = stmt(`
+    SELECT id FROM raw_messages WHERE conversation_id = ? AND role = 'user'
+    ORDER BY id DESC LIMIT ?
+  `).all(conversationId, RECENT_TURNS);
+  const minRecentRawId = recentUserRaws.at(-1)?.id ?? 0;
+
+  // 已完成 = 该轮用户消息之后有带正文的 assistant 原文（配图占位原文是空串，不算完成），
+  // 或该轮配图任务已出图（纯图无文字的轮次同样算落定）。
+  const completedClientMsgIds = stmt(`
+    SELECT r.client_msg_id FROM raw_messages r
+    WHERE r.conversation_id = ? AND r.role = 'user' AND r.client_msg_id IS NOT NULL AND r.id >= ?
+      AND (EXISTS (SELECT 1 FROM raw_messages a
+             WHERE a.conversation_id = r.conversation_id AND a.role = 'assistant'
+               AND a.id > r.id AND TRIM(a.content) <> '')
+        OR EXISTS (SELECT 1 FROM private_chat_image_turns p JOIN image_tasks t ON t.id = p.task_id
+             WHERE p.user_raw_id = r.id AND t.status = 'done'))
+    ORDER BY r.id DESC LIMIT ?
+  `).all(conversationId, minRecentRawId, RECENT_TURNS).map(r => r.client_msg_id);
+
+  // 只回未落定的配图任务：done 的图已挂在 messages 行上，随 messages 一起返回，重复下发只会多一个空壳气泡
+  const imageTasks = stmt(`
+    SELECT t.id, t.status, t.error_message, t.created_at, p.message_id, p.user_raw_id, r.client_msg_id
+    FROM private_chat_image_turns p JOIN image_tasks t ON t.id = p.task_id
+    LEFT JOIN raw_messages r ON r.id = p.user_raw_id
+    WHERE p.conversation_id = ? AND p.user_raw_id >= ? AND t.status IN ('pending','running','failed')
+    ORDER BY p.user_raw_id DESC LIMIT 10
+  `).all(conversationId, minRecentRawId).map(t => ({
+    id: t.id, status: t.status, error_message: t.error_message, created_at: toISODate(t.created_at),
+    message_id: t.message_id, user_raw_id: t.user_raw_id, clientMsgId: t.client_msg_id,
+  }));
+
   res.json({
     messages,
     affinity: lastSnapshot ? {
@@ -417,6 +451,8 @@ router.get('/characters/:id/messages', (req, res) => {
       delta: lastSnapshot.affinity_delta ?? 0,
       reason: lastSnapshot.reason || '',
     } : null,
+    completedClientMsgIds,
+    imageTasks,
   });
 });
 
