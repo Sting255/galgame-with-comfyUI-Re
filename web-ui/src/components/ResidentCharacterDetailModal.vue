@@ -1439,13 +1439,25 @@ function refreshRelationships() {
 }
 
 defineExpose({ refreshRelationships, isDirty: computed(() => detail.dirty) })
+/**
+ * 关闭详情卡。有未保存改动时先问一句。
+ *
+ * 2026-11-09（W01/C02）：原来只在 profileAdapter（系统角色）模式下检查 dirty，
+ * 普通居民改完人设/外观直接点关闭就把草稿丢了，一句提示都没有。而 detail.dirty
+ * 本身是全局的、与模式无关 —— 缺的只是这个条件判断。
+ *
+ * 保存中不许关（避免关掉一个正在落库的编辑）。
+ */
 async function requestClose() {
   if (profileSaving.value) return
-  if (props.profileAdapter && detail.dirty && !await confirmFn({ title: '放弃修改？', message: '未保存的人设与外观修改将丢失。', okText: '放弃修改', danger: true })) return
+  if (detail.dirty && !await confirmFn({ title: '放弃修改？', message: '未保存的人设与外观修改将丢失。', okText: '放弃修改', danger: true })) return
   emit('close')
 }
 function onProfileEscape(event) {
-  if (!props.profileAdapter || !props.visible || event.key !== 'Escape' || showClothingLibrary.value || showRefineModal.value) return
+  // 内层子窗打开时 Escape 归子窗管，别连详情卡一起关掉
+  if (!props.visible || event.key !== 'Escape') return
+  if (showClothingLibrary.value || showRefineModal.value || showLoraModal.value
+    || showOutfitModal.value || showIntimateModal.value || showVoiceModal.value) return
   void requestClose()
 }
 onMounted(() => window.addEventListener('keydown', onProfileEscape))

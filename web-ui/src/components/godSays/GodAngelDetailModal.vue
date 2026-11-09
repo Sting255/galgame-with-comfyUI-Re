@@ -38,4 +38,6 @@ function close() {
   if (avatarOpen.value) { cancelAvatar(); return }
   emit('close')
 }
+// 2026-11-09（W01/C02）：透出 isDirty 供外壳 CharacterDetailModal 统一判断草稿。
+defineExpose({ isDirty: dirty })
 </script>

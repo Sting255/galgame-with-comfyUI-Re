@@ -1695,8 +1695,8 @@ base
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, inject, watch, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, inject, watch, nextTick } from 'vue'
+import { useRouter, onBeforeRouteLeave } from 'vue-router'
 // 上游 v3.10.0 合并（2026-10-19）：输出额度默认值 / Vertex 校验 / 设置向导 / 自定义工作流
 import { defaultMaxTokens, isValidMaxTokens } from '../../../agent-core/src/llm/modelCapabilities.js'
 import { validateVertexServiceAccount } from '../api/index.js'
@@ -3018,6 +3018,43 @@ onMounted(async () => {
 
 function markDirty() { dirty.value = true; saved.value = false }
 function markConnDirty() { connDirty.value = true; connSaved.value = false; health.value = null }
+
+/**
+ * 生图配置有未保存改动时，离开设置页先问一句。
+ *
+ * 2026-11-09（W01/C02）：原来 dirty 只用来禁用「保存」按钮，用户改完宽度/画风
+ * 直接点别的页签，改动无声消失 —— 而界面上一句话都没说，看着像已经生效了。
+ *
+ * 只拦真的会丢东西的情况：dirty 为假时直接放行，不做无意义的确认。
+ * 浏览器刷新/关标签用 beforeunload，仅在确实有改动时挂上，避免每次切页都弹窗。
+ */
+async function confirmLeave() {
+  if (!dirty.value || comfySaving.value) return true
+  const ok = await confirmFn?.({
+    title: '放弃未保存的修改？',
+    message: '生图配置改了但还没保存，离开后这些改动会丢失。',
+    okText: '放弃修改',
+    cancelText: '留下继续编辑',
+    danger: true,
+  })
+  return ok === true
+}
+
+onBeforeRouteLeave(async () => {
+  const ok = await confirmLeave()
+  if (!ok) return false
+  dirty.value = false
+  return true
+})
+
+function onBeforeUnload(event) {
+  if (!dirty.value) return
+  event.preventDefault()
+  // 现代浏览器忽略自定义文案，但必须设 returnValue 才会弹原生确认
+  event.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload))
 async function onImageProviderChange(provider) {
   health.value = null
   try {
