@@ -51,7 +51,21 @@ async function request(path, { method = 'GET', body, headers, signal } = {}) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
   })
-  let result = {}
+  let result
+  // 204 / 205 / 304 / HEAD 没有响应体：不能去读 body，更不能伪造一个 {} 当成功。
+  // 返回 undefined，调用方用 `await` 后判空即可（现有调用点都不依赖 204 的返回对象）。
+  const noBody = res.status === 204 || res.status === 205 || res.status === 304
+    || res.headers?.get?.('content-length') === '0'
+  if (noBody) {
+    if (!res.ok) {
+      // 非 2xx 且无结构化错误体时，至少给出状态码（保留 404 not found 口径）
+      const isMissingRoute = res.status === 404
+      throw new Error(isMissingRoute
+        ? '接口不存在 (404 not found)：后端服务还是旧代码，请先在启动器里重启服务再试'
+        : `请求失败 (${res.status})`)
+    }
+    return undefined
+  }
   // `json()` 不可用（部分测试 mock 只提供 text()）或抛错（非 JSON，多半是 Express 默认 HTML 错误页）
   // 时，都要回落 `text()` + 手动 parse —— 早先只 catch 了抛错，漏了"方法不存在"这条，导致那些
   // mock 解出空对象、服务端返回的 event 被丢弃（eventChoiceCountdown 的服务端覆盖断言就是这么挂的）。
@@ -65,9 +79,22 @@ async function request(path, { method = 'GET', body, headers, signal } = {}) {
   if (!parsed && typeof res.text === 'function') {
     try {
       const raw = await res.text()
-      result = raw ? JSON.parse(raw) : {}
+      if (raw) {
+        result = JSON.parse(raw)
+        parsed = true
+      } else {
+        // 成功但空 body（部分 DELETE 返回 200 无内容）：保持 {} 兼容既有调用方
+        result = {}
+        parsed = res.ok
+      }
     } catch { /* 真的不是 JSON（Express 默认 HTML 错误页） */ }
   }
+  // 成功状态下「有内容却解析失败」不能伪装成 {} —— 那会让调用方以为"接口返回了空数据"
+  // 而把本地状态清空（B06）。给一个能追到所属请求的错误，保留 status 与 path 便于定位。
+  if (!parsed && res.ok) {
+    throw new Error(`响应解析失败 (${res.status} ${path})：服务端返回的不是合法 JSON`)
+  }
+  if (!parsed) result = {}
   if (!res.ok) {
     // 404 + 拿不到结构化 error ⇒ 路由没注册（后端是旧代码），而不是"功能坏了"。
     // ⚠️ 消息里必须保留 `404` 与 `not found`：调用方（如 getTimePerception）是按
@@ -90,30 +117,64 @@ async function request(path, { method = 'GET', body, headers, signal } = {}) {
   return result
 }
 
-// 统一 SSE 解析循环：按行解析 event:/data: 帧，每帧回调 onEvent(event, data)。
-// data 帧回调 JSON 解析后的对象；仅 event 行时 data 为 undefined。
-// 读取错误向上抛（由调用方决定静默断开还是向下游报错），流自然结束则正常返回。
+/**
+ * 统一 SSE 解析循环（2026-11-09 方案 B07 修）。
+ *
+ * **保持逐行回调契约不变**：`event:` 行回调一次 `(name, undefined)`，
+ * `data:` 行回调一次 `(name, parsedData)`。chat.js store 依赖前者的
+ * `data === undefined` 记录 lastEvent（safety timer 用），改成「按空行派发完整事件」
+ * 会让那条事件消失、安全计时失效，所以不为了贴合 SSE 规范文字而破坏现有链路。
+ *
+ * 修的是真正会出问题的四处：
+ *  1. 只按 `\n` 切，CRLF / `\r` 会在 data 尾部留字符导致 JSON.parse 失败 → 统一归一化行尾；
+ *  2. `event: ` / `data: ` 写死带空格，无空格写法会漏 → 都按冒号切再 trim；
+ *  3. JSON.parse 和**业务回调包在同一个 try** —— 回调里抛错被当成"解析失败"静默吞掉，
+ *     页面表现为"流莫名停了但没报错" → 拆开：坏帧跳该帧，回调异常向上抛；
+ *  4. `done` 时直接 return，reader 不 releaseLock，尾部多字节 UTF-8 残留没 flush → finally 释放 + flush。
+ *
+ * 跨 chunk 仍靠 buffer 保留未完整的行；流自然结束正常返回，取消由外部 signal 负责。
+ */
 async function consumeSSE(res, onEvent) {
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let eventType = null
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (line.startsWith('event: ')) {
-        eventType = line.slice(7).trim()
-        onEvent(eventType, undefined)
-      } else if (line.startsWith('data: ')) {
-        try {
-          onEvent(eventType, JSON.parse(line.slice(6)))
-        } catch { /* ignore parse errors */ }
+
+  const handleLine = (line) => {
+    if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim()
+      // 回调与解析无关，异常必须向上抛（不能被当成坏帧吞掉）
+      onEvent(eventType, undefined)
+    } else if (line.startsWith('data:')) {
+      let data
+      try {
+        data = JSON.parse(line.slice(5).replace(/^ /, ''))
+      } catch {
+        return   // 坏帧：只跳过这一行，不掐断整条流
       }
+      onEvent(eventType, data)
     }
+    // 注释行（: 开头）、id/retry、空行等忽略
+  }
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) {
+        // flush 尾部解码残留（多字节 UTF-8 被拆在两个 chunk 时靠它补齐）
+        buffer += decoder.decode()
+        const tail = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+        if (tail) for (const line of tail.split('\n')) handleLine(line)
+        return
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      const lines = normalized.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) handleLine(line)
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* 已释放 */ }
   }
 }
 

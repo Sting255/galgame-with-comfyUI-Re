@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as api from '../api/index.js'
 import { onEvent } from './unifiedStream.js'
+import { createPoller } from '../utils/poller.js'
 
 export const useBackpackStore = defineStore('backpack', () => {
   const items = ref([])
@@ -12,9 +13,10 @@ export const useBackpackStore = defineStore('backpack', () => {
   const loading = ref(false)
   const loadError = ref(null)
 
-  let pollTimer = null
   let _unsubItemReady = null
   let _pollingRefs = 0
+  // 统一轮询：请求结束后才排下一次（不重叠）、后台降频、回前台立即补一次
+  const poller = createPoller({ task: fetchItems, intervalMs: 60000 })
 
   const usableItems = computed(() => items.value.filter(i => i.status === 'ready'))
   // 红点默认不显示：完成一次真实查询、且确认宝箱就绪后才亮
@@ -115,15 +117,15 @@ export const useBackpackStore = defineStore('backpack', () => {
     _pollingRefs++
     if (_pollingRefs > 1) return
 
-    fetchItems()
     _unsubItemReady = onEvent('item_ready', _onItemReady)
-    pollTimer = setInterval(fetchItems, 60000)
+    // poller.start() 内部会先执行一次 fetchItems，不需要再单独调
+    poller.start()
   }
 
   function stopPolling() {
     _pollingRefs = Math.max(0, _pollingRefs - 1)
     if (_pollingRefs > 0) return
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    poller.stop()
     if (_unsubItemReady) { _unsubItemReady(); _unsubItemReady = null }
   }
 

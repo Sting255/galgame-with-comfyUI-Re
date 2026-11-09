@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as api from '../api/index.js'
 import { onEvent } from './unifiedStream.js'
+import { createPoller } from '../utils/poller.js'
 
 /**
  * 《邻舍日报》未读状态（唯一来源）
@@ -35,9 +36,10 @@ export const useNewspaperStore = defineStore('newspaper', () => {
   const lastReadDate = ref(readStoredDate())
   const loading = ref(false)
 
-  let pollTimer = null
-let unsubscribeRollover = null
+  let unsubscribeRollover = null
   let _pollingRefs = 0
+  // 统一轮询：请求结束后才排下一次（不重叠）、后台降频、回前台立即补一次
+  const poller = createPoller({ task: fetchToday, intervalMs: POLL_INTERVAL_MS })
 
   /** 今天的报纸已印出、且这一期没看过 */
   const unread = computed(() => {
@@ -74,20 +76,17 @@ let unsubscribeRollover = null
   function startPolling() {
     _pollingRefs++
     if (_pollingRefs > 1) return
-    fetchToday()
-    pollTimer = setInterval(fetchToday, POLL_INTERVAL_MS)
     // 世界翻篇（程序日期变了）立刻拉新一期，不用等下一个 60s 轮询
-    // （2026-10-01 用户：「日报的板块如果日期更新了也要去更新日报」；后端在 programDayRollover 里广播）
-    unsubscribeRollover = onEvent('program_day_rollover', () => { fetchToday() })
+    //（2026-10-01 用户：「日报的板块如果日期更新了也要去更新日报」；后端在 programDayRollover 里广播）
+    unsubscribeRollover = onEvent('program_day_rollover', () => { poller.kick() })
+    // poller.start() 内部会先执行一次 fetchToday，不需要再单独调
+    poller.start()
   }
 
   function stopPolling() {
     _pollingRefs = Math.max(0, _pollingRefs - 1)
     if (_pollingRefs > 0) return
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
+    poller.stop()
     if (unsubscribeRollover) {
       unsubscribeRollover()
       unsubscribeRollover = null

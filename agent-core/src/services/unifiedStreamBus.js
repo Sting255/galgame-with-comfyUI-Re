@@ -12,6 +12,18 @@
 
 const clients = new Set();
 
+/**
+ * 单个 SSE 客户端的待写缓冲上限（2026-11-09 方案 B06）。
+ *
+ * `res.write()` 是非阻塞的：客户端读得慢（后台标签页、手机休眠、网络差）时数据会积压在
+ * Node 的 socket 写缓冲里。原来完全不看水位，一个卡住的客户端就能把积压堆到几十 MB，
+ * 最后拖垮整个进程 —— 而且拖累的是**所有**连接的用户。
+ *
+ * 超过上限就只断开这一个客户端（它重连后靠快照把丢掉的事件补回来），不影响其他人。
+ * 1MB ≫ 单条 SSE 事件（几百字节到几 KB，配图走 URL 不走 SSE），正常客户端不可能到这个量。
+ */
+const MAX_CLIENT_BUFFER_BYTES = 1024 * 1024;
+
 export function addClient(res) {
   clients.add(res);
 }
@@ -25,6 +37,7 @@ export function removeClient(res) {
  * @param {object} data - JSON-serializable payload
  */
 export function broadcast(eventType, data) {
+  if (clients.size === 0) return;
   let payload;
   try {
     payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -33,10 +46,23 @@ export function broadcast(eventType, data) {
     return;
   }
   for (const client of clients) {
+    // 已结束/已销毁的连接：清掉，别再往里写
+    if (client.writableEnded || client.destroyed) {
+      clients.delete(client);
+      continue;
+    }
+    // 慢客户端：积压超过上限就断开这一个，不阻塞全体
+    if (Number(client.writableLength) > MAX_CLIENT_BUFFER_BYTES) {
+      console.warn(`[unifiedSSE] 客户端待写缓冲 ${client.writableLength} 字节超限（累计事件过多），断开该连接，重连后由快照纠正`);
+      clients.delete(client);
+      try { client.destroy(); } catch { /* 已关闭 */ }
+      continue;
+    }
     try {
       client.write(payload);
     } catch {
       clients.delete(client);
+      try { client.destroy(); } catch { /* 已关闭 */ }
     }
   }
 }

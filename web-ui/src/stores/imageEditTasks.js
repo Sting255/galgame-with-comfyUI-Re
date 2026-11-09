@@ -33,8 +33,23 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
     if (!data?.id) return
     const idx = tasks.value.findIndex(t => t.id === data.id)
     const item = normalizeTask(data, idx >= 0 ? tasks.value[idx] : null)
-    if (idx >= 0) tasks.value.splice(idx, 1, item)
-    else tasks.value.push(item)
+    if (idx >= 0) {
+      const prev = tasks.value[idx]
+      // 进度不倒退（B06）：SSE 与快照刷新可能乱序到达，一个较早的 progress 事件
+      // 不该把已经 80% 的进度打回 20%。终态（done/error）也不该被 running 覆盖。
+      if (item.progress && prev.progress && typeof item.progress.progress === 'number'
+          && typeof prev.progress.progress === 'number'
+          && item.progress.progress < prev.progress.progress
+          && item.status === prev.status) {
+        item.progress = prev.progress
+      }
+      const terminal = new Set(['pending_confirm', 'applied', 'discarded', 'failed'])
+      if (terminal.has(prev.status) && item.status === 'running') {
+        item.status = prev.status
+        item.progress = prev.progress
+      }
+      tasks.value.splice(idx, 1, item)
+    } else tasks.value.push(item)
   }
 
   function _remove(id) {
