@@ -295,27 +295,64 @@ export async function createAssetJob({ characterIds = null, kinds = ASSET_KINDS,
   return { job: getAssetJob(jobId), units: units.length, skipped };
 }
 
+/** 任务是否还能被操作：cancelled / done / partial_failed 是终态，不能再 pause/resume/retry */
+const TERMINAL_STATUSES = new Set(['cancelled', 'done', 'partial_failed']);
+
+function terminalError(jobId, status) {
+  const err = new Error(`任务已结束（${status}），不能再操作`);
+  err.code = 'JOB_TERMINAL';
+  err.jobId = jobId;
+  err.status = status;
+  return err;
+}
+
+/**
+ * 暂停。已到终态的任务拒绝操作 —— 否则 paused 会盖掉 cancelled，
+ * 一个取消过的任务在列表里又变回"暂停中"，用户还能继续点恢复。
+ */
 export function pauseAssetJob(jobId) {
   const job = readJob(jobId);
   if (!job) return null;
+  if (TERMINAL_STATUSES.has(job.status)) throw terminalError(jobId, job.status);
   paused.add(jobId);
   updateJob(jobId, { status: 'paused' });
   return getAssetJob(jobId);
 }
 
+/**
+ * 继续。**必须先领到执行权才改状态**（2026-11-09 方案 B10）。
+ *
+ * 原实现：先写 `running` 再调 startAssetJob，而后者发现 `runningJobId` 被别的任务占着就直接
+ * 返回那个任务的快照 —— 被恢复的任务从此**标着 running 却没有执行器**，进度条永远不动。
+ * 现在：领不到执行权就抛 JOB_ACTIVE（路由映射 409），状态一点不改，用户知道「有别的任务在跑」。
+ */
 export function resumeAssetJob(jobId) {
   const job = readJob(jobId);
   if (!job) return null;
+  if (TERMINAL_STATUSES.has(job.status)) throw terminalError(jobId, job.status);
+  if (job.status === 'running' && runningJobId === jobId) return getAssetJob(jobId); // 已在跑，幂等
+  if (runningJobId && runningJobId !== jobId) {
+    const err = new Error('已有批量任务在进行，请等它跑完或先暂停它');
+    err.code = 'JOB_ACTIVE';
+    throw err;
+  }
   paused.delete(jobId);
+  runningJobId = jobId;
   updateJob(jobId, { status: 'running' });
-  startAssetJob(jobId);
+  runJobWorker(jobId, job);
   return getAssetJob(jobId);
 }
 
+/**
+ * 取消。终态任务幂等返回当前快照（连点两次不该报错）；
+ * 正在跑的任务只置位，worker 会在下一个单元边界看到 cancelled 并停下。
+ */
 export function cancelAssetJob(jobId) {
   const job = readJob(jobId);
   if (!job) return null;
   paused.delete(jobId);
+  if (job.status === 'cancelled') return getAssetJob(jobId);
+  if (job.status === 'done' || job.status === 'partial_failed') throw terminalError(jobId, job.status);
   updateJob(jobId, { status: 'cancelled' });
   return getAssetJob(jobId);
 }
@@ -324,16 +361,23 @@ export function cancelAssetJob(jobId) {
 export function retryFailedAssetJob(jobId) {
   const job = readJob(jobId);
   if (!job) return null;
+  if (job.status === 'cancelled') throw terminalError(jobId, job.status);
+  if (runningJobId && runningJobId !== jobId) {
+    const err = new Error('已有批量任务在进行，请等它跑完或先暂停它');
+    err.code = 'JOB_ACTIVE';
+    throw err;
+  }
   const plan = job.plan.map(u => (u.error ? { ...u, done: false, error: '', attempts: 0 } : u));
   const firstFailed = plan.findIndex(u => !u.done && !u.error);
   const cursor = firstFailed === -1 ? plan.length : Math.min(job.cursor, firstFailed);
   const failedCount = plan.filter(u => !u.done).length;
+  paused.delete(jobId);
+  runningJobId = jobId;
   updateJob(jobId, {
     plan, cursor, status: 'running',
     failed: 0, completed: plan.filter(u => u.done).length, total: plan.length, error: '',
   });
-  paused.delete(jobId);
-  startAssetJob(jobId);
+  runJobWorker(jobId, { ...job, plan, cursor });
   return { job: getAssetJob(jobId), pending: failedCount };
 }
 
@@ -432,7 +476,19 @@ export async function startAssetJob(jobId) {
   if (job.status === 'cancelled') return getAssetJob(jobId);
   runningJobId = jobId;
   updateJob(jobId, { status: 'running' });
+  runJobWorker(jobId, job);
+  return getAssetJob(jobId);
+}
 
+/**
+ * 真正的串行 worker。**只由已经拿到 `runningJobId` 的调用方启动**。
+ *
+ * 2026-11-09（方案 B10）拆出来的原因：`resumeAssetJob` 原来先写 `status='running'` 再调
+ * `startAssetJob`，而后者遇到 `runningJobId` 已被别的任务占用时直接 `return getAssetJob(另一个)` ——
+ * 于是被恢复的任务**被标成 running 却没有任何执行器**，前端看到一个永远不动的进度条。
+ * 现在领取（claim）与启动（runJobWorker）分开：领不到就不改状态，接口返回 409。
+ */
+function runJobWorker(jobId, job) {
   (async () => {
     let cursor = job.cursor;
     const plan = job.plan;
@@ -480,9 +536,7 @@ export async function startAssetJob(jobId) {
       updateJob(jobId, { status: 'failed', error: err?.message || String(err), cursor });
       broadcastProgress(readJob(jobId));
     } finally {
-      runningJobId = null;
+      if (runningJobId === jobId) runningJobId = null;
     }
   })();
-
-  return getAssetJob(jobId);
 }

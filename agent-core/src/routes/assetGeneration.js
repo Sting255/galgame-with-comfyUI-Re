@@ -33,6 +33,9 @@ function handle(res, err) {
   // 仓库约定：`error` = 机器码、`message` = 给人看的话（前端 request() 对 4xx 取 message || error）。
   // 两个都带上，免得以后有人调整 fallback 顺序时用户只能看到代码。
   if (code === 'JOB_ACTIVE') return res.status(409).json({ error: err.message, message: err.message, code });
+  // 已结束的任务（cancelled / done / partial_failed）不能再 pause/resume/retry：
+  // 这是状态冲突，不是参数错误，用 409 让前端能按「刷新一下看看现状」处理。
+  if (code === 'JOB_TERMINAL') return res.status(409).json({ error: err.message, message: err.message, code });
   // ComfyUI 没开：409 而不是 500 —— 这是"环境还没就绪"，不是程序出错
   if (code === 'COMFY_DOWN') return res.status(409).json({ error: err.message, message: err.message, code });
   console.warn('[assetGen] route error:', err?.message || err);
@@ -77,9 +80,15 @@ for (const [action, fn] of [
   ['retry', retryFailedAssetJob],
 ]) {
   router.post(`/jobs/:jobId/${action}`, (req, res) => {
-    const result = fn(req.params.jobId);
-    if (!result) return res.status(404).json({ error: 'job not found' });
-    res.json(result);
+    try {
+      const result = fn(req.params.jobId);
+      if (!result) return res.status(404).json({ error: 'job not found' });
+      res.json(result);
+    } catch (err) {
+      // 原来这层没有 try/catch：resume 撞上 JOB_ACTIVE / 终态任务被操作时直接抛到全局 errorHandler，
+      // 前端拿到 500「Internal server error」，看不出到底为什么点不动。
+      handle(res, err);
+    }
   });
 }
 
