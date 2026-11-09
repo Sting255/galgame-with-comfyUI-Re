@@ -46,17 +46,47 @@ const dryRun = argv.includes('--dry-run');
 const tagIdx = argv.indexOf('--tag');
 const wantedTag = tagIdx >= 0 ? argv[tagIdx + 1] : '';
 
-function latestVTag() {
-  // 只认 v4.x.y 这类发布标签，按版本号排序而不是字典序（v4.10 要排在 v4.9 后面）
-  const tags = (git(['tag', '-l', 'v*']) || '').split('\n').filter(t => /^v\d+\.\d+\.\d+$/.test(t));
-  if (tags.length === 0) return '';
-  tags.sort((a, b) => {
-    const pa = a.slice(1).split('.').map(Number);
-    const pb = b.slice(1).split('.').map(Number);
-    for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
-    return 0;
-  });
-  return tags[tags.length - 1];
+/**
+ * 预览只读查询远端的正式发布标签（2026-11-09 方案 A14）。
+ *
+ * 原来从**本地全部标签**里筛最新 —— 本地可能残留自己打过、上游根本没有的标签
+ * （本仓历史上有过 v4.2.2-a 这类 fork 标签），把它当上游发布就会瞄错目标。
+ * 现在优先问远端；问不到才退回本地，并明确说明用的是缓存信息。
+ *
+ * @returns {{tag:string, commit:string, source:'remote'|'cache'|'local', note:string}}
+ */
+function resolveLatestVTag({ allowFetch = true } = {}) {
+  const parse = (raw) => {
+    const tags = String(raw || '').split('\n')
+      .map(line => line.trim().split(/\s+/).pop() || '')
+      .filter(t => /^v\d+\.\d+\.\d+$/.test(t.replace(/^refs\/tags\//, '')))
+      .map(t => t.replace(/^refs\/tags\//, ''));
+    if (tags.length === 0) return '';
+    tags.sort((a, b) => {
+      const pa = a.slice(1).split('.').map(Number);
+      const pb = b.slice(1).split('.').map(Number);
+      for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
+      return 0;
+    });
+    return tags[tags.length - 1];
+  };
+
+  // 1) 直接问远端有哪些发布标签（只读，不改本地 refs）
+  if (allowFetch) {
+    const remoteTags = git(['ls-remote', '--tags', UPSTREAM_REMOTE, 'v*'], { allowFail: true });
+    const tag = parse(remoteTags);
+    if (tag) {
+      const remoteCommit = git(['rev-parse', `${UPSTREAM_REMOTE}/${tag}^{commit}`], { allowFail: true });
+      return { tag, commit: remoteCommit || '', source: remoteCommit ? 'remote' : 'cache',
+        note: remoteCommit ? '来自远端' : '远端标签已拿到，但本地还没有对应提交（fetch 被标签冲突挡住？）' };
+    }
+    // 远端问不到（离线 / 网络故障）→ 用本地标签，并说明是缓存
+    const localTag = parse(git(['tag', '-l', 'v*'], { allowFail: true }));
+    if (localTag) return { tag: localTag, commit: '', source: 'cache', note: '远端不可达，用的是本地缓存标签' };
+    return { tag: '', commit: '', source: 'local', note: '' };
+  }
+  const localTag = parse(git(['tag', '-l', 'v*'], { allowFail: true }));
+  return { tag: localTag, commit: '', source: 'local', note: 'dry-run 未查询远端' };
 }
 
 function currentBranch() {
@@ -85,7 +115,11 @@ if (!dryRun) {
   // 标签冲突（本地已存在同名但内容不同的标签）不致命，提示一下继续
 }
 
-const target = wantedTag || latestVTag();
+const target = wantedTag || (() => {
+  const resolved = resolveLatestVTag({ allowFetch: !dryRun });
+  if (resolved.note) say(`版本基线来源：${resolved.note}`);
+  return resolved.tag;
+})();
 if (!target) {
   warn('没有找到 vX.Y.Z 形式的发布标签');
   process.exit(1);
@@ -113,17 +147,32 @@ if (!dryRun) {
   say(`upstream 已对齐到 ${target}`);
 }
 
-// ── 3. 合并到 local ──
-const behind = git(['rev-list', '--count', `${LOCAL_BRANCH}..${UPSTREAM_BRANCH}`], { allowFail: true }) || '0';
-if (behind === '0') {
-  say('local 已包含 upstream 的全部提交，无需合并');
+// ── 3. 比较 local 与**目标提交**（2026-11-09 方案 A14）──
+// 原来比较的是 `local..upstream`：dry-run 不 fetch 也不 reset upstream，
+// 于是 upstream 还停在旧位置 —— 指定一个新标签时会被判成"无需合并"，
+// 而实际上 local 根本还没有那个标签的提交。现在直接比 local 与已解析的目标提交。
+// `git cat-file -e` 成功时输出为空串（trim 后为 ''），失败返回 null ——
+// 不能用 `!!git(...)` 判断，会恒为 false。以"是否为 null"为准。
+const targetExists = git(['cat-file', '-e', `${targetCommit}^{commit}`], { allowFail: true }) !== null;
+let behind = '0';
+if (!targetExists) {
+  // 目标对象本地没有（dry-run 未 fetch 时的常见情形）：如实说明无法做祖先判断，
+  // 不拿旧 upstream 冒充目标得出"无需合并"的假结论。
+  warn(`目标提交 ${targetCommit.slice(0, 8)} 在本地不存在，无法判断 local 是否已包含它`);
+  warn('要拿到准确结论，请去掉 --dry-run 先 fetch（或手动 git fetch origin --tags）');
   if (!dryRun) git(['checkout', startBranch === LOCAL_BRANCH ? LOCAL_BRANCH : startBranch]);
   process.exit(0);
 }
-say(`local 落后 upstream ${behind} 个提交，开始合并`);
+behind = git(['rev-list', '--count', `${LOCAL_BRANCH}..${targetCommit}`], { allowFail: true }) || '0';
+if (behind === '0') {
+  say(`local 已包含目标 ${target} 的全部提交，无需合并`);
+  if (!dryRun) git(['checkout', startBranch === LOCAL_BRANCH ? LOCAL_BRANCH : startBranch]);
+  process.exit(0);
+}
+say(`local 落后目标 ${target} ${behind} 个提交，开始合并`);
 
 if (dryRun) {
-  say(`dry-run：将执行 git checkout ${LOCAL_BRANCH} && git merge ${UPSTREAM_BRANCH}`);
+  say(`dry-run：将执行 git checkout ${UPSTREAM_BRANCH} && git reset --hard ${target}，再 merge 到 ${LOCAL_BRANCH}`);
   process.exit(0);
 }
 
