@@ -1464,8 +1464,10 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
     //   前一张文件就变成没人引用的孤儿（实测目录里 81 个文件只有 37 个被引用）。
     if (!claimPostForImage(p.id)) continue;
     try {
+      // 投影必须带 id：下游把这个对象当 `opts.identity` 传给 imageSkill，
+      // 而 identityAnchor 要靠真实角色 id 回查锚点（无 id 时只能拿残缺对象现算，锚点会静默为空）
       const character = p.character_id
-        ? db.prepare('SELECT loras, artist_override, custom_workflow FROM characters WHERE id = ?').get(p.character_id)
+        ? db.prepare('SELECT id, loras, artist_override, custom_workflow FROM characters WHERE id = ?').get(p.character_id)
         : null;
       const result = await generateMediaImage(p.image_prompt, character, priority);
       if (!result) {

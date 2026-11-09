@@ -725,13 +725,17 @@ async function _execute(rawPrompt, opts) {
     }
     let prompt = sanitized.prompt;
 
-    // 0a. 身份锚点前置（2026-11-08）：调用方传了 `opts.identity`（角色行）时，把该角色的
-    //     「Name (Series) + 身体特征」锚点补在 prompt 最前。放在这里而不是各调用点，
+    // 0a. 身份锚点前置（2026-11-08）：调用方传了 `opts.identity`（角色行，或多角色时传数组）时，
+    //     把「Name (Series) + 身体特征」锚点补在 prompt 最前。放在这里而不是各调用点，
     //     是为了让 chat / touch(亲密) / 立绘 / 头像 / 梦话 / 事件 / 朋友圈 **所有**入口一次生效。
     //     不传 identity 与改动前逐字节一致（场景图、道具图、路人图都不受影响）。
     //     幂等：prompt 里已有同名身份 tag 时不重复前置。
+    //     数组 = 多人同框：每个实际入画角色各自用自己的锚点，不能只锚说话那个人。
     if (opts.identity) {
-      prompt = applyIdentityAnchorToPrompt(prompt, getIdentityAnchorForPrompt(opts.identity));
+      // 逐个应用：每个角色独立判幂等，prompt 里已有的那个不会被重复前置
+      for (const char of (Array.isArray(opts.identity) ? opts.identity : [opts.identity])) {
+        prompt = applyIdentityAnchorToPrompt(prompt, getIdentityAnchorForPrompt(char));
+      }
       // identity 只服务这一层，别让它跟着 opts 流进工作流构造
       delete opts.identity;
     }

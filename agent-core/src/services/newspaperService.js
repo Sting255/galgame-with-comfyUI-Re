@@ -600,8 +600,9 @@ async function generateAndStorePaperImage(row, task) {
   const db = getDb();
   try {
     // 特稿画面以主角为主，带角色 LoRA；角色已被删除时退化为无 LoRA 的普通插画
+    // 投影必须带 id：这个对象会作为 `identity` 传给生图，identityAnchor 靠 id 回查锚点
     const character = row.character_id
-      ? db.prepare('SELECT loras, artist_override, custom_workflow FROM characters WHERE id = ?').get(row.character_id)
+      ? db.prepare('SELECT id, loras, artist_override, custom_workflow FROM characters WHERE id = ?').get(row.character_id)
       : null;
     const featuredLoras = parseCharacterLoras(character?.loras);
     const resolution = `${config.comfyui.momentsWidth}x${config.comfyui.momentsHeight}`;

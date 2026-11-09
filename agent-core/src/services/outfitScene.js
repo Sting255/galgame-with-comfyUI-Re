@@ -37,6 +37,7 @@ import { pickFabricAndColors } from './clothingLibrary.js';
 import { getLocalDateKey } from '../utils/localDate.js';
 import { chatSync } from './lorebook/runtime.js';
 import { config } from '../config.js';
+import { getProgramNow } from './programTime.js';
 
 /**
  * 场景枚举。key 会落到 character_outfits.scene，改这里必须同步迁移注释。
@@ -497,7 +498,25 @@ export function setOutfitOverride(characterId, scene, until = null) {
   return { scene: key, until: key ? (until || null) : null };
 }
 
-export function getSceneOutfitForNow(characterId, date = new Date()) {
+/**
+ * 场景服装：按**世界钟**决定此刻穿哪套。
+ *
+ * 2026-11-09（A05）两处修正：
+ *
+ * 1. **时钟口径统一**。这里原来默认 `new Date()`（真实系统时间），而日程全线用
+ *    `getProgramNow()`（世界钟）。玩家把程序时间往前调过之后，两边算的不是同一天
+ *    甚至不是同一个时段 —— 日程说「现在在上班」，服装却按真实时间挑了睡衣。
+ *    现在默认取世界钟，调用方仍可显式传 date 覆盖（测试与回溯用）。
+ *
+ * 2. **向前回溯不跨睡眠边界**。原来 ④ 那段从当前时段一路往前找「最近一次标注了
+ *    服装的时段」，跨过睡觉那段也照找不误。于是「睡醒 → 上午没有显式标注」会捡到
+ *    睡前那套睡衣穿一整天。现在回溯到睡眠时段就停：醒后没有显式标注的时段，
+ *    回落到日间默认形象（work / 第一套白天服装），而不是睡衣。
+ *
+ * @param {number} characterId
+ * @param {Date} [date] 省略时用世界钟
+ */
+export function getSceneOutfitForNow(characterId, date = getProgramNow()) {
   const outfits = listSceneOutfits(characterId);
   if (!outfits.length) return null;
 
@@ -530,9 +549,13 @@ export function getSceneOutfitForNow(characterId, date = new Date()) {
   }
 
   // ④ 向前回溯最近的换装点（含当前段）；上限防止绕一圈
+  //    **遇睡眠时段即停**：睡过一觉之前的穿着不该延续到醒后（见函数头注释 2）。
   for (let step = 0; step < acts.length; step++) {
     const i = (idx - step + acts.length) % acts.length;
-    const o = acts[i]?.outfit;
+    const act = acts[i] || {};
+    // 回溯到自己之前的那一段时，若那一段是睡眠，说明中间隔了一觉 —— 停
+    if (step > 0 && Number(act.replyDelay) === -1) break;
+    const o = act.outfit;
     if (!o) continue;
     const text = String(o).trim();
     if (!text) continue;

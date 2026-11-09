@@ -582,7 +582,8 @@ ${directorPrompt}`
   const selfLoras = _parseCharLoras(character.loras);
   let otherChars = [];
   if (multiPerson) {
-    const otherChar = db.prepare('SELECT loras, artist_override FROM characters WHERE id = ?').get(multiPerson.otherId);
+    // 补 id：这个对象要当身份锚点用，缺 id 时 identityAnchor 回查不到锚点
+    const otherChar = db.prepare('SELECT id, loras, artist_override FROM characters WHERE id = ?').get(multiPerson.otherId);
     if (otherChar) otherChars = [otherChar];
   }
   const otherLoras = otherChars.flatMap(c => _parseCharLoras(c.loras));
@@ -604,6 +605,8 @@ ${directorPrompt}`
       scene: 'events',
       priority: options.manual ? 'high' : 'low',
       loras: allLoras,
+      // 身份锚点：本角色必传；多人奇遇连对方一起传，imageSkill 逐个前置（各自用自己的锚点）
+      identity: multiPerson ? [character, ...otherChars] : character,
       ...(!multiPerson && character.custom_workflow ? { customWorkflow: character.custom_workflow } : {}),
     });
     if (genResult.success && genResult.images.length > 0) {
@@ -806,6 +809,8 @@ export async function regenerateEventImage(eventId, { db = getDb(), generate = g
       scene: 'events',
       priority: 'high',
       loras,
+      // 身份锚点：补图只有本角色入画（ce.* 已带 character_id，identityAnchor 能按 id 回查）
+      identity: { id: row.character_id, loras: row.loras, artist_override: row.artist_override },
       ...(row.custom_workflow ? { customWorkflow: row.custom_workflow } : {}),
     });
 
@@ -1159,14 +1164,14 @@ ${directorPrompt2}${prevSceneBlock}`
   const branchOtherChars = [];
   let branchOtherLoras = [];
   if (multiPerson2) {
-    const otherChar = db.prepare('SELECT loras, artist_override FROM characters WHERE id = ?').get(multiPerson2.otherId);
+    const otherChar = db.prepare('SELECT id, loras, artist_override FROM characters WHERE id = ?').get(multiPerson2.otherId);
     if (otherChar) { branchOtherChars.push(otherChar); branchOtherLoras = _parseCharLoras(otherChar.loras); }
   }
   let branchCrossRefLoras = [];
   const crossRefIdsForLora = JSON.parse(event.referenced_character_ids || '[]');
   if (crossRefIdsForLora.length > 0) {
     branchCrossRefLoras = crossRefIdsForLora.flatMap(id => {
-      const c = db.prepare('SELECT loras, artist_override FROM characters WHERE id = ?').get(id);
+      const c = db.prepare('SELECT id, loras, artist_override FROM characters WHERE id = ?').get(id);
       if (c) branchOtherChars.push(c);
       return c ? _parseCharLoras(c.loras) : [];
     });
@@ -1190,6 +1195,8 @@ ${directorPrompt2}${prevSceneBlock}`
       height: config.comfyui.eventHeight, scene: 'events',
       priority: 'high',
       loras: branchAllLoras,
+      // 身份锚点：分支画面里实际入画的角色各自用自己的锚点（主角 + 多人对象 + 交叉引用角色）
+      identity: branchOtherChars.length ? [character, ...branchOtherChars] : character,
       ...(!multiPerson2 && character.custom_workflow ? { customWorkflow: character.custom_workflow } : {}),
     });
     if (genResult.success && genResult.images.length > 0) {
