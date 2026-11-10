@@ -71,27 +71,8 @@ output/
 HyperFrames/
 krea2-posters/
 
-# ── 测试目录：**不忽略**（2026-10-19 修正一个反向设计的规则）───────────────
-#
-# 原来这里是「`agent-core/test/*` 全忽略 + 11 个逐文件 `!` 白名单」，注释写着
-# "Isolated M1 UI build"。那个设计有真实危害：
-#
-#   **每新增一个测试文件，都必须记得手动补一行 `!`，否则它会静默不入库。**
-#   实测代价：2026-10-19 我新建 `setupIsolationGuard.test.js` 后，
-#   `git status` **完全不显示它**（被这里挡住），差点漏提交；
-#   而 `test/setup.mjs`（全仓唯一的测试隔离入口！）能进库，
-#   靠的是当初 `git add -f` 强加 —— 也就是说，**normal 流程根本加不进新测试**。
-#
-# 事实核对（2026-10-19 实测）：`agent-core/test` 共 316 个文件，
-#   314 个 `.test.js` + `setup.mjs` + `helpers/townBuildingFeatureFixture.js`
-#   —— **全是源码，没有任何构建产物或临时文件**。
-#   所以「全目录忽略」从一开始就没有要挡的东西，纯粹是过度防御。
-#
-# 保留一条真正的产物拦截（万一将来有人往这儿写临时文件）：
-agent-core/test/**/*.tmp
-agent-core/test/**/*.log
-agent-core/test/*-scratch.*
-agent-core/test/.cache/
+# 2026-11-10：`agent-core/test` 连同全项目的自动化测试已于 2026-11-06 整体移除，
+# 原先围绕它的「全忽略 + 白名单」与产物拦截规则一并作废（目录已不存在，规则空转）。
 
 # 完整包输出目录（整包 7z 产物，数百 MB 级，绝不入库）
 完整/
