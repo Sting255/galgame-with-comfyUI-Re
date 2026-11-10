@@ -3,6 +3,7 @@ import { getWorldIntegrationRule } from '../builtinRules.js';
 import { chatSync } from './lorebook/runtime.js';
 import { config } from '../config.js';
 import { intervals, fitSharedActivity } from './cohabitationSchedule.js';
+import { isCompleteJsonText, stripJsonFence } from '../llm/llm-client.js';
 
 export const COHABITATION_RULES = `你是共同生活日程编排助手。为下方居室成员规划本轮作息中自然发生的共同活动，供稍后各角色编排完整日程时遵守。
 根据世界观、居室成员的简短人格及关系原文决定活动。关系有方向：分别保留双方的关系认知；友好、疏远、竞争、敌对、依赖、单方面关系都按原文应用。敌对或竞争可以体现对峙、争执、谈判、有理由的暂时合作等，不能将原关系直接改写成友好关系。
@@ -10,9 +11,10 @@ export const COHABITATION_RULES = `你是共同生活日程编排助手。为下
 正常情况下：1～3名成员目标3件，4～5名目标4件，更多成员目标5件；可用时间不足、没有合适活动时可以少于目标甚至0件，最多5件。不要安排睡眠。每件活动建议15～120分钟，最长180分钟，避开已有约定并留下足够的工作、生活和睡眠时间。
 所有参与者都必须在候选名单中。已确认活动不可删除、移动、重复输出；只输出新增活动。检查参与者（包括室外对象）的全部已占用时段；同一个人不能在同一时段参加两件事。时间以每天重复的24小时制HH:MM表示，允许跨午夜，不可起止相同。
 活动描述用中文第三人称，26～52字，写清在场角色的姓名和正在做的事情，不包含外观。不编造候选名单之外的人物。
-严格按以下完整JSON格式输出，不能输出解释、Markdown或JSON以外的文字：
-{"activities":[{"startTime":"18:00","endTime":"19:00","activity":"共同准备晚餐","location":"共同居室厨房","participantIds":[1,2],"description":"角色甲和角色乙分头清洗食材与准备餐具，一边讨论晚餐的口味，一边完成开饭前的准备。"}]}
-字段约束：startTime/endTime为合法HH:MM时间；activity为1～60字活动名；location为1～60字真实场所；participantIds为2～3个不同的候选角色数字ID，最多3个（示例1、2必须替换成输入中的真实ID）；description为26～52字场景描述。无合适活动时输出{"activities":[]}。`;
+严格按以下完整JSON格式输出，不能输出解释、Markdown或JSON以外的文字。
+示例中的全部值都只是格式占位，必须替换成输入中的真实时间、场所、ID、姓名与动作：
+{"activities":[{"startTime":"18:10","endTime":"19:20","activity":"一起整理书架并准备晚餐","location":"共同居室的厨房与客厅","participantIds":[1001,1002],"description":"角色甲把散落的书按主题放回书架，角色乙在厨房准备两人的晚餐，两人隔着客厅商量今晚的安排。"}]}
+字段约束：startTime/endTime为合法HH:MM时间，endTime必须晚于startTime或按明确跨午夜规则填写；activity为1～60字且能说明具体共同动作；location为1～60字真实场所；participantIds为2～3个不同的候选角色数字ID，最多3个，示例1001/1002必须替换成输入中的真实ID；description为26～52字、第三人称，必须写出角色姓名、具体动作与互动，且不写外观。无合适活动时输出{"activities":[]}。`;
 
 export function buildCohabitationRequest({ room, characters, relationships, events, fixed = [], direction = '', batchId, eligibleCharacterIds }) {
   const members = characters.filter(c => room.memberIds.includes(c.id));
@@ -48,8 +50,17 @@ export function buildCohabitationRequest({ room, characters, relationships, even
   } };
 }
 
-export function validateCohabitationResult(raw, { room, candidateIds, occupancy, batchId }) {
-  const parsed = typeof raw === 'string' ? JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) : raw;
+function readCompleteCohabitationJson(raw) {
+  if (raw && typeof raw === 'object') return { complete: true, value: raw };
+  if (!isCompleteJsonText(raw)) return { complete: false, value: undefined };
+  try {
+    return { complete: true, value: JSON.parse(stripJsonFence(raw)) };
+  } catch {
+    return { complete: false, value: undefined };
+  }
+}
+
+function validateParsedCohabitationResult(parsed, { room, candidateIds, occupancy, batchId }) {
   if (!Array.isArray(parsed?.activities) || parsed.activities.length > 5) throw new Error('共同活动需要0～5件');
   const events = [];
   for (const [i, a] of parsed.activities.entries()) {
@@ -75,20 +86,42 @@ export function validateCohabitationResult(raw, { room, candidateIds, occupancy,
   return events;
 }
 
+export function validateCohabitationResult(raw, input) {
+  const parsed = readCompleteCohabitationJson(raw);
+  if (!parsed.complete) throw new Error('共同生活输出不是完整合法 JSON');
+  return validateParsedCohabitationResult(parsed.value, input);
+}
+
 export async function planResidence(input, { chat = chatSync } = {}) {
   if (input.characters.filter(c => input.room.memberIds.includes(c.id)).length < 2) return [];
   const request = buildCohabitationRequest(input);
   if (request.candidateIds.size < 2) return [];
-  let error;
+  let domainError = '';
   for (let attempt = 0; attempt < 2; attempt++) {
     const messages = request.messages.map(m => ({ ...m }));
-    if (error) messages.at(-1).content += `\n上次输出未通过校验：${error.message}。请修正后重新输出。`;
+    if (attempt > 0) {
+      messages.at(-1).content += `\n上次输出是完整合法 JSON，但未通过共同生活领域校验：${domainError}。`
+        + '请修正这些领域问题，并严格按前述完整 JSON 示例重新输出全部字段；不要解释或输出 JSON 以外的文字。';
+    }
+
+    // 网络、截断、审核中断与 JSON 续写由公共 chatSync 收口；这里不重复整轮请求。
+    const raw = await chat(messages, { temperature: attempt === 0 ? 0.6 : 0.55, response_format: { type: 'json_object' },
+      ...(config.features.scheduleDisableThinking ? { thinking: { type: 'disabled' }, forceDisableThinking: true } : {}),
+      label: `cohabitation-plan:${input.room.name}${attempt > 0 ? ':domain-retry' : ''}`, lorebook: request.lorebook });
+    const parsed = readCompleteCohabitationJson(raw);
+    if (!parsed.complete) {
+      throw new Error(`共同生活输出经公共续写后仍不是完整合法 JSON（共 ${String(raw || '').length} 字符）`);
+    }
     try {
-      const raw = await chat(messages, { temperature: 0.6, response_format: { type: 'json_object' },
-        ...(config.features.scheduleDisableThinking ? { thinking: { type: 'disabled' }, forceDisableThinking: true } : {}),
-        label: `cohabitation-plan:${input.room.name}`, lorebook: request.lorebook });
-      return validateCohabitationResult(raw, { ...request, ...input });
-    } catch (err) { error = err; }
+      return validateParsedCohabitationResult(parsed.value, { ...request, ...input });
+    } catch (err) {
+      domainError = err?.message || '共同活动字段或时间不符合要求';
+      if (attempt === 0) {
+        console.warn(`[cohabitation] ${input.room.name} 首次领域校验失败，允许一次领域修正：${domainError}`);
+        continue;
+      }
+      throw err;
+    }
   }
-  throw error;
+  throw new Error(`共同生活规划在 1 次领域修正后仍失败：${domainError}`);
 }

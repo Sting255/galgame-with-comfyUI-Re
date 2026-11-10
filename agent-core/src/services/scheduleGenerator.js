@@ -25,6 +25,7 @@ import { applySharedActivities, assertCompleteDay, intervals } from './cohabitat
 import { persistIndividualSchedule, refreshResidenceDailySleep } from './cohabitationPersistence.js';
 import { enterSingleSchedule } from './scheduleGenerationLock.js';
 import { invalidateCache, syncSleepingState } from './scheduleManager.js';
+import { isCompleteJsonText } from '../llm/llm-client.js';
 
 /**
  * 截取角色人格 prompt：从开头到 "##你的外观" 之前
@@ -230,102 +231,91 @@ ${SCHEDULE_FORMAT_TAIL}`;
 
   let rawResult = '';
   let validationError = '';
-  // 上一轮的 finish_reason：content_filter 说明被服务商输出侧切断，重试必须换写法而不是原样再发
-  let lastFinishReason = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      let attemptMsgs = msgs.map(m => ({ ...m }));
-      if (lastFinishReason === 'content_filter') {
-        // 2026-11-07 真机实证（日志里那行 finish_reason=content_filter）：
-        // 输出是被服务商在**输出侧**切断的，不是格式错。原样重试只会再被切一次，
-        // 所以这一次把描写彻底压平 —— 明确告诉它哪些词一个都不要出现。
-        attemptMsgs.at(-1).content += '\n\n【重要 · 上一次被内容策略拦截了】\n'
-          + '上一次的日程写到一半被服务商按内容策略切断，整份作废。这一次请把 description 写成完全中性的日常动作：\n'
-          + '只说明「在做什么、在哪」，不要写性行为、身体部位、体液、衣物穿着状态、表情或情绪反应。\n'
-          + '活动名称（activity）同样收敛，例如把「深夜补课——精液容量耐力训练」写成「深夜自习」、\n'
-          + '把「巡逻——清理残留」写成「走廊巡逻」。\n'
-          + '世界观要求的那部分由聊天正文承载，日程这里只是时间线，不需要它。';
-      } else if (validationError) {
-        attemptMsgs.at(-1).content += `\n上次日程校验失败：${validationError}，请修正时间安排。`;
-      }
-      const chatResult = await (options.chat || chatSync)(attemptMsgs, {
-        temperature: 0.5,
-        // 2026-10-01：2048 → 4096。真机复现实测：14~16 段的日程输出就已经到 1500+ tokens、
-        // 原文 5000+ 字符；话多的角色（纳西妲/风瑾）会顶到 2048 上限**被截断**，
-        // 表现正是日志里那类 `JSON parse failed`（截断的 JSON 当然解析不了）。
-        // 注意：这个值实际会被 applyOutputTokenLimit 用设置页的全局额度覆盖，这里只是兜底声明。
-        max_tokens: 4096,
-        response_format: { type: 'json_object' },
-        label: `schedule-gen:${character.display_name}`,
-        // returnMeta 让 chatSync 把 finish_reason 一起带回来（自定义 options.chat 可能忽略，下面按类型兼容）
-        returnMeta: true,
-        ...(config.features.scheduleDisableThinking
-          ? { thinking: { type: 'disabled' }, forceDisableThinking: true }
-          : options.thinking ? { thinking: options.thinking } : {}),
-        lorebook:{personaTexts:[personaMsg],staticTexts:[scheduleInst],characterName:character.display_name,
-          cacheBoundary: { index: msgs.findIndex(m => m.content === personaMsg), offset: personaMsg.length },
-          history: [{ role: 'user', content: `${JSON.stringify(cohabitation)}\n${triggerContent}` }] },
+    const attemptMsgs = msgs.map(m => ({ ...m }));
+    if (attempt > 0) {
+      attemptMsgs.push({
+        role: 'user',
+        content: `上次输出是完整合法 JSON，但没有通过日程领域校验：${validationError}。`
+          + '请保持同一角色与世界观，修正这些领域问题后重新输出完整日程 JSON；'
+          + '仍须按前述完整示例输出所有字段，不要解释、Markdown 或 JSON 以外的文字。',
       });
-      rawResult = typeof chatResult === 'string' ? chatResult : (chatResult?.content || '');
-      const finishReason = chatResult && typeof chatResult === 'object' ? chatResult.finishReason : null;
-      lastFinishReason = finishReason;
-
-      let schedule = parseAndValidateSchedule(rawResult, character.display_name);
-      if (!schedule) {
-        // 2026-11-07：解析失败时必须留下 finish_reason 与真实长度。
-        // 真机现象是输出到第 3 条 activity 就停（2736 字符），而实测同一网关要它写 8000 字
-        // 能吐 7865 字符且 finish_reason=stop —— 所以不是额度不够。
-        // 只有 finish_reason 能区分「被服务商砍断（length/content_filter）」与「模型自己停下（stop）」。
-        console.warn(`[scheduleGen] ${character.display_name} 输出不完整：finish_reason=${finishReason ?? '未知'}，共 ${String(rawResult).length} 字符`);
-      }
-      if (schedule) {
-        // 批次的新提案在全部草稿完成后统一协调；已发布约定仍在此严格校验。
-        const enforced = options.persist === false && options.deferSharedActivities
-          ? cohabitation.events.filter(e => options.lockedSharedEventIds?.includes(e.sharedEventId)) : cohabitation.events;
-        schedule = applySharedActivities(schedule, enforced, character.id);
-        if (cohabitation.room) schedule = schedule.map(a => a.replyDelay === -1 ? { ...a, residence: cohabitation.room } : a);
-        assertCompleteDay(schedule);
-
-        // 着装标注校验 + 一次专注修复（仅当该角色配了场景服装）。
-        // 提示词已要求「出门/回家必须标」，但 LLM 有波动：同一角色两次生成可能一次给 6 个换装点、
-        // 一次只给 3 个 —— 漏标会让角色穿着居家服在街上活动。只压提示词不够，加这道确定性兜底。
-        if (outfitLayer) {
-          try {
-            const r = await ensureOutfitAnnotations(schedule, character.id);
-            schedule = r.schedule;
-          } catch (err) {
-            console.warn(`[scheduleGen] 着装标注修复失败（不影响日程生成）: ${err.message}`);
-          }
-        }
-        const json = JSON.stringify(schedule);
-        // 系统角色（天使）复用生成与校验，但由自己的存储负责，不混入普通居民表。
-        if (options.persist === false) return { schedule_json: json, version: 1 };
-        const saved = persistIndividualSchedule(db, character, schedule, cohabitation.room);
-        const manager = await import('./scheduleManager.js');
-        for (const id of saved.changed) { manager.invalidateCache(id); manager.syncSleepingState(id); }
-        return { schedule_json: JSON.stringify(saved.schedule), version: db.prepare('SELECT version FROM schedule_templates WHERE character_id=?').get(character.id).version };
-      }
-
-      // 首轮输出不合规 ⇒ 把上一版回灌，第二轮只做「改写成 JSON」。
-      // 不再用「原样重试」：同样的 prompt 同样的随机性，大概率还是 Markdown。
-      if (attempt === 0 && rawResult.trim()) {
-        attemptMsgs = [
-          ...msgs,
-          { role: 'assistant', content: rawResult.slice(0, 6000) },
-          { role: 'user', content: JSON_ONLY_REPAIR },
-        ];
-        console.warn(`[scheduleGen] ${character.display_name} 首轮输出非 JSON，带格式纠正指令重试`);
-      }
-      console.warn(`[scheduleGen] Validation failed for ${character.display_name}, attempt ${attempt + 1}/2`);
-      validationError = '请使用合法时间，完整覆盖24小时，无重叠无空档，并保留睡眠。';
-    } catch (err) {
-      validationError = err.message;
-      console.error(`[scheduleGen] Attempt ${attempt + 1} failed for ${character.display_name}:`, err.message);
-      if (attempt === 1) throw err;
     }
+
+    // 传输、截断、审核中断与续写均由公共 chatSync 收口。到这里仍失败时不再包一层整轮重问。
+    const chatResult = await (options.chat || chatSync)(attemptMsgs, {
+      temperature: attempt === 0 ? 0.5 : 0.45,
+      // 2026-10-01：2048 → 4096。真机复现实测：14~16 段的日程输出就已经到 1500+ tokens、
+      // 原文 5000+ 字符；话多的角色（纳西妲/风瑾）会顶到 2048 上限**被截断**。
+      // 注意：这个值实际会被 applyOutputTokenLimit 用设置页的全局额度覆盖，这里只是兜底声明。
+      max_tokens: 4096,
+      response_format: { type: 'json_object' },
+      label: `schedule-gen:${character.display_name}${attempt > 0 ? ':domain-retry' : ''}`,
+      // returnMeta 只用于日志；是否完整以公共客户端最终 content 为准，不能机械相信历史 finish_reason。
+      returnMeta: true,
+      ...(config.features.scheduleDisableThinking
+        ? { thinking: { type: 'disabled' }, forceDisableThinking: true }
+        : options.thinking ? { thinking: options.thinking } : {}),
+      lorebook:{personaTexts:[personaMsg],staticTexts:[scheduleInst],characterName:character.display_name,
+        cacheBoundary: { index: msgs.findIndex(m => m.content === personaMsg), offset: personaMsg.length },
+        history: [{ role: 'user', content: `${JSON.stringify(cohabitation)}\n${triggerContent}` }] },
+    });
+    rawResult = typeof chatResult === 'string' ? chatResult : (chatResult?.content || '');
+    const finishReason = chatResult && typeof chatResult === 'object' ? chatResult.finishReason : null;
+
+    // 只按公共客户端最终内容的严格完整性分类。finish_reason 仅留在错误证据里，
+    // 不因曾经 length 而拒绝一段已被公共续写补全的合法 JSON。
+    if (!isCompleteJsonText(rawResult)) {
+      const message = `日程输出经公共续写后仍不是完整 JSON（finish_reason=${finishReason ?? '未知'}，共 ${String(rawResult).length} 字符）`;
+      console.warn(`[scheduleGen] ${character.display_name} ${message}`);
+      dumpScheduleRaw(rawResult, character.display_name, message);
+      throw new Error(message);
+    }
+
+    let schedule;
+    try {
+      const diagnostics = [];
+      schedule = parseAndValidateSchedule(rawResult, character.display_name, diagnostics);
+      if (!schedule) {
+        throw new Error(diagnostics[0] || '日程字段、时间或完整24小时覆盖不符合要求');
+      }
+      // 批次的新提案在全部草稿完成后统一协调；已发布约定仍在此严格校验。
+      const enforced = options.persist === false && options.deferSharedActivities
+        ? cohabitation.events.filter(e => options.lockedSharedEventIds?.includes(e.sharedEventId)) : cohabitation.events;
+      schedule = applySharedActivities(schedule, enforced, character.id);
+      if (cohabitation.room) schedule = schedule.map(a => a.replyDelay === -1 ? { ...a, residence: cohabitation.room } : a);
+      assertCompleteDay(schedule);
+    } catch (err) {
+      validationError = err?.message || '日程领域校验失败';
+      if (attempt === 0) {
+        console.warn(`[scheduleGen] ${character.display_name} 首次领域校验失败，允许一次领域修正：${validationError}`);
+        continue;
+      }
+      console.error(`[scheduleGen] ${character.display_name} 领域修正后仍失败：${validationError}`);
+      throw err;
+    }
+
+    // 着装标注校验 + 一次专注修复（仅当该角色配了场景服装）。
+    // 提示词已要求「出门/回家必须标」，但 LLM 有波动：同一角色两次生成可能一次给 6 个换装点、
+    // 一次只给 3 个 —— 漏标会让角色穿着居家服在街上活动。只压提示词不够，加这道确定性兜底。
+    if (outfitLayer) {
+      try {
+        const r = await ensureOutfitAnnotations(schedule, character.id);
+        schedule = r.schedule;
+      } catch (err) {
+        console.warn(`[scheduleGen] 着装标注修复失败（不影响日程生成）: ${err.message}`);
+      }
+    }
+    const json = JSON.stringify(schedule);
+    // 系统角色（天使）复用生成与校验，但由自己的存储负责，不混入普通居民表。
+    if (options.persist === false) return { schedule_json: json, version: 1 };
+    const saved = persistIndividualSchedule(db, character, schedule, cohabitation.room);
+    const manager = await import('./scheduleManager.js');
+    for (const id of saved.changed) { manager.invalidateCache(id); manager.syncSleepingState(id); }
+    return { schedule_json: JSON.stringify(saved.schedule), version: db.prepare('SELECT version FROM schedule_templates WHERE character_id=?').get(character.id).version };
   }
 
-  throw new Error(`Failed to generate valid schedule for ${character.display_name} after 2 attempts`);
+  throw new Error(`Failed to generate valid schedule for ${character.display_name} after one domain correction`);
 }
 
 /**
@@ -432,46 +422,23 @@ activity 和 location 也保持中性：写「深夜自习」「走廊巡逻」�
 不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
 
 /**
- * 「格式纠正」重试指令（2026-10-22）
- *
- * 背景（真机实测）：日程与日报都传了 `response_format: { type: 'json_object' }`，
- * 但网关**直接忽略该参数**，模型返回的是 Markdown 排版（`# 银狼LV.999 · 今日日程安排`），
- * 解析器要 JSON 数组 → `No JSON array found` → 两次尝试全废。
- * 实测 7 个角色 14 次尝试全部失败，日程功能整体不可用。
- *
- * 修法：不重写提示词（原文已经写得很强），而是**把上一次的输出回灌**，只要求它
- * 把同样的内容改写成 JSON。模型做「格式转换」比「从零遵守格式」成功率高得多，
- * 也不会因为换一次随机采样就把角色/剧情写飞。
- */
-const JSON_ONLY_REPAIR = `你上一次的回答不是合法 JSON（写成了 Markdown 标题/表格/分点）。
-
-现在请把**同样的日程内容**改写成下面这个结构的纯 JSON，字段名一个字都不能改：
-
-{"activities":[
-  {"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"在浴室洗脸，把毛巾挂回架子上。"}
-]}
-
-硬性要求：
-- 一共 8~15 条，按时间顺序覆盖完整 24 小时，上一条的 endTime 必须等于下一条的 startTime，不留任何空档；
-- 只有睡觉那一条 replyDelay 是 -1，其余全部 0；
-- description 20~40 字、必须有内容，不许空字符串；
-- description 顺手收敛成中性动作：只写「在做什么」，去掉身体部位、衣物穿着、表情、声音与情绪反应（这次改写同时也是最后一次机会，写得太像正文会被服务商掐断）；
-- 只输出这个 JSON 对象本身：不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
-
-/**
  * 解析并校验 LLM 输出的日程 JSON。
  *
  * 真正的实现是下面的 `validateScheduleInner`；本函数是**带失败回显的包装**：
  * 失败时统一补一条原始输出预览（具体原因仍由 inner 里各自的 warn 说明），
  * 这样"校验为什么没过"永远能从日志里看出来。
  */
-export function parseAndValidateSchedule(raw, displayName) {
-  const result = validateScheduleInner(raw, displayName);
+export function parseAndValidateSchedule(raw, displayName, diagnostics = null) {
+  const result = validateScheduleInner(raw, displayName, diagnostics);
   if (!result) dumpScheduleRaw(raw, displayName, '日程校验未通过（具体原因见上一条 warn）');
   return result;
 }
 
-function validateScheduleInner(raw, displayName) {
+function validateScheduleInner(raw, displayName, diagnostics = null) {
+  const fail = (reason) => {
+    if (Array.isArray(diagnostics)) diagnostics.push(reason);
+    return null;
+  };
   let activities;
 
   // 优先尝试完整 JSON 解析（兼容 json_object 模式的 {"activities":[...]} 和旧格式 [...]）
@@ -488,19 +455,19 @@ function validateScheduleInner(raw, displayName) {
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
       console.warn(`[scheduleGen] No JSON array found in response for ${displayName}`);
-      return null;
+      return fail('输出必须是包含 activities 数组的完整 JSON');
     }
     try {
       activities = JSON.parse(jsonMatch[0]);
     } catch {
       console.warn(`[scheduleGen] JSON parse failed for ${displayName}`);
-      return null;
+      return fail('输出必须是完整合法 JSON');
     }
   }
 
   if (!Array.isArray(activities) || activities.length === 0) {
     console.warn(`[scheduleGen] Too few activities (${activities?.length || 0}) for ${displayName}`);
-    return null;
+    return fail('activities 必须是非空数组');
   }
 
   // 校验每个活动
@@ -526,20 +493,22 @@ function validateScheduleInner(raw, displayName) {
         act.description = `${String(act.activity).trim()}${place}。`;
       }
     }
-    if (!act || typeof act !== 'object' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.startTime)) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.endTime))) return null;
+    if (!act || typeof act !== 'object' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.startTime)) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm(act.endTime))) {
+      return fail('每条活动的 startTime / endTime 都必须是合法 HH:MM');
+    }
     for (const key of required) {
       if (!(key in act)) {
         console.warn(`[scheduleGen] Missing key "${key}" in activity for ${displayName}`);
-        return null;
+        return fail(`活动缺少必需字段 ${key}`);
       }
     }
     if (typeof act.description !== 'string' || !act.description.trim()) {
       console.warn(`[scheduleGen] Empty or invalid description in activity for ${displayName}: "${act.activity}"`);
-      return null;
+      return fail('每条活动的 description 都必须是非空字符串');
     }
     if (typeof act.replyDelay !== 'number') {
       console.warn(`[scheduleGen] replyDelay is not a number for ${displayName}`);
-      return null;
+      return fail('replyDelay 必须是数字');
     }
   }
 
@@ -547,7 +516,7 @@ function validateScheduleInner(raw, displayName) {
   const sleepingBlocks = activities.filter(a => a.replyDelay === -1);
   if (sleepingBlocks.length === 0) {
     console.warn(`[scheduleGen] No sleeping block found for ${displayName}`);
-    return null;
+    return fail('必须保留至少一段睡眠活动，并令其 replyDelay 为 -1');
   }
 
   // 计算最长睡眠时长
@@ -559,7 +528,7 @@ function validateScheduleInner(raw, displayName) {
   }
   if (maxSleepDuration < 15) {
     console.warn(`[scheduleGen] Sleep too short (${maxSleepDuration}min) for ${displayName}, need ≥15min`);
-    return null;
+    return fail('睡眠活动至少持续 15 分钟');
   }
 
   // 2026-11-03 用户：「角色还在大白天睡觉」—— 主睡眠块**不许压到白天**。
@@ -585,7 +554,7 @@ function validateScheduleInner(raw, displayName) {
       if (isDaytimeSleep || !startsOk || !endsOk) {
         console.warn(`[scheduleGen] 主睡眠块压到白天（${displayName}）：${block.startTime}–${block.endTime}`
           + `「${block.activity}」⇒ 必须落在 21:00–09:30 窗口内，返回 null 触发重生成`);
-        return null;
+        return fail('主睡眠必须落在 21:00–09:30，且不得在白天长睡');
       }
     }
   }
@@ -607,14 +576,14 @@ function validateScheduleInner(raw, displayName) {
         activities[j].startTime, activities[j].endTime
       )) {
         console.warn(`[scheduleGen] Overlapping activities for ${displayName}: "${activities[i].activity}" and "${activities[j].activity}"`);
-        return null;
+        return fail('活动时间不能重叠');
       }
     }
   }
 
   // 校验 24 小时全覆盖（不允许时间空档）
   if (!checkFullDayCoverage(activities, displayName)) {
-    return null;
+    return fail('活动必须按时间顺序无空档覆盖完整 24 小时');
   }
 
   // 80% 秒回兜底：理想情况下 prompt 已限定 replyDelay 只有 0 和 -1，但 LLM 可能不听话

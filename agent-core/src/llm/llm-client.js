@@ -689,7 +689,7 @@ export function stripJsonFence(text) {
  * 与 repairJsonText 的区别是关键：修复器会把半截 JSON 补成合法结构，
  * 用它判完整性等于永远判「完整」，截断续写就再也不会触发。
  */
-function isCompleteJsonText(text) {
+export function isCompleteJsonText(text) {
   const s = stripJsonFence(text);
   if (!s) return false;
   try { JSON.parse(s); return true; } catch { return false; }
