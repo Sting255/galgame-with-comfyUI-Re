@@ -11,6 +11,7 @@ import {
   deleteNewspaperEdition,
   deleteNewspaperEditions,
 } from '../services/newspaperService.js';
+import { getProgramDateKey } from '../services/programTime.js';
 // 离线编年（2026-11-06）：日报里加一段「昨夜邻里」，让用户看得到离开期间发生了什么
 import { recentWorldTimeline } from '../services/worldTimeline.js';
 
@@ -38,7 +39,14 @@ router.post('/regenerate', async (req, res) => {
 
 // GET /api/newspaper/today — 今天的《邻舍日报》（没有则 { newspaper: null }）
 router.get('/today', (req, res) => {
-  res.json({ newspaper: getTodayNewspaperForFrontend(), offlineNotes: offlineNotes() });
+  // programDate 是这份快照所属的程序世界日期。报纸存在与否都返回，
+  // 前端据此识别世界钟前进/回拨和断线期间的旧响应，不再额外请求时间接口。
+  const programDate = getProgramDateKey();
+  res.json({
+    newspaper: getTodayNewspaperForFrontend(),
+    offlineNotes: offlineNotes(),
+    programDate,
+  });
 });
 
 // GET /api/newspaper/editions — 历史期简目（最新在前，供期号导航）

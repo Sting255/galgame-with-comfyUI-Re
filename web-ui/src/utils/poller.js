@@ -20,6 +20,7 @@ export function createPoller({ task, intervalMs, backgroundFactor = 4 }) {
   let timer = null
   let running = false
   let inFlight = false
+  let rerunRequested = false
   let stopped = false
 
   const isVisible = () => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden')
@@ -46,8 +47,14 @@ export function createPoller({ task, intervalMs, backgroundFactor = 4 }) {
       console.error('[poller] 轮询任务失败:', err?.message || err)
     } finally {
       inFlight = false
-      // 上一轮结束后才排下一轮 —— 这就是「不重叠」的实现方式
-      schedule()
+      // 上一轮结束后才排下一轮 —— 这就是「不重叠」的实现方式。
+      // 在途期间收到 kick（例如 SSE 重连成功）时，合并成当前轮结束后的立即补查。
+      if (rerunRequested) {
+        rerunRequested = false
+        schedule(0)
+      } else {
+        schedule()
+      }
     }
   }
 
@@ -77,12 +84,17 @@ export function createPoller({ task, intervalMs, backgroundFactor = 4 }) {
     stop() {
       running = false
       stopped = true
+      rerunRequested = false
       clear()
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
     },
-    /** 手动催一次（比如收到 SSE 后想立刻刷新）：不等待当前轮结束，避免堆积 */
+    /** 手动催一次（比如收到 SSE 后想立刻刷新）：在途请求最多合并为一次补查。 */
     kick() {
-      if (!running || inFlight) return
+      if (!running) return
+      if (inFlight) {
+        rerunRequested = true
+        return
+      }
       clear()
       run()
     },

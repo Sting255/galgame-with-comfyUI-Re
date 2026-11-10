@@ -14,7 +14,10 @@ export const useBackpackStore = defineStore('backpack', () => {
   const loadError = ref(null)
 
   let _unsubItemReady = null
+  let _unsubConnected = null
   let _pollingRefs = 0
+  let _listRequest = 0
+  let _stateRevision = 0
   // 统一轮询：请求结束后才排下一次（不重叠）、后台降频、回前台立即补一次
   const poller = createPoller({ task: fetchItems, intervalMs: 60000 })
 
@@ -22,10 +25,29 @@ export const useBackpackStore = defineStore('backpack', () => {
   // 红点默认不显示：完成一次真实查询、且确认宝箱就绪后才亮
   const chestReady = computed(() => chestLoaded.value && chest.value.canOpen)
 
+  /**
+   * 写操作从发起时就算新代，完成时再算一次：
+   * 发起前已在途的列表不能回填；写入期间启动的列表也不能把写入前状态提交。
+   */
+  async function mutate(operation) {
+    _stateRevision++
+    let result
+    try {
+      result = await operation()
+    } finally {
+      _stateRevision++
+    }
+    return result
+  }
+
   async function fetchItems() {
+    const request = ++_listRequest
+    const revision = _stateRevision
     loading.value = true
     try {
       const data = await api.listItems()
+      // 写入成功后开始的旧列表请求不得再把已用/已丢弃道具复活。
+      if (request !== _listRequest || revision !== _stateRevision) return
       // 生成中的道具不上架：图片就绪（status=ready）后才出现在背包
       items.value = (data.items || []).filter(i => i.status !== 'generating')
       // 待收下：开箱后尚未收下的道具，只在宝箱面板展示
@@ -37,9 +59,11 @@ export const useBackpackStore = defineStore('backpack', () => {
     } catch (err) {
       console.error('[backpack] fetchItems error:', err)
       // 失败不能和「没有生效效果」混在一起（2026-10-22）
-      loadError.value = err?.message || '加载失败'
+      if (request === _listRequest && revision === _stateRevision) {
+        loadError.value = err?.message || '加载失败'
+      }
     } finally {
-      loading.value = false
+      if (request === _listRequest) loading.value = false
     }
   }
 
@@ -52,7 +76,7 @@ export const useBackpackStore = defineStore('backpack', () => {
   }
 
   async function openChest() {
-    const result = await api.openChest()
+    const result = await mutate(() => api.openChest())
     if (result.ok) {
       chest.value.canOpen = false
       // 冷却从此刻起算
@@ -63,7 +87,7 @@ export const useBackpackStore = defineStore('backpack', () => {
   }
 
   async function useItem(itemId, characterId) {
-    const result = await api.useItem(itemId, characterId)
+    const result = await mutate(() => api.useItem(itemId, characterId))
     if (result.ok) {
       items.value = items.value.filter(i => i.id !== itemId)
       const activeEffect = result.activeEffect
@@ -79,19 +103,21 @@ export const useBackpackStore = defineStore('backpack', () => {
   }
 
   async function collectItem(itemId) {
-    const result = await api.collectItem(itemId)
-    if (result.ok) await fetchItems()
+    const result = await mutate(() => api.collectItem(itemId))
+    if (result.ok) {
+      await fetchItems()
+    }
     return result
   }
 
   async function discardItem(itemId) {
-    await api.discardItem(itemId)
+    await mutate(() => api.discardItem(itemId))
     items.value = items.value.filter(i => i.id !== itemId)
     pendingItems.value = pendingItems.value.filter(i => i.id !== itemId)
   }
 
   async function removeActiveEffect(effectId) {
-    const result = await api.removeActiveEffect(effectId)
+    const result = await mutate(() => api.removeActiveEffect(effectId))
     if (result.ok) {
       activeEffects.value = activeEffects.value.filter(effect => effect.id !== effectId)
     }
@@ -99,6 +125,7 @@ export const useBackpackStore = defineStore('backpack', () => {
   }
 
   function _onItemReady(data) {
+    _stateRevision++
     const item = items.value.find(i => i.id === data.itemId)
     if (item) {
       item.status = 'ready'
@@ -118,6 +145,7 @@ export const useBackpackStore = defineStore('backpack', () => {
     if (_pollingRefs > 1) return
 
     _unsubItemReady = onEvent('item_ready', _onItemReady)
+    _unsubConnected = onEvent('connected', poller.kick)
     // poller.start() 内部会先执行一次 fetchItems，不需要再单独调
     poller.start()
   }
@@ -127,6 +155,7 @@ export const useBackpackStore = defineStore('backpack', () => {
     if (_pollingRefs > 0) return
     poller.stop()
     if (_unsubItemReady) { _unsubItemReady(); _unsubItemReady = null }
+    if (_unsubConnected) { _unsubConnected(); _unsubConnected = null }
   }
 
   return {

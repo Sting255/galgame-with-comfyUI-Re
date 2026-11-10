@@ -6,6 +6,8 @@ import { useChatStore } from './chat.js'
 import { useEventsStore } from './events.js'
 import { refreshImageUrls, recordOverwriteBust } from '../utils/imageUrlRefresh.js'
 
+const MAX_REMOVED_TASK_IDS = 200
+
 function normalizeTask(data, existing = null) {
   return {
     id: data.id,
@@ -28,9 +30,25 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
   const tasks = ref([])
   let _unsubs = []
   let _connected = false
+  let _revision = 0
+  let _refreshRequest = 0
+  let _refreshQueued = false
+  // Map 按插入顺序保留最近一次移除；容量有界，不能让前端生命周期无限增长。
+  const _removedIds = new Map()
+
+  function _rememberRemoved(id) {
+    if (!id) return
+    _removedIds.delete(id)
+    _removedIds.set(id, true)
+    while (_removedIds.size > MAX_REMOVED_TASK_IDS) {
+      _removedIds.delete(_removedIds.keys().next().value)
+    }
+  }
 
   function _upsert(data) {
     if (!data?.id) return
+    // 本端已经确认 apply/discard 的任务不接受任何晚到 SSE，避免重新出现。
+    if (_removedIds.has(data.id)) return
     const idx = tasks.value.findIndex(t => t.id === data.id)
     const item = normalizeTask(data, idx >= 0 ? tasks.value[idx] : null)
     if (idx >= 0) {
@@ -43,18 +61,36 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
           && item.status === prev.status) {
         item.progress = prev.progress
       }
-      const terminal = new Set(['pending_confirm', 'applied', 'discarded', 'failed'])
+      const terminal = new Set(['ready', 'pending_confirm', 'applied', 'discarded', 'failed'])
       if (terminal.has(prev.status) && item.status === 'running') {
-        item.status = prev.status
-        item.progress = prev.progress
+        // 后端 serializeTask 会给 progress 带上当时的完整旧快照。若只保留 status/progress，
+        // 终态的 token / previewUrl / result 会被旧 running 快照覆盖成空值，用户便无法应用。
+        // 这类降级事件整条忽略，保留原终态对象。
+        return
       }
+      _revision++
       tasks.value.splice(idx, 1, item)
-    } else tasks.value.push(item)
+    } else {
+      _revision++
+      tasks.value.push(item)
+    }
   }
 
   function _remove(id) {
+    _revision++
+    _rememberRemoved(id)
     const idx = tasks.value.findIndex(t => t.id === id)
     if (idx >= 0) tasks.value.splice(idx, 1)
+  }
+
+  function _queueRefresh() {
+    if (_refreshQueued) return
+    _refreshQueued = true
+    // 合并同一次请求期间收到的多次进度/终态事件，只补查一次完整快照。
+    queueMicrotask(() => {
+      _refreshQueued = false
+      refresh()
+    })
   }
 
   function connect() {
@@ -65,6 +101,8 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
       onEvent('image_edit_task_progress', _upsert),
       onEvent('image_edit_task_done', _upsert),
       onEvent('image_edit_task_error', _upsert),
+      // 断线期间完成的任务不会补发已经错过的 SSE；重连成功后用活动任务快照补齐。
+      onEvent('connected', refresh),
     ]
     refresh()
   }
@@ -76,10 +114,21 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
   }
 
   async function refresh() {
+    const request = ++_refreshRequest
+    const revision = _revision
     try {
       const { tasks: list } = await api.listImageEditTasks()
+      // 只允许最新一次快照提交。请求期间发生过 SSE 或本地 apply/discard 时，
+      // 丢弃这份旧快照，并合并排一次补查，保证被其它任务事件打断的遗漏任务最终收敛。
+      if (request !== _refreshRequest) return
+      if (revision !== _revision) {
+        _queueRefresh()
+        return
+      }
       const prev = new Map(tasks.value.map(t => [t.id, t]))
-      tasks.value = (list || []).map(d => normalizeTask(d, prev.get(d.id)))
+      const rows = list || []
+      const fresh = rows.filter(d => !_removedIds.has(d.id))
+      tasks.value = fresh.map(d => normalizeTask(d, prev.get(d.id)))
     } catch (err) {
       console.warn('[imageEditTasks] refresh failed:', err.message)
     }
@@ -110,6 +159,7 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
   async function apply(task) {
     const res = await api.applyImageEditTask(task.id, task.token)
     _remove(task.id)
+    refresh()
     if (task.action === 'standing') {
       window.dispatchEvent(new CustomEvent('standing-overwritten', {
         detail: { characterId: task.characterId, url: res.url, scene: task.meta?.scene, promptText: task.meta?.promptText },
@@ -145,6 +195,7 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
   async function discard(task) {
     await api.discardImageEditTask(task.id, task.token)
     _remove(task.id)
+    refresh()
   }
 
   return { tasks, connect, disconnect, refresh, start, apply, rerun, discard }
