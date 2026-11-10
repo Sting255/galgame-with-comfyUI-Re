@@ -621,15 +621,22 @@ const shutdown = async (exitCode = 0, { reason = '' } = {}) => {
   }
 
   // 响应断开不等于上传流、临时文件和导入事务已经收尾；关库前再给它们一个有界窗口。
+  let importsSettled = false;
   try {
-    const importsSettled = await waitForDataImportsToSettle({ timeoutMs: 5000 });
-    if (!importsSettled) {
-      console.error('[agent-core] data import cleanup still active after shutdown deadline');
-      requestedExitCode = Math.max(requestedExitCode, 1);
-    }
+    importsSettled = await waitForDataImportsToSettle({ timeoutMs: 5000 });
   } catch (error) {
     console.error('[agent-core] wait for data imports failed:', error?.message || error);
+  }
+  if (!importsSettled) {
+    console.error('[agent-core] data import cleanup did not settle; database left open for the fatal deadline');
     requestedExitCode = Math.max(requestedExitCode, 1);
+    // 仍在恢复/回滚时绝不能关库。日志先独立收尾，进程由上方固定 deadline 非零退出。
+    try {
+      await getFileLogging()?.close();
+    } catch (error) {
+      console.error('[agent-core] flush logs failed:', error?.message || error);
+    }
+    return;
   }
 
   // 正常请求可能还要读库完成响应；必须等 HTTP 排空（或生命周期超时）后再关库。
