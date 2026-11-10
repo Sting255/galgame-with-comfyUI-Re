@@ -16,7 +16,7 @@ import { withEventProcessing } from './eventProcessing.js';
 
 import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting, getGlobalRule } from '../db/index.js';
 import { appendOathRing } from './oathUtils.js';
-import { chatSync } from '../llm/llm-client.js';
+import { chatSync, isCompleteJsonText } from '../llm/llm-client.js';
 import { generateImageRaw } from './imageSkill.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
 import { recordCompletedImageTask, recordFailedImageTask } from './imageTaskRecorder.js';
@@ -35,12 +35,9 @@ import { getTimeTag, getLightNoteWithWeather } from './timeLight.js';
 import { matchAll } from './characterSearch.js';
 import { buildCharacterPersona } from './characterPersona.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
-// ⚠️ 这一行**本地 import** 不能删：下面 533 / 1042 / 1346 行都在本文件里直接调用 extractFirstJson，
-// 而文件末尾那句 `export { extractFirstJson } from './jsonExtract.js'` 只是**再导出**、
-// **不会**产生本地绑定 ⇒ 少了这行就是 `extractFirstJson is not defined`，
-// 真机表现：多人事件生成直接失败（日志里 eventGen + eventScheduler 两条 error，
-// 而模型其实已经回了完整 JSON —— 白瞎一次调用）。
-import { extractFirstJson } from './jsonExtract.js';
+// 本文件内部统一用「原样 parse 优先、失败才有限修复」的 parseFirstJson；
+// 文件末尾仍再导出 extractFirstJson / repairJson，供既有调用方兼容。
+import { parseFirstJson } from './jsonExtract.js';
 // 亲密看板：奇遇场景记账（零 LLM 的确定性归类；幂等锚点用显式 sourceUid，见 recordIntimateForEvent）
 import { classifyPromptTags, recordIntimateActs, tagsFromPromptString } from './intimateService.js';
 // 世界时间轴（2026-11-06）：事件开场与世界事实落成"这个世界最近发生了什么"，供后续承接
@@ -563,10 +560,14 @@ ${directorPrompt}`
     const llmChat = options.llm?.chatSync || chatSync;
     const llmRun = typeof llmChat === 'function' ? llmChat : chatSync;
     rawResult = await llmRun.call(options.llm || null, msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '奇遇生成' });
-    const jsonStr = extractFirstJson(rawResult);
-    if (!jsonStr) throw new Error('No JSON found in LLM response');
-    eventData = JSON.parse(repairJson(jsonStr));
-    if (!eventData.title || !eventData.description || !eventData.choiceA || !eventData.choiceB) {
+    eventData = parseFirstJson(rawResult);
+    if (!eventData || Array.isArray(eventData) || typeof eventData !== 'object') {
+      throw new Error('奇遇输出不是可解析的完整 JSON 对象');
+    }
+    if (typeof eventData.title !== 'string' || !eventData.title.trim()
+      || typeof eventData.description !== 'string' || !eventData.description.trim()
+      || typeof eventData.choiceA !== 'string' || !eventData.choiceA.trim()
+      || typeof eventData.choiceB !== 'string' || !eventData.choiceB.trim()) {
       throw new Error('Incomplete event data from LLM');
     }
     // field 兼容：imagePrompt / prompt 两种写法都接受
@@ -903,20 +904,9 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
     return null;
   }
 
-  // 用户已成功提交一个有效分支选择，立即延长倒计时，避免分支生成期间事件到期。
-  // 但只在剩余 ≤15 分钟时续（上游 v3.9.0 的窗口判定），否则反复点分支会无限续命。
-  if (expiresAt.getTime() - now.getTime() <= branchTimeExtensionWindowMs) {
-    db.prepare(`
-      UPDATE character_events
-      SET expires_at = datetime(expires_at, '+' || ? || ' minutes')
-      WHERE id = ?
-    `).run(branchTimeExtensionMinutes, event.id);
-    event.expires_at = db.prepare(
-      `SELECT expires_at FROM character_events WHERE id = ?`
-    ).get(event.id).expires_at;
-  }
-  // 仍延长开场日程，不能在跨过边界后改成延长下一个活动。（上游 v3.9.0 奇遇时长预留）
-  syncEventSchedule(event);
+  // 续时与最终分支写入放在同一个事务里；生成/解析失败时不留下只续了倒计时的半状态。
+  // 窗口判定仍按点击时的剩余时间：≤15 分钟才续，否则反复点分支会无限续命。
+  const extendsBranchTime = expiresAt.getTime() - now.getTime() <= branchTimeExtensionWindowMs;
 
   // 2. 加载关系网
   const relationships = db.prepare(`
@@ -1115,33 +1105,68 @@ ${directorPrompt2}${prevSceneBlock}`
 
   let branchData;
   let rawBranchResult = '';
-  // 分支结果必须是完整可解析的 JSON；失败最多重试 3 次
-  const MAX_BRANCH_ATTEMPTS = 3;
   let lastBranchError = null;
-  for (let attempt = 1; attempt <= MAX_BRANCH_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
     rawBranchResult = '';
+    const messagesForAttempt = msgs.map(message => ({ ...message }));
+    if (attempt > 1) {
+      messagesForAttempt.push({
+        role: 'user',
+        content: `上次输出是完整合法 JSON，但没有通过奇遇分支领域校验：${lastBranchError?.message || '字段不符合要求'}。`
+          + '请保持同一角色、世界观和上一幕事实，修正字段后重新输出完整 JSON；'
+          + '必须包含非空的 description、choiceA、choiceB，不要解释或输出 JSON 以外的文字。',
+      });
+    }
     try {
       const branchLlmChat = deps.llm?.chatSync || chatSync;
       const branchLlmRun = typeof branchLlmChat === 'function' ? branchLlmChat : chatSync;
-      rawBranchResult = await branchLlmRun.call(deps.llm || null, msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '事件分支' });
-      const jsonStr = extractFirstJson(rawBranchResult);
-      if (!jsonStr) throw new Error('No JSON found in LLM response');
-      const parsed = JSON.parse(repairJson(jsonStr));
+      rawBranchResult = await branchLlmRun.call(deps.llm || null, messagesForAttempt, {
+        temperature: attempt === 1 ? 0.7 : 0.65,
+        max_tokens: 4096,
+        response_format: { type: 'json_object' },
+        label: `事件分支${attempt > 1 ? ':领域修正' : ''}`,
+      });
+    } catch (err) {
+      lastBranchError = err;
+      console.warn(`[eventGen] Branch transport failure ${attempt}/2; no business retry:`, err.message);
+      console.log(`[eventGen] Raw branch LLM response (attempt ${attempt}):\n${rawBranchResult}`);
+      break;
+    }
+
+    const parsed = parseFirstJson(rawBranchResult);
+    if (!parsed) {
+      lastBranchError = new Error('分支输出不是可解析的完整对象');
+      console.warn('[eventGen] Branch parse failure; no business retry');
+      break;
+    }
+
+    const domainError = !parsed || Array.isArray(parsed) || typeof parsed !== 'object'
+      ? '输出必须是 JSON 对象'
+      : typeof parsed.description !== 'string' || !parsed.description.trim()
+        || typeof parsed.choiceA !== 'string' || !parsed.choiceA.trim()
+        || typeof parsed.choiceB !== 'string' || !parsed.choiceB.trim()
+        ? 'description、choiceA、choiceB 必须是非空字符串'
+        : '';
+    if (!domainError) {
       const branchPromptText = parsed.prompt || parsed.imagePrompt;
-      if (!parsed.description || !parsed.choiceA || !parsed.choiceB) throw new Error('Incomplete branch data');
       branchData = parsed;
       branchData.prompt = branchPromptText || event.prompt;
       break;
-    } catch (err) {
-      lastBranchError = err;
-      console.warn(`[eventGen] Branch generation attempt ${attempt}/${MAX_BRANCH_ATTEMPTS} failed:`, err.message);
-      console.log(`[eventGen] Raw branch LLM response (attempt ${attempt}):\n${rawBranchResult}`);
     }
+
+    lastBranchError = new Error(domainError);
+    console.warn(`[eventGen] Branch domain validation failed ${attempt}/2:`, domainError);
+    if (!isCompleteJsonText(rawBranchResult)) {
+      // parseFirstJson 允许有限 escape repair；但拿修复结果判断“是否值得重新问模型”
+      // 会绕开公共截断续写。这里只在领域修正决策点严格验原文，截断绝不触发业务重问。
+      console.warn('[eventGen] Branch domain retry blocked: raw JSON is not strictly complete');
+      break;
+    }
+    if (attempt === 2) break;
   }
 
   if (!branchData) {
-    // 3 次都无法产出有效分支：清除生成中状态，回到用户选择分支之前的状态
-    console.error('[eventGen] Branch generation failed after 3 attempts, reverting to pre-choice state:', lastBranchError?.message);
+    console.error('[eventGen] Branch generation failed; reverting to pre-choice state:', lastBranchError?.message);
     db.prepare(`UPDATE character_events SET processing = 0 WHERE id = ?`).run(event.id);
     const resetEvent = db.prepare(`SELECT * FROM character_events WHERE id = ?`).get(event.id);
     return resetEvent;
@@ -1188,8 +1213,8 @@ ${directorPrompt2}${prevSceneBlock}`
 
   const originalBranchPrompt = branchData.prompt;
   let imageUrl = null;
+  const charArtist = charArtistOverrideWithFallback(character, branchOtherChars);
   try {
-    const charArtist = charArtistOverrideWithFallback(character, branchOtherChars);
     const genResult = await (deps.image?.generateImageRaw || generateImageRaw).call(deps.image || null, branchData.prompt, {
       ragQuery: branchData.description || event.description,
       artist: charArtist !== null ? charArtist : config.comfyui.eventArtist,
@@ -1259,23 +1284,29 @@ ${directorPrompt2}${prevSceneBlock}`
   };
   choiceHistory.push(newChoiceEntry);
 
-  // 7. 更新 DB（清除 processing 标记，重置强调标记以便下轮重新通知用户）
-  db.prepare(`
-    UPDATE character_events SET
-      description = ?, image = ?, prompt = ?,
-      choice_a = ?, choice_b = ?, choice_c_label = ?,
-      current_branch = ?, choice_history = ?,
-      engaged = 1, processing = 0, emphasis_delivered = 0, last_interaction_at = datetime('now')
-    WHERE id = ?
-  `).run(
-    branchData.description, imageUrl, branchData.prompt,
-    branchData.choiceA, branchData.choiceB, '自由行动',
-    event.current_branch + 1, JSON.stringify(choiceHistory),
-    event.id
-  );
+  // 7. 更新 DB（清除 processing 标记，重置强调标记以便下轮重新通知用户）。
+  // 续时只在成功提交时发生；任何异常都回滚到选择前，不会留下半截状态。
+  const updatedEvent = db.transaction(() => {
+    db.prepare(`
+      UPDATE character_events SET
+        expires_at = CASE WHEN ? = 1 THEN datetime(expires_at, '+' || ? || ' minutes') ELSE expires_at END,
+        description = ?, image = ?, prompt = ?,
+        choice_a = ?, choice_b = ?, choice_c_label = ?,
+        current_branch = ?, choice_history = ?,
+        engaged = 1, processing = 0, emphasis_delivered = 0, last_interaction_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      extendsBranchTime ? 1 : 0, branchTimeExtensionMinutes,
+      branchData.description, imageUrl, branchData.prompt,
+      branchData.choiceA, branchData.choiceB, '自由行动',
+      event.current_branch + 1, JSON.stringify(choiceHistory),
+      event.id
+    );
+    return db.prepare(`SELECT * FROM character_events WHERE id = ?`).get(event.id);
+  }).immediate();
 
-  // 8. 获取更新后的事件（事件只由时间到期结束）
-  const updatedEvent = db.prepare(`SELECT * FROM character_events WHERE id = ?`).get(event.id);
+  // 8. 提交后才同步日程；不能把失败选择也延长成开场活动。（上游 v3.9.0 奇遇时长预留）
+  syncEventSchedule(updatedEvent);
 
   // 10. SSE 广播
   broadcastEventUpdate({
@@ -1436,10 +1467,11 @@ ${taskPrompt}`
   let conclusionData;
   try {
     const result = await (deps.chatSync || chatSync)(msgs, { temperature: 0.7, max_tokens: 1024, response_format: { type: 'json_object' }, label: '事件结局' });
-    const jsonStr = extractFirstJson(result);
-    if (!jsonStr) throw new Error('No JSON found');
-    conclusionData = JSON.parse(repairJson(jsonStr));
-    if (!conclusionData.summary) throw new Error('No summary generated');
+    conclusionData = parseFirstJson(result);
+    if (!conclusionData || Array.isArray(conclusionData) || typeof conclusionData !== 'object'
+      || typeof conclusionData.summary !== 'string' || !conclusionData.summary.trim()) {
+      throw new Error('No summary generated');
+    }
   } catch (err) {
     console.error(`[eventGen] Conclusion generation failed:`, err.message);
     conclusionData = {
@@ -1552,11 +1584,6 @@ function toSQLite(iso) {
   return iso.replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
 }
 
-// 修复 LLM 输出的非法 JSON 转义（image_prompt 规则中的 \( \) 等不是合法 JSON 转义）
-export function repairJson(text) {
-  return text.replace(/\\([^"\\\/bfnrtu])/g, '$1');
-}
-
 // 结局第三人称守卫：剥掉台词引号后仍残留第一人称称谓即视为跑偏（「自我」「忘我」等词不算）
 function conclusionHasFirstPerson(text) {
   if (!text) return false;
@@ -1566,14 +1593,11 @@ function conclusionHasFirstPerson(text) {
   return /我|咱/.test(stripped);
 }
 
-// 从 LLM 原始输出中提取第一个完整 JSON 对象（括号计数，防 LLM 输出多段 JSON 拼在一起）
 /**
- * 从任意文本里取出第一个完整 JSON 对象。
- * 2026-10-01：实现搬到 `jsonExtract.js`（那边有自己的说明：本模块会连带拉起生图栈，
- * 而情绪评估等只想解析 JSON 的调用方不该被拖上整条生图依赖），这里**原样再导出**，
- * 13 处既有 `import { extractFirstJson } from './eventGenerator.js'` 不用改。
+ * 兼容再导出。实现都在 `jsonExtract.js`：extractFirstJson 只做括号配对，
+ * repairJson 只修复字符串内非法单转义；两者都不补全截断结构。
  */
-export { extractFirstJson } from './jsonExtract.js';
+export { extractFirstJson, repairJson } from './jsonExtract.js';
 
 function toISO(dt) {
   if (!dt) return dt;

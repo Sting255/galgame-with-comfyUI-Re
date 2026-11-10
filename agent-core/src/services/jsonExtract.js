@@ -43,19 +43,65 @@ export function extractFirstJson(text) {
 }
 
 /**
- * 修掉 LLM 写出的**非法转义**：`\\(` / `\\'` / `\。` 这类不是 JSON 合法转义的写法，
- * 一律把反斜杠去掉（`\\(` → `(`）。合法转义 `\\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX` 原样保留。
+ * 修掉 LLM 在 JSON **字符串内部**写出的非法转义，但保留合法的 `\\` 对。
  *
- * 为什么收进本模块（2026-10-15）：这段正则在仓库里曾有 **5 份本地定义**
- * （`eventGenerator` / `itemService` / `libraryGenerator` / `momentResponseParser` /
- * `replyPlanner`），改一处忘一处就会出现"有的链路能解析、有的不能"的怪现象。
- * 现在只有两份：本模块（正源）+ `eventGenerator.repairJson`（对既有 import 的再导出兼容）。
+ * 旧实现 `/\\\\([^"\\\\/bfnrtu])/g` 会对每个反斜杠独立匹配：合法 JSON 里的
+ * `"A \\\\(original\\\\)"`（双反斜杠编码一个文字反斜杠）会被删成非法的 `\\(`。
+ * 现在逐字符扫描，只有字符串内、且不是合法 JSON 转义起始的单反斜杠才去掉。
+ * 对象外的反斜杠不属于 JSON token，原样保留，交给严格解析器判断。
  *
  * @param {string} text
  * @returns {string} 修好转义的原文（**不做** JSON.parse）
  */
 export function repairJson(text) {
-  return String(text ?? '').replace(/\\([^"\\\/bfnrtu])/g, '$1');
+  const source = String(text ?? '');
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+
+    const next = source[i + 1];
+    if (next === undefined) {
+      // 未闭合字符串的尾部反斜杠：留给严格 JSON 解析器判为不完整。
+      out += ch;
+      break;
+    }
+    if ('"\\/bfnrt'.includes(next)) {
+      out += ch + next;
+      i++;
+      continue;
+    }
+    if (next === 'u') {
+      // 只有完整 4 位十六进制才是合法 JSON Unicode 转义。残缺的 `\u12`、
+      // 非法 `\uZZZZ` 与尾截断 `\u` 都必须原样留给严格解析器判失败，
+      // 不能把反斜杠删成普通文字，否则会静默改写内容。
+      if (/^[0-9a-fA-F]{4}$/.test(source.slice(i + 2, i + 6))) {
+        out += source.slice(i, i + 6);
+        i += 5;
+      } else {
+        out += ch;
+      }
+      continue;
+    }
+    // 字符串内的非法单转义：例如 `\(` / `\.` / `\'`。
+    out += next;
+    i++;
+  }
+  return out;
 }
 
 /**
