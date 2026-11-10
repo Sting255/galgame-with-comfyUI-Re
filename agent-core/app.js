@@ -66,7 +66,7 @@ import newspaperRoutes from './src/routes/newspaper.js';
 // 角色操作反馈（右下角轻通知）：即时反应 + 短句包，独立前缀，与 /api/characters 无冲突
 import characterReactionsRoutes from './src/routes/characterReactions.js';
 import contextRoutes from './src/routes/context.js';
-import dataRoutes from './src/routes/data.js';   // 一键导出/导入全部数据
+import dataRoutes, { waitForDataImportsToSettle } from './src/routes/data.js';   // 一键导出/导入全部数据
 import maibotBridgeRoutes from './src/maibot-bridge/router.js';
 import { autoRestoreMissing } from './src/services/workflowTemplates.js';
 // 2026-10-01：世界翻篇（程序日切换）——启动补一次，覆盖"关机跨天"
@@ -542,44 +542,113 @@ const walCheckpointTimer = setInterval(() => {
 // 不阻塞 process.exit()：WAL checkpoint 不是必须完成的关键操作
 walCheckpointTimer.unref();
 
-// 全局未捕获异常，防止进程崩溃
+function isExpectedMaintenanceError(message) {
+  // 只按当前维护状态放行，不能因为任意错误文本碰巧包含「正在恢复备份」就继续接单。
+  try {
+    const status = maintenanceStatus();
+    return Boolean(status) && String(message || '').includes(status);
+  } catch {
+    return false;
+  }
+}
+
+// 普通未捕获异常意味着进程状态已无法证明安全：停止接单并以非零码退出。
 process.on('unhandledRejection', (reason) => {
   const message = reason?.message || String(reason);
-  // 维护期（恢复/已恢复待重启）里每个定时任务都会拿到这句话，是**预期内**的拒绝，
-  // 记成 error 只会让真崩溃被埋掉（真机日志每次导入备份后都刷两条）。
-  if (/正在恢复备份|请重启邻舍后继续使用/.test(message)) return;
+  // 维护期（恢复/已恢复待重启）里每个定时任务都会拿到维护状态原文，是预期拒绝。
+  if (isExpectedMaintenanceError(message)) return;
   console.error('[agent-core] unhandled rejection:', message);
+  void shutdown(1, { reason: 'unhandledRejection' }).catch(() => process.exit(1));
 });
 process.on('uncaughtException', (err) => {
   const message = err?.message || String(err);
-  // 同上：DB 已被 closeDb() 之后，启动器拉起新进程前的这几秒里，残留的异步任务会
-  // 一路抛到这里。它不代表代码出错，压成 log 免得误判。
-  if (/正在恢复备份|请重启邻舍后继续使用/.test(message)) {
+  if (isExpectedMaintenanceError(message)) {
     console.log('[agent-core] 维护期内的预期异常（忽略）：', message);
     return;
   }
-  console.error('[agent-core] uncaught exception:', message);
+  console.error('[agent-core] uncaught exception:', err?.stack || message);
+  void shutdown(1, { reason: 'uncaughtException' }).catch(() => process.exit(1));
 });
 
-// 优雅退出（幂等 — 防止 shutdown 端点 + 信号双重触发）
+// 优雅退出（幂等 — 防止 shutdown 端点、信号和致命异常重复触发）
 let shuttingDown = false;
-const shutdown = async () => {
+let requestedExitCode = 0;
+const shutdown = async (exitCode = 0, { reason = '' } = {}) => {
+  // 退出开始后再次收到致命异常只允许把退出码从 0 提升到非零，不能被后续 SIGTERM 洗回 0。
+  if (Number.isInteger(exitCode) && exitCode !== 0) {
+    requestedExitCode = Math.max(requestedExitCode, exitCode);
+  }
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log('\n[agent-core] shutting down...');
-  stopBackgroundServices();
-  stopMemoryIndexWorker();
-  try { stopGodSays(); } catch { /* 退出继续收尾 */ }
-  // 只给无法完成的资源收尾设置最终兜底；HTTP 超时仍会走下面的关库与刷日志。
-  const hardExit = setTimeout(() => process.exit(1), 10000).unref();
-  let graceful = false;
-  try { graceful = await httpLifecycle.close(server); }
-  finally {
-    closeDb();
-    try { await getFileLogging()?.close(); } catch { /* 日志错误不阻止退出 */ }
-    clearTimeout(hardExit);
-    process.exit(graceful ? 0 : 1);
+  console.log(`\n[agent-core] shutting down...${reason ? ` (${reason})` : ''}`);
+
+  // 截止计时必须最先建立；清理中的任何同步/异步异常都不能挡住有限时退出。
+  const hardExit = setTimeout(() => process.exit(requestedExitCode || 1), 10000);
+  let closeHttpPromise;
+  try {
+    // 调用即同步关闭 listener 并让生命周期中间件停止接新请求，再返回等待 Promise。
+    closeHttpPromise = httpLifecycle.close(server);
+    // shutdown 响应本身可能在这一轮之后才从 active 变 idle；下一轮再关一次空闲
+    // keep-alive 连接，避免一个已完成的 /api/shutdown 响应把优雅退出拖到超时。
+    setImmediate(() => server.closeIdleConnections?.());
+  } catch (error) {
+    console.error('[agent-core] stop accepting requests failed:', error?.message || error);
+    closeHttpPromise = Promise.resolve(false);
   }
+
+  for (const [name, stop] of [
+    ['background services', stopBackgroundServices],
+    ['memory index worker', stopMemoryIndexWorker],
+    ['god-says runtime', stopGodSays],
+  ]) {
+    try {
+      await stop?.();
+    } catch (error) {
+      console.error(`[agent-core] stop ${name} failed:`, error?.message || error);
+      requestedExitCode = Math.max(requestedExitCode, 1);
+    }
+  }
+
+  let graceful = false;
+  try {
+    graceful = await closeHttpPromise;
+  } catch (error) {
+    console.error('[agent-core] HTTP shutdown failed:', error?.message || error);
+  }
+  if (!graceful) {
+    console.error('[agent-core] HTTP shutdown timed out; connections were force-closed');
+    requestedExitCode = Math.max(requestedExitCode, 1);
+  }
+
+  // 响应断开不等于上传流、临时文件和导入事务已经收尾；关库前再给它们一个有界窗口。
+  try {
+    const importsSettled = await waitForDataImportsToSettle({ timeoutMs: 5000 });
+    if (!importsSettled) {
+      console.error('[agent-core] data import cleanup still active after shutdown deadline');
+      requestedExitCode = Math.max(requestedExitCode, 1);
+    }
+  } catch (error) {
+    console.error('[agent-core] wait for data imports failed:', error?.message || error);
+    requestedExitCode = Math.max(requestedExitCode, 1);
+  }
+
+  // 正常请求可能还要读库完成响应；必须等 HTTP 排空（或生命周期超时）后再关库。
+  try {
+    closeDb();
+  } catch (error) {
+    console.error('[agent-core] close database failed:', error?.message || error);
+    requestedExitCode = Math.max(requestedExitCode, 1);
+  }
+
+  // 日志 flush 独立收尾，closeDb 失败也不能跳过。
+  try {
+    await getFileLogging()?.close();
+  } catch (error) {
+    console.error('[agent-core] flush logs failed:', error?.message || error);
+  }
+
+  clearTimeout(hardExit);
+  process.exit(requestedExitCode);
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
