@@ -251,7 +251,12 @@
             role="button"
             tabindex="0"
             class="force-img-toggle"
-            :class="{ active: imageGenMode === 'force', off: imageGenMode === 'off' }"
+            :class="{
+              active: imageGenMode === 'force',
+              off: imageGenMode === 'off',
+              'is-disabled': settings.isSaving('imageGenMode'),
+            }"
+            :aria-disabled="settings.isSaving('imageGenMode')"
             :title="imageGenModeLabel"
             @keydown.enter.prevent="cycleImageGenMode"
             @keydown.space.prevent="cycleImageGenMode"
@@ -662,7 +667,13 @@
                     <!-- 实时显示开关 -->
                     <div class="affinity-realtime-toggle">
                       <span class="affinity-realtime-label">实时显示</span>
-                      <linshe-switch v-model="realtimeAffinityEnabled" size="sm" aria-label="实时显示好感度" />
+                      <linshe-switch
+                        :model-value="realtimeAffinityEnabled"
+                        :disabled="settings.isSaving('realtimeAffinityDisplay')"
+                        size="sm"
+                        aria-label="实时显示好感度"
+                        @change="onRealtimeAffinityChange"
+                      />
                     </div>
                   </div>
                 </template>
@@ -1112,17 +1123,29 @@ const imageGenModeIcon = computed(() => {
   if (imageGenMode.value === 'force') return '🎬'
   return '🎨'
 })
-const realtimeAffinityEnabled = computed({
-  get: () => settings.realtimeAffinityDisplay,
-  set: (v) => settings.setRealtimeAffinityDisplay(v),
-})
+const realtimeAffinityEnabled = computed(() => settings.realtimeAffinityDisplay)
 
 const IMAGE_GEN_MODE_CYCLE = ['smart', 'force', 'off']
 
-function cycleImageGenMode() {
+async function cycleImageGenMode() {
+  if (settings.isSaving('imageGenMode')) return
   const idx = IMAGE_GEN_MODE_CYCLE.indexOf(imageGenMode.value)
-  settings.setImageGenMode(IMAGE_GEN_MODE_CYCLE[(idx + 1) % IMAGE_GEN_MODE_CYCLE.length])
-  showForceTip()
+  const next = IMAGE_GEN_MODE_CYCLE[(idx + 1) % IMAGE_GEN_MODE_CYCLE.length]
+  try {
+    await settings.setImageGenMode(next)
+    showForceTip()
+  } catch (err) {
+    toastFn?.(`配图模式保存失败：${err?.message || '未知错误'}`, 'error')
+  }
+}
+
+async function onRealtimeAffinityChange(next) {
+  if (settings.isSaving('realtimeAffinityDisplay')) return
+  try {
+    await settings.setRealtimeAffinityDisplay(next)
+  } catch (err) {
+    toastFn?.(`好感度显示保存失败：${err?.message || '未知错误'}`, 'error')
+  }
 }
 
 
@@ -2454,6 +2477,7 @@ function renderContent(text) {
 }
 .force-img-toggle.off:hover { opacity: 0.75; border-color: var(--border-strong); }
 .force-img-toggle.off .force-img-icon { transform: scale(0.92); }
+.force-img-toggle.is-disabled { opacity: 0.35; cursor: wait; }
 
 .force-img-tip {
   position: absolute;

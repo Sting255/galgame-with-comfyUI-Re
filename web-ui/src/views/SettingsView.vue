@@ -765,7 +765,7 @@ type="range" min="1" max="10" step="1"
             <div class="tl">好感度系统</div>
             <div class="td">每轮对话后评估 AI 情绪变化，影响回复语气</div>
           </div>
-          <linshe-switch v-model="features.emotion" @change="saveFeature('emotion', features.emotion)" />
+          <linshe-switch v-model="features.emotion" :disabled="featureSaving.has('emotion')" @change="saveFeature('emotion', features.emotion)" />
         </div>
 
         <div class="toggle-row">
@@ -773,7 +773,7 @@ type="range" min="1" max="10" step="1"
             <div class="tl">聊天候选词</div>
             <div class="td">LLM回复后预测用户接下来可能说的话，在输入框上方显示快捷候选</div>
           </div>
-          <linshe-switch v-model="features.replyGuesses" @change="saveFeature('replyGuesses', features.replyGuesses)" />
+          <linshe-switch v-model="features.replyGuesses" :disabled="featureSaving.has('replyGuesses')" @change="saveFeature('replyGuesses', features.replyGuesses)" />
         </div>
 
         <div class="toggle-row">
@@ -781,7 +781,7 @@ type="range" min="1" max="10" step="1"
             <div class="tl">实时显示好感度</div>
             <div class="td">在聊天顶部实时显示当前好感度数值和最近变化原因</div>
           </div>
-          <linshe-switch v-model="features.realtimeAffinityDisplay" @change="saveFeature('realtimeAffinityDisplay', features.realtimeAffinityDisplay)" />
+          <linshe-switch v-model="features.realtimeAffinityDisplay" :disabled="featureSaving.has('realtimeAffinityDisplay') || settingsStore.isSaving('realtimeAffinityDisplay')" @change="saveFeature('realtimeAffinityDisplay', features.realtimeAffinityDisplay)" />
         </div>
 
 
@@ -846,7 +846,7 @@ type="range" min="0" max="1" step="0.1"
           >
 <gear-icon :size="17" />
 </div>
-          <linshe-switch v-model="features.weather" @change="saveFeature('weather', features.weather)" />
+          <linshe-switch v-model="features.weather" :disabled="featureSaving.has('weather')" @change="saveFeature('weather', features.weather)" />
         </div>
 
         <!-- 亲密度看板（总开关：关闭后不再自动记账，看板写入与回填接口返回 409） -->
@@ -1329,7 +1329,7 @@ type="range" min="0" max="1" step="0.1"
           <div class="memory-settings-copy">
             <div class="tl">启用聊天记忆</div>
           </div>
-          <linshe-switch v-model="features.memory" title="启用聊天记忆" aria-label="启用聊天记忆" @change="saveFeature('memory', features.memory)" />
+          <linshe-switch v-model="features.memory" :disabled="featureSaving.has('memory')" title="启用聊天记忆" aria-label="启用聊天记忆" @change="saveFeature('memory', features.memory)" />
         </div>
 
         <div
@@ -1593,9 +1593,9 @@ type="range" min="0" max="1" step="0.1"
     <!-- 天气城市设置弹窗 -->
     <linshe-modal v-model="weatherCityDialog.show" title="天气城市设置">
       <p class="disturb-dialog-hint">输入城市名（中文），留空则自动根据 IP 定位</p>
-      <linshe-input type="text" v-model="weatherCityDialog.city" class="fi" placeholder="如：北京、上海、杭州" @keyup.enter="confirmWeatherCity" />
+      <linshe-input type="text" v-model="weatherCityDialog.city" class="fi" :disabled="settingsStore.isSaving('weatherCity')" placeholder="如：北京、上海、杭州" @keyup.enter="confirmWeatherCity" />
       <template #footer>
-        <linshe-button variant="primary" @click="confirmWeatherCity">保存</linshe-button>
+        <linshe-button variant="primary" :loading="settingsStore.isSaving('weatherCity')" :disabled="settingsStore.isSaving('weatherCity')" @click="confirmWeatherCity">保存</linshe-button>
       </template>
     </linshe-modal>
     <!-- 工作流模式弹窗 -->
@@ -1707,7 +1707,7 @@ import DataBackupPanel from '../components/settings/DataBackupPanel.vue'
 import LlmProfilesPanel from '../components/settings/LlmProfilesPanel.vue'
 import { useLlmProfiles } from '../composables/useLlmProfiles.js'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, updateWeatherCity, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval, getModelRoutes, saveModelRoutes } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval, getModelRoutes, saveModelRoutes } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
@@ -2081,6 +2081,7 @@ async function saveDefaultAssistant(val) {
   }
 }
 const features = reactive({ emotion: false, memory: false, replyGuesses: false, realtimeAffinityDisplay: false, serializeBackgroundLLM: false, backgroundLLMMaxConcurrency: 3, mergeMessages: false, weather: true, intimate: true, intimateBackfill: true, antiRepetition: true, antiRepetitionLock: true, antiRepetitionEscalation: true, antiRepetitionReroll: false, hiresQuality: DEFAULT_HIRES_QUALITY, toys: false, touch: true, touchInstant: true, touchGroupAdult: false, touchImageMode: DEFAULT_TOUCH_IMAGE_MODE, touchReactionMode: DEFAULT_TOUCH_REACTION_MODE, touchBystanderChance: 0.3, jailbreak: true })
+const featureSaving = reactive(new Set())
 
 /**
  * 亲密度看板两个总开关的读取口径：**fail-closed**。
@@ -3487,8 +3488,31 @@ function applyPreset(p, mode = 'chat') {
   dirty.value = true; saved.value = false;
 }
 
+const featureLabels = {
+  emotion: '好感度系统',
+  replyGuesses: '聊天候选词',
+  realtimeAffinityDisplay: '实时好感度',
+  weather: '实时天气',
+  memory: '聊天记忆',
+}
+
 async function saveFeature(key, val) {
-  await updateFeatureFlag(key, val)
+  if (featureSaving.has(key)) return
+  featureSaving.add(key)
+  try {
+    if (key === 'realtimeAffinityDisplay') {
+      await settingsStore.setRealtimeAffinityDisplay(val)
+    } else {
+      await updateFeatureFlag(key, val)
+    }
+    const label = featureLabels[key] || '设置'
+    toastFn?.(val ? `已开启${label}` : `已关闭${label}`, 'success')
+  } catch (err) {
+    features[key] = !val
+    toastFn?.(`${featureLabels[key] || '设置'}保存失败：${err?.message || '未知错误'}`, 'error')
+  } finally {
+    featureSaving.delete(key)
+  }
 }
 
 // ── 反重复 / 反钻牛角尖（专题·车轱辘话与钻牛角尖 · 阶段一）──
@@ -3794,13 +3818,16 @@ function openWeatherCityDialog() {
 }
 
 async function confirmWeatherCity() {
+  if (settingsStore.isSaving('weatherCity')) return
+  const city = String(weatherCityDialog.city || '').trim()
   try {
-    await updateWeatherCity(weatherCityDialog.city || '')
-    weatherCity.value = weatherCityDialog.city
-    settingsStore.setWeatherCity(weatherCity.value)
+    await settingsStore.setWeatherCity(city)
+    weatherCity.value = settingsStore.weatherCity
     weatherCityDialog.show = false
+    toastFn?.('天气城市已保存', 'success')
   } catch (err) {
     console.error('[weather] save city failed:', err)
+    toastFn?.(`天气城市保存失败：${err?.message || '未知错误'}`, 'error')
   }
 }
 
