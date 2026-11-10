@@ -730,8 +730,14 @@ export function undoLastGroupRound(id) {
   return request(`/groups/${id}/messages/last-round`, { method: 'DELETE' })
 }
 
-export async function getGroupMessages(id) {
-  return request(`/groups/${id}/messages`)
+export async function getGroupMessages(id, page = null) {
+  if (!page || (!page.limit && page.before == null)) {
+    return request(`/groups/${id}/messages`)
+  }
+  const params = new URLSearchParams()
+  if (page.limit) params.set('limit', String(page.limit))
+  if (page.before != null) params.set('before', String(page.before))
+  return request(`/groups/${id}/messages?${params}`)
 }
 
 export async function markGroupSeen(id) {

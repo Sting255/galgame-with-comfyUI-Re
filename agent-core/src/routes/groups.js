@@ -6,7 +6,7 @@
  * PATCH  /api/groups/:id             改名/主题/成员调整
  * POST   /api/groups/:id/avatar      上传/清除群头像（base64，空值 = 恢复成员拼图）
  * DELETE /api/groups/:id             解散（级联清理消息/记忆/摘要/向量）
- * GET    /api/groups/:id/messages    全部消息（含发言角色信息）
+ * GET    /api/groups/:id/messages    群消息（默认全部；limit/before 可分页）
  * POST   /api/groups/:id/seen        清未读
  * POST   /api/groups/:id/chat        用户发言 → SSE 流式返回本轮剧本
  */
@@ -284,7 +284,12 @@ router.delete('/:id', (req, res, next) => {
   }
 });
 
-// GET /api/groups/:id/messages — 全部消息
+// GET /api/groups/:id/messages — 群消息
+//
+// 不传 limit：保持旧行为，返回全部消息。
+// 传 limit：按稳定消息 id 倒序取最新一页，再在响应中恢复正序；
+// before 取上一页 page.beforeCursor，只返回 id 更小的一页。
+// 多取一条仅用于判断是否还有更早消息，不会多发这一条。
 router.get('/:id/messages', (req, res) => {
   const db = getDb();
   const groupId = parseInt(req.params.id, 10);
@@ -292,19 +297,40 @@ router.get('/:id/messages', (req, res) => {
   if (!group) return res.status(404).json({ error: '群不存在' });
 
   const paged = req.query.limit !== undefined;
-  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
-  const before = Number(req.query.before) || 0;
-  const messages = db.prepare(`
+  const selectMessages = (whereBefore, order, hasLimit) => db.prepare(`
     SELECT m.id, m.role, m.content, m.images, m.seq, m.created_at,
            m.speaker_character_id, c.display_name AS speaker_name, c.avatar_path AS speaker_avatar
     FROM messages m
     LEFT JOIN characters c ON c.id = m.speaker_character_id
-    WHERE m.conversation_id = ? ${paged && before > 0 ? 'AND m.id < ?' : ''}
-    ORDER BY m.id ${paged ? 'DESC LIMIT ?' : 'ASC'}
-  `).all(groupConvId(groupId), ...(paged && before > 0 ? [before] : []), ...(paged ? [limit] : [])).map(m => ({ ...m, created_at: toISODate(m.created_at) }));
-  if (paged) messages.reverse();
+    WHERE m.conversation_id = ? ${whereBefore}
+    ORDER BY m.id ${order}
+    ${hasLimit ? 'LIMIT ?' : ''}
+  `);
+  const conversationId = groupConvId(groupId);
 
-  res.json({ group: serializeGroup(group), messages });
+  if (!paged) {
+    const messages = selectMessages('', 'ASC', false)
+      .all(conversationId)
+      .map(m => ({ ...m, created_at: toISODate(m.created_at) }));
+    return res.json({ group: serializeGroup(group), messages });
+  }
+
+  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+  const before = Number.parseInt(req.query.before, 10);
+  const hasBefore = Number.isSafeInteger(before) && before > 0;
+  const rows = selectMessages(hasBefore ? 'AND m.id < ?' : '', 'DESC', true)
+    .all(conversationId, ...(hasBefore ? [before] : []), limit + 1)
+    .map(m => ({ ...m, created_at: toISODate(m.created_at) }));
+
+  const hasMoreOlder = rows.length > limit;
+  const messages = rows.slice(0, limit).reverse();
+  const page = {
+    hasMoreOlder,
+    beforeCursor: messages[0]?.id ?? null,
+    limit,
+  };
+
+  res.json({ group: serializeGroup(group), messages, page });
 });
 
 // POST /api/groups/:id/seen — 清未读

@@ -73,6 +73,7 @@
           </div>
           <div
             class="message"
+            :data-message-id="msg.id"
             :class="[msg.role === 'user' ? 'user' : 'assistant', { 'msg-same-role': isSameSpeaker(idx) }]"
           >
           <div
@@ -1136,6 +1137,8 @@ const RESIZE_OBSERVER_TTL = 2000
 const BOTTOM_THRESHOLD = 16
 let autoScrollTimer = null
 let isAutoScrolling = false
+let loadingOlderLock = false
+let olderScrollGeneration = 0
 
 function isNearBottom(el = scrollEl.value) {
   if (!el) return true
@@ -1148,19 +1151,42 @@ function syncFollowingState() {
   if (atBottom) hasNewMessages.value = false
 }
 
-function onMessageScroll() {
+async function onMessageScroll() {
   if (isAutoScrolling) return
   syncFollowingState()
 
   const el = scrollEl.value
-  if (el?.scrollTop < 40 && store.hasMoreOlder) {
-    const prevHeight = el.scrollHeight
-    store.expandWindow()
-    nextTick(() => {
-      if (scrollEl.value) scrollEl.value.scrollTop += scrollEl.value.scrollHeight - prevHeight
-    })
+  if (!el || el.scrollTop >= 40 || !store.hasMoreOlder || loadingOlderLock) return
+
+  const generation = ++olderScrollGeneration
+  const groupId = store.activeGroupId
+  loadingOlderLock = true
+  const viewportTop = el.getBoundingClientRect().top
+  const anchor = [...el.querySelectorAll('[data-message-id]')]
+    .find(node => node.getBoundingClientRect().bottom > viewportTop)
+  const anchorId = anchor?.dataset.messageId ?? null
+  const anchorTop = anchor?.getBoundingClientRect().top ?? null
+
+  const hasOlder = await store.expandWindow()
+  await nextTick()
+
+  if (generation !== olderScrollGeneration || store.activeGroupId !== groupId) return
+
+  const current = scrollEl.value
+  if (current && anchorId != null && anchorTop != null) {
+    const nextAnchor = [...current.querySelectorAll('[data-message-id]')]
+      .find(node => node.dataset.messageId === anchorId)
+    if (nextAnchor) current.scrollTop += nextAnchor.getBoundingClientRect().top - anchorTop
   }
+
+  setTimeout(() => { loadingOlderLock = false }, 300)
+  if (!hasOlder) loadingOlderLock = false
 }
+
+watch(() => store.activeGroupId, () => {
+  olderScrollGeneration += 1
+  loadingOlderLock = false
+})
 
 function onUserScrollIntent() {
   isAutoScrolling = false

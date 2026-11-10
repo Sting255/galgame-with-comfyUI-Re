@@ -19,8 +19,8 @@ export const useGroupsStore = defineStore('groups', () => {
   const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId.value) || null)
   const messages = ref([])          // 已上屏消息
   const lastSeenDividerId = ref(null) // 本次进群固定的分界消息，不随清未读或新消息移动
-  // 与私聊一致：历史消息保留在内存中，窗口策略统一由 useMessageWindow 提供
-  const { renderStart, visibleMessages, hasMoreOlder, resetToLatest } = useMessageWindow(messages)
+  // 内存窗口只负责限制 DOM；服务端分页由下面的每群独立游标负责。
+  const { renderStart, visibleMessages, hasMoreOlder: windowHasMoreOlder } = useMessageWindow(messages)
   const playing = ref(false)        // 播放队列是否正在逐条上屏
   const sending = ref(false)
   const undoing = ref(false)
@@ -52,6 +52,10 @@ export const useGroupsStore = defineStore('groups', () => {
       currentPlaying: null,
       lastPushAt: 0,
       renderStart: 0,
+      serverHasMoreOlder: false,
+      olderCursor: null,
+      olderLoading: false,
+      lastSeenAt: null,
       loaded: false,
     }
   }
@@ -68,6 +72,10 @@ export const useGroupsStore = defineStore('groups', () => {
   function _activeSession() {
     return activeGroupId.value ? _sessions.get(activeGroupId.value) : null
   }
+
+  const GROUP_SERVER_PAGE_SIZE = 40
+  const serverHasMoreOlder = ref(false)
+  const hasMoreOlder = computed(() => windowHasMoreOlder.value || serverHasMoreOlder.value)
 
   const totalUnread = computed(() => groups.value.reduce((s, g) => s + (g.unread || 0), 0))
 
@@ -142,17 +150,43 @@ export const useGroupsStore = defineStore('groups', () => {
       activeGroupId.value = null
       messages.value = []
       renderStart.value = 0
+      serverHasMoreOlder.value = false
     }
     await loadGroups()
   }
 
   // ── 进入群聊 ──
 
-  function captureLastSeenDivider(lastSeenAt) {
+  function findLastSeenDivider(lastSeenAt, list = messages.value, hasOlder = false) {
     const seenTime = lastSeenAt ? Date.parse(lastSeenAt) : NaN
-    lastSeenDividerId.value = Number.isFinite(seenTime)
-      ? messages.value.find(msg => Date.parse(msg.created_at) > seenTime)?.id ?? null
-      : null
+    if (!Number.isFinite(seenTime)) return null
+
+    // 分页读取时，最新一页可能整页都晚于 last_seen_at，此时真正的分界还在更早页。
+    // 先保持未决，等翻到包含“已读/未读交界”的页，或确认已无更早消息后再定位。
+    let firstUnread = null
+    let containsSeen = false
+    for (const msg of list) {
+      const createdAt = Date.parse(msg.created_at)
+      if (!Number.isFinite(createdAt)) continue
+      if (createdAt <= seenTime) containsSeen = true
+      else if (firstUnread == null) firstUnread = msg.id
+    }
+    if (!containsSeen && firstUnread != null && hasOlder) return null
+    return firstUnread
+  }
+
+  function captureLastSeenDivider(lastSeenAt, session = _activeSession(), hasOlder = false) {
+    if (session) session.lastSeenAt = lastSeenAt
+    lastSeenDividerId.value = findLastSeenDivider(lastSeenAt, messages.value, hasOlder)
+  }
+
+  function restoreLastSeenDivider(session) {
+    if (!session?.lastSeenAt) return
+    lastSeenDividerId.value = findLastSeenDivider(
+      session.lastSeenAt,
+      session.messages,
+      session.serverHasMoreOlder === true,
+    )
   }
 
   async function selectGroup(id) {
@@ -163,16 +197,18 @@ export const useGroupsStore = defineStore('groups', () => {
     const previous = _activeSession()
     if (previous) {
       previous.renderStart = renderStart.value
+      previous.serverHasMoreOlder = serverHasMoreOlder.value
       if (previous.groupId !== id) previous.imageGate.clear()
     }
     activeGroupId.value = id
     const session = _getSession(id, true)
     messages.value = session.messages
     renderStart.value = session.renderStart
+    serverHasMoreOlder.value = session.serverHasMoreOlder === true
     playing.value = session.playing
 
     if (session.loaded) {
-      captureLastSeenDivider(lastSeenAt)
+      captureLastSeenDivider(lastSeenAt, session, session.serverHasMoreOlder)
       scrollSignal.value++
       api.markGroupSeen(id).then(() => {
         if (activeGroupId.value !== id) return
@@ -182,15 +218,25 @@ export const useGroupsStore = defineStore('groups', () => {
       return
     }
 
-    const data = await api.getGroupMessages(id)
+    const data = await api.getGroupMessages(id, { limit: GROUP_SERVER_PAGE_SIZE })
     if (requestId !== _selectRequestId || activeGroupId.value !== id) return
     session.messages.splice(0, session.messages.length, ...(data.messages || []).map(m => ({ ...m, images: parseImages(m.images) })))
     session.renderStart = Math.max(0, session.messages.length - MESSAGE_WINDOW_INITIAL)
     renderStart.value = session.renderStart
+    session.serverHasMoreOlder = data.page?.hasMoreOlder === true
+    session.olderCursor = data.page?.beforeCursor ?? null
+    serverHasMoreOlder.value = session.serverHasMoreOlder
     session.seenMsgIds.clear()
     for (const m of session.messages) session.seenMsgIds.add(m.id)
     session.loaded = true
-    captureLastSeenDivider(lastSeenAt === undefined ? data.group?.last_seen_at : lastSeenAt)
+    captureLastSeenDivider(
+      lastSeenAt === undefined ? data.group?.last_seen_at : lastSeenAt,
+      session,
+      session.serverHasMoreOlder,
+    )
+    // 首屏请求期间到达的 SSE 可能晚于数据库查询；统一在 loaded 后播放。
+    // 若它已被首屏带回来，_drainQueue 会按 id 去重。
+    _drainQueue(session)
     scrollSignal.value++
     api.markGroupSeen(id).then(() => {
       if (requestId !== _selectRequestId || activeGroupId.value !== id) return
@@ -206,20 +252,68 @@ export const useGroupsStore = defineStore('groups', () => {
     const session = _activeSession()
     if (session) {
       session.renderStart = renderStart.value
+      session.serverHasMoreOlder = serverHasMoreOlder.value
       session.imageGate.clear()
     }
     if (activeGroupId.value) api.markGroupSeen(activeGroupId.value)
     activeGroupId.value = null
     messages.value = []
     renderStart.value = 0
+    serverHasMoreOlder.value = false
     playing.value = false
   }
 
-  function expandWindow() {
-    if (!hasMoreOlder.value) return
-    renderStart.value = Math.max(0, renderStart.value - MESSAGE_WINDOW_EXPAND)
+  async function expandWindow() {
     const session = _activeSession()
-    if (session) session.renderStart = renderStart.value
+    if (!session || session.olderLoading) return false
+    renderStart.value = Math.max(0, renderStart.value - MESSAGE_WINDOW_EXPAND)
+    if (windowHasMoreOlder.value || renderStart.value < session.renderStart) {
+      session.renderStart = renderStart.value
+      return true
+    }
+    if (!session.serverHasMoreOlder || session.olderCursor == null) return false
+
+    const groupId = session.groupId
+    const requestId = _selectRequestId
+    const cursor = session.olderCursor
+    session.olderLoading = true
+    try {
+      const data = await api.getGroupMessages(groupId, {
+        limit: GROUP_SERVER_PAGE_SIZE,
+        before: cursor,
+      })
+      if (requestId !== _selectRequestId || activeGroupId.value !== groupId || activeGroupId.value !== session.groupId) {
+        return false
+      }
+
+      const existing = new Set(session.messages.map(m => m.id))
+      const older = (Array.isArray(data.messages) ? data.messages : [])
+        .filter(m => !existing.has(m.id))
+        .map(m => ({ ...m, images: parseImages(m.images) }))
+
+      if (older.length > 0) {
+        session.messages.splice(0, 0, ...older)
+        for (const m of older) session.seenMsgIds.add(m.id)
+        // 服务端翻页发生在渲染窗口已展开完时；前插后同时露出一段旧消息，
+        // 否则 DOM 高度不变，用户停在顶端不会产生下一次滚动事件。
+        session.renderStart = Math.max(
+          0,
+          session.renderStart + older.length - MESSAGE_WINDOW_EXPAND,
+        )
+        renderStart.value = session.renderStart
+      }
+
+      session.olderCursor = data.page?.beforeCursor ?? null
+      session.serverHasMoreOlder = data.page?.hasMoreOlder === true
+      serverHasMoreOlder.value = session.serverHasMoreOlder
+      restoreLastSeenDivider(session)
+      return older.length > 0
+    } catch (e) {
+      console.warn('[groups] 加载更早消息失败:', e.message)
+      return false
+    } finally {
+      session.olderLoading = false
+    }
   }
 
   // ── 播放队列（动态上屏） ──
@@ -227,11 +321,11 @@ export const useGroupsStore = defineStore('groups', () => {
   function _enqueue(msg) {
     if (!msg) return false
     const session = _getSession(msg.group_id)
-    if (!session || !session.loaded) return false
+    if (!session) return false
     if (session.seenMsgIds.has(msg.id)) return true
     session.seenMsgIds.add(msg.id)
     session.playQueue.push(msg)
-    _drainQueue(session)
+    if (session.loaded) _drainQueue(session)
     return true
   }
   const ROUND_GAP = 5000
