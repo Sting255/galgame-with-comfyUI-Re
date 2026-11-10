@@ -1,13 +1,10 @@
 /**
- * 发布门禁：**测试不通过就不打包**（2026-10-02 用户要求：「交付给我的一定要是最新的 没有bug的」）
- *
- * 为什么要有这个脚本：我做错过一次 —— 一条测试还红着就把包打出去了（第三十六轮）。
- * 人记性不可靠，所以把规矩写进工具：这个脚本**先跑全量测试，任何 fail 就立刻退出，一个字节都不打包**。
+ * 发布门禁：静态检查、生产构建或显式生图冒烟失败就不打包。
  *
  * 用法（在仓库根目录）：
- *   node scripts/发布-校验并打包.mjs                 # 跑测试 → 同步 → 打包 → 校验压缩方法与关键条目
+ *   node scripts/发布-校验并打包.mjs                 # 静态检查 + 构建 → 同步 → 打包 → 校验
+ *   node scripts/发布-校验并打包.mjs --with-smoke    # 另外在隔离目录真实出图（交付前必开）
  *   node scripts/发布-校验并打包.mjs --round 37      # 指定轮次号（默认按 输出/ 目录里已有的最大轮次 +1）
- *   node scripts/发布-校验并打包.mjs --skip-tests    # 只在明确知道刚跑过全量时用（会打印告警）
  *   node scripts/发布-校验并打包.mjs --incremental   # 只同步 git status 里改动过的文件（危险，见下）
  *
  * ⚠️ 2026-10-16 改：同步**默认全量**（原来是增量）。
@@ -20,7 +17,8 @@
  * ⚠️ 全量同步**不清多余文件**：仓库里删掉的源码文件仍会留在交付目录。
  *    本轮无影响（没删源码文件）；真要清就先手工删掉交付目录里对应的文件再打。
  *
- * 它做的事：①后端全量 ②前端全量 ③生成使用说明 + 同步源码→交付包 ④7z 打包 ⑤校验（方法/条目/体积/手册）
+ * 它做的事：①静态检查与前端构建 ②可选隔离生图冒烟 ③生成使用说明 + 同步源码→交付包
+ *          ④7z 打包 ⑤校验（方法/条目/体积/手册）
  * 起服务那一步（解压 + 真启动 + 抽查端点）需要交互式等待，仍在打包后手工跑，脚本会打印提醒。
  *
  * ⚠️ 2026-10-17 补：**使用说明.txt 的生成接进来了**（③-0）。
@@ -28,7 +26,7 @@
  *    一路停在 2026-10-01 旧版（关键词零命中），第五十五~五十七轮 3 个交付包全带旧手册。
  *    现在：打包前用正源 `scripts/usage-guide.mjs` 重新生成 → 随 ③ 同步进交付目录 →
  *    ⑤ 对**仓库根**与**交付目录**两份都做关键词断言（缺章节就 die）。
- *    另：测试门禁补了 `cancelled > 0 即 die`（只看 fail 会漏判"用例没跑完"，历史事故见 接手必读 §2）。
+ *    另：测试收集链已移除；当前门禁为项目健康、未定义符号、生产构建与可选真生图。
  *
  * ⚠️ 2026-10-02 从仓库根搬进 `scripts/`（AGENTS.md：根目录不散落脚本）——
  *    搬动时唯一的坑是下面那行 REPO：原来写 `path.resolve(import.meta.dirname)`（=脚本所在目录），
@@ -36,10 +34,15 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import os from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 // 使用说明.txt 的正文正源（2026-10-17 从 build-release.mjs 抽出；两份脚本共用这一份，见 ③-0）
 import { buildUsageGuideText } from './usage-guide.mjs'
 import { syncReleaseEnv, inspectReleaseEnv } from './lib/releaseLocalConfig.mjs'
+import { resolveServicePort } from '../agent-core/src/utils/servicePort.js'
+import { resolveEnvPath } from '../agent-core/src/utils/envFile.js'
 
 // 本文件在 <repo>/scripts/ 下 ⇒ 仓库根是它的上一层
 const REPO = path.resolve(import.meta.dirname, '..')
@@ -53,6 +56,9 @@ const DELIVER_PARENT = path.dirname(DELIVER)
 const OUTDIR = process.env.OUT_DIR || path.join(process.env.USERPROFILE || 'C:\\Users\\Sting', 'Downloads', '输出')
 const NODE = path.join(REPO, 'runtime', 'nodejs', 'node.exe')
 const SEVENZIP = process.env.SEVENZIP_EXE || 'C:\\Program Files\\7-Zip\\7z.exe'
+const API_PORT = resolveServicePort()
+const VECTOR_SERVICE_URL = process.env.VECTOR_SERVICE_URL || 'http://localhost:8765'
+const coreRequire = createRequire(path.join(SRC, 'package.json'))
 // 压缩级别（2026-11-03 用户：「要最高压缩的」）：默认 3 与既有行为一致，交付时用 SEVENZIP_LEVEL=9。
 // 级别 >=7 时把 LZMA2 的 fb / 字典一起放大（低级别配大字典只是白烧内存）。
 const LEVEL = Number(process.env.SEVENZIP_LEVEL || 3) || 3
@@ -76,10 +82,8 @@ const args = process.argv.slice(2)
 const skipTests = args.includes('--skip-tests')
 const roundArg = args.includes('--round') ? Number(args[args.indexOf('--round') + 1]) : null
 const incremental = args.includes('--incremental')
-// 冒烟族开关（2026-10-18 补，全项目复查 §P1-3）：
-//   --with-smoke  跑 e2e/smoke-all-modules.mjs（161 端点的全模块冒烟，自起自停后端）
-//   --with-checks 跑 e2e/check-*.mjs（面板/资产/事件图专项检查）
-// 默认**全关**：交付日手动开。理由见下方 runSmoke / runChecks 的长注释。
+// --with-smoke 执行隔离的 scripts/smoke-image-isolated.mjs。
+// 它是真实生图（需要 ComfyUI）；默认关闭，正式交付必须显式开启。
 const withSmoke = args.includes('--with-smoke')
 const withChecks = args.includes('--with-checks')
 // --gates-only：**只跑门禁，不打包**（2026-10-18 补）
@@ -94,7 +98,177 @@ const withChecks = args.includes('--with-checks')
 const gatesOnly = args.includes('--gates-only')
 
 const log = (s) => console.log(s)
-const die = (msg) => { console.error('\n✗ ' + msg + '\n打包已中止 —— 没有产出任何文件。'); process.exit(1) }
+let packageCreated = false
+const die = (msg) => {
+  const outcome = packageCreated
+    ? '已生成的候选包不可交付；请检查错误并重新打包'
+    : '打包已中止 —— 没有产出可交付包'
+  console.error('\n✗ ' + msg + '\n' + outcome)
+  process.exit(1)
+}
+
+if (skipTests) {
+  die('--skip-tests 已移除：项目不再维护自动化测试收集链。静态检查与前端构建始终执行；交付日请另加 --with-smoke 跑真实生图。')
+}
+if (withChecks) {
+  die('--with-checks 已移除：e2e/check-*.mjs 入口不存在。请使用 --with-smoke 做真实生图，并按验收记录手工检查页面与包内启动。')
+}
+
+/** Node 流式 SHA256，不依赖 PowerShell / certutil，也不把大文件整体读入内存。 */
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256')
+    const stream = fs.createReadStream(file, { highWaterMark: 4 * 1024 * 1024 })
+    stream.on('error', reject)
+    stream.on('data', chunk => hash.update(chunk))
+    stream.on('end', () => resolve(hash.digest('hex')))
+  })
+}
+
+function isSameOrInside(parent, candidate) {
+  const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value
+  // 必须比较规范路径；`C:\foo` 与 `C:\foobar` 不能被当成父子。
+  const rel = path.relative(normalize(path.resolve(parent)), normalize(path.resolve(candidate)))
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel))
+}
+
+function sameAbsolutePath(left, right) {
+  const normalize = value => {
+    const resolved = path.resolve(value)
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  return normalize(left) === normalize(right)
+}
+
+/** 解析最近一个已存在的祖先；不跟随尚不存在的最终 DELIVER 本身。 */
+function realpathNearestExisting(target) {
+  let cursor = path.resolve(target)
+  const missingParts = []
+  for (;;) {
+    if (fs.existsSync(cursor)) {
+      const real = fs.realpathSync.native(cursor)
+      return path.resolve(real, ...missingParts.slice().reverse())
+    }
+    const parent = path.dirname(cursor)
+    if (parent === cursor) return path.resolve(cursor, ...missingParts.slice().reverse())
+    missingParts.push(path.basename(cursor))
+    cursor = parent
+  }
+}
+
+/**
+ * DELIVER 默认允许清空既有镜像，但必须在结构上与其他关键目录完全隔离。
+ * 这项检查不增加交互确认，只拒绝根盘、仓库自身/祖先、源码依赖、玩家数据和输出目录重叠。
+ */
+function assertSafeDeliverPath() {
+  if (!path.isAbsolute(DELIVER)) die(`DELIVER_DIR 必须是绝对路径：${DELIVER}`)
+  const resolvedDeliver = path.resolve(DELIVER)
+  if (resolvedDeliver === path.parse(resolvedDeliver).root) die(`拒绝清空磁盘根目录：${resolvedDeliver}`)
+
+  // 已存在的目录/文件可能是指向外部的 junction、symlink 或其它重解析点。
+  // 递归删除之前，解析 DELIVER 自身或其最近已存在祖先的真实目的路径。
+  let finalDeliver
+  try {
+    finalDeliver = realpathNearestExisting(resolvedDeliver)
+  } catch (error) {
+    die(`无法解析 DELIVER_DIR 的真实路径：${resolvedDeliver}（${error.message}）`)
+  }
+  // 递归删除只接受路径自身就是最终真实路径；目标或任一已存在祖先经过
+  // symlink/junction 时，即使最后仍落在父目录内，也拒绝，避免 Windows 重解析点语义差异。
+  if (!sameAbsolutePath(finalDeliver, resolvedDeliver)) {
+    die(`DELIVER_DIR 经过 symlink/junction，拒绝递归清理：${resolvedDeliver} → ${finalDeliver}`)
+  }
+  if (finalDeliver === path.parse(finalDeliver).root) die(`拒绝清空磁盘根目录的真实路径：${finalDeliver}`)
+
+  const protectedPaths = [
+    REPO,
+    SRC,
+    WEB,
+    path.join(SRC, 'data'),
+    path.join(REPO, 'runtime'),
+    OUTDIR,
+  ].map(value => {
+    try {
+      return realpathNearestExisting(value)
+    } catch (error) {
+      // 保护路径无法规范化时必须 fail-closed；不能退回未校验路径后继续递归删除。
+      die(`无法解析受保护路径，拒绝清空交付目录：${value}（${error.message}）`)
+    }
+  })
+
+  for (const protectedPath of protectedPaths) {
+    if (isSameOrInside(finalDeliver, protectedPath) || isSameOrInside(protectedPath, finalDeliver)) {
+      die(`DELIVER_DIR 与受保护目录重叠，拒绝清空：${resolvedDeliver} → ${finalDeliver} ↔ ${protectedPath}`)
+    }
+  }
+  // 使用输入解析后的路径执行清理；上面已确认其真实路径没有重解析点。
+  return resolvedDeliver
+}
+
+/**
+ * 真实生图冒烟的父进程运行环境。
+ * 现有配置只读合并到子进程环境；临时 LINSHE_ENV_PATH 只用于容纳将来可能发生的
+ * 配置写入，位于系统临时根，不复制进仓库或交付包，不打印任何值。
+ */
+function prepareIsolatedSmokeEnvironment() {
+  const smokeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'linshe-publish-smoke-'))
+  try {
+    const dirs = Object.fromEntries(
+      ['images', 'audio', 'data', 'comfy-output', 'tmp'].map(name => [name, path.join(smokeRoot, name)]),
+    )
+    for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true })
+
+    const sourceEnv = resolveEnvPath()
+    const verificationEnv = path.join(smokeRoot, 'verification.env')
+    if (fs.existsSync(sourceEnv)) fs.copyFileSync(sourceEnv, verificationEnv)
+    else fs.writeFileSync(verificationEnv, '', 'utf8')
+
+    let fileValues = {}
+    if (fs.existsSync(sourceEnv)) {
+      try {
+        fileValues = coreRequire('dotenv').parse(fs.readFileSync(sourceEnv))
+      } catch (error) {
+        throw new Error(`读取现有 .env 失败：${error.message}`)
+      }
+    }
+
+    const childEnv = { ...process.env }
+    for (const [key, value] of Object.entries(fileValues)) {
+      if (childEnv[key] === undefined) childEnv[key] = value
+    }
+    Object.assign(childEnv, {
+      DB_PATH: ':memory:',
+      LOG_TO_FILE: 'false',
+      IMAGES_DIR: dirs.images,
+      TTS_AUDIO_DIR: dirs.audio,
+      LINSHE_DATA_DIR: dirs.data,
+      COMFYUI_OUTPUT_DIR: dirs['comfy-output'],
+      LINSHE_ENV_PATH: verificationEnv,
+      LINSHE_SMOKE_ROOT: smokeRoot,
+      TEMP: dirs.tmp,
+      TMP: dirs.tmp,
+      LLM_MODEL: 'cn:deepseek-v4.1-flash',
+    })
+    return { smokeRoot, env: childEnv }
+  } catch (error) {
+    try {
+      cleanupIsolatedSmokeRoot(smokeRoot)
+    } catch (cleanupError) {
+      throw new Error(`${error.message}；冒烟临时目录清理失败：${cleanupError.message}`)
+    }
+    throw error
+  }
+}
+
+function cleanupIsolatedSmokeRoot(smokeRoot) {
+  if (!smokeRoot) return
+  const base = path.resolve(os.tmpdir())
+  const resolved = path.resolve(smokeRoot)
+  if (path.dirname(resolved) !== base || !path.basename(resolved).startsWith('linshe-publish-smoke-')) {
+    throw new Error(`拒绝清理非预期冒烟目录：${resolved}`)
+  }
+  fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}
 
 // ── 轮次号：取 输出/ 里最大的那个 +1 ──────────────────────────────────────
 function nextRound() {
@@ -117,14 +291,15 @@ function nextRound() {
   } catch { return 1 }
 }
 
-// ── ① / ② 测试门禁 ───────────────────────────────────────────────────────
+// ── 静态门禁与迁移路径断言 ────────────────────────────────────────────────
 
 // ── ⓪-前置：静态断言「代码里没有迁移前的机器绝对路径」────────────────────────
 //
 // 真事故（2026-10-17 全项目复查 §P0-1）：项目从旧的百度网盘下载目录迁到 `D:\邻舍改` 时
 //   只搬了目录，**没扫测试/e2e 里的绝对路径** ⇒
 //   `web-ui/test/toyLabelParity.test.js` 里写死的旧 `CORE` 让本文件 5 条用例全挂（ENOENT），
-//   而它正是「前端全量」门禁的一部分 ⇒ **打包门禁被堵死**，唯一出路是 `--skip-tests`（那正是门禁要防的事）。
+//   而它当时正是旧前端测试门禁的一部分 ⇒ 曾把打包门禁堵死；现在测试收集链已移除，
+//   这项扫描继续防脚本/测试夹具引用迁移前路径。
 //
 // 所以把这次事故变成门禁规则（本仓一贯打法：`cancelled>0 即 die`、使用说明双端关键词断言）：
 //   测试 / e2e / 脚本里**不许出现旧项目根目录的字面量**，命中即 die。
@@ -187,106 +362,21 @@ function assertNoStalePaths() {
   log(`   ${STALE_SCAN_DIRS.join(' / ')} 共扫无残留 ✓（已剥注释，只钉旧项目根字面量）`)
 }
 
-function isBackendUp(port) {
-  // ⚠️ 用 node 自带的 http 模块同步探活，**不**用 execFileSync('curl') —— 本机可能没 curl，
-  //    且 spawnSync 会被 Windows 的 shell 解析拖慢。connectSync 也不行（Node 没有同步 connect），
-  //    所以用 child_process.spawnSync 起一个 2 秒超时的 node -e 脚本做 HTTP GET。
-  //    200/anything 都算"起着"（探活只看 TCP/HTTP 是否响应，不看状态码）。
-  const probe = spawnSync(NODE, ['-e', `
-    const http = require('http');
-    const r = http.get('http://127.0.0.1:${port}/api/health', (res) => { process.exit(0); });
-    r.on('error', () => process.exit(1));
-    r.setTimeout(2000, () => { r.destroy(); process.exit(1); });
-  `], { encoding: 'utf8', timeout: 5000 })
-  return probe.status === 0
-}
-
-function runSuite(name, cwd, patterns, extraEnv, { withSetup = false } = {}) {
-  log(`\n── ${name} ─────────────────────────────────────────`)
-  // ⚠️ `--import ./test/setup.mjs` 只有 agent-core 有（它负责"测试禁止联网"）；
-  //    给 web-ui 也传会直接让 75 个文件全红（第一版就这么挂的 —— 门禁救了它，没让它误报成"代码有问题"）。
-  const setupArgs = withSetup ? ['--import', './test/setup.mjs'] : []
-  const res = spawnSync(NODE, [
-    '--test', ...setupArgs, '--test-concurrency=1',
-    '--test-force-exit', '--test-timeout=90000', ...patterns,
-  ], { cwd, encoding: 'utf8', env: { ...process.env, DB_PATH: ':memory:', LOG_TO_FILE: 'false', ...extraEnv }, maxBuffer: 64 * 1024 * 1024 })
-  const out = (res.stdout || '') + (res.stderr || '')
-  const num = (k) => Number((new RegExp(`^# ${k} (\\d+)`, 'm').exec(out) || [])[1] ?? -1)
-  const tests = num('tests'); const pass = num('pass'); const fail = num('fail'); const skip = num('skipped')
-  const cancelled = num('cancelled')
-  log(`   tests=${tests} pass=${pass} fail=${fail} skipped=${skip < 0 ? 0 : skip} cancelled=${cancelled < 0 ? 0 : cancelled}`)
-  const notOk = out.split(/\r?\n/).filter((l) => l.startsWith('not ok')).slice(0, 8)
-  if (notOk.length) { log('   失败项：'); for (const l of notOk) log('     ' + l) }
-  if (fail !== 0 || notOk.length) die(`${name} 有失败（fail=${fail}${notOk.length ? `, not ok=${notOk.length}` : ''}）`)
-  // cancelled > 0 = 有用例没跑完就被 `--test-force-exit` 掐掉（摘要照样显示 0 fail）。
-  // 历史事故：3 个文件「最后一条用例从未执行」而门禁一直判绿（见 接手必读 §2「假绿已修」）。
-  if (cancelled > 0) die(`${name} 有 cancelled=${cancelled}（用例没跑完就被掐掉，不能当绿）`)
-  if (tests <= 0) die(`${name} 没跑起来（tests=${tests}）—— 参数或环境不对，不能当"通过"`)
-  return { tests, pass, fail, skip, cancelled }
-}
-
-// 5 个 skipped 的固定原因（2026-10-17 全项目复查 §三-5）：
-// 每轮都会被当新问题排查一遍，所以在这里固定写明，别再重复查。
-const KNOWN_SKIPS = [
-  'intimateAiEditHttp ×3 —— 本机 .env 配了 LLM Key ⇒ 503 分支进程内不可达（源码级用例已覆盖）',
-  'townSevenDay —— 长测，TOWN_LONG_SIM=1 才启用',
-  'toyWakeAndImage ②b —— 睡眠态要真实日程快照，:memory: 造不出',
-]
-
-// ── 冒烟族（2026-10-18 补，收口 P1-3「E2E / 冒烟不在发布门禁」）─────────────────
-//
-// 为什么默认关：这两族要**起真后端**（smoke 还会自己 `VACUUM INTO` 一份真库副本），
-// 比单测慢得多、且依赖 ComfyUI / 网络这些外部条件。订成"交付日手动开"是权衡后的口径，
-// 不是偷懒 —— 门禁的职责是"每次打包都不许退化"，而这两族是"这次交付额外验一遍"。
-//
-// 为什么不塞进 runSuite：它们不是 `node --test` 套件，输出格式完全不同（自起自停后端、
-// 自己的报告文件与退出码）。硬套 runSuite 的 `# tests/# pass` 正则只会得到 `tests=-1`，
-// 反而会让门禁误报"没跑起来"。
-//
-// ⚠️ 用户纪律：**起停服务必须各自单独一次调用**（Windows job runner 会把同一条命令里的
-//    Stop-Process 和重活挤在一起然后以 4294967295 崩掉）。所以这里**不**自己拼启停命令，
-//    而是把"起停"整个交给被调脚本自己管（smoke-all-modules.mjs 就是这么设计的：它自己
-//    spawn 后端、自己 finally 里 stopBackend）。这样门禁侧只有一次 spawnSync，没有中间态。
-function runScript(name, scriptRel, env, { expectExitZero = true, tolerateWarn = true } = {}) {
-  const script = path.join(REPO, scriptRel)
-  log(`\n── ${name} ─────────────────────────────────────────`)
-  if (!fs.existsSync(script)) die(`${name}：脚本不存在 —— ${script}`)
-  const res = spawnSync(NODE, [script], {
-    cwd: REPO,
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: 15 * 60_000,   // 冒烟要起后端 + 扫 161 端点，给足 15 分钟
-  })
-  const out = (res.stdout || '') + (res.stderr || '')
-  // 只把结论段打给人看（全量输出太长，会淹掉打包日志）
-  const lines = out.split(/\r?\n/)
-  const tail = lines.slice(-14)
-  for (const l of tail) if (l.trim()) log('   ' + l.trim())
-
-  const conclusion = /端点\s+(\d+)\s*个：PASS\s+(\d+)\s*·\s*WARN\s+(\d+)\s*·\s*FAIL\s+(\d+)/.exec(out)
-  const stats = conclusion
-    ? { total: Number(conclusion[1]), pass: Number(conclusion[2]), warn: Number(conclusion[3]), fail: Number(conclusion[4]) }
-    : null
-  if (stats) {
-    log(`   解析：端点 ${stats.total} 个 → PASS ${stats.pass} / WARN ${stats.warn} / FAIL ${stats.fail}`)
-    if (stats.fail > 0) die(`${name}：FAIL ${stats.fail} 个端点（5xx 或 404，代码里有这个 GET 却拿不到正常响应）`)
-    // WARN 是"正确的参数守卫"（缺 query / 状态不满足），历史基线就是 5 个，不算失败；
-    // 但要是 WARN 暴涨到异常值，说明接口口径可能批量走偏了，给人一眼能看见的提示。
-    if (stats.warn > 40) log(`   ⚠️ WARN 达 ${stats.warn} 个，明显高于历史基线（约 5 个），请人工看一眼明细`)
-    if (tolerateWarn === false && stats.warn > 0) die(`${name}：不接受任何 WARN`)
-  } else if (expectExitZero && res.status !== 0) {
-    die(`${name}：退出码 ${res.status}，且没解析到结论行`)
-  }
-  if (!stats && !conclusion) log('   （未解析到「端点 N 个：…」结论行 —— 该脚本可能不是冒烟类，看上面输出）')
-  return { status: res.status, stats }
-}
-
-let be = null
-let fe = null
+let smokeStatus = '未执行'
 assertNoStalePaths()
 // 2026-11-06 用户决定移除全部自动化测试：门禁改为「前端能构建」。
 // 代码正确性靠真机验收（解压 → 真启动 → 抽端点），这一步在打包后手工做。
+{
+  log('\n── 项目健康与本地链接 ──────────────────────────')
+  const health = spawnSync(NODE, [path.join(REPO, 'scripts', 'project-health.mjs')], {
+    cwd: REPO, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+  })
+  if (health.status !== 0) {
+    log(String((health.stdout || '') + (health.stderr || '')).slice(-3000))
+    die('项目健康检查未通过')
+  }
+  log(`  ✓ ${String(health.stdout || '').split(/\r?\n/).find(line => line.includes('本地链接')) || '项目健康检查通过'}`)
+}
 {
   log('\n── 前端生产构建 ────────────────')
   const build = spawnSync(NODE, ['build.mjs'], { cwd: WEB, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
@@ -316,54 +406,74 @@ assertNoStalePaths()
   log(`  ✓ ${output.split(/\r?\n/).pop()}`)
 }
 
-// ── ②-冒烟族（默认关，交付日手动开）─────────────────────────────────────────
-// 跑在单测之后、同步之前：冒烟失败就不该继续产出交付包（避免"坏包已同步进交付目录"）。
+// ── ②-真实生图冒烟（交付日显式开启）──────────────────────────────────────────
+// helper 会先切出本次生图直接依赖的内存库、图片目录和临时配置副本，再导入真实链路。
+// 0=出图成功；2=ComfyUI 未开/不可达，必须视为环境阻塞；其它退出码=代码失败。
 if (withSmoke) {
-  // 2026-11-07：e2e/ 已由用户删除，这里不再执行脚本（免得 --with-smoke 直接崩）
-  log('\n── 全模块冒烟 ──────────────── 已跳过（e2e 已移除）────────')
-} else {
-  log('\n── 全模块冒烟 ──────────────── 已跳过 ────────────────')
-  log('   （交付日加 --with-smoke 开；它自起自停后端、用真库副本，不碰真实库）')
-}
-
-if (withChecks) {
-  // ⚠️ 2026-10-18 核实：这三个脚本**都要求外部已有一个后端在 3199 跑着**（并且 check-panels /
-  //    check-assets 还要 playwright 浏览器）。它们**不像** smoke 那样自起自停 —— 所以这里
-  //    不能盲调，得先探端口：没起后端就"跳过 + 说明原因"，而不是让打包 die。
-  //
-  //    为什么不做成"门禁自己起后端"：起停服务是本仓的敏感动作（用户纪律：起停要各自单独一次
-  //    调用，Windows job runner 会把它们和重活挤一起然后崩）。门禁脚本不该偷偷起服务 ——
-  //    真要这几个检查，就按 `e2e/README.md` 手工起好 3199 再跑 --with-checks。
-  //
-  //    check-event-images.mjs 另外还依赖交付目录存在（它读的是**交付包**里的 data 与库），
-  //    所以它天然只适合"同步之后"跑；本函数当前排在同步**之前**是为了"冒烟不过就别同步"，
-  //    两者顺序诉求冲突 —— 这也是它默认不进自动流的原因之一（见下方 SKIP 说明）。
-  const up = isBackendUp(3199)
-  if (!up) {
-    log('\n── e2e 专项检查 ──────────── 已跳过（e2e 已移除）──────────')
-  } else {
-    // 2026-11-07：e2e/ 目录已由用户删除，这里不再尝试执行任何脚本，
-    // 免得有人加了 --with-checks 才发现文件不存在。
-    log('\n── e2e 专项检查 ──────────── 已跳过（e2e 已移除）──────────')
-    log('   e2e/ 已不在仓库内；需要这类检查请自行准备脚本。')
+  log('\n── 隔离生图冒烟 ────────────────────────────────')
+  const smokeScript = path.join(REPO, 'scripts', 'smoke-image-isolated.mjs')
+  if (!fs.existsSync(smokeScript)) die(`生图冒烟入口不存在：${smokeScript}`)
+  let smokeRoot = null
+  let smokeStatusAfter = null
+  try {
+    const prepared = prepareIsolatedSmokeEnvironment()
+    smokeRoot = prepared.smokeRoot
+    log(`   父进程环境：DB_PATH=:memory: / 隔离根=${smokeRoot}`)
+    const smoke = spawnSync(NODE, [smokeScript], {
+      cwd: REPO,
+      encoding: 'utf8',
+      env: prepared.env,
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 5 * 60_000,
+    })
+    const output = `${smoke.stdout || ''}${smoke.stderr || ''}`
+    for (const line of output.trim().split(/\r?\n/).slice(-24)) log(`   ${line}`)
+    if (smoke.error) throw new Error(`生图冒烟进程启动失败：${smoke.error.message}`)
+    if (smoke.status === 0) smokeStatusAfter = 'PASS（真实出图）'
+    else if (smoke.status === 2) {
+      throw new Error('生图冒烟被环境阻塞：ComfyUI 未开或不可达。退出码 2 不能当作通过。')
+    } else throw new Error(`生图冒烟失败：退出码 ${smoke.status ?? '未知'}`)
+  } catch (error) {
+    // 必须让 finally 先删除含临时配置的冒烟根；process.exit 不会执行 finally。
+    smokeStatusAfter = null
+    smokeStatus = error.message
+  } finally {
+    try {
+      cleanupIsolatedSmokeRoot(smokeRoot)
+    } catch (error) {
+      smokeStatusAfter = null
+      smokeStatus = `冒烟临时目录清理失败：${error.message}`
+    }
   }
+  if (smokeStatusAfter) smokeStatus = smokeStatusAfter
+  else die(smokeStatus)
 } else {
-  log('\n── e2e 专项检查 ──────────── 已跳过 ────────────────')
-  log('   （e2e/ 已移除，--with-checks 不再执行任何脚本）')
+  smokeStatus = '未执行（正式交付请加 --with-smoke）'
+  log('\n── 隔离生图冒烟 ──────────────── 未执行 ────────────────')
 }
 
 // ── --gates-only：到此为止，不同步、不打包 ────────────────────────────────────
 if (gatesOnly) {
   log('\n── 门禁结束（--gates-only，未同步、未打包）──────────')
-  log(`   后端：${be ? `${be.pass}/${be.tests} pass, fail=${be.fail}, cancelled=${be.cancelled}` : '已跳过（--skip-tests）'}`)
-  log(`   前端：${fe ? `${fe.pass}/${fe.tests} pass, fail=${fe.fail}, cancelled=${fe.cancelled}` : '已跳过（--skip-tests）'}`)
-  log(`   冒烟：${withSmoke ? '已跑（见上）' : '未跑（加 --with-smoke 开）'}`)
+  log(`   静态检查：project-health + check-imports`)
+  log(`   前端：生产构建通过`)
+  log(`   冒烟：${smokeStatus}`)
   log('   没有产出任何文件。要真打包：去掉 --gates-only。')
   process.exit(0)
 }
 
 // ── ③ 同步源码 → 交付包 ──────────────────────────────────────────────────
 log('\n── 同步源码到交付包 ────────────────────────────────')
+const SAFE_DELIVER = assertSafeDeliverPath()
+
+// ── ③-0 先把交付目录清空（2026-11-08）──────────────────────────────────
+// 为什么必须清：交付目录是**跨轮复用的固定路径**（默认 C:\3.6.2-r），同步全是增量。
+// 于是「上一轮打进包、这一轮才被排除」的文件会原地留着 —— 本轮实测：加了 `.mimosa`
+// 排除规则后重新打包，`web-ui/.mimosa` 仍然跟着进了 993MB 的包，因为它是上一轮留下的。
+// 清理后每次都是从零同步，「排除规则生效」这件事才可验证。
+// 注意只清交付目录本身（DELIVER），不动它的父目录。
+fs.rmSync(SAFE_DELIVER, { recursive: true, force: true })
+log(`   已清空交付目录（${DELIVER}），本次从零同步`)
 
 // ── ③-0 使用说明.txt：重新生成（2026-10-17 补，修「生成链断裂」）──────────────
 //
@@ -378,7 +488,10 @@ log('\n── 同步源码到交付包 ─────────────�
 //
 // ⚠️ 断言口径：`使用说明.txt` 是**用户手册**，断言必须打在**用户看得见的正文**上，
 //    不能靠"生成源文件里有没有这个词"（那种断言在生成链断了的时候照样绿）。
-const USAGE_GUIDE = path.join(REPO, '使用说明.txt')
+// 发布验证可指定独立副本；默认仍写仓库根的正源产物。
+const USAGE_GUIDE = process.env.LINSHE_USAGE_GUIDE_PATH
+  ? path.resolve(process.env.LINSHE_USAGE_GUIDE_PATH)
+  : path.join(REPO, '使用说明.txt')
 const USAGE_KEYWORDS = [
   // 42~56 轮新增的用户可见功能（2026-10-17 复查时实测关键词命中 0 的那批）
   ['破限规则集', '破限'],
@@ -399,6 +512,7 @@ const USAGE_KEYWORDS = [
   let version = 'dev'
   try { version = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim() || 'dev' } catch { /* 保持 dev */ }
   const text = buildUsageGuideText({ version })
+  fs.mkdirSync(path.dirname(USAGE_GUIDE), { recursive: true })
   fs.writeFileSync(USAGE_GUIDE, text, 'utf8')
   const missing = USAGE_KEYWORDS.filter(([, kw]) => !text.includes(kw)).map(([name]) => name)
   log(`   已用正源重新生成 使用说明.txt（${Buffer.byteLength(text, 'utf8')} B，版本 ${version}）`)
@@ -470,8 +584,10 @@ function syncDir(from, to) {
     }
   }
 }
-const changed = execFileSync('git', ['status', '--short'], { cwd: REPO, encoding: 'utf8' })
-  .split(/\r?\n/).map((l) => l.slice(3).trim().replace(/^"|"$/g, '')).filter(Boolean)
+const changed = incremental
+  ? execFileSync('git', ['status', '--short'], { cwd: REPO, encoding: 'utf8' })
+    .split(/\r?\n/).map((l) => l.slice(3).trim().replace(/^"|"$/g, '')).filter(Boolean)
+  : []
 
 // ── 同步源码 → 交付目录（2026-10-16 改：默认全量）────────────────────────
 //
@@ -509,7 +625,7 @@ if (incremental) {
   //     （CLAUDE.md 的仓级约定已固化进 AGENTS.md，不必随包发）
   //   · *.tar.gz / *.apk —— 108 MB 旧备份与旧安装包（下面 7z 也排除它们）
   const SKIP_TOP = new Set([
-    '.git', 'node_modules', 'data', 'logs', '目标', 'docs', '.mimosa', '完整', '.claude',
+    '.git', 'node_modules', 'data', 'logs', '目标', 'docs', '.mimosa', '完整', '.claude', '方案',
     // 2026-11-07 用户："AGENTS 怎么还在包里" —— 这些是仓库的**开发/维护资产**，
     // 用户拿到只会困惑（而且 AGENTS.md 里写着本机路径与协作约定，不该外发）：
     '.github', '.learnings', '.playwright-cli',
@@ -673,12 +789,10 @@ log(`   线程 = ${cores}（本机核心数）| 级别 -mx=${LEVEL}（交付日�
 // 把成员单独抽出来 integrity_check=ok），坏在"解压工具不校验就写出坏文件"。
 // 所以：① 包里放一份可对账的校验清单；② 打包后再把数据库从压缩包里抽出来验一遍（见下）。
 {
-  // 用 PowerShell 取哈希（脚本本来就是这么取压缩包 SHA256 的；ESM 里没有 require，别用）
-  const hashOf = (p) => {
-    try {
-      return execFileSync('powershell', ['-NoProfile', '-Command', `(Get-FileHash -Algorithm SHA256 '${p}').Hash`], { encoding: 'utf8' }).trim()
-    } catch { return '(读不到)' }
-  }
+  const dbPath = path.join(DELIVER, 'agent-core', 'data', 'agent.db')
+  const dbLine = WITH_DATA
+    ? `   期望：${await sha256File(dbPath)}`
+    : '   本包不含玩家数据库，无需校验 agent-core\\data\\agent.db。'
   const lines = [
     '邻舍.EXE 交付包 · 校验清单（2026-10-02 起自动生成）',
     '',
@@ -691,9 +805,8 @@ log(`   线程 = ${cores}（本机核心数）| 级别 -mx=${LEVEL}（交付日�
     '   与发布说明里给的 SHA256 逐字对照（发布脚本会在打包后打印）。',
     '   或者用 7-Zip 自带测试：7z t "本包.7z"     ← 输出 Everything is Ok 才算好',
     '',
-    '【第二步】用 7-Zip 解压后，验关键文件（在 3.6.2-r 目录下执行）：',
-    '   certutil -hashfile "agent-core\\data\\agent.db" SHA256',
-    `   期望：${hashOf(path.join(DELIVER, 'agent-core', 'data', 'agent.db'))}`,
+    '【第二步】用 7-Zip 解压后，验关键文件：',
+    dbLine,
     '',
     '【如果 agent.db 坏了】不用重新下载整个包，用 7-Zip 只解出这一个文件覆盖即可',
     '（`7z e` 解单个成员时会校验该成员的 CRC，坏了会直接报错，不会静默给你坏文件）：',
@@ -705,7 +818,9 @@ log(`   线程 = ${cores}（本机核心数）| 级别 -mx=${LEVEL}（交付日�
   log('   已写入 校验-SHA256.txt（含 DB 的 SHA256 + "别用网盘客户端解压" + 单文件修复命令）')
 }
 
-fs.rmSync(outFile, { force: true })
+  if (fs.existsSync(outFile)) {
+    die(`输出包已存在，拒绝覆盖：${outFile}\n     —— 请换一个尚未使用的轮次号或输出目录。`)
+  }
 const t0 = Date.now()
 const zip = spawnSync(SEVENZIP, [
   'a', '-t7z', `-mx=${LEVEL}`, `-mmt=${cores}`,
@@ -715,6 +830,10 @@ const zip = spawnSync(SEVENZIP, [
   // 把整个 `目标/` 排除在包外 ⇒ 交付包里的开发文档一直是旧的、甚至缺文件（前面好几版包都这样）。
   // 文档是交付物的一部分 ⇒ 取消这条排除；上面的同步段会整份刷 `目标/` 与 `docs/`，这里照实打进去。
   // （2026-10-13：`目标/` 已从 19 份精简为 3 份 —— 接手必读 / 历史与教训 / 编程模式，别再往里堆逐轮流水。）
+  // 2026-10-02 用户：「文档也同步吧」⇒ 取消对 `docs/` 的排除。
+  // 2026-11-08 复查：`目标/`（逐轮规划与盘点的开发笔记）里写着本机绝对路径等私人信息，
+  // 发布到公开 Release 属于外泄 ⇒ 只排除 `目标/`，`docs/` 仍然照常进包。
+  `-xr!${DELIVER_NAME}\\目标\\*`,
   `-xr!${DELIVER_NAME}\\web-ui\\node_modules\\*`, '-xr!*.log',
   // 2026-11-03 用户：「打包程序就行，不要带玩家数据」⇒ 默认把数据库整份排除在包外。
   // 包内仍随源码带上 `agent-core/data/` 目录本身（首次启动会自动建空库），只是不带 agent.db 及其日志。
@@ -731,11 +850,25 @@ const zip = spawnSync(SEVENZIP, [
   `-xr!${DELIVER_NAME}\\release\\*`,
   `-xr!${DELIVER_NAME}\\launcher\\build_cache\\*`,
   `-xr!${DELIVER_NAME}\\launcher\\build\\*`,
+  `-xr!${DELIVER_NAME}\\方案\\*`,
 ], { cwd: DELIVER_PARENT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
 if (zip.status !== 0) die(`7z 退出码 ${zip.status}：${(zip.stderr || '').slice(0, 300)}`)
+packageCreated = true
 const secs = Math.round((Date.now() - t0) / 1000)
 log('   ' + (zip.stdout || '').split(/\r?\n/).filter((l) => l.includes('Everything is Ok') || l.includes('Archive size')).join(' | '))
 log(`   用时 ${secs} 秒（${(secs / 60).toFixed(1)} 分钟）`)
+
+// 压缩成功不等于归档可读；用 7-Zip 自身完整测试 CRC/内容结构。
+{
+  const test = spawnSync(SEVENZIP, ['t', outFile], {
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  })
+  if (test.status !== 0 || !String(test.stdout || '').includes('Everything is Ok')) {
+    die(`候选包 7z 完整性测试失败：${(test.stdout || '') + (test.stderr || '')}`)
+  }
+  log('   7z 完整性测试：Everything is Ok ✓')
+}
 
 // ── 打包后：把数据库从压缩包里抽出来验一遍 ────────────────────────────────
 // 2026-10-02 真事故后补的：我原本只验了"打包前的 DB"（integrity_check=ok），
@@ -856,31 +989,34 @@ if (hasGitLogs && !needGitLogs) die('包内缺少 .git\\logs（交付目录里�
   // `launcher_config.json`（2026-10-18 补）：它是启动器的本机用户配置，`comfyui_exe` 指向
   // **打包这台机器**的路径。包内若带它，别人一开启动器就指到不存在的地址。
   // 匹配 `3.6.2-r\launcher_config.json`（仓库根那份）；顺带挡 `agent-core\` 下的误放。
-  const lcInPkg = /3\.6\.2-r\\launcher_config\.json(\s|$)/m.test(plain)
-    || /3\.6\.2-r\\agent-core\\launcher_config\.json(\s|$)/m.test(plain)
+  const esc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const lcInPkg = new RegExp(`${esc(DELIVER_NAME)}\\\\launcher_config\\.json(?:\\s|$)`, 'm').test(plain)
+    || new RegExp(`${esc(DELIVER_NAME)}\\\\agent-core\\\\launcher_config\\.json(?:\\s|$)`, 'm').test(plain)
   if (lcInPkg) die('包内含 launcher_config.json（含打包机器的 ComfyUI 绝对路径）⇒ 交付链剥离失败，拒绝交付')
   log('   launcher_config.json 不在包内 ✓（缺失即全新用户初始状态：启动器会自动写默认配置）')
 }
 
 const sizeMb = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1)
-const sha = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-FileHash -Algorithm SHA256 '${outFile}').Hash`], { encoding: 'utf8' }).trim()
+let sha
+try {
+  sha = await sha256File(outFile)
+} catch (error) {
+  log(`   候选包已生成但 SHA256 读取失败：${error.message}`)
+  die('最终包哈希未取得，不能交付')
+}
 log('\n══════════════════════════════════════════════════════')
 log(` 产出：${path.basename(outFile)}`)
 log(` 体积：${sizeMb} MB`)
 log(` SHA256：${sha}`)
-if (be && fe) {
-  log(` 测试：后端 ${be.pass}/${be.tests} ✓ · 前端 ${fe.pass}/${fe.tests} ✓ （0 fail / 0 cancelled）`)
-  const skips = (be.skip || 0) + (fe.skip || 0)
-  if (skips > 0) {
-    log(` 跳过 ${skips} 项，均为**已知环境性**（不是新问题，别再排查）：`)
-    for (const line of KNOWN_SKIPS) log(`   · ${line}`)
-  }
-}
+log(` 静态检查：project-health + check-imports ✓`)
+log(` 前端构建：生产构建 ✓`)
+log(` 生图冒烟：${smokeStatus}`)
 log('══════════════════════════════════════════════════════')
 log('\n⚠️ 还剩最后一步（手跑，需要等解压与启动）：')
-log('   解压 → 起 vector-service(8765) 与 agent-core(3199) → 抽查 /api/characters 与 /api/intimate-actions/:id/state')
+log(`   解压 → 起 vector-service(${VECTOR_SERVICE_URL}) 与 agent-core(:${API_PORT}) → 抽查 /api/health 与 /api/characters`)
+log('   隔离验收请显式使用独立的 DELIVER_DIR / OUT_DIR / TEMP、:memory: 与临时媒体目录；不要写入玩家实例。')
 // 2026-11-06：第 69 轮包曾经把「每张图都 opts is not defined」的回归打出去过 ——
 // 上面所有校验都只看文件与接口，没有一步真的生成一张图。生图冒烟必须单独跑。
 log('   另外务必跑一次生图冒烟（十几秒，能挡住"接口全活、生图全挂"这类回归）：')
-log('     cd agent-core && DB_PATH=":memory:" ../runtime/nodejs/node.exe ../scripts/smoke-image.mjs')
-log('     退出码 0=出图成功 / 2=ComfyUI 未开（环境问题）/ 1=代码链路有错')
+log('     node scripts/发布-校验并打包.mjs --gates-only --with-smoke')
+log('     退出码 0=真实出图 / 2=ComfyUI 未开（环境阻塞）/ 1=代码链路有错')

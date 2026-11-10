@@ -48,7 +48,9 @@ function walk(dir, out = []) {
 }
 
 const srcFiles = walk(path.join(AGENT, 'src'));
-const testFiles = walk(path.join(AGENT, 'test'));
+// 测试体系已按要求移除；维护工具仍可复用，但不能把不存在的目录当作错误。
+const testRoot = path.join(AGENT, 'test');
+const testFiles = fs.existsSync(testRoot) ? walk(testRoot) : [];
 // ⚠️ app.js 必须算进去（见文件头 §假阳性 1）
 const appEntry = path.join(AGENT, 'app.js');
 

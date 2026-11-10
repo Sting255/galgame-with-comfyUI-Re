@@ -252,10 +252,11 @@ if (missing.length) {
     + `       ${C.dim}cd agent-core; <runtime>/nodejs/npm.cmd rebuild better-sqlite3${C.reset}\n`
     + `  4) 验一次加载（别只看 exit 0）：\n`
     + `       ${C.dim}<runtime>/nodejs/node.exe -e "require('better-sqlite3')"${C.reset}\n`
-    + `  5) 跑全量：\n`
-    + `       ${C.dim}npm test${C.reset}\n`)
+    + `  5) 跑静态门禁：\n`
+    + `       ${C.dim}node scripts/project-health.mjs${C.reset}\n`
+    + `       ${C.dim}node scripts/check-imports.mjs${C.reset}\n`)
 }
 
 log(`${C.green}  ✓ 闸 3 通过${C.reset}（主树依赖树完整）`)
 log(`\n${C.green}${C.bold}工作树已安全移除，主树完好。${C.reset}`)
-log(`  ${C.dim}建议再跑一次 npm test 确认全量仍绿。${C.reset}\n`)
+log(`  ${C.dim}建议跑一次静态门禁与前端构建，再按验收记录做真实启动/页面人工检查。${C.reset}\n`)
