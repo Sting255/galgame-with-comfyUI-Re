@@ -1,4 +1,8 @@
 import { defaultBackupFileName, parseBackupFileName } from '../utils/dataBackup.js'
+import {
+  REQUEST_TIMEOUTS, requestJson, withDeadline, openStreamResponse, fetchWithConnectDeadline,
+  readJsonResponse, bodyBlobOnce, httpErrorForResponse, rejectStreamResponse, consumeSSE,
+} from './transport.js'
 
 const BASE = '/api'
 
@@ -21,14 +25,16 @@ export const stopGodSaysRun = id => request(`/god-says/runs/${id}/stop`, { metho
 export const deleteGodSaysTurn = id => request(`/god-says/runs/${encodeURIComponent(id)}`, { method: 'DELETE' })
 export const getGodAngel = () => request('/god-says/angel')
 export const updateGodAngel = body => request('/god-says/angel', { method: 'PUT', body })
-export const summonGodAngel = ({ personalities, custom } = {}) => request('/god-says/angel/summon', { method: 'POST', body: { personalities, custom } })
+export const summonGodAngel = ({ personalities, custom } = {}) => request('/god-says/angel/summon', { method: 'POST', body: { personalities, custom }, timeoutMs: REQUEST_TIMEOUTS.llm })
 export const getGodAngelImageJobs = () => request('/god-says/angel/image-jobs')
 export const getGodAngelImageJob = id => request(`/god-says/angel/image-jobs/${encodeURIComponent(id)}`)
 export const generateGodAngelImage = body => request('/god-says/angel/image-jobs', { method: 'POST', body })
 export const saveGodAngelAvatar = base64 => request('/god-says/angel/avatar', { method: 'POST', body: { base64 } })
 export const saveGodAngelStanding = (base64, scene = 'work') => request('/god-says/angel/standing', { method: 'POST', body: { base64, scene } })
 export const removeGodAngelStanding = (scene = 'work') => request(`/god-says/angel/standing?scene=${encodeURIComponent(scene)}`, { method: 'DELETE' })
-export const generateGodAngelClothingDraft = ({ basePrompt, scene, tags, brief, signal }) => request('/god-says/angel/clothing-draft', { method: 'POST', body: { basePrompt, scene, tags, brief }, signal })
+export const generateGodAngelClothingDraft = ({ basePrompt, scene, tags, brief, signal }) => request('/god-says/angel/clothing-draft', {
+  method: 'POST', body: { basePrompt, scene, tags, brief }, signal, timeoutMs: REQUEST_TIMEOUTS.llm,
+})
 export const getGodWorldEvents = session => request(`/god-says/world-events${session ? `?session=${session}` : ''}`)
 export const getGodAngelActivity = () => request('/god-says/activity')
 export const retryGodWorldEvent = id => request(`/god-says/world-events/${id}/retry`, { method: 'POST' })
@@ -36,146 +42,18 @@ export const retryGodWorldEvent = id => request(`/god-says/world-events/${id}/re
 export const getLogs = after => request('/logs' + (after ? `?after=${after}` : ''))
 export const clearLogs = () => request('/logs', { method: 'DELETE' })
 
-// 统一请求基元：非 2xx 自动抛出服务端错误信息（4xx 取人话 `message`，5xx 只取机器码 `error`），成功返回解析后的 JSON。
-//
-// 解析策略（2026-10-15 漏合并修复，对齐上游 v3.9.0 的意图但**不破坏本地 mock 形态**）：
-//   1. 先试 `res.json()` —— 真实 Response 与既有测试 mock 都走这条，行为与改动前逐字节一致；
-//   2. `json()` 不可用或抛错（非 JSON，多半是 Express 默认 HTML 错误页）时，回落 `res.text()` + 手动 parse。
-// 为什么不能一刀切改成 `text()`：那样 30 个既有测试的 mock（`text: async () => ''` + `json: async () => body`）
-// 会全部拿到空对象。而 `json()` 优先让两种 mock 形态都能活，且**仍然保留上游最看重的那条能力** ——
-// "404 + 拿不到结构化 error ⇒ 路由没注册（后端是旧代码）" 的人话提示（已踩三次：日报删除/传媒批量操作/外观扩写）。
-async function request(path, { method = 'GET', body, headers, signal } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+// 统一请求基元：只读一次响应体，按内容解析 JSON；非 2xx 抛带 status/code/path 的错误。
+// 4xx 优先使用服务端人话 message，5xx 只暴露安全 error；404 缺少结构体时保留旧提示口径。
+async function request(path, { method = 'GET', body, headers, signal, timeoutMs } = {}) {
+  const url = `${BASE}${path}`
+  return requestJson(url, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json', ...headers } : headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
+    timeoutMs,
+    path,
   })
-  let result
-  // 204 / 205 / 304 / HEAD 没有响应体：不能去读 body，更不能伪造一个 {} 当成功。
-  // 返回 undefined，调用方用 `await` 后判空即可（现有调用点都不依赖 204 的返回对象）。
-  const noBody = res.status === 204 || res.status === 205 || res.status === 304
-    || res.headers?.get?.('content-length') === '0'
-  if (noBody) {
-    if (!res.ok) {
-      // 非 2xx 且无结构化错误体时，至少给出状态码（保留 404 not found 口径）
-      const isMissingRoute = res.status === 404
-      throw new Error(isMissingRoute
-        ? '接口不存在 (404 not found)：后端服务还是旧代码，请先在启动器里重启服务再试'
-        : `请求失败 (${res.status})`)
-    }
-    return undefined
-  }
-  // `json()` 不可用（部分测试 mock 只提供 text()）或抛错（非 JSON，多半是 Express 默认 HTML 错误页）
-  // 时，都要回落 `text()` + 手动 parse —— 早先只 catch 了抛错，漏了"方法不存在"这条，导致那些
-  // mock 解出空对象、服务端返回的 event 被丢弃（eventChoiceCountdown 的服务端覆盖断言就是这么挂的）。
-  let parsed = false
-  if (typeof res.json === 'function') {
-    try {
-      result = await res.json()
-      parsed = true
-    } catch { /* 非 JSON，走下面的 text() 回落 */ }
-  }
-  if (!parsed && typeof res.text === 'function') {
-    try {
-      const raw = await res.text()
-      if (raw) {
-        result = JSON.parse(raw)
-        parsed = true
-      } else {
-        // 成功但空 body（部分 DELETE 返回 200 无内容）：保持 {} 兼容既有调用方
-        result = {}
-        parsed = res.ok
-      }
-    } catch { /* 真的不是 JSON（Express 默认 HTML 错误页） */ }
-  }
-  // 成功状态下「有内容却解析失败」不能伪装成 {} —— 那会让调用方以为"接口返回了空数据"
-  // 而把本地状态清空（B06）。给一个能追到所属请求的错误，保留 status 与 path 便于定位。
-  if (!parsed && res.ok) {
-    throw new Error(`响应解析失败 (${res.status} ${path})：服务端返回的不是合法 JSON`)
-  }
-  if (!parsed) result = {}
-  if (!res.ok) {
-    // 404 + 拿不到结构化 error ⇒ 路由没注册（后端是旧代码），而不是"功能坏了"。
-    // ⚠️ 消息里必须保留 `404` 与 `not found`：调用方（如 getTimePerception）是按
-    // `/not found|Cannot GET|请求失败 \(404\)/` 认这个错再翻成自己的专业人话的，
-    // 换成别的措辞会让那些翻译集体失效（timeControlPerception.test.js 钉着这条）。
-    const isMissingRoute = res.status === 404 && !result.error && !result.message
-    if (isMissingRoute) {
-      throw new Error('接口不存在 (404 not found)：后端服务还是旧代码，请先在启动器里重启服务再试')
-    }
-    // 2026-10-01 修：**4xx 优先取人话（`message`）**。本仓约定是 `error` = 机器码、`message` = 人话，
-    // 而所有调用点都写成 `toast(err.message)`。具体踩到的坑：玩具门控被拒返回
-    // `403 { error:'toy_gate_blocked', code:'affinity_low', message:'她握住你的手腕，摇头。…' }`，
-    // 原来先取 `error` ⇒ 用户看到的是 `toy_gate_blocked` 这串代码，看着就是「玩具一点就报错」。
-    // 5xx 维持原样（只取 `error`）：errorHandler 的注释写明 5xx 的 err.message 可能含 SQL / 路径细节，不透给界面。
-    // ⚠️ 这里**不要加可选链**（`result?.message`）：`realMachineFeedback20261001.test.js` 有一条
-    // 源码文本守卫钉的就是 `result.message || result.error` 这个写法，加了它那条会红。
-    const detail = res.status < 500 ? (result.message || result.error) : result.error
-    throw new Error(detail || `请求失败 (${res.status})`)
-  }
-  return result
-}
-
-/**
- * 统一 SSE 解析循环（2026-11-09 方案 B07 修）。
- *
- * **保持逐行回调契约不变**：`event:` 行回调一次 `(name, undefined)`，
- * `data:` 行回调一次 `(name, parsedData)`。chat.js store 依赖前者的
- * `data === undefined` 记录 lastEvent（safety timer 用），改成「按空行派发完整事件」
- * 会让那条事件消失、安全计时失效，所以不为了贴合 SSE 规范文字而破坏现有链路。
- *
- * 修的是真正会出问题的四处：
- *  1. 只按 `\n` 切，CRLF / `\r` 会在 data 尾部留字符导致 JSON.parse 失败 → 统一归一化行尾；
- *  2. `event: ` / `data: ` 写死带空格，无空格写法会漏 → 都按冒号切再 trim；
- *  3. JSON.parse 和**业务回调包在同一个 try** —— 回调里抛错被当成"解析失败"静默吞掉，
- *     页面表现为"流莫名停了但没报错" → 拆开：坏帧跳该帧，回调异常向上抛；
- *  4. `done` 时直接 return，reader 不 releaseLock，尾部多字节 UTF-8 残留没 flush → finally 释放 + flush。
- *
- * 跨 chunk 仍靠 buffer 保留未完整的行；流自然结束正常返回，取消由外部 signal 负责。
- */
-async function consumeSSE(res, onEvent) {
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let eventType = null
-
-  const handleLine = (line) => {
-    if (line.startsWith('event:')) {
-      eventType = line.slice(6).trim()
-      // 回调与解析无关，异常必须向上抛（不能被当成坏帧吞掉）
-      onEvent(eventType, undefined)
-    } else if (line.startsWith('data:')) {
-      let data
-      try {
-        data = JSON.parse(line.slice(5).replace(/^ /, ''))
-      } catch {
-        return   // 坏帧：只跳过这一行，不掐断整条流
-      }
-      onEvent(eventType, data)
-    }
-    // 注释行（: 开头）、id/retry、空行等忽略
-  }
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) {
-        // flush 尾部解码残留（多字节 UTF-8 被拆在两个 chunk 时靠它补齐）
-        buffer += decoder.decode()
-        const tail = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-        if (tail) for (const line of tail.split('\n')) handleLine(line)
-        return
-      }
-      buffer += decoder.decode(value, { stream: true })
-      const normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-      const lines = normalized.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) handleLine(line)
-    }
-  } finally {
-    try { reader.releaseLock() } catch { /* 已释放 */ }
-  }
 }
 
 // ── 应用自身版本 ──
@@ -244,7 +122,7 @@ export function getIdentityAnchor(characterId) {
 
 /** 重新自动提取（正则优先，提不到时后端会调一次 LLM）。overwrite=true 时覆盖手改过的锚点。 */
 export function extractIdentityAnchor(characterId, overwrite = false) {
-  return request(`/characters/${characterId}/identity-anchor/extract`, { method: 'POST', body: { overwrite } })
+  return request(`/characters/${characterId}/identity-anchor/extract`, { method: 'POST', body: { overwrite }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 // ── 角色专属外观/形态 ──
@@ -310,7 +188,7 @@ export function setOutfitOverride(characterId, scene, until = null) {
  * @param {string} [extra.baseAppearance] 没有任何 seed 时的身体来源兜底（如角色卡外观段）
  */
 export function generateSceneOutfits(characterId, save = false, extra = {}) {
-  return request(`/characters/${characterId}/outfits/generate`, { method: 'POST', body: { save, ...extra } })
+  return request(`/characters/${characterId}/outfits/generate`, { method: 'POST', body: { save, ...extra }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /**
@@ -371,7 +249,7 @@ export function listSceneStandings(characterId) {
 
 /** 生成场景立绘；已有图时返回 task_id，后台出图并在对比确认后落库。传 prompt 时复用提示词。 */
 export function generateSceneStanding(characterId, scene, requirement = '', prompt = '') {
-  return request(`/characters/${characterId}/standings/generate`, { method: 'POST', body: { scene, requirement, prompt } })
+  return request(`/characters/${characterId}/standings/generate`, { method: 'POST', body: { scene, requirement, prompt }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 上传某场景的立绘：base64 必须是 data:image/…;base64, 形式 */
@@ -392,12 +270,12 @@ export async function undoLastRound(characterId) {
 }
 
 export async function generateCharacter(description) {
-  return request(`/characters/generate`, { method: 'POST', body: { description } })
+  return request(`/characters/generate`, { method: 'POST', body: { description }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 预览模式生成角色：只生成不入库，由前端确认后再调 createCharacter */
 export async function generateCharacterPreview(description, { searchContext = '' } = {}) {
-  return request(`/characters/generate`, { method: 'POST', body: { description, save: false, searchContext } })
+  return request(`/characters/generate`, { method: 'POST', body: { description, save: false, searchContext }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 导入酒馆角色卡（PNG 内嵌 chara / JSON 卡），返回预览数据，直接进入招募预览步骤 */
@@ -503,7 +381,7 @@ export async function getRecentImages(characterId) {
 
 /** AI 生成角色头像（脸部特写，表情跟随人格） */
 export function generateAvatar(characterId) {
-  return request(`/characters/${characterId}/generate-avatar`, { method: 'POST' })
+  return request(`/characters/${characterId}/generate-avatar`, { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 上传/清除角色聊天背景（base64，空串 = 恢复默认） */
@@ -516,12 +394,12 @@ export async function uploadChatBg(characterId, base64) {
  * target='galgame' 时写进角色 galgame 背景；previewOnly=true 只返回预览不落库。
  */
 export function generateChatBg(characterId, requirement = '', target = 'galgame', previewOnly = false) {
-  return request(`/characters/${characterId}/generate-chat-bg`, { method: 'POST', body: { requirement, target, previewOnly } })
+  return request(`/characters/${characterId}/generate-chat-bg`, { method: 'POST', body: { requirement, target, previewOnly }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 生成角色立绘（requirement 为额外立绘需求，可空） */
 export function generateStanding(characterId, requirement = '') {
-  return request(`/characters/${characterId}/generate-standing`, { method: 'POST', body: { requirement } })
+  return request(`/characters/${characterId}/generate-standing`, { method: 'POST', body: { requirement }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 删除角色立绘 */
@@ -541,6 +419,7 @@ export function refineAppearanceDraft({ image, basePrompt, displayName, sceneLab
     method: 'POST',
     body: { image, base_prompt: basePrompt, display_name: displayName, scene_label: sceneLabel },
     signal,
+    timeoutMs: REQUEST_TIMEOUTS.llm,
   })
 }
 
@@ -549,22 +428,23 @@ export function expandAppearanceDraft({ brief, characterId, basePrompt, displayN
   return request('/characters/expand-appearance-draft', {
     method: 'POST',
     body: { brief, character_id: characterId, base_prompt: basePrompt, display_name: displayName, scene_label: sceneLabel },
+    timeoutMs: REQUEST_TIMEOUTS.llm,
   })
 }
 
 export const getClothingLibrary = () => request('/characters/clothing-library')
 export const generateClothingAppearanceDraft = ({ characterId, basePrompt, scene, tags, brief, signal }) => request('/characters/clothing-appearance-draft', {
-  method: 'POST', body: { character_id: characterId, base_prompt: basePrompt, scene, tags, brief }, signal,
+  method: 'POST', body: { character_id: characterId, base_prompt: basePrompt, scene, tags, brief }, signal, timeoutMs: REQUEST_TIMEOUTS.llm,
 })
 
 /** 生成角色立绘任务（已有立绘时走对比确认，requirement 为额外需求 / prompt 为直接复用提示词） */
 export function generateStandingTask(characterId, body = {}) {
-  return request(`/characters/${characterId}/generate-standing-task`, { method: 'POST', body })
+  return request(`/characters/${characterId}/generate-standing-task`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.batch })
 }
 
 /** 用已有英文 prompt 直接重出立绘（不重新请求提示词） */
 export function regenerateStandingImage(characterId, prompt) {
-  return request(`/characters/${characterId}/generate-standing-image`, { method: 'POST', body: { prompt } })
+  return request(`/characters/${characterId}/generate-standing-image`, { method: 'POST', body: { prompt }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 当前立绘姿势风格（normal / dynamic，全局设置） */
@@ -600,11 +480,11 @@ export async function deleteRelationship(id) {
 }
 
 export async function deduceRelationships(characterId, boost, excludeNames) {
-  return request(`/relationships/deduce`, { method: 'POST', body: { characterId, boost, excludeNames } })
+  return request(`/relationships/deduce`, { method: 'POST', body: { characterId, boost, excludeNames }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export async function deduceUserRelationships(boost, excludeNames) {
-  return request(`/relationships/deduce`, { method: 'POST', body: { mode: 'user', boost, excludeNames } })
+  return request(`/relationships/deduce`, { method: 'POST', body: { mode: 'user', boost, excludeNames }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 // ── User Relationships ──
@@ -626,58 +506,90 @@ export async function deleteUserRelationship(id) {
 
 export function chatStream(characterId, message, clientMsgId, imageMode = 'smart', townContext, galgameMode = false) {
   const controller = new AbortController()
+  let streamEnded = false
+  let streamCancelled = false
   const stream = new ReadableStream({
     async start(outerController) {
-      // ── 健壮连接：fetch 异常 + 非 2xx 响应均重试（覆盖代理 ECONNRESET → 502 场景）──
-      //    每次尝试带 8s 超时，防止 Vite proxy 挂起导致无限等待
+      const endStream = () => {
+        if (streamEnded || streamCancelled) return
+        streamEnded = true
+        try { outerController.close() } catch { /* stream was cancelled independently */ }
+      }
+      const failStream = error => {
+        if (streamEnded || streamCancelled) return
+        streamEnded = true
+        try { outerController.error(error) } catch { /* stream was cancelled independently */ }
+      }
+      const emitStream = chunk => {
+        if (streamEnded || streamCancelled) return false
+        try { outerController.enqueue(chunk); return true } catch { return false }
+      }
+      // ── 健壮连接：连接阶段与非 2xx 响应均可重试；已发出幂等 client_msg_id ──
+      // 连接 deadline 由 openStreamResponse 统一管理，拿到响应头后不再限制长回复寿命。
       let res
       let detachResponseAbort
+      let connection = null
       let retries = 0
       const MAX_RETRIES = 3
       while (true) {
-        if (controller.signal.aborted) { outerController.close(); return }
-        let timeoutId, onUserAbort, keepAbortListener = false
-        const attemptCtrl = new AbortController()
+        if (controller.signal.aborted) { endStream(); return }
+        let keepConnection = false
         try {
-          // 8s 超时：超时后走重试逻辑，保证连接断开场景下 8 秒内必有一次判决
-          timeoutId = setTimeout(() => attemptCtrl.abort(new Error('timeout')), 8000)
-          // 用户主动取消也中止本次尝试
-          onUserAbort = () => attemptCtrl.abort()
-          controller.signal.addEventListener('abort', onUserAbort, { once: true })
-
-          res = await fetch(`${BASE}/characters/${characterId}/chat`, {
+          const opened = await openStreamResponse(`${BASE}/characters/${characterId}/chat`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message, client_msg_id: clientMsgId, image_mode: imageMode, force_image_gen: imageMode === 'force', ...(galgameMode === true ? { galgame_mode: true } : {}), ...(townContext === undefined ? {} : { townContext }) }),
-            signal: attemptCtrl.signal,
+          }, {
+            signal: controller.signal,
+            timeoutMs: REQUEST_TIMEOUTS.chatConnect,
+            path: `/characters/${characterId}/chat`,
           })
+          connection = opened
+          res = opened.response
           if (res.ok) {
-            keepAbortListener = true
-            detachResponseAbort = () => controller.signal.removeEventListener('abort', onUserAbort)
+            keepConnection = true
+            detachResponseAbort = () => connection?.dispose()
             break
           }
           if (townContext !== undefined && [400, 409].includes(res.status)) {
-            const detail = await res.json().catch(() => ({}))
-            const error = Object.assign(new Error(detail.error || '小镇对话暂时不可用，请重新选择邻居'), { status: res.status, code: detail.code || 'TOWN_CHAT_REJECTED' })
-            outerController.error(error)
+            const error = await rejectStreamResponse(res, `/characters/${characterId}/chat`, {
+              signal: opened.signal,
+              abortBody: opened.abort.bind(opened),
+            })
+            if (error.status === res.status && error.message === `请求失败 (${res.status})`) {
+              error.message = '小镇对话暂时不可用，请重新选择邻居'
+            }
+            error.code ||= 'TOWN_CHAT_REJECTED'
+            failStream(error)
             return // Admission errors must never retry or fall back to an ordinary request.
           }
           // 非 2xx：也按重试处理（代理 502/504 等）
+          let responseError
+          try {
+            responseError = await rejectStreamResponse(res, `/characters/${characterId}/chat`, {
+              signal: opened.signal,
+              abortBody: opened.abort.bind(opened),
+            })
+          } catch (error) {
+            responseError = error
+          }
           retries++
           if (retries > MAX_RETRIES) {
-            outerController.error(new Error(`Server returned ${res.status}`))
+            failStream(responseError)
             return
           }
-          console.warn(`[api] bad status ${res.status} (${retries}/${MAX_RETRIES}), retrying in ${retries}s...`)
+          console.warn(`[api] bad status ${res.status} (${retries}/${MAX_RETRIES}): ${responseError.message}, retrying in ${retries}s...`)
           await new Promise(r => setTimeout(r, retries * 1000))
         } catch (err) {
-          if (err.name === 'AbortError') { outerController.close(); return }
+          if (controller.signal.aborted) { endStream(); return }
           retries++
-          if (retries > MAX_RETRIES) { outerController.error(err); return }
+          if (retries > MAX_RETRIES) { failStream(err); return }
           console.warn(`[api] fetch failed (${retries}/${MAX_RETRIES}): ${err.message}, retrying in ${retries}s...`)
           await new Promise(r => setTimeout(r, retries * 1000))
         } finally {
-          clearTimeout(timeoutId)
-          if (onUserAbort && !keepAbortListener) controller.signal.removeEventListener('abort', onUserAbort)
+          if (!keepConnection) {
+            connection?.dispose()
+            connection = null
+          }
         }
       }
 
@@ -685,30 +597,43 @@ export function chatStream(characterId, message, clientMsgId, imageMode = 'smart
         // ── 日程系统：检测 queued 响应（非 SSE，是 JSON）──
         const contentType = res.headers.get('Content-Type') || ''
         if (contentType.includes('application/json')) {
-          const json = await res.json()
+          const json = await readJsonResponse(res, `/characters/${characterId}/chat`, {
+            method: 'POST',
+            signal: connection.signal,
+            timeoutMs: REQUEST_TIMEOUTS.write,
+            abortBody: connection.abort.bind(connection),
+          })
           if (json.queued) {
             // 返回结构化事件（与正常 SSE 解析路径格式一致，确保 store 能正确识别）
-            outerController.enqueue({ type: 'event', event: 'queued' })
-            outerController.enqueue({ type: 'data', event: 'queued', data: json })
-            outerController.close()
+            emitStream({ type: 'event', event: 'queued' })
+            emitStream({ type: 'data', event: 'queued', data: json })
+            endStream()
             return
           }
+          throw new Error('聊天接口返回 JSON，但没有生成或排队状态')
         }
 
         // ── 流式读取 ──
         await consumeSSE(res, (event, data) => {
           if (data === undefined) {
-            outerController.enqueue({ type: 'event', event })
+            emitStream({ type: 'event', event })
           } else {
-            outerController.enqueue({ type: 'data', event, data })
+            emitStream({ type: 'data', event, data })
           }
         })
-        outerController.close()
+        endStream()
       } catch (err) {
-        outerController.error(err)
-      } finally { detachResponseAbort() }
+        failStream(err)
+      } finally {
+        detachResponseAbort?.()
+        connection?.dispose()
+        connection = null
+      }
     },
-    cancel() { controller.abort() },
+    cancel() {
+      streamCancelled = true
+      controller.abort()
+    },
   })
   return { stream, abort: () => controller.abort() }
 }
@@ -755,7 +680,7 @@ export async function markGroupSeen(id) {
 
 /** 冷场续聊：用户停留但没人说话时触发角色继续聊（消息经统一 SSE 到达） */
 export async function nudgeGroup(id) {
-  return request(`/groups/${id}/nudge`, { method: 'POST' })
+  return request(`/groups/${id}/nudge`, { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 群聊发言：SSE 流式返回本轮剧本（解析格式与 chatStream 一致）
@@ -764,34 +689,72 @@ export async function nudgeGroup(id) {
  */
 export function groupChatStream(groupId, items, truncateAfterMsgId = null) {
   const controller = new AbortController()
+  let streamEnded = false
+  let streamCancelled = false
   const stream = new ReadableStream({
     async start(outerController) {
       let res
+      let connection = null
+      const endStream = () => {
+        if (streamEnded || streamCancelled) return
+        streamEnded = true
+        try { outerController.close() } catch { /* stream was cancelled independently */ }
+      }
+      const failStream = error => {
+        if (streamEnded || streamCancelled) return
+        streamEnded = true
+        try { outerController.error(error) } catch { /* stream was cancelled independently */ }
+      }
+      const emitStream = chunk => {
+        if (streamEnded || streamCancelled) return false
+        try { outerController.enqueue(chunk); return true } catch { return false }
+      }
       try {
-        res = await fetch(`${BASE}/groups/${groupId}/chat`, {
+        const opened = await openStreamResponse(`${BASE}/groups/${groupId}/chat`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ messages: items, truncate_after_msg_id: truncateAfterMsgId }),
+        }, {
           signal: controller.signal,
+          timeoutMs: REQUEST_TIMEOUTS.chatConnect,
+          path: `/groups/${groupId}/chat`,
         })
+        connection = opened
+        res = opened.response
       } catch (err) {
-        if (err.name === 'AbortError') { outerController.close(); return }
-        outerController.error(err)
+        if (controller.signal.aborted) { endStream(); return }
+        failStream(err)
         return
       }
       if (!res.ok) {
-        outerController.error(new Error(`Server returned ${res.status}`))
+        try {
+          failStream(await rejectStreamResponse(res, `/groups/${groupId}/chat`, {
+            signal: connection.signal,
+            abortBody: connection.abort.bind(connection),
+          }))
+        } catch (error) {
+          failStream(error)
+        } finally {
+          connection.dispose()
+        }
         return
       }
       try {
         await consumeSSE(res, (event, data) => {
           if (data !== undefined) {
-            outerController.enqueue({ type: 'data', event, data })
+            emitStream({ type: 'data', event, data })
           }
         })
-        outerController.close()
+        endStream()
       } catch (err) {
-        if (err.name !== 'AbortError') outerController.error(err)
+        if (controller.signal.aborted) endStream()
+        else failStream(err)
+      } finally {
+        connection.dispose()
       }
+    },
+    cancel() {
+      streamCancelled = true
+      controller.abort()
     },
   })
   return { stream, abort: () => controller.abort() }
@@ -993,7 +956,7 @@ export function getCharacterReactionPack(characterId) {
 
 export function generateCharacterReactionPack(characterId, eventTypes) {
   const body = Array.isArray(eventTypes) ? { eventTypes } : {}
-  return request(`/character-reactions/packs/${characterId}/generate`, { method: 'POST', body })
+  return request(`/character-reactions/packs/${characterId}/generate`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function deleteCharacterReactionPack(characterId) {
@@ -1146,7 +1109,7 @@ export async function updateLlmConfig(data) {
 }
 
 export function testLlmConnection(data) {
-  return request(`/config/llm/test`, { method: 'POST', body: data })
+  return request(`/config/llm/test`, { method: 'POST', body: data, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 /** 校验 Vertex 服务账号 JSON（不落库，供设置页「测试」按钮用；上游 v3.10.0） */
 export function validateVertexServiceAccount(data) {
@@ -1197,21 +1160,15 @@ export async function syncActiveLlmProfile() {
 //   POST /api/data/import                   → body 为归档原始字节，Content-Type: application/gzip
 //
 // 导出/导入都绕开 request()：一个要拿二进制 blob + 响应头，一个要发非 JSON 的原始字节。
-// 失败时把后端的人话（error / detail）和 backupPath 挂在 Error 上交给页面展示。
+// 失败时使用同一错误分类；导入失败允许附带后端明确给出的 backupPath 供回滚。
 
 /** 导出摘要：角色/消息/群/记忆条数 + 预估大小（dbBytes 是估算上界，文案不写「精确」） */
 export function getDataExportInfo() {
   return request('/data/export/info')
 }
 
-function backupError(status, payload) {
-  const result = payload && typeof payload === 'object' ? payload : {}
-  const error = new Error(result.error || result.detail || `请求失败 (${status})`)
-  error.status = status
-  error.detail = result.detail || ''
-  // 500 时后端会把导入前的自动备份路径带回来，页面必须能显示它以便回滚
-  error.backupPath = result.backupPath || ''
-  return error
+function backupHttpError(res, path, signal, abortBody) {
+  return httpErrorForResponse(res, path, { allowBackupPath: true, signal, abortBody })
 }
 
 /**
@@ -1220,12 +1177,22 @@ function backupError(status, payload) {
  * @returns {Promise<{fileName:string, bytes:number}>}
  */
 export async function downloadDataArchive(includeConfig = false) {
-  const res = await fetch(`${BASE}/data/export?includeConfig=${includeConfig ? 1 : 0}`)
-  if (!res.ok) throw backupError(res.status, await res.json().catch(() => ({})))
-  const blob = await res.blob()
-  const fileName = parseBackupFileName(res.headers.get('Content-Disposition')) || defaultBackupFileName()
-  saveBlobAsFile(blob, fileName)
-  return { fileName, bytes: blob.size }
+  const path = `/data/export?includeConfig=${includeConfig ? 1 : 0}`
+  return withDeadline(async signal => {
+    const res = await fetch(`${BASE}${path}`, { signal })
+    if (!res.ok) {
+      throw await backupHttpError(res, path, signal)
+    }
+    // 下载归档可能很大，按同一个备份预算流式收齐，不能只覆盖响应头阶段。
+    const blob = await bodyBlobOnce(res, {
+      signal,
+      timeoutMs: REQUEST_TIMEOUTS.backup,
+      path,
+    })
+    const fileName = parseBackupFileName(res.headers.get('Content-Disposition')) || defaultBackupFileName()
+    saveBlobAsFile(blob, fileName)
+    return { fileName, bytes: blob.size }
+  }, { timeoutMs: REQUEST_TIMEOUTS.backup, path })
 }
 
 /**
@@ -1234,14 +1201,19 @@ export async function downloadDataArchive(includeConfig = false) {
  * @returns {Promise<{ok:boolean, restored:object, backupPath:string, restartRecommended:boolean, message:string}>}
  */
 export async function importDataArchive(file) {
-  const res = await fetch(`${BASE}/data/import`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/gzip' },
-    body: file,
-  })
-  const result = await res.json().catch(() => ({}))
-  if (!res.ok) throw backupError(res.status, result)
-  return result
+  const path = '/data/import'
+  return withDeadline(async signal => {
+    const res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/gzip' },
+      body: file,
+      signal,
+    })
+    if (!res.ok) {
+      throw await backupHttpError(res, path, signal)
+    }
+    return readJsonResponse(res, path, { method: 'POST', signal, timeoutMs: 0 })
+  }, { timeoutMs: REQUEST_TIMEOUTS.backup, path })
 }
 
 /** 临时 <a download> 触发下载（不进模板，因此不受「不用裸元素」约束） */
@@ -1280,10 +1252,19 @@ export async function activateNovelaiProfile(id) {
 
 // ── Chat Memory ──
 async function jsonRequest(url, options) {
-  const res = await fetch(url, options)
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status, code: data.code, requestId: data.requestId, characterId: data.characterId })
-  return data
+  const path = url.startsWith(BASE) ? url.slice(BASE.length) : url
+  return withDeadline(async signal => {
+    const res = await fetch(url, { ...options, signal })
+    return readJsonResponse(res, path, { method: options?.method || 'GET', signal, timeoutMs: 0 })
+  }, {
+    signal: options?.signal,
+    timeoutMs: options?.timeoutMs ?? (
+      String(options?.method || 'GET').toUpperCase() === 'GET'
+        ? REQUEST_TIMEOUTS.query
+        : REQUEST_TIMEOUTS.write
+    ),
+    path,
+  })
 }
 
 export function getMemoryConfig() {
@@ -1295,11 +1276,11 @@ export function updateMemoryConfig(data) {
 }
 
 export function testMemoryEmbedding(data) {
-  return request(`/config/memory/test-embedding`, { method: 'POST', body: data })
+  return request(`/config/memory/test-embedding`, { method: 'POST', body: data, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function testMemoryReranker(data) {
-  return request(`/config/memory/test-reranker`, { method: 'POST', body: data })
+  return request(`/config/memory/test-reranker`, { method: 'POST', body: data, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function getMemoryStats() {
@@ -1388,11 +1369,11 @@ export async function getSystemRules() {
 }
 
 export async function polishWorldSetting(data) {
-  return request(`/config/world-settings/polish`, { method: 'POST', body: data })
+  return request(`/config/world-settings/polish`, { method: 'POST', body: data, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export async function polishWorldLanguageStyle(id, data) {
-  return request(`/config/world-settings/${id}/language-style/polish`, { method: 'POST', body: data })
+  return request(`/config/world-settings/${id}/language-style/polish`, { method: 'POST', body: data, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export async function activateWorldSetting(id) {
@@ -1446,26 +1427,36 @@ export async function testStyle({ artist, width, height, mode = 'chat', prompt =
   if (sceneDesc) body.sceneDesc = sceneDesc;
   if (reuseSceneLoras) body.reuseSceneLoras = true;
   if (alreadyPrepared) body.alreadyPrepared = true;
-  if (!onPrompt) return request(`/images/test-style`, { method: 'POST', body })
-  const res = await fetch(`${BASE}/images/test-style`, {
+  if (!onPrompt) return request(`/images/test-style`, {
+    method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.llm,
+  })
+  const path = '/images/test-style'
+  const connection = await openStreamResponse(`${BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...body, stream: true }),
+  }, {
+    timeoutMs: REQUEST_TIMEOUTS.sseConnect,
+    path,
   })
-  // 兼容尚未重启的旧后端，以及鉴权等中间件返回的 JSON 错误。
-  if (!res.ok || !res.headers.get('content-type')?.includes('text/event-stream')) {
-    const result = await res.json()
-    if (!res.ok) throw new Error(result.error || `请求失败 (${res.status})`)
+  const { response: res } = connection
+  try {
+    // 兼容尚未重启的旧后端，以及鉴权等中间件返回的 JSON 错误。
+    if (!res.ok || !res.headers.get('content-type')?.includes('text/event-stream')) {
+      if (!res.ok) throw await rejectStreamResponse(res, path, { abortBody: connection.abort.bind(connection) })
+      return await readJsonResponse(res, path, { method: 'POST', signal: connection.signal, timeoutMs: REQUEST_TIMEOUTS.llm, abortBody: connection.abort.bind(connection) })
+    }
+    let result
+    await consumeSSE(res, (event, data) => {
+      if (!data) return
+      if (event === 'prompt') onPrompt(data)
+      else if (event === 'result') result = data
+    }, { path })
+    if (!result) throw new Error('生成连接已中断，请重试')
     return result
+  } finally {
+    connection.dispose()
   }
-  let result
-  await consumeSSE(res, (event, data) => {
-    if (!data) return
-    if (event === 'prompt') onPrompt(data)
-    else if (event === 'result') result = data
-  })
-  if (!result) throw new Error('生成连接已中断，请重试')
-  return result
 }
 
 // ── 姿势控制（Anima Control Pose）──
@@ -1490,7 +1481,7 @@ export function uploadPoseReference(base64) {
 
 /** 测试细化（最近一张图，HiresFix 参数流程，不落盘，返回原图+细化图） */
 export function testHires() {
-  return request(`/images/test-hires`, { method: 'POST' });
+  return request(`/images/test-hires`, { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.llm });
 }
 
 // ── Moments 朋友圈 ──
@@ -1516,32 +1507,44 @@ export async function listMoments(params) {
 export function connectMomentsStream(onNewPost) {
   const controller = new AbortController()
   const conn = { _closed: false }
+  let connection = null
 
   conn.close = () => {
     conn._closed = true
     controller.abort()
+    connection?.dispose()
   }
 
-  fetch(`${BASE}/moments/stream`, { signal: controller.signal })
-    .then(async (res) => {
+  const path = '/moments/stream'
+  fetchWithConnectDeadline(`${BASE}${path}`, { signal: controller.signal }, { timeoutMs: REQUEST_TIMEOUTS.sseConnect, path })
+    .then(async opened => {
+      connection = opened
+      opened.finishHeaders()
+      const { response: res } = opened
       if (!res.ok) {
         console.warn('[api] moments SSE connection failed:', res.status)
-        conn._closed = true
+        await rejectStreamResponse(res, path, { signal: controller.signal, abortBody: controller.abort.bind(controller) }).catch(() => {})
+        _handleStreamClose()
         return
       }
       try {
         await consumeSSE(res, (event, data) => {
           if (data !== undefined && event === 'new_post') onNewPost(data)
-        })
+        }, { path })
       } catch { /* 连接中断，交给上层重连逻辑 */ }
-      conn._closed = true
+      _handleStreamClose()
     })
     .catch(err => {
-      conn._closed = true
+      _handleStreamClose()
       if (err.name !== 'AbortError') {
         console.warn('[api] moments SSE error:', err.message)
       }
     })
+    .finally(() => { connection?.dispose(); connection = null })
+
+  function _handleStreamClose() {
+    conn._closed = true
+  }
 
   return conn
 }
@@ -1554,23 +1557,30 @@ export function connectMomentsStream(onNewPost) {
 export function connectNotificationsStream(onProactiveMessage) {
   const controller = new AbortController()
   const conn = { _closed: false }
+  let connection = null
 
   conn.close = () => {
     conn._closed = true
     controller.abort()
+    connection?.dispose()
   }
 
-  fetch(`${BASE}/notifications/stream`, { signal: controller.signal })
-    .then(async (res) => {
+  const path = '/notifications/stream'
+  fetchWithConnectDeadline(`${BASE}${path}`, { signal: controller.signal }, { timeoutMs: REQUEST_TIMEOUTS.sseConnect, path })
+    .then(async opened => {
+      connection = opened
+      opened.finishHeaders()
+      const { response: res } = opened
       if (!res.ok) {
         console.warn('[api] notifications SSE connection failed:', res.status)
+        await rejectStreamResponse(res, path, { signal: controller.signal, abortBody: controller.abort.bind(controller) }).catch(() => {})
         conn._closed = true
         return
       }
       try {
         await consumeSSE(res, (event, data) => {
           if (data !== undefined && event === 'proactive_message') onProactiveMessage(data)
-        })
+        }, { path })
       } catch { /* 连接中断，交给上层重连逻辑 */ }
       conn._closed = true
     })
@@ -1580,6 +1590,7 @@ export function connectNotificationsStream(onProactiveMessage) {
         console.warn('[api] notifications SSE error:', err.message)
       }
     })
+    .finally(() => { connection?.dispose(); connection = null })
 
   return conn
 }
@@ -1616,7 +1627,7 @@ export async function markMomentsRead() {
 export async function generateMoment(characterId, topicId) {
   // topicId 为「话题库点题」：带上它后端按 id 读原条目（失效话题返回 400/404）；
   // 不传时后端保持原随机/日程抽题口径。undefined 会被 JSON.stringify 丢掉，兼容旧调用。
-  return request(`/moments/generate`, { method: 'POST', body: { character_id: characterId, topic_id: topicId } })
+  return request(`/moments/generate`, { method: 'POST', body: { character_id: characterId, topic_id: topicId }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export async function updateMoment(postId, content) {
@@ -1649,7 +1660,7 @@ export async function likeMoment(postId) {
 
 /** 按帖子原本的提示词重新出图，补上因生图失败缺失的配图 */
 export async function regenerateMomentImage(postId) {
-  return request(`/moments/${postId}/regenerate-image`, { method: 'POST' })
+  return request(`/moments/${postId}/regenerate-image`, { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 // ── 角色对用户的画像（user_portraits）──
@@ -1807,15 +1818,11 @@ export async function getEventById(eventId) {
 }
 
 export async function chooseEventOption(eventId, choice, customText) {
-  // 120s 超时：LLM (~15s) + ComfyUI 生图 (~90s) 的总耗时上限
-  // 避免请求无限挂起耗尽浏览器 HTTP/1.1 连接池（6 连接限制 + 3 SSE = 仅剩 3 可用）
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 120_000)
-  try {
-    return request(`/events/${eventId}/choose`, { method: 'POST', body: { choice, customText }, signal: controller.signal })
-  } finally {
-    clearTimeout(timeoutId)
-  }
+  // 这条同步链路会先跑 LLM，再等 ComfyUI 出图；预算与 transport 的 LLM 档一致。
+  // 不能在外层再套一个更短的 controller，否则会先于 transport 截止时间误杀请求。
+  return request(`/events/${eventId}/choose`, {
+    method: 'POST', body: { choice, customText }, timeoutMs: REQUEST_TIMEOUTS.llm,
+  })
 }
 
 export async function undoEventOption(eventId) {
@@ -1842,7 +1849,7 @@ export async function deleteEvent(eventId) {
  * 这里要把它当"一次正常的业务结果"来处理（把 error 显示给用户），不要当成请求异常。
  */
 export async function regenerateEventImage(eventId) {
-  return request(`/events/${eventId}/image`, { method: 'POST' })
+  return request(`/events/${eventId}/image`, { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export async function getEventsUnread() {
@@ -1854,7 +1861,7 @@ export async function markEventsRead() {
 }
 
 export async function generateEvent(characterId, eventTypeKey, customPrompt) {
-  return request(`/events/generate`, { method: 'POST', body: { characterId, eventTypeKey, customPrompt } })
+  return request(`/events/generate`, { method: 'POST', body: { characterId, eventTypeKey, customPrompt }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /**
@@ -1871,10 +1878,12 @@ export async function generateEvent(characterId, eventTypeKey, customPrompt) {
 export function connectUnifiedStream(handlers = {}, { onClose } = {}) {
   const controller = new AbortController()
   const conn = { _closed: false }
+  let connection = null
 
   conn.close = () => {
     conn._closed = true
     controller.abort()
+    connection?.dispose()
   }
 
   function _handleClose() {
@@ -1883,10 +1892,15 @@ export function connectUnifiedStream(handlers = {}, { onClose } = {}) {
     if (onClose) onClose()
   }
 
-  fetch(`${BASE}/stream`, { signal: controller.signal })
-    .then(async (res) => {
+  const path = '/stream'
+  fetchWithConnectDeadline(`${BASE}${path}`, { signal: controller.signal }, { timeoutMs: REQUEST_TIMEOUTS.sseConnect, path })
+    .then(async opened => {
+      connection = opened
+      opened.finishHeaders()
+      const { response: res } = opened
       if (!res.ok) {
         console.warn('[api] unified SSE connection failed:', res.status)
+        await rejectStreamResponse(res, path, { signal: controller.signal, abortBody: controller.abort.bind(controller) }).catch(() => {})
         _handleClose()
         return
       }
@@ -1895,7 +1909,7 @@ export function connectUnifiedStream(handlers = {}, { onClose } = {}) {
           if (data === undefined) return
           const fn = handlers[event]
           if (fn) fn(data)
-        })
+        }, { path })
       } catch { /* 连接中断，交给上层重连逻辑 */ }
       _handleClose()
     })
@@ -1905,6 +1919,7 @@ export function connectUnifiedStream(handlers = {}, { onClose } = {}) {
       }
       _handleClose()
     })
+    .finally(() => { connection?.dispose(); connection = null })
 
   return conn
 }
@@ -1913,16 +1928,23 @@ export function connectUnifiedStream(handlers = {}, { onClose } = {}) {
 export function connectEventsStream(handlers = {}) {
   const controller = new AbortController()
   const conn = { _closed: false }
+  let connection = null
 
   conn.close = () => {
     conn._closed = true
     controller.abort()
+    connection?.dispose()
   }
 
-  fetch(`${BASE}/events/stream`, { signal: controller.signal })
-    .then(async (res) => {
+  const path = '/events/stream'
+  fetchWithConnectDeadline(`${BASE}${path}`, { signal: controller.signal }, { timeoutMs: REQUEST_TIMEOUTS.sseConnect, path })
+    .then(async opened => {
+      connection = opened
+      opened.finishHeaders()
+      const { response: res } = opened
       if (!res.ok) {
         console.warn('[api] events SSE connection failed:', res.status)
+        await rejectStreamResponse(res, path, { signal: controller.signal, abortBody: controller.abort.bind(controller) }).catch(() => {})
         conn._closed = true
         return
       }
@@ -1933,7 +1955,7 @@ export function connectEventsStream(handlers = {}) {
           else if (event === 'event_update') handlers.onUpdate?.(data)
           else if (event === 'event_concluded') handlers.onConclusion?.(data)
           else if (event === 'event_expired') handlers.onExpired?.(data)
-        })
+        }, { path })
       } catch { /* 连接中断，交给上层重连逻辑 */ }
       conn._closed = true
     })
@@ -1943,6 +1965,7 @@ export function connectEventsStream(handlers = {}) {
         console.warn('[api] events SSE error:', err.message)
       }
     })
+    .finally(() => { connection?.dispose(); connection = null })
 
   return conn
 }
@@ -1980,25 +2003,25 @@ export function updateScheduleActivity(characterId, index, patch) {
 export function peekSnapshot(characterId, genImage = true, activityContext = null) {
   const body = { gen_image: genImage };
   if (activityContext) body.activity = activityContext;
-  return request(`/schedule/${characterId}/peek`, { method: 'POST', body })
+  return request(`/schedule/${characterId}/peek`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 瞄一眼再拍一张：使用已生成的 prompt 重新提交 ComfyUI 生图 */
 export function retakePeekSnapshot(characterId, prompt, participantIds) {
-  return request(`/schedule/${characterId}/peek/retake`, { method: 'POST', body: { prompt, participantIds } })
+  return request(`/schedule/${characterId}/peek/retake`, { method: 'POST', body: { prompt, participantIds }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function regenerateSchedule(characterId, direction) {
   const body = {}
   if (direction) body.direction = direction
-  return request(`/schedule/${characterId}/regenerate`, { method: 'POST', body })
+  return request(`/schedule/${characterId}/regenerate`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 /** 重置世界线：重新生成所有角色日程（后端 SSE 推送进度） */
 export function regenerateAllSchedules(direction, resume = false) {
   const body = { resume }
   if (direction) body.direction = direction
-  return request(`/schedule/regenerate-all`, { method: 'POST', body })
+  return request(`/schedule/regenerate-all`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.batch })
 }
 
 /** 取消正在进行的重置世界线任务 */
@@ -2100,7 +2123,7 @@ export function listDiaries(characterId, limit = 60) {
 export function generateDiary(characterId, date) {
   const body = {}
   if (date) body.date = date
-  return request(`/diaries/${characterId}/generate`, { method: 'POST', body })
+  return request(`/diaries/${characterId}/generate`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.batch })
 }
 
 // ── 《邻舍日报》预告报纸 ──
@@ -2124,18 +2147,18 @@ export async function deleteNewspaperEdition(date) {
 }
 
 export async function generateNewspaper() {
-  return request(`/newspaper/generate`, { method: 'POST' })
+  return request(`/newspaper/generate`, { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.batch })
 }
 
 // 重新生成今天的报纸（文字重印，配图后台补）—— 上游 v3.10.0 合并，2026-10-19
 export async function regenerateTodayNewspaper() {
-  return request('/newspaper/regenerate', { method: 'POST' })
+  return request('/newspaper/regenerate', { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.batch })
 }
 
 // 手动补印一张缺失的报纸配图（slot: lead=特稿 / world=今日异闻 / item=普通新闻，index 为新闻下标；
 // date 省略 = 今天，带日期可给历史期补图）
 export async function regenerateNewspaperImage({ slot, index, date } = {}) {
-  return request(`/newspaper/regenerate-image`, { method: 'POST', body: { slot, index, date } })
+  return request(`/newspaper/regenerate-image`, { method: 'POST', body: { slot, index, date }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 // 消除/恢复今天的世界影响（异闻不再/重新注入角色提示词）
@@ -2163,7 +2186,7 @@ export function deleteEventType(id) {
 }
 
 export function generateEventTypes(direction) {
-  return request(`/library/event-types/generate`, { method: 'POST', body: { direction } })
+  return request(`/library/event-types/generate`, { method: 'POST', body: { direction }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function saveEventTypeBatch(items) {
@@ -2192,7 +2215,7 @@ export function setTopicsChecked({ ids = null, all = false, checked }) {
 }
 
 export function generateTopics(direction) {
-  return request(`/library/topics/generate`, { method: 'POST', body: { direction } })
+  return request(`/library/topics/generate`, { method: 'POST', body: { direction }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function saveTopicBatch(items) {
@@ -2203,15 +2226,24 @@ export function saveTopicBatch(items) {
 async function maibotFetch(path, options = {}) {
   const headers = {}
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
-  const res = await fetch(`${BASE}/maibot${path}`, {
-    ...options,
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+  const requestPath = `/maibot${path}`
+  return withDeadline(async signal => {
+    const res = await fetch(`${BASE}${requestPath}`, {
+      ...options,
+      headers: { ...headers, ...(options.headers || {}) },
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal,
+    })
+    return readJsonResponse(res, requestPath, { method: options.method || 'GET', signal, timeoutMs: 0 })
+  }, {
+    signal: options.signal,
+    timeoutMs: options.timeoutMs ?? (
+      String(options.method || 'GET').toUpperCase() === 'GET'
+        ? REQUEST_TIMEOUTS.query
+        : REQUEST_TIMEOUTS.write
+    ),
+    path: requestPath,
   })
-  let data = null
-  try { data = await res.json() } catch { /* 非 JSON 响应按 null 处理 */ }
-  if (!res.ok) throw new Error((data && data.error) || (`HTTP ${res.status}`))
-  return data
 }
 
 export function maibotGetWebuiSettings() {
@@ -2236,7 +2268,7 @@ export function maibotUpdatePluginPersona(payload) {
   return maibotFetch('/plugin-persona', { method: 'PUT', body: payload })
 }
 export function maibotDeriveStyle(basePrompt) {
-  return maibotFetch('/derive-style', { method: 'POST', body: { base_prompt: basePrompt } })
+  return maibotFetch('/derive-style', { method: 'POST', body: { base_prompt: basePrompt }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 export function maibotGetLatestMemory() {
   return maibotFetch('/latest-memory')
@@ -2284,10 +2316,10 @@ export function listMediaAvatars() {
   return request('/media/avatars')
 }
 export function generateMediaAvatars(direction = '', artist = '@ebora', count = 10) {
-  return request('/media/avatars/generate', { method: 'POST', body: { direction, artist, count } })
+  return request('/media/avatars/generate', { method: 'POST', body: { direction, artist, count }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 export function regenerateMediaAvatar(id, direction = '', artist = '@ebora') {
-  return request(`/media/avatars/${id}/regenerate`, { method: 'POST', body: { direction, artist } })
+  return request(`/media/avatars/${id}/regenerate`, { method: 'POST', body: { direction, artist }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 export function removeMediaAvatar(id) {
   return request(`/media/avatars/${id}`, { method: 'DELETE' })
@@ -2311,7 +2343,7 @@ export function applyGlobalOutfitType(id) {
   return request(`/global-outfits/${id}/apply`, { method: 'POST', body: {} })
 }
 export function generateGlobalOutfitType(id, withStanding = true, skipExisting = false, extra = {}) {
-  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding, skipExisting, ...extra } })
+  return request(`/global-outfits/${id}/generate`, { method: 'POST', body: { withStanding, skipExisting, ...extra }, timeoutMs: REQUEST_TIMEOUTS.batch })
 }
 // 这套统一服装在每个用户角色上的现状（描述/立绘有没有）——「可选人物」与覆盖确认都用它
 export function listGlobalOutfitTypeCharacters(id) {
@@ -2335,7 +2367,7 @@ export function getMediaJob(jobId, signal) {
 
 /** 提交后台任务并轮询到出结果；失败/超时抛人话错误，signal 取消时抛 AbortError */
 async function runMediaJob(submitPath, body, { signal, timeoutMs = 5 * 60 * 1000, intervalMs = 1200 } = {}) {
-  const submitted = await request(submitPath, { method: 'POST', body, signal })
+  const submitted = await request(submitPath, { method: 'POST', body, signal, timeoutMs: REQUEST_TIMEOUTS.write })
   const jobId = submitted?.jobId
   if (!jobId) throw new Error('后台任务没有返回任务号（后端可能是旧版本）')
   const startedAt = Date.now()
@@ -2796,17 +2828,17 @@ const expressionStandingPath = (id, slot = '') => `/characters/${id}/expression-
 export const getStandingOverview = () => request('/expression-standings/overview')
 export const preflightAllExpressionStandings = body => request('/expression-standings/preflight', { method: 'POST', body })
 export const preflightExpressionStandings = (id, body) => request(expressionStandingPath(id) + '/preflight', { method: 'POST', body })
-export const generateAllExpressionStandings = body => request('/expression-standings/generate', { method: 'POST', body })
+export const generateAllExpressionStandings = body => request('/expression-standings/generate', { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.batch })
 export const listExpressionStandings = id => request(expressionStandingPath(id))
-export const generateExpressionStandings = (id, body) => request(expressionStandingPath(id) + '/generate', { method: 'POST', body })
+export const generateExpressionStandings = (id, body) => request(expressionStandingPath(id) + '/generate', { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.batch })
 export const controlExpressionStandingTask = (id, jobId, action, body = null) => request(expressionStandingPath(id) + `/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST', body: body || {} })
 export const updateExpressionStandingPrompt = (id, slot, prompt, generation) => request(expressionStandingPath(id, slot) + '/prompt', { method: 'PATCH', body: { prompt, generation } })
 export const editExpressionStanding = (id, slot, action, body = {}) => request(expressionStandingPath(id, slot) + '/' + action, { method: 'POST', body })
 export const deleteExpressionStanding = (id, slot) => request(expressionStandingPath(id, slot), { method: 'DELETE' })
 export const getStandingDisplayState = () => request('/standing-display/state')
 // 上游 v4.0.0 合并：立绘触摸台词的语音合成与批量补齐
-export const generateStandingTouchSpeech = (id, body) => request(`/characters/${id}/expression-standings/touch-lines/speech`, {method:'POST',body})
-export const fillAllStandingTouchSpeech = () => request('/expression-standings/touch-lines/speech/fill', {method:'POST'})
+export const generateStandingTouchSpeech = (id, body) => request(`/characters/${id}/expression-standings/touch-lines/speech`, { method: 'POST', body, timeoutMs: REQUEST_TIMEOUTS.llm })
+export const fillAllStandingTouchSpeech = () => request('/expression-standings/touch-lines/speech/fill', { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.batch })
 export const setStandingDisplayCharacter = body => request('/standing-display/active', { method: 'PUT', body })
 
 // ── 上游 v3.9.0 合并：朋友圈回填（补发今日动态）──────────────────────────────
@@ -2821,8 +2853,8 @@ export const stopBackfillMoments = taskId => request(`/moments/backfill/${encode
 // standing-interaction 的读改写接口，只保留台词三件套。
 export const getStandingTouchLines = (id, { signal } = {}) => request(`/characters/${id}/expression-standings/touch-lines`, { signal })
 export const saveStandingTouchLines = (id, body) => request(`/characters/${id}/expression-standings/touch-lines`, { method: 'PUT', body })
-export const generateStandingTouchLines = (id, expectedVersion) => request(`/characters/${id}/expression-standings/touch-lines/generate`, { method: 'POST', body: { expectedVersion } })
-export const fillAllStandingTouchLines = () => request('/expression-standings/touch-lines/fill', { method: 'POST' })
+export const generateStandingTouchLines = (id, expectedVersion) => request(`/characters/${id}/expression-standings/touch-lines/generate`, { method: 'POST', body: { expectedVersion }, timeoutMs: REQUEST_TIMEOUTS.llm })
+export const fillAllStandingTouchLines = () => request('/expression-standings/touch-lines/fill', { method: 'POST', timeoutMs: REQUEST_TIMEOUTS.batch })
 /**
  * 立绘互动配置（上游 v3.9.0 契约；后端 routes/expressionStandings.js 已挂
  * `GET /characters/:id/standing-interaction`）：
