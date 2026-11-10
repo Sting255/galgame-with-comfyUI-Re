@@ -30,8 +30,13 @@ const currentBg = computed(() => props.character?.chat_bg_path || '')
 const busy = ref(false)
 const busyText = ref('')
 const fileEl = ref(null)
+let pendingCharacterId = null
 
-function pickFile() { fileEl.value?.click() }
+function pickFile() {
+  if (!props.character?.id || busy.value) return
+  pendingCharacterId = props.character.id
+  fileEl.value?.click()
+}
 
 /** 本地图片压缩：最长边 1600px，转 JPEG，控制 base64 体积 */
 function compressImage(file) {
@@ -56,13 +61,15 @@ function compressImage(file) {
 
 async function onFile(e) {
   const file = e.target.files?.[0]
+  const characterId = pendingCharacterId || props.character?.id
+  pendingCharacterId = null
   e.target.value = ''
-  if (!file || !props.character) return
+  if (!file || !characterId) return
   if (!file.type.startsWith('image/')) { toast('请选择图片文件', 'error'); return }
   try {
     busy.value = true; busyText.value = '处理图片中…'
     const base64 = await compressImage(file)
-    await saveBg(base64)
+    await saveBg(base64, characterId)
   } catch (err) {
     toast(err.message || '上传失败', 'error')
   } finally {
@@ -70,12 +77,13 @@ async function onFile(e) {
   }
 }
 
-async function saveBg(base64) {
+async function saveBg(base64, characterId) {
+  if (!characterId) return
   try {
     busy.value = true; busyText.value = '保存中…'
-    const r = await api.uploadChatBg(props.character.id, base64)
+    const r = await api.uploadChatBg(characterId, base64)
     if (r.ok) {
-      emit('updated', r.chat_bg_path)
+      emit('updated', { characterId, path: r.chat_bg_path })
       toast(base64 ? '聊天背景已更新' : '已恢复默认背景')
     } else {
       toast(r.error || '保存失败', 'error')
@@ -87,7 +95,10 @@ async function saveBg(base64) {
   }
 }
 
-function resetBg() { saveBg('') }
+function resetBg() {
+  const characterId = props.character?.id
+  if (characterId && !busy.value) saveBg('', characterId)
+}
 </script>
 
 <style scoped>

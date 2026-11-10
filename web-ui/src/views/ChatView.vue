@@ -377,9 +377,9 @@
         </div>
 
         <!-- 编辑人格 → 二级弹窗 -->
-        <div role="button" tabindex="0" class="sp-btn" @click="openCharEditor" @keydown.enter.prevent="openCharEditor" @keydown.space.prevent="openCharEditor">
+        <div role="button" tabindex="0" class="sp-btn" :class="{ 'is-disabled': editorLoading }" :aria-disabled="editorLoading" @click="openCharEditor" @keydown.enter.prevent="openCharEditor" @keydown.space.prevent="openCharEditor">
           <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M892.691692 30.72l77.981539 77.981538a73.491692 73.491692 0 0 1 0 103.975385l-584.861539 584.861539-228.036923 46.08 46.08-228.036924L788.716308 30.72a73.491692 73.491692 0 0 1 103.975384 0z m25.993846 129.969231l-77.981538-77.981539-569.186462 569.186462-19.692307 97.673846 97.673846-19.692308 569.186461-569.186461z" fill="currentColor"/><path d="M652.366769 167.699692l180.854154 182.035693 55.689846-55.689847-180.854154-182.114461zM73.491692 953.344h888.595693v-78.769231H73.570462z" fill="currentColor"/></svg>
-          查看详细信息
+          {{ editorLoading ? '读取角色资料...' : '查看详细信息' }}
         </div>
 
         <!-- 亲密信息看板直达：原先要「查看详细信息」→ 详情卡里再点一次，这里一步打开同一个看板 -->
@@ -430,7 +430,7 @@
     <CharacterDetailModal
       ref="detailModalRef"
       :visible="showEditor"
-      :character="chat.activeChar"
+      :character="editorCharacter"
       @close="closeCharEditor"
       @saved="onCharSaved"
       @deleted="onCharDeleted"
@@ -690,11 +690,10 @@
     <Teleport to="body">
       <AvatarCropper
         v-if="showAvatarPicker"
-        :title="'选择' + (chat.activeChar?.display_name || '') + '的头像'"
+        :title="'选择' + (avatarCharacter?.display_name || chat.activeChar?.display_name || '') + '的头像'"
         :show-recent-tab="true"
         :show-generate-tab="true"
-        :character-id="chat.activeChar?.id"
-        :character-base-prompt="chat.activeChar?.base_prompt || ''"
+        :character-id="avatarCharacter?.id"
         :recent-images="recentImages"
         :recent-loading="recentLoading"
         @close="closeAvatarPicker"
@@ -1160,11 +1159,10 @@ function onGiftSent(result) {
   }
   chat.affinityKey++
 
-  // 戒指：更新角色的誓约状态
-  if (result.is_oath) {
-    const char = chat.characters.find(c => c.id === chat.activeCharId)
-    if (char) char.is_oath = 1
-  }
+  chat.patchCharacterLocal(chat.activeCharId, {
+    ...(result.affinity != null ? { affinity: result.affinity } : {}),
+    ...(result.is_oath ? { is_oath: 1 } : {}),
+  })
 
   // 1. 自定义送出台词（选填）
   if (result.giftLine) {
@@ -1350,6 +1348,10 @@ const showSettings = ref(false)
 const showIntimate = ref(false)
 const showHypnosis = ref(false)
 const showEditor = ref(false)
+const editorCharacter = ref(null)
+const editorLoading = ref(false)
+let editorClearTimer = null
+let editorRequestSeq = 0
 const showRelationGraph = ref(false)
 const detailModalRef = ref(null)
 const clearing = ref(false)
@@ -1726,21 +1728,67 @@ function openHypnosisPanel() {
 // ══════════════════════════════════════════════════
 
 async function openCharEditor() {
-  showSettings.value = false
-  if (!chat.activeChar) return
-  showEditor.value = true
+  const characterId = chat.activeCharId
+  if (!characterId || editorLoading.value) return
+  clearTimeout(editorClearTimer)
+  const requestId = ++editorRequestSeq
+  editorLoading.value = true
+  try {
+    const detail = await chat.loadCharacterDetail(characterId, { force: true })
+    if (!detail) throw new Error('角色详情已更新，请重试')
+    if (requestId !== editorRequestSeq || String(chat.activeCharId) !== String(characterId)) return
+    editorCharacter.value = detail
+    showSettings.value = false
+    showEditor.value = true
+  } catch (err) {
+    toastFn?.(`角色资料读取失败：${err?.message || '请稍后重试'}`, 'error')
+  } finally {
+    editorLoading.value = false
+  }
 }
 
 function closeCharEditor() {
+  editorRequestSeq += 1
   showEditor.value = false
+  clearTimeout(editorClearTimer)
+  editorClearTimer = setTimeout(() => {
+    if (!showEditor.value) editorCharacter.value = null
+  }, 320)
 }
 
 async function onCharSaved(c) {
+  const characterId = c?.id ?? chat.activeCharId
+  if (!characterId) return
+  const requestId = ++editorRequestSeq
+  chat.invalidateCharacterDetail(characterId)
   await chat.loadCharacters()
+  if (requestId !== editorRequestSeq
+    || String(chat.activeCharId) !== String(characterId)
+    || String(editorCharacter.value?.id) !== String(characterId)
+    || !showEditor.value) return
+  try {
+    const detail = await chat.loadCharacterDetail(characterId, { force: true })
+    if (requestId !== editorRequestSeq
+      || String(chat.activeCharId) !== String(characterId)
+      || String(editorCharacter.value?.id) !== String(characterId)
+      || !showEditor.value) return
+    if (!detail) throw new Error('角色详情已更新，请重试')
+    editorCharacter.value = detail
+  } catch (err) {
+    if (requestId === editorRequestSeq) {
+      toastFn?.(`角色已保存，但详情刷新失败：${err?.message || '请重新打开'}`, 'error')
+    }
+  }
 }
 
 async function onCharDeleted(c) {
+  editorRequestSeq += 1
+  if (c?.id) chat.invalidateCharacterDetail(c.id)
   showEditor.value = false
+  clearTimeout(editorClearTimer)
+  editorClearTimer = setTimeout(() => {
+    if (!showEditor.value) editorCharacter.value = null
+  }, 320)
   await chat.loadCharacters()
   router.push('/tavern')
 }
@@ -1784,10 +1832,13 @@ try { await chat.deleteActiveCharacter() } catch {} finally { deleting.value = f
 }
 
 async function removeAvatar() {
-showSettings.value = false
-const ok = await confirmFn({ title:'移除头像', message:'确定要移除当前角色的头像吗？', okText:'移除' })
-if (!ok) return
-await chat.uploadAvatar(null)
+  const characterId = chat.activeCharId
+  if (!characterId) return
+  const displayName = chat.activeChar?.display_name || '当前角色'
+  showSettings.value = false
+  const ok = await confirmFn({ title:'移除头像', message:`确定要移除${displayName}的头像吗？`, okText:'移除' })
+  if (!ok) return
+  await chat.uploadAvatar(null, characterId)
 }
 
 // ══════════════════════════════════════════════════
@@ -1796,11 +1847,8 @@ await chat.uploadAvatar(null)
 
 const chatBgUrl = computed(() => chat.activeChar?.chat_bg_path || '')
 
-function onChatBgUpdated(path) {
-  if (chat.activeChar) chat.activeChar.chat_bg_path = path
-  // 同步角色列表中的同名角色，避免切换会话时闪回旧背景
-  const inList = chat.characters.find(c => c.id === chat.activeCharId)
-  if (inList) inList.chat_bg_path = path
+function onChatBgUpdated({ characterId, path }) {
+  chat.patchCharacterLocal(characterId, { chat_bg_path: path })
 }
 
 // ══════════════════════════════════════════════════
@@ -1810,28 +1858,53 @@ function onChatBgUpdated(path) {
 const showAvatarPicker = ref(false)
 const recentImages = ref([])
 const recentLoading = ref(false)
+const avatarCharacter = ref(null)
+let avatarClearTimer = null
+let recentRequestSeq = 0
 
 function openAvatarPicker() {
-showSettings.value = false
-recentImages.value = []
-showAvatarPicker.value = true
+  const characterId = chat.activeCharId
+  if (!characterId) return
+  recentRequestSeq += 1
+  clearTimeout(avatarClearTimer)
+  showSettings.value = false
+  recentImages.value = []
+  avatarCharacter.value = {
+    id: characterId,
+    display_name: chat.activeChar?.display_name || '',
+  }
+  showAvatarPicker.value = true
 }
 
 function closeAvatarPicker() {
-showAvatarPicker.value = false
+  recentRequestSeq += 1
+  showAvatarPicker.value = false
+  clearTimeout(avatarClearTimer)
+  avatarClearTimer = setTimeout(() => {
+    if (!showAvatarPicker.value) avatarCharacter.value = null
+  }, 320)
 }
 
 async function switchToRecent() {
-if (recentImages.value.length > 0) return
-recentLoading.value = true
-try {
-const d = await chat.getRecentChatImages()
-recentImages.value = d.images || []
-} catch {} finally { recentLoading.value = false }
+  if (recentImages.value.length > 0) return
+  const characterId = avatarCharacter.value?.id
+  if (!characterId) return
+  const requestId = ++recentRequestSeq
+  recentLoading.value = true
+  try {
+    const d = await chat.getRecentChatImages(characterId)
+    if (requestId !== recentRequestSeq || String(avatarCharacter.value?.id) !== String(characterId)) return
+    recentImages.value = d.images || []
+  } catch {
+  } finally {
+    if (requestId === recentRequestSeq) recentLoading.value = false
+  }
 }
 
 async function onAgentAvatarSave(base64) {
-await chat.uploadAvatar(base64)
+  const characterId = avatarCharacter.value?.id
+  if (!characterId) throw new Error('头像归属角色已失效')
+  await chat.uploadAvatar(base64, characterId)
 }
 
 const messageGroups = computed(() => {
@@ -2085,7 +2158,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  editorRequestSeq += 1
+  recentRequestSeq += 1
   cancelImageScroll()
+  clearTimeout(editorClearTimer)
+  clearTimeout(avatarClearTimer)
   clearTimeout(scrollTimer)
   teardownMobileKeyboard()
   teardownResizeObserver()

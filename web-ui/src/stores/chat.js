@@ -24,6 +24,8 @@ export const useChatStore = defineStore('chat', () => {
   let streamSeq = 0
   let selectionSeq = 0
   let historySeq = 0
+  let characterListSeq = 0
+  let characterLocalRevision = 0
   let activeStream = null  // { charId, id, abort } | null
   let restoreAfterStream = false
   let imageRevision = 0
@@ -78,6 +80,11 @@ export const useChatStore = defineStore('chat', () => {
     return !!activeStream && activeStream.id === sessionId
   }
   const characters = ref([])
+  const characterDetails = new Map()
+  const MAX_CACHED_CHARACTER_DETAILS = 6
+  const detailRequests = new Map()
+  const detailVersions = new Map()
+  const activeCharDetail = ref(null)
   const activeCharId = ref(null)
   const messages = ref([])       // unified: { id, role, type, content, images, genId, genStatus, genStartTime, created_at }
   const queuedReplies = ref({}) // presentation only; authoritative delayed replies still use the original queue/SSE
@@ -123,7 +130,14 @@ export const useChatStore = defineStore('chat', () => {
   })
   watch(activeCharId, () => imageRecovery.stopAll(), { flush: 'sync' })
   onScopeDispose(() => imageRecovery.stopAll())
-  const activeChar = computed(() => characters.value.find(c => c.id === activeCharId.value))
+  const activeChar = computed(() => {
+    const id = activeCharId.value
+    const detail = activeCharDetail.value
+    const summary = characters.value.find(c => String(c.id) === String(id))
+    // 摘要负责头像、背景、状态、好感度等列表侧频繁更新；详情只补长字段。
+    if (id && detail && String(detail.id) === String(id)) return { ...detail, ...(summary || {}) }
+    return summary || (detail && String(detail.id) === String(id) ? detail : null)
+  })
 
   function applyImageEvent(d) {
     if (Number(d.characterId) !== Number(activeCharId.value)) return
@@ -150,7 +164,11 @@ export const useChatStore = defineStore('chat', () => {
     const user = [...messages.value].reverse().find(m => m.role === 'user')
     if (!d.clientMsgId || (user?.clientMsgId || user?.client_msg_id) !== d.clientMsgId) return
     if (d.event === 'guesses') { guesses.value = { a: d.a, b: d.b }; guessSourceRawId.value = d.source_raw_id }
-    if (d.event === 'affinity_update') { realtimeAffinity.value = d; affinityKey.value++ }
+    if (d.event === 'affinity_update') {
+      realtimeAffinity.value = d
+      if (d.affinity != null) patchCharacterLocal(d.characterId, { affinity: d.affinity })
+      affinityKey.value++
+    }
   })
   onEvent('connected', () => {
     if (streaming.value) restoreAfterStream = true
@@ -174,8 +192,98 @@ export const useChatStore = defineStore('chat', () => {
   const hasMoreOlder = computed(() => windowHasMoreOlder.value || serverHasMoreOlder.value)
 
   async function loadCharacters() {
-    try { const d = await api.listCharacters(); characters.value = d.characters || [] } catch {}
-    sortCharactersByPin()
+    const request = ++characterListSeq
+    const revision = characterLocalRevision
+    try {
+      const d = await api.listCharacters({ view: 'summary' })
+      if (request !== characterListSeq || revision !== characterLocalRevision) return false
+      characters.value = d.characters || []
+      sortCharactersByPin()
+      return true
+    } catch (error) {
+      if (request === characterListSeq) {
+        console.warn('[chat] 角色列表加载失败:', error?.message || error)
+      }
+      return false
+    }
+  }
+
+  /** 任意角色行的本地写入或失效都推进 revision，阻止早先列表响应覆盖新值。 */
+  function markCharacterLocalChange() {
+    characterLocalRevision += 1
+  }
+
+  function characterDetailKey(characterId) {
+    return String(characterId)
+  }
+
+  function cacheCharacterDetail(key, detail) {
+    characterDetails.delete(key)
+    characterDetails.set(key, detail)
+    while (characterDetails.size > MAX_CACHED_CHARACTER_DETAILS) {
+      characterDetails.delete(characterDetails.keys().next().value)
+    }
+  }
+
+  /**
+   * 按 id 拉完整角色详情。编辑入口必须等这个请求成功后才能打开；
+   * 摘要行不能冒充完整编辑对象。
+   */
+  async function loadCharacterDetail(characterId, { force = false } = {}) {
+    const key = characterDetailKey(characterId)
+    let version = detailVersions.get(key) || 0
+
+    if (force) {
+      version += 1
+      detailVersions.set(key, version)
+      characterDetails.delete(key)
+      detailRequests.delete(key)
+    } else {
+      const cached = characterDetails.get(key)
+      if (cached) {
+        if (String(activeCharId.value) === key) activeCharDetail.value = cached
+        return cached
+      }
+      const pending = detailRequests.get(key)
+      if (pending) return pending
+    }
+
+    const request = api.getCharacter(characterId).then(response => {
+      const detail = response?.character || response
+      if (!detail || String(detail.id) !== key) throw new Error('角色详情响应与请求不匹配')
+      if ((detailVersions.get(key) || 0) !== version) return null
+      cacheCharacterDetail(key, detail)
+      if (String(activeCharId.value) === key) activeCharDetail.value = detail
+      return detail
+    }).finally(() => {
+      if (detailRequests.get(key) === request) detailRequests.delete(key)
+    })
+    detailRequests.set(key, request)
+    return request
+  }
+
+  /** 角色写入或删除后让详情缓存失效；进行中的旧响应会因版本不符被丢弃。 */
+  function invalidateCharacterDetail(characterId) {
+    markCharacterLocalChange()
+    const key = characterDetailKey(characterId)
+    detailVersions.set(key, (detailVersions.get(key) || 0) + 1)
+    characterDetails.delete(key)
+    detailRequests.delete(key)
+    if (String(activeCharId.value) === key) activeCharDetail.value = null
+  }
+
+  /** 同步摘要与已缓存详情中的轻量字段，供头像、背景、好感度等即时更新使用。 */
+  function patchCharacterLocal(characterId, patch) {
+    markCharacterLocalChange()
+    const key = characterDetailKey(characterId)
+    const summary = characters.value.find(c => String(c.id) === key)
+    if (summary) Object.assign(summary, patch)
+    const cached = characterDetails.get(key)
+    if (cached) Object.assign(cached, patch)
+    if (String(activeCharId.value) === key && activeCharDetail.value
+      && String(activeCharDetail.value.id) === key) {
+      Object.assign(activeCharDetail.value, patch)
+    }
   }
 
   // 置顶优先 + 最近消息时间降序（置顶组内部仍按消息时间排）
@@ -227,6 +335,7 @@ export const useChatStore = defineStore('chat', () => {
           affinityDelta: d.affinity.delta ?? 0,
           lastReason: d.affinity.reason || '',
         }
+        patchCharacterLocal(charId, { affinity: d.affinity.value })
       }
       return true;
     } catch { return false }
@@ -361,6 +470,7 @@ export const useChatStore = defineStore('chat', () => {
       showTypingDots.value = false
     }
     activeCharId.value = charId
+    activeCharDetail.value = characterDetails.get(characterDetailKey(charId)) || null
     messages.value = []
     resetPaging()
     resetToLatest()
@@ -377,7 +487,13 @@ export const useChatStore = defineStore('chat', () => {
     } catch { /* 非关键 */ }
     if (selection !== selectionSeq) return false
     affinityKey.value = 0         // 重置动画 key，避免切角色触发 roll
-    const loaded = await loadMessages(charId)
+    const [loaded] = await Promise.all([
+      loadMessages(charId),
+      loadCharacterDetail(charId).catch(error => {
+        console.warn('[chat] 角色详情加载失败:', error?.message || error)
+        return null
+      }),
+    ])
     if (selection !== selectionSeq) return false
     await loadCharacters()
     return loaded && selection === selectionSeq
@@ -386,8 +502,11 @@ export const useChatStore = defineStore('chat', () => {
   async function updateActiveCharacter(data) {
     const id = activeCharId.value
     if (!id) return
+    markCharacterLocalChange()
     await api.updateCharacter(id, data)
+    invalidateCharacterDetail(id)
     await loadCharacters()
+    return loadCharacterDetail(id, { force: true }).catch(() => null)
   }
 
   async function clearActiveMessages() {
@@ -463,21 +582,24 @@ export const useChatStore = defineStore('chat', () => {
 
   // 在设置页面调用：AI 生成角色并直接入库
   async function generateCharacter(description) {
+    markCharacterLocalChange()
     const result = await api.generateCharacter(description)
     await loadCharacters()
     return result
   }
 
-  async function uploadAvatar(base64) {
-    const id = activeCharId.value
+  async function uploadAvatar(base64, characterId = activeCharId.value) {
+    const id = characterId
     if (!id) return
+    markCharacterLocalChange()
     const r = await api.uploadAvatar(id, base64 || '')
+    invalidateCharacterDetail(id)
     await loadCharacters()
     return r
   }
 
-  async function getRecentChatImages() {
-    const id = activeCharId.value
+  async function getRecentChatImages(characterId = activeCharId.value) {
+    const id = characterId
     if (!id) return { images: [] }
     return api.getRecentImages(id)
   }
@@ -490,7 +612,9 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = false
     streamingContent.value = ''
     showTypingDots.value = false
+    markCharacterLocalChange()
     await api.deleteCharacter(id)
+    invalidateCharacterDetail(id)
     writeChatRecovery(id, null)
     failedTurn.value = null
     messages.value = []
@@ -899,6 +1023,7 @@ export const useChatStore = defineStore('chat', () => {
                 affinityDelta: d.affinityDelta ?? 0,
                 lastReason: d.lastReason || '',
               }
+              patchCharacterLocal(charId, { affinity: d.affinity })
               affinityKey.value++
             }
              //  msg_saved: 临时 ID  真实 ID / 用户消息解析 
@@ -1238,6 +1363,6 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  return { characters, activeCharId, messages, queuedReplies, visibleMessages, streaming, streamingContent, showTypingDots, memoryRecalling, hasMoreOlder, guesses, guessSourceRawId, dialogueRevision, responseComplete, lastSendError, failedTurn, retryFailedMessage, rerolling, realtimeAffinity, affinityKey, activeChar, sidebarScrollSignal,
-    loadCharacters, loadMessages, expandWindow, selectChar, updateActiveCharacter, clearActiveMessages, undoLastRound, generateCharacter, uploadAvatar, getRecentChatImages, deleteActiveCharacter, sendMessage, handleProactiveMessage, handleProactiveMessageUpdate, handleDelayedReply, bumpImageUrls, showTouchPlaceholder, clearTouchPlaceholder }
+  return { characters, activeCharId, activeCharDetail, messages, queuedReplies, visibleMessages, streaming, streamingContent, showTypingDots, memoryRecalling, hasMoreOlder, guesses, guessSourceRawId, dialogueRevision, responseComplete, lastSendError, failedTurn, retryFailedMessage, rerolling, realtimeAffinity, affinityKey, activeChar, sidebarScrollSignal,
+    loadCharacters, loadCharacterDetail, invalidateCharacterDetail, patchCharacterLocal, markCharacterLocalChange, loadMessages, expandWindow, selectChar, updateActiveCharacter, clearActiveMessages, undoLastRound, generateCharacter, uploadAvatar, getRecentChatImages, deleteActiveCharacter, sendMessage, handleProactiveMessage, handleProactiveMessageUpdate, handleDelayedReply, bumpImageUrls, showTouchPlaceholder, clearTouchPlaceholder }
 })

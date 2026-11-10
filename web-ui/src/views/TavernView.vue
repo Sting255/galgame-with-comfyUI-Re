@@ -321,6 +321,7 @@
         v-for="c in visibleCharacters"
         :key="c.id"
         class="char-card"
+        :aria-busy="detailLoadingId === c.id"
         @click="openCharDetail(c)"
       >
         <!-- 左上角置顶按钮 -->
@@ -701,7 +702,7 @@
         :character-base-prompt="detailChar?.base_prompt || ''"
         :recent-images="recentImages"
         :recent-loading="recentLoading"
-        @close="showCharAvatarPicker = false"
+        @close="closeCharAvatarPicker"
         :save-handler="onCharAvatarSave"
         @switch-to-recent="switchToRecent"
       />
@@ -1350,6 +1351,10 @@ async function onCardSelected(e) {
 // ═══════════════════════════════════════
 const detailVisible = ref(false)
 const detailChar = ref(null)
+const detailLoadingId = ref(null)
+let detailRequestSeq = 0
+let detailClearTimer = null
+let recentRequestSeq = 0
 
 const showRelationGraph = ref(false)
 const showUserRelationGraph = ref(false)
@@ -1376,9 +1381,12 @@ const detailModalRef = ref(null)
 // 关闭关系图后刷新关系数据
 watch(showRelationGraph, async (val) => {
   if (!val && detailChar.value) {
+    const characterId = detailChar.value.id
     await chat.loadCharacters()
-    const updated = chat.characters.find(x => x.id === detailChar.value.id)
-    if (updated) detailChar.value = updated
+    const updated = chat.characters.find(x => String(x.id) === String(characterId))
+    if (updated && String(detailChar.value?.id) === String(characterId)) {
+      detailChar.value.relationship_count = updated.relationship_count
+    }
     detailModalRef.value?.refreshRelationships()
   }
 })
@@ -1683,8 +1691,23 @@ async function confirmPolish() {
 }
 
 async function openCharDetail(c) {
-  detailChar.value = c
-  detailVisible.value = true
+  clearTimeout(detailClearTimer)
+  recentRequestSeq += 1
+  const requestId = ++detailRequestSeq
+  detailLoadingId.value = c.id
+  try {
+    const detail = await chat.loadCharacterDetail(c.id, { force: true })
+    if (!detail) throw new Error('角色详情已更新，请重试')
+    if (requestId !== detailRequestSeq) return
+    detailChar.value = detail
+    detailVisible.value = true
+  } catch (error) {
+    if (requestId === detailRequestSeq) {
+      toastFn?.(`角色资料读取失败：${error?.message || '请稍后重试'}`, 'error')
+    }
+  } finally {
+    if (requestId === detailRequestSeq) detailLoadingId.value = null
+  }
 }
 
 // ── 角色置顶 ──
@@ -1700,7 +1723,12 @@ onMounted(() => {
   // 最长一档错峰是 440ms 延迟 + 450ms 动画
   staggerTimer = setTimeout(() => { gridStagger.value = false }, 1000)
 })
-onUnmounted(() => clearTimeout(staggerTimer))
+onUnmounted(() => {
+  detailRequestSeq += 1
+  recentRequestSeq += 1
+  clearTimeout(staggerTimer)
+  clearTimeout(detailClearTimer)
+})
 
 // 置顶按钮：先播一次爆心特效，再切状态（重排由 TransitionGroup 的 FLIP 兜住）
 function onPinClick(c) {
@@ -1709,25 +1737,72 @@ function onPinClick(c) {
 }
 
 async function toggleCharPin(c) {
-  // sortedCharacters 是浅拷贝，元素与 store 同引用，改这里即改 store
-  c.pinned = c.pinned ? 0 : 1
-  try { await api.togglePin(c.id, c.pinned) } catch {}
+  const characterId = c.id
+  const previous = c.pinned ? 1 : 0
+  const target = previous ? 0 : 1
+  chat.markCharacterLocalChange()
+  chat.patchCharacterLocal(characterId, { pinned: target })
+  try {
+    await api.togglePin(characterId, target)
+    // 成功后按 id 再确认一次；期间若列表被替换，也不会回写旧对象。
+    chat.patchCharacterLocal(characterId, { pinned: target })
+    chat.invalidateCharacterDetail(characterId)
+  } catch (error) {
+    chat.patchCharacterLocal(characterId, { pinned: previous })
+    toastFn?.(`置顶状态保存失败：${error?.message || '请重试'}`, 'error')
+  }
 }
 
 function closeCharDetail() {
+  detailRequestSeq += 1
+  recentRequestSeq += 1
+  detailLoadingId.value = null
   detailVisible.value = false
-  detailChar.value = null
+  clearTimeout(detailClearTimer)
+  detailClearTimer = setTimeout(() => {
+    if (!detailVisible.value) detailChar.value = null
+  }, 320)
+}
+
+async function finishDetailWriteRefresh(characterId, requestId, label) {
+  if (requestId !== detailRequestSeq
+    || !detailVisible.value
+    || String(detailChar.value?.id) !== String(characterId)) return
+  try {
+    const detail = await chat.loadCharacterDetail(characterId, { force: true })
+    if (requestId !== detailRequestSeq
+      || String(detailChar.value?.id) !== String(characterId)) return
+    if (!detail) throw new Error('角色详情已更新，请重试')
+    detailChar.value = detail
+  } catch (error) {
+    if (requestId === detailRequestSeq) {
+      toastFn?.(`${label}，但详情刷新失败：${error?.message || '请重新打开'}`, 'error')
+    }
+  }
+}
+
+async function refreshDetailAfterWrite(characterId, label) {
+  const requestId = ++detailRequestSeq
+  chat.invalidateCharacterDetail(characterId)
+  await chat.loadCharacters()
+  await finishDetailWriteRefresh(characterId, requestId, label)
 }
 
 async function onCharSaved(c) {
-  await chat.loadCharacters()
-  const updated = chat.characters.find(x => x.id === c.id)
-  if (updated) detailChar.value = updated
+  const characterId = c?.id ?? detailChar.value?.id
+  if (characterId) await refreshDetailAfterWrite(characterId, '角色已保存')
 }
 
 async function onCharDeleted(c) {
+  detailRequestSeq += 1
+  recentRequestSeq += 1
+  detailLoadingId.value = null
   detailVisible.value = false
-  detailChar.value = null
+  clearTimeout(detailClearTimer)
+  detailClearTimer = setTimeout(() => {
+    if (!detailVisible.value) detailChar.value = null
+  }, 320)
+  if (c?.id) chat.invalidateCharacterDetail(c.id)
   await chat.loadCharacters()
 }
 
@@ -1750,11 +1825,8 @@ function onGraphAutoDeduce() {
 }
 
 async function onDeductionSaved() {
-  await chat.loadCharacters()
-  if (detailChar.value) {
-    const updated = chat.characters.find(x => x.id === detailChar.value.id)
-    if (updated) detailChar.value = updated
-  }
+  const characterId = detailChar.value?.id
+  if (characterId) await refreshDetailAfterWrite(characterId, '关系已保存')
 }
 
 // ── 角色头像 ──
@@ -1763,42 +1835,78 @@ const recentImages = ref([])
 const recentLoading = ref(false)
 
 function openCharAvatarEditor() {
+  recentRequestSeq += 1
   recentImages.value = []
   showCharAvatarPicker.value = true
 }
 
-async function switchToRecent() {
-  if (recentImages.value.length > 0) return
-  if (!detailChar.value?.id) return
-  recentLoading.value = true
-  try {
-    const d = await api.getRecentImages(detailChar.value.id)
-    recentImages.value = d.images || []
-  } catch {} finally { recentLoading.value = false }
-}
-
-async function onCharAvatarSave(base64) {
-  if (!detailChar.value) return
-  await api.uploadAvatar(detailChar.value.id, base64 || '')
-  await chat.loadCharacters()
-  const updated = chat.characters.find(x => x.id === detailChar.value.id)
-  if (updated) detailChar.value = updated
+function closeCharAvatarPicker() {
+  recentRequestSeq += 1
   showCharAvatarPicker.value = false
 }
 
+async function switchToRecent() {
+  if (recentImages.value.length > 0) return
+  const characterId = detailChar.value?.id
+  if (!characterId) return
+  const requestId = ++recentRequestSeq
+  recentLoading.value = true
+  try {
+    const d = await api.getRecentImages(characterId)
+    if (requestId !== recentRequestSeq || String(detailChar.value?.id) !== String(characterId)) return
+    recentImages.value = d.images || []
+  } catch {
+  } finally {
+    if (requestId === recentRequestSeq) recentLoading.value = false
+  }
+}
+
+async function onCharAvatarSave(base64) {
+  const characterId = detailChar.value?.id
+  if (!characterId) return
+  const requestId = ++detailRequestSeq
+  try {
+    const uploaded = await api.uploadAvatar(characterId, base64 || '')
+    chat.invalidateCharacterDetail(characterId)
+    await chat.loadCharacters()
+    await finishDetailWriteRefresh(characterId, requestId, '头像已保存')
+    if (requestId === detailRequestSeq
+      && String(detailChar.value?.id) === String(characterId)
+      && uploaded?.avatar_path !== undefined) {
+      detailChar.value.avatar_path = uploaded.avatar_path
+    }
+  } catch (error) {
+    if (requestId === detailRequestSeq) {
+      toastFn?.(`头像保存失败：${error?.message || '请稍后重试'}`, 'error')
+    }
+  }
+}
+
 async function removeCharAvatar() {
-  if (!detailChar.value) return
+  const characterId = detailChar.value?.id
+  const displayName = detailChar.value?.display_name || '这个角色'
+  if (!characterId) return
   const ok = await confirmFn({
     title: '移除头像',
-    message: `确定要移除「${detailChar.value.display_name}」的头像吗？`,
+    message: `确定要移除「${displayName}」的头像吗？`,
     okText: '移除',
     danger: true,
   })
   if (!ok) return
-  await api.uploadAvatar(detailChar.value.id, '')
-  await chat.loadCharacters()
-  const updated = chat.characters.find(x => x.id === detailChar.value.id)
-  if (updated) detailChar.value = updated
+  const requestId = ++detailRequestSeq
+  try {
+    await api.uploadAvatar(characterId, '')
+    chat.invalidateCharacterDetail(characterId)
+    await chat.loadCharacters()
+    await finishDetailWriteRefresh(characterId, requestId, '头像已移除')
+    if (requestId === detailRequestSeq && String(detailChar.value?.id) === String(characterId)) {
+      detailChar.value.avatar_path = null
+    }
+  } catch (error) {
+    if (requestId === detailRequestSeq) {
+      toastFn?.(`头像移除失败：${error?.message || '请稍后重试'}`, 'error')
+    }
+  }
 }
 
 // ── 初始化 ──

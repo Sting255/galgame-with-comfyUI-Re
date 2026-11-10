@@ -159,8 +159,11 @@ async function deleteFolder() {
     if (!ok) return
     await folderStore.removeFolder(folder.id)
     // 文件夹 store 更新计数；共享角色数据也要同步，避免侧栏和未分类筛选残留旧归属。
-    chat.characters.forEach(character => {
-      if (character.folder_id === folder.id) character.folder_id = null
+    const affected = chat.characters
+      .filter(character => character.folder_id === folder.id)
+      .map(character => character.id)
+    affected.forEach(characterId => {
+      chat.patchCharacterLocal(characterId, { folder_id: null })
     })
     editorOpen.value = false
     emit('deleted', folder.id)
@@ -177,15 +180,13 @@ async function toggleMember(character) {
   const previous = character.folder_id ?? null
   const target = isMember(character) ? null : selectedId.value
   pendingIds.value.add(character.id)
-  character.folder_id = target
+  chat.markCharacterLocalChange()
+  chat.patchCharacterLocal(character.id, { folder_id: target })
   try {
     await folderStore.moveCharacter(character.id, target)
-    const current = chat.characters.find(item => item.id === character.id)
-    if (current) current.folder_id = target
+    chat.patchCharacterLocal(character.id, { folder_id: target })
   } catch (error) {
-    character.folder_id = previous
-    const current = chat.characters.find(item => item.id === character.id)
-    if (current) current.folder_id = previous
+    chat.patchCharacterLocal(character.id, { folder_id: previous })
     toast?.(error?.message || '分类保存失败，请重试', 'error')
   } finally {
     pendingIds.value.delete(character.id)

@@ -188,9 +188,18 @@ export async function getAppVersion() {
 
 // ── Characters ──
 export async function listCharacters(options = {}) {
-  // 挑选类界面传 { scope: 'user' }：只要用户角色，别把系统内置角色（默认助手）带进来
-  const query = options?.scope ? `?scope=${encodeURIComponent(options.scope)}` : ''
+  // 挑选类界面传 { scope: 'user' }：只要用户角色，别把系统内置角色（默认助手）带进来。
+  // 主列表传 { view: 'summary' }；不传 view 时保留完整角色卡旧接口形状。
+  const params = new URLSearchParams()
+  if (options?.scope) params.set('scope', String(options.scope))
+  if (options?.view) params.set('view', String(options.view))
+  const query = params.size ? `?${params}` : ''
   return request(`/characters${query}`)
+}
+
+/** 按 id 获取完整角色详情；系统角色同样可按 id 访问。 */
+export async function getCharacter(characterId) {
+  return request(`/characters/${encodeURIComponent(characterId)}`)
 }
 
 /**

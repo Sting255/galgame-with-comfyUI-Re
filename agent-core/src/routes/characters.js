@@ -179,13 +179,35 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
 });
 
 // GET /api/characters — 列出角色，含最近消息摘要
-router.get('/', (req, res) => {
-  const db = getDb();
-  // 默认 scope：跟「默认助手」开关走（停用后列表里不出现系统角色）。
-  // ?scope=user 强制只取用户角色 —— 批量/挑选类界面用这个，别把系统内置角色带进来。
-  const onlyUser = String(req.query?.scope || '') === 'user';
-  const scopeClause = onlyUser ? USER_SCOPE : userVisibleScope(db);
-  const characters = db.prepare(`SELECT * FROM characters WHERE ${scopeClause}`).all();
+// 主列表只下发界面确实消费的短字段。`standing_world_sig` 必须保留，
+// 否则 withStandingStaleness 会误判为 unknown；长文本和编辑专用字段走按 id 详情。
+const CHARACTER_SUMMARY_COLUMNS = [
+  'id',
+  'name',
+  'display_name',
+  'avatar_path',
+  'standing_url',
+  'standing_world_sig',
+  'moments_disabled',
+  'events_disabled',
+  'proactive_disabled',
+  'schedule_enabled',
+  'is_sleeping',
+  'sleep_until',
+  'chat_bg_path',
+  'galgame_bg_path',
+  'pinned',
+  'folder_id',
+  'is_system',
+  'created_at',
+];
+
+function enrichCharacterList(db, characters) {
+  if (characters.length === 0) return [];
+  const characterIds = characters.map(character => character.id);
+  const conversationIds = characterIds.map(id => `char_${id}`);
+  const characterPlaceholders = characterIds.map(() => '?').join(',');
+  const conversationPlaceholders = conversationIds.map(() => '?').join(',');
 
   // 聚合查询代替每角色 4 条子查询（N+1 → 固定 4 条，规模不随角色数增长）
   const lastByConv = db.prepare(`
@@ -193,23 +215,26 @@ router.get('/', (req, res) => {
       SELECT conversation_id, content, created_at,
              ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY id DESC) AS rn
       FROM messages
-      WHERE raw_id IS NOT NULL AND conversation_id LIKE 'char_%'
+      WHERE raw_id IS NOT NULL AND conversation_id IN (${conversationPlaceholders})
     ) WHERE rn = 1
-  `).all();
+  `).all(...conversationIds);
   const countsByConv = db.prepare(`
     SELECT conversation_id, COUNT(*) AS c FROM raw_messages
-    WHERE conversation_id LIKE 'char_%' GROUP BY conversation_id
-  `).all();
+    WHERE conversation_id IN (${conversationPlaceholders}) GROUP BY conversation_id
+  `).all(...conversationIds);
   const relCounts = db.prepare(`
     SELECT id, COUNT(*) AS relationship_count FROM (
       SELECT from_character_id AS id FROM character_relationships
+      WHERE from_character_id IN (${characterPlaceholders})
       UNION ALL
       SELECT to_character_id AS id FROM character_relationships
+      WHERE to_character_id IN (${characterPlaceholders})
     ) GROUP BY id
-  `).all();
+  `).all(...characterIds, ...characterIds);
   const userRels = db.prepare(
-    'SELECT character_id, affinity, is_oath FROM user_relationships'
-  ).all();
+    `SELECT character_id, affinity, is_oath FROM user_relationships
+     WHERE character_id IN (${characterPlaceholders})`
+  ).all(...characterIds);
 
   const lastMap = new Map(lastByConv.map(r => [r.conversation_id, r]));
   const countMap = new Map(countsByConv.map(r => [r.conversation_id, r.c]));
@@ -239,8 +264,68 @@ router.get('/', (req, res) => {
     return new Date(b.last_message_at) - new Date(a.last_message_at);
   });
 
+  return enriched;
+}
+
+function readSingleCharacterDetail(db, characterId) {
+  const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId);
+  if (!character) return null;
+
+  const conversationId = `char_${character.id}`;
+  const last = db.prepare(`
+    SELECT content, created_at FROM messages
+    WHERE conversation_id = ? AND raw_id IS NOT NULL
+    ORDER BY id DESC LIMIT 1
+  `).get(conversationId);
+  const messageCount = db.prepare(
+    'SELECT COUNT(*) AS c FROM raw_messages WHERE conversation_id = ?'
+  ).get(conversationId).c;
+  const relationshipCount = db.prepare(`
+    SELECT COUNT(*) AS c FROM (
+      SELECT from_character_id FROM character_relationships WHERE from_character_id = ?
+      UNION ALL
+      SELECT to_character_id FROM character_relationships WHERE to_character_id = ?
+    )
+  `).get(character.id, character.id).c;
+  const userRel = db.prepare(
+    'SELECT affinity, is_oath FROM user_relationships WHERE character_id = ?'
+  ).get(character.id);
+
+  return withStandingStaleness({
+    ...character,
+    last_message: last ? last.content.slice(0, 80) : null,
+    last_message_at: last?.created_at ? last.created_at.replace(' ', 'T') + '.000Z' : null,
+    message_count: messageCount,
+    relationship_count: relationshipCount,
+    affinity: userRel?.affinity ?? 50,
+    is_oath: userRel?.is_oath ?? 0,
+  });
+}
+
+router.get('/', (req, res) => {
+  const db = getDb();
+  // 默认 scope：跟「默认助手」开关走（停用后列表里不出现系统角色）。
+  // ?scope=user 强制只取用户角色 —— 批量/挑选类界面用这个，别把系统内置角色带进来。
+  const onlyUser = String(req.query?.scope || '') === 'user';
+  const scopeClause = onlyUser ? USER_SCOPE : userVisibleScope(db);
+  const summaryOnly = String(req.query?.view || '') === 'summary';
+  const selectClause = summaryOnly ? CHARACTER_SUMMARY_COLUMNS.join(', ') : '*';
+  const characters = db.prepare(`SELECT ${selectClause} FROM characters WHERE ${scopeClause}`).all();
+  const enriched = enrichCharacterList(db, characters);
+
   // 立绘是否与"当前世界观"一致（2026-10-01）：前端据此在形象展示上提示 + 一键按当前世界观重生成
   res.json({ characters: enriched.map(withStandingStaleness) });
+});
+
+// GET /api/characters/:id — 完整角色详情。按 id 的人工访问不过滤系统角色。
+router.get('/:id(\\d+)', (req, res) => {
+  const characterId = Number.parseInt(req.params.id, 10);
+  if (!Number.isSafeInteger(characterId) || characterId <= 0) {
+    return res.status(400).json({ error: '角色 ID 无效' });
+  }
+  const character = readSingleCharacterDetail(getDb(), characterId);
+  if (!character) return res.status(404).json({ error: '角色不存在' });
+  res.json({ character });
 });
 
 // POST /api/characters — 创建角色

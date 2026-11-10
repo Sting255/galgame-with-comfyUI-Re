@@ -1530,8 +1530,7 @@ async function removeOath() {
   try {
     await api.removeOath(c.id)
     c.is_oath = 0
-    const inList = chat.characters.find(x => x.id === c.id)
-    if (inList) inList.is_oath = 0
+    chat.patchCharacterLocal(c.id, { is_oath: 0 })
     toastFn('誓约已解除', 'success')
   } catch (e) {
     toastFn('解除誓约失败', 'error')
@@ -1633,8 +1632,7 @@ async function toggleMomentsDisabled() {
   try {
     await api.updateCharacter(c.id, { moments_disabled: detail.momentsDisabled })
     c.moments_disabled = detail.momentsDisabled
-    const inList = chat.characters.find(x => x.id === c.id)
-    if (inList) inList.moments_disabled = detail.momentsDisabled
+    chat.patchCharacterLocal(c.id, { moments_disabled: detail.momentsDisabled })
   } catch (e) {
     detail.momentsDisabled = !detail.momentsDisabled
     console.error('toggleMomentsDisabled failed:', e)
@@ -1650,8 +1648,7 @@ async function toggleProactiveDisabled() {
   try {
     await api.updateCharacter(c.id, { proactive_disabled: detail.proactiveDisabled })
     c.proactive_disabled = detail.proactiveDisabled
-    const inList = chat.characters.find(x => x.id === c.id)
-    if (inList) inList.proactive_disabled = detail.proactiveDisabled
+    chat.patchCharacterLocal(c.id, { proactive_disabled: detail.proactiveDisabled })
   } catch (e) {
     detail.proactiveDisabled = !detail.proactiveDisabled
     console.error('toggleProactiveDisabled failed:', e)
@@ -1667,8 +1664,7 @@ async function toggleEventsDisabled() {
   try {
     await api.updateCharacter(c.id, { events_disabled: detail.eventsDisabled })
     c.events_disabled = detail.eventsDisabled
-    const inList = chat.characters.find(x => x.id === c.id)
-    if (inList) inList.events_disabled = detail.eventsDisabled
+    chat.patchCharacterLocal(c.id, { events_disabled: detail.eventsDisabled })
   } catch (e) {
     detail.eventsDisabled = !detail.eventsDisabled
     console.error('toggleEventsDisabled failed:', e)
@@ -1686,8 +1682,7 @@ async function toggleScheduleDisabled() {
   try {
     await api.setCharacterScheduleEnabled(c.id, enabled)
     c.schedule_enabled = enabled ? 1 : 0
-    const inList = chat.characters.find(x => x.id === c.id)
-    if (inList) inList.schedule_enabled = c.schedule_enabled
+    chat.patchCharacterLocal(c.id, { schedule_enabled: enabled ? 1 : 0 })
     toastFn(
       enabled ? '已恢复日程生成' : '已停止日程生成，该角色之后不再消耗日程额度',
       'success'
