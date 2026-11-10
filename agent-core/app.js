@@ -150,7 +150,14 @@ app.use('/api', (req, res, next) => {
 // 请求诊断（2026-11-09 方案 B11）：给每个请求分配短 id、写响应头、只记 4xx/5xx/慢请求。
 // 必须挂在最前面 —— 放在后面的话，中途抛错或早退的请求就记不到 id 与耗时了。
 app.use(requestDiagnostics());
-app.use(express.json({ limit: '10mb' }));
+const apiJsonParser = express.json({ limit: '10mb' });
+app.use((req, res, next) => {
+  // 备份导入必须在数据路由自己取得并发槽后再读 body。即便客户端误传
+  // application/json，也不能让全局 JSON parser 抢先收完一个大包。
+  const normalizedPath = req.path.replace(/\/+$/, '').toLowerCase();
+  if (req.method === 'POST' && normalizedPath === '/api/data/import') return next();
+  return apiJsonParser(req, res, next);
+});
 
 // 静态文件（Vue 前端，构建后）
 // 带内容哈希的资源（/assets/*，含字体）可长缓存；index.html 保持可即时更新

@@ -8,32 +8,72 @@
  * 实现口径：
  *   - 导出**先落临时文件再发**：生成过程中出错返回 500 JSON，绝不会吐半个归档给前端；
  *     发送用 res.sendFile 从磁盘流式读（不把归档读进内存），发完删临时文件。
- *   - 导入体是 .tar.gz 原始字节，用**路由级** express.raw（不动 app.js 的全局 body parser）；
- *     上限按请求现读 LINSHE_BACKUP_MAX_BYTES，超限由 body-parser 抛 entity.too.large，
- *     本路由内的错误中间件把它翻译成 413 { error, detail }。
+ *   - 导入体是 .tar.gz 原始字节；先在进入路由 body 之前抢单并发槽，再流式写入
+ *     独立 linshe-import-* 暂存目录，由服务直接读文件流做 gunzip/tar 校验。
+ *     上限按请求现读 LINSHE_BACKUP_MAX_BYTES；超限、取消或错误都只释放一次。
  *   - 校验/落地全部在 services/dataBackup.js 里，本文件只负责 HTTP 形状。
  */
-import express, { Router } from 'express';
+import { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { scheduleSelfRestart } from '../services/procRestart.js';
 import {
-  createBackup, importBackup, getExportInfo, getMaxArchiveBytes, BackupError,
+  createBackup, importBackup, getExportInfo, getMaxArchiveBytes, BackupError, stageImportUpload,
 } from '../services/dataBackup.js';
 
 const router = Router();
 
-// 路由级 raw parser：limit 按当前 LINSHE_BACKUP_MAX_BYTES 现取，同一个 limit 复用同一个 parser
-const rawParsers = new Map();
-function importBodyParser(req, res, next) {
-  const limit = getMaxArchiveBytes();
-  let parser = rawParsers.get(limit);
-  if (!parser) {
-    // type: () => true —— 不论客户端写的是 application/gzip 还是 octet-stream 都按原始字节收，
-    // 真正的"是不是 gzip"由 service 校验文件头决定（curl 忘写 Content-Type 也能用）
-    parser = express.raw({ type: () => true, limit });
-    rawParsers.set(limit, parser);
+const activeImportTasks = new Set();
+function trackImportTask() {
+  let settle;
+  const task = new Promise(resolve => { settle = resolve; });
+  activeImportTasks.add(task);
+  return () => {
+    if (!activeImportTasks.delete(task)) return;
+    settle();
+  };
+}
+
+/** 退出流程在关库前等待本次导入完成暂存清理；超时由总退出 deadline 兜底。 */
+export async function waitForDataImportsToSettle({ timeoutMs = 5000 } = {}) {
+  if (activeImportTasks.size === 0) return true;
+  let timer;
+  const settled = Promise.allSettled([...activeImportTasks]).then(() => true);
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([settled, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
-  return parser(req, res, next);
+}
+
+/**
+ * 导入并发槽必须在任何请求体读取之前取得。
+ * 409 响应会关闭当前连接；服务端不会为第二个大包保留 socket 级或内存级缓冲。
+ */
+let importSlotBusy = false;
+function acquireImportSlot(req, res, next) {
+  if (importSlotBusy) {
+    res.setHeader('Retry-After', '2');
+    res.setHeader('Connection', 'close');
+    res.status(409).json({
+      error: '已有备份正在导入',
+      detail: '请等当前导入完成后再试',
+    });
+    return;
+  }
+
+  importSlotBusy = true;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    importSlotBusy = false;
+  };
+  res.locals.releaseImportSlot = release;
+  // 响应断开不代表后台恢复/暂存清理已经结束；槽只在路由 finally 中释放。
+  next();
 }
 
 router.get('/export/info', asyncHandler(async (req, res) => {
@@ -84,17 +124,35 @@ router.get('/export', asyncHandler(async (req, res) => {
   });
 }));
 
-router.post('/import', importBodyParser, asyncHandler(async (req, res) => {
-  const body = req.body;
-  if (!Buffer.isBuffer(body) || body.length === 0) {
-    return res.status(400).json({
-      error: '请求体为空',
-      detail: 'POST /api/data/import 的 body 必须是 .tar.gz 的原始字节（Content-Type: application/gzip）',
-    });
-  }
-
+router.post('/import', acquireImportSlot, asyncHandler(async (req, res) => {
+  let upload = null;
+  const releaseSlot = res.locals.releaseImportSlot;
+  const finishImportTask = trackImportTask();
   try {
-    const result = await importBackup(body, { holdUntilRestart: req.app.locals.restoreRequiresRestart !== false });
+    const maxBytes = getMaxArchiveBytes();
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      res.setHeader('Connection', 'close');
+      return res.status(413).json({
+        error: '归档超过大小上限',
+        detail: `声明 ${declared} 字节 > 上限 ${maxBytes} 字节（可用环境变量 LINSHE_BACKUP_MAX_BYTES 覆盖）`,
+      });
+    }
+
+    upload = await stageImportUpload(req, { maxBytes });
+    // 上传刚结束时连接可能已被用户关闭；此时不要启动不可撤销的恢复。
+    if (req.aborted || res.destroyed) return;
+
+    const result = await importBackup(upload.file, {
+      maxBytes,
+      holdUntilRestart: req.app.locals.restoreRequiresRestart !== false,
+    });
+    // 重启调度必须独立于客户端是否仍在：holdUntilRestart 成功时服务已停止接单，
+    // 若不在这里安排自重启，连接中途断开会让进程永久停在维护状态。
+    if (result.restartRequired || result.restartRecommended) {
+      scheduleSelfRestart({ delayMs: 2500, reason: '备份已恢复' });
+    }
+    if (res.destroyed) return;
     res.json({
       ok: true,
       restored: result.restored,
@@ -105,12 +163,10 @@ router.post('/import', importBodyParser, asyncHandler(async (req, res) => {
       // 前端据此显示「正在重启…」并轮询 /api/health，起来后自动刷新
       autoRestart: Boolean(result.restartRequired || result.restartRecommended),
     });
-    // 换库 / 写回 .env 都只有新进程才生效 ⇒ 恢复成功后直接把进程换掉，
-    // 免得用户自己关窗口、杀进程（真机上还会被启动器的重复启动搅乱）。
-    if (result.restartRequired || result.restartRecommended) {
-      scheduleSelfRestart({ delayMs: 2500, reason: '备份已恢复' });
-    }
   } catch (err) {
+    if (res.destroyed || res.headersSent) return;
+    // 上传可能在未 EOF 时因坏头/超限提前停止；本响应结束后关闭连接，不再吞剩余字节。
+    res.setHeader('Connection', 'close');
     if (err instanceof BackupError) {
       const status = err.status || 400;
       console.error(`[data] 导入失败(${status}):`, err.message, err.detail || '');
@@ -121,12 +177,21 @@ router.post('/import', importBodyParser, asyncHandler(async (req, res) => {
     }
     console.error('[data] 导入失败(500):', err.message);
     res.status(500).json({ error: '导入失败', detail: err.message, backupPath: null });
+  } finally {
+    try {
+      if (upload) await upload.cleanup();
+    } finally {
+      releaseSlot?.();
+      // 客户端中途断开时这次响应不会自行 end；主动销毁才能让 HTTP 生命周期移除它。
+      if (!res.writableEnded && !res.destroyed) res.destroy();
+      finishImportTask();
+    }
   }
 }));
 
 /**
- * 本路由内的错误兜底：只处理 raw parser 抛出的解析类错误，其余交给全局 errorHandler。
- * 放在所有路由之后注册，因此只会兜到 /api/data 自己的请求。
+ * 本路由内的错误兜底保留 body-parser 的既有错误形状；上传主链路已改为手动流式读取，
+ * 其余错误交给全局 errorHandler。放在所有路由之后注册，只兜 /api/data 自己的请求。
  */
 router.use((err, req, res, next) => {
   if (!err) return next();

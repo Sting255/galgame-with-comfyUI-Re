@@ -343,14 +343,21 @@ export function isGzip(buffer) {
 }
 
 /**
- * 从 gzip 压缩的内存字节流式解析 tar（增量喂给 TarParser，不会把解压结果整体展开）。
- * @param {Buffer} gzipBuffer
+ * 从 gzip 字节流或内存字节增量解析 tar（不会把解压结果整体展开）。
+ * 大归档应传 fs.createReadStream()，避免先把整个压缩包读回 Buffer。
+ * @param {Buffer|import('node:stream').Readable} gzipSource
  * @param {{onEntry?:Function,onData?:Function,onEnd?:Function}} handlers
  */
-export async function readTarGzStream(gzipBuffer, handlers) {
+export async function readTarGzStream(gzipSource, handlers) {
+  const source = Buffer.isBuffer(gzipSource)
+    ? Readable.from([gzipSource], { objectMode: false })
+    : gzipSource;
+  if (!source || typeof source.pipe !== 'function') {
+    throw new TypeError('tar: 读取源必须是 Buffer 或可读流');
+  }
   const parser = new TarParser(handlers);
   await pipeline(
-    Readable.from([gzipBuffer], { objectMode: false }),
+    source,
     zlib.createGunzip(),
     parser,
   );

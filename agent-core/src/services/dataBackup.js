@@ -20,8 +20,9 @@
  *   [config/.env]        ← 仅 includeConfig=1 且磁盘上确实有 .env
  *
  * 安全口径（导入）：
- *   1) **先全部校验、解到临时 staging 目录**，任何一项不过就整单拒绝，绝不碰现有数据；
- *   2) 校验：gunzip → tar → manifest 存在 / format / version → 每个文件 bytes+sha256 与 manifest 一致
+ *   1) HTTP body 先有界流式落到独立 upload 暂存文件；坏头/超限立即停止读取，不整包进内存；
+ *   2) **先全部校验、解到另一临时 staging 目录**，任何一项不过就整单拒绝，绝不碰现有数据；
+ *      校验：文件流 gunzip → tar → manifest 存在 / format / version → 每个文件 bytes+sha256 与 manifest 一致
  *      → 路径安全（拒绝绝对路径、`..`、反斜杠、盘符、超长、符号链接/硬链接/设备/FIFO）
  *      → 只允许数据库、avatars/town/images/audio 与（仅 includeConfig 时）config/.env
  *      → 总解压大小上限（默认 2GB，LINSHE_BACKUP_MAX_BYTES 覆盖）；
@@ -37,7 +38,6 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { pipeline } from 'node:stream/promises';
 import { config } from '../config.js';
 import { resolveEnvPath } from '../utils/envFile.js';
 import { getDb, closeDb } from '../db/index.js';
@@ -179,6 +179,114 @@ export function resolveRoots() {
 export function getMaxArchiveBytes() {
   const parsed = Number.parseInt(process.env.LINSHE_BACKUP_MAX_BYTES, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_BYTES;
+}
+
+/**
+ * 把上传流有界落盘。调用方必须先取得导入并发槽，再调用本函数；
+ * 这里不再经过 express.raw，因此并发中的第二个请求不会先把 body 塞进内存。
+ *
+ * @param {import('node:stream').Readable} readable
+ * @param {{maxBytes?:number}} [options]
+ * @returns {Promise<{file:string,directory:string,bytes:number,cleanup:()=>Promise<void>}>}
+ */
+export async function stageImportUpload(readable, { maxBytes = getMaxArchiveBytes() } = {}) {
+  if (!readable || typeof readable.pipe !== 'function') {
+    throw new TypeError('备份上传源必须可读');
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new RangeError('备份上传大小上限必须是正整数');
+  }
+
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'linshe-import-upload-'));
+  const file = path.join(directory, 'backup.tar.gz');
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    await fs.promises.rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+    cleaned = true;
+  };
+
+  let bytes = 0;
+  let prefix = Buffer.alloc(0);
+  const output = fs.createWriteStream(file, { flags: 'wx' });
+  const outputDone = streamDone(output);
+  outputDone.catch(() => {});
+  let failure = null;
+
+  try {
+    // Node 22 的 iterator({destroyOnReturn:false}) 允许在坏头/超限时立刻 break：
+    // 既不继续等请求 EOF，也不提前 destroy 请求 socket，路由仍能把 400/413 写回客户端。
+    const iterator = readable.iterator({ destroyOnReturn: false });
+    for (;;) {
+      const { value: chunk, done } = await iterator.next();
+      if (done) break;
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        failure = tooLarge('归档超过大小上限', `${bytes} 字节 > 上限 ${maxBytes} 字节`);
+        break;
+      }
+      if (prefix.length < 2) {
+        const need = 2 - prefix.length;
+        prefix = Buffer.concat([prefix, chunk.subarray(0, need)]);
+      }
+      if (prefix.length === 2 && !isGzip(prefix)) {
+        failure = bad('不是 gzip 归档', '文件头不是 1f 8b，本接口只接受 .tar.gz');
+        break;
+      }
+      try {
+        await writeChunk(output, chunk);
+      } catch (error) {
+        failure = new BackupError('写入导入暂存失败', { status: 500, detail: error.message });
+        break;
+      }
+    }
+    if (failure) {
+      readable.pause();
+      // 响应发完后路由会关闭连接；截断读取期间不让迟到的 socket error 冒成未捕获异常。
+      readable.once('error', () => {});
+      output.destroy();
+      await outputDone.catch(() => {});
+      throw failure;
+    }
+    if (bytes === 0) {
+      output.end();
+      await outputDone.catch(() => {});
+      throw bad('请求体为空', 'POST /api/data/import 的 body 必须是 .tar.gz 的原始字节');
+    }
+    if (prefix.length < 2) {
+      output.end();
+      await outputDone.catch(() => {});
+      throw bad('不是 gzip 归档', '文件不足 gzip 文件头所需的 2 字节');
+    }
+    output.end();
+    await outputDone;
+    return { file, directory, bytes, cleanup };
+  } catch (error) {
+    output.destroy();
+    await outputDone.catch(() => {});
+    try {
+      await cleanup();
+    } catch {
+      // 文件句柄在部分 Windows 杀毒/索引器下会晚一个短窗口释放；失败留给过期暂存清理。
+    }
+    throw error;
+  }
+}
+
+async function fileHasGzipMagic(file) {
+  const handle = await fs.promises.open(file, 'r');
+  try {
+    const head = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(head, 0, head.length, 0);
+    return bytesRead === head.length && isGzip(head);
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -565,7 +673,7 @@ function stagedPath(stagingRoot, rel) {
  * 全量校验：把归档解到 staging（临时目录），逐条核对 manifest 与 sha256。
  * 任何问题都抛错，且**不产生任何对现有数据的影响**。
  */
-async function extractAndValidate(gzipBuffer, stagingRoot, maxBytes) {
+async function extractAndValidate(gzipFile, stagingRoot, maxBytes) {
   const files = new Map();       // rel -> { bytes, sha256 }
   const dirs = new Set();
   const state = {
@@ -647,7 +755,10 @@ async function extractAndValidate(gzipBuffer, stagingRoot, maxBytes) {
   };
 
   try {
-    await readTarGzStream(gzipBuffer, { onEntry, onData, onEnd });
+    await readTarGzStream(
+      fs.createReadStream(gzipFile, { highWaterMark: 1 << 20 }),
+      { onEntry, onData, onEnd },
+    );
   } catch (err) {
     if (err instanceof BackupError) throw err;
     throw bad('归档不是合法的 .tar.gz', err.message);
@@ -819,27 +930,40 @@ async function applyDataTree(stagingRoot, roots, checked, journal) {
  * 换库本身是同步的（closeDb/rm/copyFile/getDb 之间没有 await），
  * 所以关键区对事件循环是原子的，导出侧不会拍到半个文件。
  *
- * @param {Buffer} gzipBuffer 请求体（.tar.gz 原始字节）
+ * @param {string} gzipFile 已完整落到独立暂存文件的 .tar.gz 绝对路径
  * @returns {Promise<{restored:object, backupPath:string, restartRecommended:boolean, message:string}>}
  */
-export function importBackup(gzipBuffer, options = {}) {
+export function importBackup(gzipFile, options = {}) {
   const run = importQueue.then(
-    () => runImport(gzipBuffer, options),
-    () => runImport(gzipBuffer, options),
+    () => runImport(gzipFile, options),
+    () => runImport(gzipFile, options),
   );
   // 队列本身不因失败而断链（失败已经由 run 交给调用方）
   importQueue = run.then(() => {}, () => {});
   return run;
 }
 
-async function runImport(gzipBuffer, { maxBytes = getMaxArchiveBytes(), roots = resolveRoots(), holdUntilRestart = false } = {}) {
-  if (!Buffer.isBuffer(gzipBuffer) || gzipBuffer.length === 0) {
+async function runImport(gzipFile, { maxBytes = getMaxArchiveBytes(), roots = resolveRoots(), holdUntilRestart = false } = {}) {
+  if (typeof gzipFile !== 'string' || !path.isAbsolute(gzipFile)) {
+    throw bad('导入暂存文件路径无效', '导入入口必须传入独立暂存归档的绝对路径');
+  }
+  let stat;
+  try {
+    stat = await fs.promises.stat(gzipFile);
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw bad('导入暂存文件不存在', '上传可能已取消或暂存已清理');
+    throw new BackupError('无法读取导入暂存文件', { status: 500, detail: error.message });
+  }
+  if (!stat.isFile()) {
+    throw bad('导入暂存路径不是文件', gzipFile);
+  }
+  if (stat.size === 0) {
     throw bad('请求体为空', 'POST /api/data/import 的 body 必须是 .tar.gz 的原始字节');
   }
-  if (gzipBuffer.length > maxBytes) {
-    throw tooLarge('归档超过大小上限', `${gzipBuffer.length} 字节 > 上限 ${maxBytes} 字节`);
+  if (stat.size > maxBytes) {
+    throw tooLarge('归档超过大小上限', `${stat.size} 字节 > 上限 ${maxBytes} 字节`);
   }
-  if (!isGzip(gzipBuffer)) {
+  if (!(await fileHasGzipMagic(gzipFile))) {
     throw bad('不是 gzip 归档', '文件头不是 1f 8b，本接口只接受 .tar.gz');
   }
   if (roots.dbPath === ':memory:') throw bad('内存数据库不能导入磁盘备份', '请在使用磁盘数据库的实例中恢复');
@@ -848,7 +972,7 @@ async function runImport(gzipBuffer, { maxBytes = getMaxArchiveBytes(), roots = 
   let backupPath = null;
   try {
     // 1) 校验（解到 staging，绝不碰现有数据）
-    const checked = await extractAndValidate(gzipBuffer, stagingRoot, maxBytes);
+    const checked = await extractAndValidate(gzipFile, stagingRoot, maxBytes);
 
     return await withDatabaseMaintenance(async () => {
       const journal = createRestoreJournal(path.join(stagingRoot, 'rollback'));
