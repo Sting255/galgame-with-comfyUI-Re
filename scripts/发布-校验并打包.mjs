@@ -58,11 +58,37 @@ const NODE = path.join(REPO, 'runtime', 'nodejs', 'node.exe')
 const SEVENZIP = process.env.SEVENZIP_EXE || 'C:\\Program Files\\7-Zip\\7z.exe'
 const API_PORT = resolveServicePort()
 const VECTOR_SERVICE_URL = process.env.VECTOR_SERVICE_URL || 'http://localhost:8765'
+// 完整可运行包固定携带本地 Jina ONNX 模型。Git 仓库出于体积原因忽略
+// `vector-service/models/`，因此隔离发布源（例如 git archive 副本）不会天然带模型；
+// 可用 VECTOR_MODEL_SOURCE 指向受控的源仓 models 目录，默认取当前工作区的同一位置。
+const VECTOR_MODEL_NAME = 'jina-embeddings-v2-base-zh'
+const VECTOR_MODEL_SOURCE = path.resolve(
+  process.env.VECTOR_MODEL_SOURCE || path.join(REPO, 'vector-service', 'models'),
+)
+const VECTOR_MODEL_REQUIRED_FILES = [
+  'onnx/model_int8.onnx',
+  'tokenizer.json',
+  'vocab.json',
+  'merges.txt',
+  'config.json',
+  'tokenizer_config.json',
+  'special_tokens_map.json',
+]
 const coreRequire = createRequire(path.join(SRC, 'package.json'))
 // 压缩级别（2026-11-03 用户：「要最高压缩的」）：默认 3 与既有行为一致，交付时用 SEVENZIP_LEVEL=9。
 // 级别 >=7 时把 LZMA2 的 fb / 字典一起放大（低级别配大字典只是白烧内存）。
 const LEVEL = Number(process.env.SEVENZIP_LEVEL || 3) || 3
 const HIGH = LEVEL >= 7
+// 最高压缩并不要求固定使用 256 MiB 字典或占满所有核心。大字典在多线程 LZMA2
+// 下可能因内存峰值直接报 E_OUTOFMEMORY；发布时可显式收紧这两个参数。
+const COMPRESS_THREADS = Math.max(1, Number(process.env.SEVENZIP_THREADS || 0)
+  || Number(process.env.NUMBER_OF_PROCESSORS || 0)
+  || os.cpus().length
+  || 8)
+const COMPRESS_DICT = process.env.SEVENZIP_DICT || (HIGH ? '256m' : '')
+if (COMPRESS_DICT && !/^\d+[mMgG]$/.test(COMPRESS_DICT)) {
+  die(`SEVENZIP_DICT 必须是 MiB/GiB 规格（如 64m、128m）：${COMPRESS_DICT}`)
+}
 // 包名标签：原来是写死的 '3.6.2-r' + 写死日期 20261002，交付包名字会一直停在旧版本上。
 const PACK_LABEL = process.env.PACK_LABEL || (() => {
   // 2026-11-06：原来硬编码 '3.6.2-r'，打出来的包名跟 VERSION（4.2.0）对不上，用户分不清是哪个版本
@@ -99,6 +125,7 @@ const gatesOnly = args.includes('--gates-only')
 
 const log = (s) => console.log(s)
 let packageCreated = false
+let vectorModelManifest = null
 const die = (msg) => {
   const outcome = packageCreated
     ? '已生成的候选包不可交付；请检查错误并重新打包'
@@ -157,6 +184,38 @@ function realpathNearestExisting(target) {
 }
 
 /**
+ * 归档前先对模型白名单做严格预检并记录源文件大小/SHA256。
+ * 只复制下面 7 个运行时必需文件，既不依赖 Hugging Face 下载，也不把模型缓存带进包。
+ */
+async function readVectorModelManifest() {
+  const modelDir = path.join(VECTOR_MODEL_SOURCE, VECTOR_MODEL_NAME)
+  if (!fs.existsSync(modelDir) || !fs.statSync(modelDir).isDirectory()) {
+    die(`缺少本地向量模型目录：${modelDir}\n`
+      + '     —— 请准备完整模型，或通过 VECTOR_MODEL_SOURCE 指向受控的 vector-service/models 目录。')
+  }
+
+  const missing = VECTOR_MODEL_REQUIRED_FILES.filter((rel) => {
+    const file = path.join(modelDir, ...rel.split('/'))
+    return !fs.existsSync(file) || !fs.statSync(file).isFile() || fs.statSync(file).size <= 0
+  })
+  if (missing.length) {
+    die(`本地向量模型不完整（${modelDir}），缺少或为空：${missing.join('、')}\n`
+      + '     —— 完整包发布门禁不提供按需下载兜底。')
+  }
+
+  const manifest = []
+  for (const rel of VECTOR_MODEL_REQUIRED_FILES) {
+    const file = path.join(modelDir, ...rel.split('/'))
+    manifest.push({
+      rel,
+      bytes: fs.statSync(file).size,
+      sha256: await sha256File(file),
+    })
+  }
+  return manifest
+}
+
+/**
  * DELIVER 默认允许清空既有镜像，但必须在结构上与其他关键目录完全隔离。
  * 这项检查不增加交互确认，只拒绝根盘、仓库自身/祖先、源码依赖、玩家数据和输出目录重叠。
  */
@@ -186,6 +245,7 @@ function assertSafeDeliverPath() {
     WEB,
     path.join(SRC, 'data'),
     path.join(REPO, 'runtime'),
+    VECTOR_MODEL_SOURCE,
     OUTDIR,
   ].map(value => {
     try {
@@ -465,6 +525,9 @@ if (gatesOnly) {
 // ── ③ 同步源码 → 交付包 ──────────────────────────────────────────────────
 log('\n── 同步源码到交付包 ────────────────────────────────')
 const SAFE_DELIVER = assertSafeDeliverPath()
+vectorModelManifest = await readVectorModelManifest()
+log(`   本地向量模型源：${path.join(VECTOR_MODEL_SOURCE, VECTOR_MODEL_NAME)}`)
+log(`   模型白名单：${vectorModelManifest.length} 个文件，${vectorModelManifest.reduce((sum, item) => sum + item.bytes, 0).toLocaleString('en-US')} B（待复制）`)
 
 // ── ③-0 先把交付目录清空（2026-11-08）──────────────────────────────────
 // 为什么必须清：交付目录是**跨轮复用的固定路径**（默认 C:\3.6.2-r），同步全是增量。
@@ -475,7 +538,7 @@ const SAFE_DELIVER = assertSafeDeliverPath()
 fs.rmSync(SAFE_DELIVER, { recursive: true, force: true })
 log(`   已清空交付目录（${DELIVER}），本次从零同步`)
 
-// ── ③-0 使用说明.txt：重新生成（2026-10-17 补，修「生成链断裂」）──────────────
+// ── ③-1 使用说明.txt：重新生成（2026-10-17 补，修「生成链断裂」）──────────────
 //
 // 真问题（2026-10-17 全项目复查 §三-1）：本脚本原来**完全没有生成使用说明这一步**，
 // 而生成源 `buildUsageGuideText` 早已更新（含破限/敏感度/每日额度/点题/重新组织…全部新功能）。
@@ -512,8 +575,15 @@ const USAGE_KEYWORDS = [
   let version = 'dev'
   try { version = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim() || 'dev' } catch { /* 保持 dev */ }
   const text = buildUsageGuideText({ version })
+  // 隔离构建可把说明直接放到最终交付镜像，此时清空 DELIVER 后再写，
+  // 避免用户必须先创建 DELIVER 才能解析一个尚不存在的目标路径。
   fs.mkdirSync(path.dirname(USAGE_GUIDE), { recursive: true })
   fs.writeFileSync(USAGE_GUIDE, text, 'utf8')
+  // 自定义路径用于隔离发布源时，正源生成结果不会自动成为 REPO/使用说明.txt。
+  // 显式写入交付镜像，确保 GUIDE 断言验证的是真正进入包内的那一份。
+  const deliveredGuide = path.join(DELIVER, '使用说明.txt')
+  fs.mkdirSync(path.dirname(deliveredGuide), { recursive: true })
+  fs.copyFileSync(USAGE_GUIDE, deliveredGuide)
   const missing = USAGE_KEYWORDS.filter(([, kw]) => !text.includes(kw)).map(([name]) => name)
   log(`   已用正源重新生成 使用说明.txt（${Buffer.byteLength(text, 'utf8')} B，版本 ${version}）`)
   if (missing.length) {
@@ -550,6 +620,8 @@ function syncDir(from, to) {
         // 里面还留着上游合并时的 node_modules junction —— 被当文件复制会 EPERM，且绝不该进包。
         '.pai'].includes(e.name)) continue
       if (path.relative(REPO, s).split(path.sep).join('/') === 'agent-core/data') continue
+      // 用户向量库属于本机运行数据，不能因为工作区镜像或 7z 规则变化而进包。
+      if (path.relative(REPO, s).split(path.sep).join('/') === 'vector-service/chroma_data') continue
       // 2026-11-07 事故：`launcher/build_cache/` 是 PyInstaller 虚拟环境与下载的工具链（≈800 MB），
       // `launcher/build/` 与 `launcher/dist/` 是构建中间产物和旧 exe（各 ≈50 MB）。
       // 三者都被 .gitignore 忽略（launcher/.gitignore / 根 .gitignore:39），但**顶层镜像是
@@ -656,6 +728,24 @@ if (incremental) {
     copied += 1
   }
   log(`   全量镜像：仓库顶层 ${copied} 项整份刷到交付目录（data/ 与 node_modules 已跳过）`)
+}
+
+// 模型目录被 .gitignore 排除，隔离发布源通常没有它。按运行时必需文件白名单从
+// VECTOR_MODEL_SOURCE 复制；源仓默认值就是工作区，不会触发网络下载或重复安装。
+{
+  const modelSrc = path.join(VECTOR_MODEL_SOURCE, VECTOR_MODEL_NAME)
+  const modelDst = path.join(DELIVER, 'vector-service', 'models', VECTOR_MODEL_NAME)
+  for (const item of vectorModelManifest) {
+    const from = path.join(modelSrc, ...item.rel.split('/'))
+    const to = path.join(modelDst, ...item.rel.split('/'))
+    fs.mkdirSync(path.dirname(to), { recursive: true })
+    fs.copyFileSync(from, to)
+    const copiedItem = fs.statSync(to)
+    if (copiedItem.size !== item.bytes || await sha256File(to) !== item.sha256) {
+      die(`向量模型复制校验失败：${to}`)
+    }
+  }
+  log(`   已从受控源补入 vector-service/models/${VECTOR_MODEL_NAME}：${vectorModelManifest.length} 文件，字节与 SHA256 一致 ✓`)
 }
 
 // 运行依赖：上面的镜像**故意跳过 node_modules**（否则每次全量同步都要搬几万文件），
@@ -781,7 +871,7 @@ const today = (() => { const d = new Date(); const p = (n) => String(n).padStart
 const outFile = path.join(OUTDIR, `邻舍-${PACK_LABEL}-完整可运行包-${WITH_DATA ? '含数据' : '不含数据'}-${today}-第${cnNum(round)}轮.7z`)
 const cores = Number(process.env.NUMBER_OF_PROCESSORS || 0) || 8
 log('\n── 打包 ───────────────────────────────────────────')
-log(`   线程 = ${cores}（本机核心数）| 级别 -mx=${LEVEL}（交付日设 SEVENZIP_LEVEL=9 走最高压缩）`)
+ log(`   线程 = ${COMPRESS_THREADS} | 字典 = ${COMPRESS_DICT || '默认'} | 级别 -mx=${LEVEL}`)
 
 // ── 打包前：往交付包里写一份「校验清单」（会跟着进包）──────────────────
 // 2026-10-02 真事故：用户在另一台机器上用网盘客户端解压，解出来的 agent.db 损坏
@@ -822,9 +912,11 @@ log(`   线程 = ${cores}（本机核心数）| 级别 -mx=${LEVEL}（交付日�
     die(`输出包已存在，拒绝覆盖：${outFile}\n     —— 请换一个尚未使用的轮次号或输出目录。`)
   }
 const t0 = Date.now()
+const compressionArgs = HIGH
+  ? `-m0=LZMA2:mt=${COMPRESS_THREADS}:fb=273:d=${COMPRESS_DICT}`
+  : `-m0=LZMA2:mt=${COMPRESS_THREADS}:fb=32`
 const zip = spawnSync(SEVENZIP, [
-  'a', '-t7z', `-mx=${LEVEL}`, `-mmt=${cores}`,
-  HIGH ? `-m0=LZMA2:mt=${cores}:fb=273:d=256m` : `-m0=LZMA2:mt=${cores}:fb=32`, '-mf=off',
+  'a', '-t7z', `-mx=${LEVEL}`, `-mmt=${COMPRESS_THREADS}`, compressionArgs, '-mf=off',
   outFile, DELIVER_NAME,
   // 2026-10-02 用户：「文档也同步吧」。原来这里有一条 `-xr!3.6.2-r\目标\*`，
   // 把整个 `目标/` 排除在包外 ⇒ 交付包里的开发文档一直是旧的、甚至缺文件（前面好几版包都这样）。
@@ -851,6 +943,8 @@ const zip = spawnSync(SEVENZIP, [
   `-xr!${DELIVER_NAME}\\launcher\\build_cache\\*`,
   `-xr!${DELIVER_NAME}\\launcher\\build\\*`,
   `-xr!${DELIVER_NAME}\\方案\\*`,
+  `-xr!${DELIVER_NAME}\\目标\\*`,
+  `-xr!${DELIVER_NAME}\\vector-service\\chroma_data\\*`,
 ], { cwd: DELIVER_PARENT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
 if (zip.status !== 0) die(`7z 退出码 ${zip.status}：${(zip.stderr || '').slice(0, 300)}`)
 packageCreated = true
@@ -952,6 +1046,42 @@ if (hasGitLogs && !needGitLogs) die('包内缺少 .git\\logs（交付目录里�
   log(`   启动必需文件：${requiredSources.length} 项全在包内 ✓`)
 }
 
+// 完整可运行包必须自带本地向量模型。先断言 7 个白名单文件都在最终归档里，
+// 再把 ONNX 从 7z 解到本次发布进程的隔离临时目录，按源文件大小与 SHA256 复验。
+{
+  const modelArchiveBase = `${DELIVER_NAME}/vector-service/models/${VECTOR_MODEL_NAME}`
+  const modelArchiveFiles = VECTOR_MODEL_REQUIRED_FILES.map((rel) => `${modelArchiveBase}/${rel}`)
+  const plainSlash = plain.split('\\').join('/')
+  const missing = modelArchiveFiles.filter((file) => !plainSlash.includes(file))
+  if (missing.length) {
+    die(`包内缺少本地向量模型文件：${missing.join('、')}\n`
+      + '     —— 完整可运行包不得依赖首次启动联网下载，拒绝交付。')
+  }
+
+  const onnxItem = vectorModelManifest.find((item) => item.rel === 'onnx/model_int8.onnx')
+  if (!onnxItem) die('本地向量模型清单缺少 onnx/model_int8.onnx')
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linshe-model-verify-'))
+  try {
+    const member = `${DELIVER_NAME}\\vector-service\\models\\${VECTOR_MODEL_NAME}\\onnx\\model_int8.onnx`
+    const extracted = spawnSync(SEVENZIP, ['e', outFile, member, `-o${tmp}`, '-y'], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+    })
+    const extractedFile = path.join(tmp, 'model_int8.onnx')
+    if (extracted.status !== 0 || !fs.existsSync(extractedFile)) {
+      die(`从候选包提取 model_int8.onnx 失败：${String((extracted.stdout || '') + (extracted.stderr || '')).slice(-600)}`)
+    }
+    const bytes = fs.statSync(extractedFile).size
+    const digest = await sha256File(extractedFile)
+    if (bytes !== onnxItem.bytes || digest !== onnxItem.sha256) {
+      die(`包内 model_int8.onnx 与源文件不一致：源=${onnxItem.bytes} B/${onnxItem.sha256}，包=${bytes} B/${digest}`)
+    }
+    log(`   本地向量模型：${modelArchiveFiles.length} 项在包内 ✓ model_int8.onnx ${bytes.toLocaleString('en-US')} B / SHA256 ${digest} 与源一致 ✓`)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
 // 使用说明.txt：**交付目录那一份**再断言一次（2026-10-17）。
 // 为什么要在同步之后再验：③-0 生成的是仓库根那份，交付目录那份靠 ③ 的全量同步带过去。
 // 只验生成源等于没验——真正会断的就是"同步/打包这一步没带上它"（第五十五~五十七轮的实况）。
@@ -994,6 +1124,20 @@ if (hasGitLogs && !needGitLogs) die('包内缺少 .git\\logs（交付目录里�
     || new RegExp(`${esc(DELIVER_NAME)}\\\\agent-core\\\\launcher_config\\.json(?:\\s|$)`, 'm').test(plain)
   if (lcInPkg) die('包内含 launcher_config.json（含打包机器的 ComfyUI 绝对路径）⇒ 交付链剥离失败，拒绝交付')
   log('   launcher_config.json 不在包内 ✓（缺失即全新用户初始状态：启动器会自动写默认配置）')
+
+  const plainSlash = plain.split('\\').join('/')
+  const forbidden = [
+    [new RegExp(`${esc(DELIVER_NAME)}/vector-service/chroma_data/`, 'i'), '用户向量库 chroma_data'],
+    [new RegExp(`${esc(DELIVER_NAME)}/agent-core/data/(?:agent\\.db(?:-(?:wal|shm))?|\\.access-token|files(?:/|\\.))`, 'i'), '玩家数据库/运行文件'],
+    [new RegExp(`${esc(DELIVER_NAME)}/方案/`, 'i'), '仓库验收/方案目录'],
+    [new RegExp(`${esc(DELIVER_NAME)}/目标/`, 'i'), '仓库开发目标目录'],
+  ]
+  const violations = forbidden.filter(([pattern]) => pattern.test(plainSlash)).map(([, label]) => label)
+  const archivePaths = [...plain.matchAll(/^\s*Path = (.+?)\s*$/gm)].map((match) => match[1].replace(/\\/g, '/'))
+  const rootEnv = archivePaths.includes(`${DELIVER_NAME}/.env`)
+  if (rootEnv) violations.push('仓库根 .env')
+  if (violations.length) die(`包内含禁止交付的本机数据/敏感项：${violations.join('、')}，拒绝交付`)
+  log('   用户向量库、玩家数据、方案/目标目录与根级 .env 均不在包内 ✓')
 }
 
 const sizeMb = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1)
@@ -1006,7 +1150,8 @@ try {
 }
 log('\n══════════════════════════════════════════════════════')
 log(` 产出：${path.basename(outFile)}`)
-log(` 体积：${sizeMb} MB`)
+ log(` 体积：${sizeMb} MB`)
+ log(` 压缩：-mx=${LEVEL} | 线程=${COMPRESS_THREADS} | 字典=${COMPRESS_DICT || '默认'}`)
 log(` SHA256：${sha}`)
 log(` 静态检查：project-health + check-imports ✓`)
 log(` 前端构建：生产构建 ✓`)
