@@ -1371,6 +1371,8 @@ router.post('/:id/touch/:action', async (req, res) => {
       console.log(`[touch] reaction feed mode=${reactionFeed.mode} rounds=${reactionFeed.rounds} blocks=${reactionFeed.blocks.join(',') || 'none'} failed=${reactionFeed.failed.join(',') || 'none'} chars=${prompt.system.length + prompt.user.length} sameAction=${reactionFeed.sameAction ? 'yes' : 'no'}`);
       const raw = await chatSync(prompt.messages, {
         temperature: 0.8, max_tokens: maxTokens, label: 'touch-reaction', retries: 1,
+        // 与亲密推进同口径：这类内容上游常审核中断，只续写一次，别把短失败拖成 30 秒
+        maxIncompleteRetries: 1,
         signal: upstreamAbort.signal,   // §1.3：客户端断开 → 立即中止（abort 不重试，见 llm-client 的 throwIfSyncAborted）
       });
       parsed = parseReactionOutput(raw);

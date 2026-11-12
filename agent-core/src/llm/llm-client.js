@@ -929,9 +929,14 @@ export async function chatSync(messages, opts = {}) {
     const jsonMode = opts?.response_format?.type === 'json_object';
     // 短任务单独限次（见 SHORT_TASK_MAX_TOKENS 注释）
     const tokenBudget = Number(opts?.max_tokens ?? opts?.max_completion_tokens) || 0;
-    const retryLimit = tokenBudget > 0 && tokenBudget <= SHORT_TASK_MAX_TOKENS
-      ? SHORT_TASK_RETRY_LIMIT
-      : MAX_INCOMPLETE_RETRIES;
+    // 调用方可以显式指定续写次数（2026-11-12）：亲密/触摸的即时反应只要 1~4 句，
+    // 上游对这类内容经常审核中断，续写 5 次等于把一次 5 秒的失败拖成 30 秒（真机实测）。
+    const explicitRetries = Number.isInteger(opts?.maxIncompleteRetries) ? opts.maxIncompleteRetries : null;
+    const retryLimit = explicitRetries != null
+      ? explicitRetries
+      : (tokenBudget > 0 && tokenBudget <= SHORT_TASK_MAX_TOKENS
+        ? SHORT_TASK_RETRY_LIMIT
+        : MAX_INCOMPLETE_RETRIES);
     let attempt = 0;
     let retryOpts = opts;
     // 兜底基线：循环里每轮都留一份「目前最可用」的，收尾按它返回（见 pickBetterContent 注释）
@@ -943,7 +948,7 @@ export async function chatSync(messages, opts = {}) {
       attempt += 1;
       // 续写前先把上游回填的拒绝语剥掉：剩下那截才是真正写到的位置
       const baseText = jsonMode ? String(meta.content || '') : stripTailRefusal(meta.content);
-      console.warn(`[incomplete] ▸ ${kind === 'filtered' ? '输出被审核中断' : '输出被长度截断'}（已写 ${baseText.length} 字），第 ${attempt}/${MAX_INCOMPLETE_RETRIES} 次自动续写 (${opts.label || 'chatSync'})`);
+      console.warn(`[incomplete] ▸ ${kind === 'filtered' ? '输出被审核中断' : '输出被长度截断'}（已写 ${baseText.length} 字），第 ${attempt}/${retryLimit} 次自动续写 (${opts.label || 'chatSync'})`);
       const retryMessages = buildIncompleteRetryMessages(messages, { ...meta, content: baseText }, kind, attempt, jsonMode);
       retryOpts = { ...retryOpts, max_tokens: bumpMaxTokens(retryOpts) };
       try {

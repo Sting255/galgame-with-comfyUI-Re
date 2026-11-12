@@ -697,6 +697,8 @@ router.post('/:id/:action', async (req, res) => {
       const llmStarted = Date.now();
       const raw = await chatSync(prompt.messages, {
         temperature: 0.9, max_tokens: 500, label: 'intimate-action', retries: 1,
+        // 这类内容上游常审核中断：只续写一次，别把 5 秒的失败拖成 30 秒（2026-11-12 实测）
+        maxIncompleteRetries: 1,
         signal: upstreamAbort.signal,
       });
       // 耗时埋点（2026-11-12）：日志里一直只有 chars，没有真实耗时，没法判断「慢」花在哪。
