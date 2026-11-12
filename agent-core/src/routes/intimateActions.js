@@ -369,6 +369,9 @@ router.get('/:id/state', (req, res) => {
 // 只返回建议（key/label/reason），真正换姿势仍走 POST /:id/position，服务端校验口径不变。
 // 每角色最近用过的体位（内存即可：重启后"新鲜感"重新计，不影响正确性）
 const recentByCharacter = new Map();
+// 同一角色同时只允许一次「即时反应」在飞（2026-11-12）：一次调用要带上万字符上下文，
+// 连点会让它叠成多个并发请求，每个都更慢、还互相抢网关。后来的动作只推进状态并记 pendingNote。
+const instantInFlight = new Set();
 const RECENT_LIMIT = 5;
 function noteRecentPosition(id, key) {
   if (!key) return;
@@ -615,18 +618,45 @@ router.post('/:id/:action', async (req, res) => {
       });
     }
 
-    // ⑤ 即时反应：一次 500 token 的小调用（客户端断开就中止，别空烧额度）
+    // ⑤ 即时反应：一次 500 token 的小调用
+    // 同一角色同时只跑一个：连点时后来的动作只推进状态并记 pendingNote，
+    // 否则多个上万字符的请求并行抢网关，每个都更慢（2026-11-12 真机）。
+    if (instantInFlight.has(id)) {
+      const busyNote = buildPendingNote({ actionKey: action.key, state: before, next: persisted, target });
+      const busySaved = patchIntimateScene(id, { pendingNote: busyNote });
+      const busySnapshot = snap(busySaved);
+      const busyEmotion = applySceneEmotion({
+        character, characterId: id, delta: null,
+        reason: `性爱推进：${action.label}`, afterMsgId: null,
+      });
+      return res.json({
+        ...baseResponse,
+        mode: 'instant',
+        fallback: true,
+        reason: 'instant_busy',
+        quota: quotaBefore,
+        notice: '上一句她还在写：这一下已经记下，会在下一次反应里一起演出来。',
+        reaction: null,
+        message: null,
+        emotion: busyEmotion,
+        state: statePayload(busySnapshot),
+        her: busySnapshot.her,
+      });
+    }
     let clientGone = false;
+    // 2026-11-12 修「点了推进没反应、只留一条待补演」：客户端断开时**不再 abort 上游**。
+    // 以前一断开就掐掉这次调用（日志里 client_disconnected 反复出现），这一下等于白算；
+    // 现在让它算完：反应照常落库并广播，用户回到聊天就能看到这一句。
     const upstreamAbort = new AbortController();
     res.on('close', () => {
       if (res.writableEnded) return;   // 正常结束（我们自己 res.json）不算断开
       clientGone = true;
-      upstreamAbort.abort();
     });
 
     let parsed = null;
     let promptInfo = null;
     let quotaAfter = quotaBefore;
+    instantInFlight.add(id);
     try {
       const feed = collectFeed({ characterId: id, userName, characterName, character, conversationId: `char_${id}` });
       const prompt = buildIntimateActionPrompt({
@@ -671,6 +701,8 @@ router.post('/:id/:action', async (req, res) => {
       parsed = parseReactionOutput(raw);
     } catch (err) {
       console.warn('[intimate-action] 即时反应调用失败，留待下一轮补演:', clientGone ? 'client_disconnected' : (err?.message || err));
+    } finally {
+      instantInFlight.delete(id);
     }
 
     if (!parsed?.ok) {
@@ -874,6 +906,8 @@ router.post('/:id/:action', async (req, res) => {
     });
 
     const snapshot = snap(saved);
+    // 客户端已断开时消息已落库并广播，不再往已关闭的响应上写（会 ERR_STREAM_WRITE_AFTER_END）
+    if (clientGone || res.writableEnded) return undefined;
     return res.json({
       ...baseResponse,
       mode: 'instant',
