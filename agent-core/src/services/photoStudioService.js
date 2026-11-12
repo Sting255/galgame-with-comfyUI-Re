@@ -16,6 +16,7 @@ import { saveBase64Image } from './imagePaths.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
 import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions } from './photoStudioWorkflow.js';
+import { USER_SCOPE } from './characterScope.js';
 
 export const POSE_GALLERY_DIR = fileURLToPath(new URL('../../assets/pose-gallery/', import.meta.url));
 const WORKFLOW_DIR = fileURLToPath(new URL('../../../workflow/', import.meta.url));
@@ -92,14 +93,14 @@ export function createPhotoStudioService({
   const polishedPrompts = new Map();
   function listCharacters() {
     const outfits = db().prepare("SELECT character_id, scene FROM character_outfits WHERE scene IN ('casual', 'home', 'sleep') AND TRIM(COALESCE(description, '')) != ''").all();
-    return db().prepare('SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE COALESCE(archived, 0) = 0 ORDER BY pinned DESC, id DESC').all().map(character => ({
+    return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${USER_SCOPE} ORDER BY pinned DESC, id DESC`).all().map(character => ({
       ...character,
       outfitScenes: outfitScenes.filter(scene => scene === 'work' || outfits.some(outfit => outfit.character_id === character.id && outfit.scene === scene)),
     }));
   }
 
   function loadCharacter(id) {
-    if (id !== 'angel') return db().prepare('SELECT * FROM characters WHERE id = ? AND COALESCE(archived, 0) = 0').get(Number(id));
+    if (id !== 'angel') return db().prepare('SELECT * FROM characters WHERE id = ?').get(Number(id));
     const exists = db().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='god_angel'").get();
     const angel = exists && db().prepare('SELECT * FROM god_angel WHERE id = 1').get();
     if (!angel) throw Object.assign(new Error('尚未创建天使，请先在神说中召唤天使'), { status: 400 });
@@ -149,7 +150,7 @@ export function createPhotoStudioService({
     }
     let first;
     if (randomFirst) {
-      const candidates = db().prepare('SELECT * FROM characters WHERE COALESCE(archived, 0) = 0 AND id != ? ORDER BY pinned DESC, id DESC').all(second?.id ?? -1);
+      const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(second?.id ?? -1);
       if (!candidates.length) throw Object.assign(new Error(duo ? '双人姿势至少需要两位可用角色' : '没有可选择的角色'), { status: 400 });
       first = random(candidates);
     } else {
@@ -160,7 +161,7 @@ export function createPhotoStudioService({
       if (!randomSecond) {
         if (second.id === first.id) throw Object.assign(new Error('双人姿势需要选择两位不同角色'), { status: 400 });
       } else {
-        const candidates = db().prepare('SELECT * FROM characters WHERE COALESCE(archived, 0) = 0 AND id != ? ORDER BY pinned DESC, id DESC').all(first.id);
+        const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(first.id);
         if (!candidates.length) throw Object.assign(new Error('双人姿势至少需要两位可用角色'), { status: 400 });
         second = random(candidates);
       }
@@ -278,6 +279,12 @@ export function createPhotoStudioService({
       const result = await render(snapshot.prompt, {
         promptScene: 'standalone',
         alreadyPrepared: true,
+        // 本地口径（2026-11-08）：所有生图入口都要把身份锚点交给 imageSkill，否则照片里的角色会漂。
+        // 天使没有 characters 行，按 id 查不到就跳过，行为与不传一致。
+        identity: [snapshot.character_id, snapshot.character2_id]
+          .filter(id => Number(id) > 0)
+          .map(id => database.prepare('SELECT * FROM characters WHERE id = ?').get(Number(id)))
+          .filter(Boolean),
         artist: config.comfyui.momentsArtist ?? config.comfyui.artist,
         // Keep LoRA triggers out of AI rewriting; the shared workflow adds them
         // to its dedicated trigger node and loads the models with their saved weights.
