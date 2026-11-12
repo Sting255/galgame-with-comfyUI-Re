@@ -744,20 +744,31 @@ async function downloadImagesFromHistory(promptId, retries = 3) {
       if (data[promptId]) {
         const entry = data[promptId];
         const outputs = entry.outputs || {};
-        const images = [];
+        const collected = [];
 
-        for (const [, output] of Object.entries(outputs)) {
+        for (const [nodeId, output] of Object.entries(outputs)) {
           if (output.images) {
             for (const img of output.images) {
               try {
                 const base64 = await downloadImageAsBase64(img.filename, img.subfolder || '', img.type || 'output');
-                images.push({ base64, filename: img.filename });
+                collected.push({ base64, filename: img.filename, type: img.type || 'output', nodeId });
               } catch (e) {
                 console.error(`[comfyClient] download failed: ${img.filename}`, e.message);
               }
             }
           }
         }
+
+        // 2026-11-12 修「聊天里冒出骨骼线框图」：注入体位骨架后 ComfyUI 会多返回一张
+        // AnimaPoseControl 的**预览图**（`type='temp'`，黑底彩色骨架），而 SaveImage 的成品是
+        // `type='output'`。以前不分类型全收，images[0] 经常取到预览图 —— 用户看到的就是骨架，
+        // 体位看起来"没生效"。有正式产出时只交正式产出；整套都是预览的工作流才回退全收。
+        const saved = collected.filter(img => img.type === 'output');
+        const picked = saved.length > 0 ? saved : collected;
+        if (saved.length > 0 && picked.length !== collected.length) {
+          console.log(`[comfyClient] 已忽略 ${collected.length - picked.length} 张预览图（temp），只返回 ${picked.length} 张成品`);
+        }
+        const images = picked.map(({ base64, filename }) => ({ base64, filename }));
 
         if (images.length > 0) {
           return images;
