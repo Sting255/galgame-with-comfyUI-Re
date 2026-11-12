@@ -5,7 +5,7 @@
     <span class="banner-text">尚未配置 API Key，请前往设置页面填写 DeepSeek（或其他兼容）API Key</span>
     <router-link to="/settings" class="banner-link">前往设置 →</router-link>
   </div>
-  <div class="app-layout" :class="{ 'is-mobile': isMobile, 'sidebar-collapsed': !isMobile && (sidebarCollapsed || route.path === '/god-says'), 'immersive-chat': route.path.startsWith('/chat') && route.query.mode === 'galgame' }">
+  <div class="app-layout" :class="{ 'is-mobile': isMobile, 'sidebar-collapsed': !isMobile && (sidebarCollapsed || route.path === '/god-says' || route.path === '/photo-studio'), 'immersive-chat': route.path.startsWith('/chat') && route.query.mode === 'galgame' }">
     <!-- 移动端遮罩层：Sidebar 拉出时覆盖聊天区域 -->
     <Transition name="scrim-fade">
       <div v-if="isMobile && mobileSidebarOpen" class="mobile-scrim" @click="closeMobileSidebar"></div>
@@ -21,7 +21,7 @@
         />
         <!-- 桌面端：贴侧栏右缘的收纳手柄，点一下把侧栏向左收起（移动端用抽屉，不显示） -->
         <div
-          v-if="!isMobile && route.path !== '/god-says'"
+          v-if="!isMobile && route.path !== '/god-says' && route.path !== '/photo-studio'"
           class="sidebar-handle"
           role="button"
           tabindex="0"
@@ -78,7 +78,7 @@ import { useSettingsStore } from './stores/settings.js'
 import { useProactiveStore } from './stores/notifications.js'
 import { forceProactive } from './api/index.js'
 import { loadUserConfig } from './userConfig.js'
-import { playNotificationSound } from './utils/sound.js'
+import { playEncounterSound, playNotificationSound } from './utils/sound.js'
 import { useMailboxStore } from './stores/mailbox.js'
 import { useUpdateStore } from './stores/updateInfo.js'
 import { onEvent as onStreamEvent } from './stores/unifiedStream.js'
@@ -295,7 +295,8 @@ onMounted(async () => {
 
     // 非当前活跃角色 → 播放提示音
     if (data.character_id !== chat.activeCharId) {
-      playNotificationSound()
+      if (data.event_id != null) playEncounterSound()
+      else playNotificationSound()
     }
   })
 

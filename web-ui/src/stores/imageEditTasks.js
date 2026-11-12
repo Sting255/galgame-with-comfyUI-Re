@@ -5,6 +5,7 @@ import { onEvent } from './unifiedStream.js'
 import { useChatStore } from './chat.js'
 import { useEventsStore } from './events.js'
 import { refreshImageUrls, recordOverwriteBust } from '../utils/imageUrlRefresh.js'
+import { playTaskCompletionSound } from '../utils/sound.js'
 
 const MAX_REMOVED_TASK_IDS = 200
 
@@ -45,6 +46,20 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
     }
   }
 
+  const completedTaskIds = new Set()
+  let lastCompletionSoundAt = -Infinity
+
+  function notifyCompletion(task, silent = false) {
+    if (!['ready', 'pending_confirm'].includes(task.status) || completedTaskIds.has(task.id)) return
+    completedTaskIds.add(task.id)
+    if (silent || task.result?.cancelled) return
+    // 同批任务集中完成时只响一次，避免提示音叠加。
+    const now = Date.now()
+    if (now - lastCompletionSoundAt < 800) return
+    lastCompletionSoundAt = now
+    playTaskCompletionSound()
+  }
+
   function _upsert(data) {
     if (!data?.id) return
     // 本端已经确认 apply/discard 的任务不接受任何晚到 SSE，避免重新出现。
@@ -74,6 +89,7 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
       _revision++
       tasks.value.push(item)
     }
+    notifyCompletion(item)
   }
 
   function _remove(id) {
@@ -129,6 +145,10 @@ export const useImageEditTasksStore = defineStore('imageEditTasks', () => {
       const rows = list || []
       const fresh = rows.filter(d => !_removedIds.has(d.id))
       tasks.value = fresh.map(d => normalizeTask(d, prev.get(d.id)))
+      // 上游 v4.3.0：首次加载的旧任务不播报；刷新补到已知执行中任务的完成状态时仍提醒。
+      for (const task of tasks.value) {
+        notifyCompletion(task, prev.get(task.id)?.status !== 'running')
+      }
     } catch (err) {
       console.warn('[imageEditTasks] refresh failed:', err.message)
     }

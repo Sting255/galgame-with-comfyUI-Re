@@ -62,9 +62,9 @@
         :loading="refineAnalyzing"
         @click="startRefineAnalysis"
       >
-        {{ refineResult ? '重新生成' : '开始分析' }}
+        {{ refineAnalyzing ? '正在修正外观' : refineResult ? '重新生成' : '开始分析' }}
       </linshe-button>
-      <linshe-button variant="primary" :disabled="!refineResult || refineAnalyzing" @click="applyRefineResult">
+      <linshe-button v-if="!autoApply" variant="primary" :disabled="!refineResult || refineAnalyzing" @click="applyRefineResult">
         {{ applyText }}
       </linshe-button>
     </template>
@@ -102,6 +102,9 @@ const props = defineProps({
   /** 当前整卡文本（待重写「## 你的外观」的草稿/编辑中人格卡） */
   basePrompt: { type: String, default: '' },
   /** 当前编辑的服装场景；同时用于标题与分析请求。 */
+  /** 上游 v4.3.0：招募时自动带入百科立绘；普通手动修正保持原来的预览确认流程 */
+  initialImage: { type: String, default: '' },
+  autoApply: { type: Boolean, default: false },
   sceneLabel: { type: String, default: '' },
   /** 应用按钮文案 / 底部提示（草稿卡场景父级可改写） */
   applyText: { type: String, default: '应用并保存' },
@@ -174,7 +177,13 @@ function absorbResult(res) {
 }
 
 watch(() => props.modelValue, (open) => {
-  if (open) resetRefineState()
+  if (open) {
+    resetRefineState()
+    if (props.initialImage) {
+      refineImage.value = props.initialImage
+      void startRefineAnalysis()
+    }
+  }
   else { cancelAnalysis(); showRefinePicker.value = false }
   document.removeEventListener('paste', onRefinePaste)
   if (open) document.addEventListener('paste', onRefinePaste)
@@ -287,6 +296,8 @@ async function startRefineAnalysis() {
   refinePromptBefore.value = ''
   refinePromptAfter.value = ''
   refineLegacyBasePrompt.value = ''
+  clearResult()
+  let completed = false
   try {
     const res = await api.refineAppearanceDraft({
       image: refineImage.value,
@@ -297,6 +308,7 @@ async function startRefineAnalysis() {
     })
     if (version !== analysisVersion || !props.modelValue) return
     absorbResult(res)
+    completed = true
   } catch (err) {
     if (version !== analysisVersion || err.name === 'AbortError') return
     console.error('startRefineAnalysis failed:', err)
@@ -304,6 +316,7 @@ async function startRefineAnalysis() {
   } finally {
     if (version === analysisVersion) { refineAnalyzing.value = false; analysisController = undefined }
   }
+  if (completed && props.autoApply && version === analysisVersion && props.modelValue) applyRefineResult()
 }
 
 function applyRefineResult() {

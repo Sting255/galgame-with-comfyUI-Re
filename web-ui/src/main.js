@@ -40,6 +40,8 @@ const MaibotBridgeView = () => import('./views/MaibotBridgeView.vue')
 const GroupChatView = () => import('./views/GroupChatView.vue')
 const MediaView = () => import('./views/MediaView.vue')
 const GodSaysView = () => import('./views/GodSaysView.vue')
+// 上游 v4.3.0：照相馆
+const PhotoStudioView = () => import('./views/PhotoStudioView.vue')
 
 const routes = [
   { path: '/standing-display', component: StandingDisplayView, meta: { standingDisplay: true } },
@@ -56,6 +58,7 @@ const routes = [
   { path: '/gallery', component: GalleryView },
   { path: '/dorm', component: DormView },   // 宿舍页：房间与入住安排（2026-11-07 取代原地图页）
   { path: '/tavern', component: TavernView },
+  { path: '/photo-studio', component: PhotoStudioView },
   { path: '/mailbox', component: MailboxView },
   { path: '/backpack', component: BackpackView },
   { path: '/settings', component: SettingsView },

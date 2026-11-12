@@ -150,6 +150,7 @@ async function curateNow({ conversationId, throughRawMsgId, characterName = '', 
     let result = await chatSync(requestMessages, {
       temperature: 0.2,
       max_tokens: CURATION_MAX_TOKENS,
+      thinking: { type: 'disabled' }, forceDisableThinking: true,
       label: '聊天记忆整理',
       returnMeta: true,
     });
@@ -161,6 +162,7 @@ async function curateNow({ conversationId, throughRawMsgId, characterName = '', 
       result = await chatSync(requestMessages, {
         temperature: 0.2,
         max_tokens: CURATION_MAX_TOKENS,
+        thinking: { type: 'disabled' }, forceDisableThinking: true,
         label: '聊天记忆整理(截断重发)',
         returnMeta: true,
       });
@@ -177,6 +179,7 @@ async function curateNow({ conversationId, throughRawMsgId, characterName = '', 
       const strict = await chatSync(requestMessages, {
         temperature: 0.2,
         max_tokens: CURATION_MAX_TOKENS,
+        thinking: { type: 'disabled' }, forceDisableThinking: true,
         response_format: { type: 'json_object' },
         label: '聊天记忆整理(json回退)',
       });
@@ -414,6 +417,7 @@ export async function curateAccumulatedMemory({ accumulatedText, characterName =
   const raw = await chatSync(buildCurationMessages({ transcript: accumulatedText, related: [], v3: false, maxActions: CURATION_MAIBOT_ACTIONS }), {
     temperature: 0.2,
     max_tokens: 1800,
+    thinking: { type: 'disabled' }, forceDisableThinking: true,
     response_format: { type: 'json_object' },
     label: '聊天记忆整理',
   });

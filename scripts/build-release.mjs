@@ -724,7 +724,12 @@ async function main() {
   const launcherExe = resolve(launcherDir, "dist", "邻舍.EXE.exe");
   if (existsSync(launcherExe)) {
     const { copyFileSync } = await import("node:fs");
-    copyFileSync(launcherExe, resolve(RELEASE_DIR, "邻舍.EXE.exe"));
+    const releaseLauncherExe = resolve(RELEASE_DIR, "邻舍.EXE.exe");
+    copyFileSync(launcherExe, releaseLauncherExe);
+    const integrityResult = await exec("python", [
+      "build_launcher.py", "--normalize-integrity", releaseLauncherExe,
+    ], { cwd: launcherDir, print: true });
+    if (!integrityResult.ok) { fail("启动器完整性标记修复失败!"); process.exit(1); }
     ok("邻舍.EXE.exe");
   } else {
     warn("未找到 邻舍.EXE.exe，PyInstaller 可能未成功");

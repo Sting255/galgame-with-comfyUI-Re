@@ -7,6 +7,18 @@ import {
 const BASE = '/api'
 
 // ── 系统规则改写（上游 4.2.1：破限词可在设置里改）──
+// ── 照相馆（上游 v4.3.0）──
+export const getPhotoStudioCatalog = () => request('/photo-studio/catalog')
+export const describePhotoStudioPose = (image, signal, direction = '') => request('/photo-studio/describe-pose', { method: 'POST', body: { image, direction }, signal })
+export const getPhotoStudioBackgrounds = () => request('/photo-studio/backgrounds')
+export const generatePhotoStudioBackground = ({ description, signal }) => request('/photo-studio/background-draft', { method: 'POST', body: { description }, signal })
+export const getPhotoStudioCapability = () => request('/photo-studio/capability')
+export const getPhotoStudioCharacters = () => request('/photo-studio/characters')
+export const getPhotoStudioJobs = () => request('/photo-studio/jobs')
+export const getPhotoStudioJob = id => request(`/photo-studio/jobs/${encodeURIComponent(id)}`)
+export const createPhotoStudioJob = body => request('/photo-studio/jobs', { method: 'POST', body })
+export const getPhotoStudioPrompt = body => request('/photo-studio/prompt-preview', { method: 'POST', body })
+export const generateStudioClothingDraft = ({ signal, ...body }) => request('/photo-studio/clothing-draft', { method: 'POST', body, signal })
 export const getSystemRulesOverride = () => request('/config/system-rules')
 export const saveSystemRulesOverride = content => request('/config/system-rules', { method: 'PUT', body: { content } })
 
@@ -276,6 +288,11 @@ export async function generateCharacter(description) {
 /** 预览模式生成角色：只生成不入库，由前端确认后再调 createCharacter */
 export async function generateCharacterPreview(description, { searchContext = '' } = {}) {
   return request(`/characters/generate`, { method: 'POST', body: { description, save: false, searchContext }, timeoutMs: REQUEST_TIMEOUTS.llm })
+}
+
+/** 只重试已选百科页面的立绘，不调用角色生成、不修改角色卡。 */
+export function retryCharacterReferenceImage(pageUrl, { signal } = {}) {
+  return request('/characters/reference-image', { method: 'POST', body: { pageUrl }, signal })
 }
 
 /** 导入酒馆角色卡（PNG 内嵌 chara / JSON 卡），返回预览数据，直接进入招募预览步骤 */
@@ -694,7 +711,7 @@ export function groupChatStream(groupId, items, truncateAfterMsgId = null) {
   const stream = new ReadableStream({
     async start(outerController) {
       let res
-      let connection = null
+      let connection
       const endStream = () => {
         if (streamEnded || streamCancelled) return
         streamEnded = true

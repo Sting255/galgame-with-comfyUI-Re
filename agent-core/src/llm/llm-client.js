@@ -89,8 +89,8 @@ const _limitEnabled = () => config.features.serializeBackgroundLLM;
 // 思考内容仅进入日志，不混入业务正文；完整打印，便于检查服务商实际返回的内容。
 // （上游 4.1.0 随「神说」的 chatAgentStream 一起引入；4.2.0 起补充"未开启思考且无内容时不输出"。）
 
-function logResponse(label, content, reasoning) {
-  logReasoning(label, reasoning);
+function logResponse(label, content, reasoning, thinkingMode) {
+  logReasoning(label, reasoning, thinkingMode);
   console.log(`[${providerLabel()} ← ${label} 正文]`);
   const outputText = content || '';
   const outputLimit = outputLogLimit(label);
@@ -307,9 +307,9 @@ function withErrorBodyLogging(client, label) {
 }
 
 // 思考内容仅进入日志，不混入业务正文；完整打印，便于检查服务商实际返回的内容。
-function logReasoning(label, reasoning) {
+function logReasoning(label, reasoning, thinkingMode = config.llm.thinkingMode) {
   // 未开启思考且没有返回思考内容时，不输出空标题和缺失提示。
-  if (!reasoning && config.llm.thinkingMode !== 'enabled') return;
+  if (!reasoning && thinkingMode !== 'enabled') return;
   console.log(`[${providerLabel()} ← ${label} 思考链]`);
   console.log(reasoning || '(服务商未返回思考内容)');
 }
@@ -1219,6 +1219,8 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
     applyForcedThinking(params, forceThinkingMode, config.llm);
   }
   applyOutputTokenLimit(params);
+  // 实际生效的思考模式（关闭优先于开启），供请求日志与响应处理使用
+  const forcedMode = forceDisableThinking ? 'disabled' : forceThinkingMode;
   let canFallbackThinking = !forceDisableThinking && forceThinkingMode === 'enabled' && fallbackToConfiguredThinking;
 
   // 日志打印时压缩 ANIMA3 模板内容，避免刷屏
@@ -1226,6 +1228,11 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
   // 先缓存请求日志，等响应返回后一起输出，避免并行调用时控制台输出串行
   const requestLog =
     `\n══════════ [${providerLabel()} → ${label}] ══════════\n` +
+    (forcedMode ? `[thinking-policy] ${JSON.stringify({ model: params.model, forcedMode,
+      thinking: params.thinking, reasoning_effort: params.reasoning_effort,
+      enable_thinking: params.enable_thinking, reasoningEnabled: params.reasoning?.enabled,
+      reasoningEffort: params.reasoning?.effort, templateThinking: params.chat_template_kwargs?.enable_thinking,
+      thinkingConfig: params.generationConfig?.thinkingConfig })}\n` : '') +
     JSON.stringify(logMsgs, null, 2) + '\n' +
     '───────────────────────────────────────────────';
 

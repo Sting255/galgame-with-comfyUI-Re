@@ -267,9 +267,11 @@
     </Teleport>
 
     <!-- ═══ 改变日程方向输入弹窗 ═══ -->
-    <linshe-modal :visible="showRegenerateModal" title="编排日程" @close="showRegenerateModal = false" panel-class="schedule-direction-modal">
-      <template #title>
-        <div class="modal-heading-content">
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showRegenerateModal" class="reset-overlay reset-confirm-overlay" @click.self="showRegenerateModal = false">
+          <div class="reset-dialog" @click.stop>
+            <div class="reset-dialog-header">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="1,4 1,10 7,10" />
                 <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
@@ -279,8 +281,6 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </linshe-button>
             </div>
-      </template>
-
             <div class="reset-dialog-desc">
               <p>定向规划{{ detailChar?.display_name || '...' }}今天的行程。留空则正常随机规划。</p>
               <linshe-input
@@ -293,25 +293,27 @@
                 @keydown.enter.exact="confirmRegenerateWithDirection"
               />
             </div>
-
-      <template #footer>
+            <div class="reset-dialog-actions">
               <linshe-button class="reset-btn-bg" variant="secondary" style="flex: 1" @click="confirmRegenerateRandom">随机日程规划</linshe-button>
               <linshe-button class="reset-btn-confirm" variant="primary" @click="confirmRegenerateWithDirection" :disabled="!regenerateDirection.trim()">按此方向生成</linshe-button>
-      </template>
-    </linshe-modal>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- ═══ 重置世界线确认弹窗 ═══ -->
-    <linshe-modal :visible="showResetConfirm" title="全部重置" @close="showResetConfirm = false" panel-class="schedule-reset-modal">
-      <template #title>
-        <div class="modal-heading-content">
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showResetConfirm" class="reset-overlay reset-confirm-overlay" @click.self="showResetConfirm = false">
+          <div class="reset-dialog" @click.stop>
+            <div class="reset-dialog-header">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="1,4 1,10 7,10" />
                 <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
               </svg>
               <span>全部重置</span>
             </div>
-      </template>
-
             <div class="reset-dialog-desc">
               <p>将重新生成全部 <b>{{ store.characters.length }}</b> 个角色的日程表。可输入方向来影响生成结果，留空则随机生成。</p>
               <linshe-input
@@ -324,12 +326,14 @@
                 @keydown.enter.exact="confirmResetAll"
               />
             </div>
-
-      <template #footer>
+            <div class="reset-dialog-actions">
               <linshe-button class="reset-btn-bg" variant="secondary" style="flex: 1" @click="confirmResetRandom">随机日程规划</linshe-button>
               <linshe-button class="reset-btn-confirm" variant="primary" @click="confirmResetAll" :disabled="!resetDirection.trim()">按此方向生成</linshe-button>
-      </template>
-    </linshe-modal>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- ═══ 重置世界线进度弹窗 ═══ -->
     <Teleport to="body">
@@ -1722,6 +1726,8 @@ function finishReset() {
 .modal-leave-to .peek-film { transform: scale(0.95) translateY(10px); }
 
 /* ── 重置世界线弹窗 ── */
+.reset-confirm-overlay.modal-enter-active,
+.reset-confirm-overlay.modal-leave-active { transition-duration: 0.3s; }
 .reset-overlay {
   position: fixed; inset: 0; z-index: 1200;
   background: rgba(0,0,0,0.3); backdrop-filter: blur(4px);

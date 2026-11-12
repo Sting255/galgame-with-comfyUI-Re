@@ -38,6 +38,22 @@ function assertAllowedOutboundUrl(url) {
   return url;
 }
 
+// 交给本地爬虫前的最后一道清洗：只保留路径/查询，主机用字面量硬重建。
+// 这样即使 URL 取自远程 HTML（Bing 结果等），实际请求目标也固定是萌娘百科，
+// 远程内容无法把抓取引向其他主机（含内网）。
+function toSafeMoegirlScrapeUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (!/^([a-z0-9-]+\.)*moegirl\.org\.cn$/.test(parsed.hostname)
+    || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password
+    || (parsed.port && !['80', '443'].includes(parsed.port))) return null;
+  return `https://zh.moegirl.org.cn${parsed.pathname}${parsed.search}`;
+}
+
 function fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT) {
   assertAllowedOutboundUrl(url);
   const controller = new AbortController();
@@ -58,7 +74,7 @@ async function extractNameForSearch(rawQuery) {
     const result = await chatSync([
       { role: 'system', content: '你是一个动漫游戏角色搜索关键词提取器和纠错器。从用户输入中提取核心角色名称和所属作品。\n如果角色名有错别字（如输入"芙宁哪"→纠正为"芙宁娜"），请自动纠正为正确的官方名称。\n输出格式：角色名|作品名\n如果没有作品名，只输出角色名，|后面留空。\n\n示例：\n输入：绝区零里的千夏\n输出：千夏|绝区零\n输入：芙宁娜（原神）\n输出：芙宁娜|原神\n输入：帮我看一下雷电将军的背景故事\n输出：雷电将军|\n输入：一个金发双马尾的傲娇角色\n输出：金发双马尾傲娇角色|\n输入：芙宁哪\n输出：芙宁娜|原神\n输入：我想要钟离\n输出：钟离|原神' },
       { role: 'user', content: rawQuery },
-    ], { temperature: 0, label: '网络搜索' });
+    ], { temperature: 0, label: '网络搜索', thinking: { type: 'disabled' }, forceDisableThinking: true });
     const trimmed = (result || '').trim();
     const pipeIdx = trimmed.indexOf('|');
     if (pipeIdx !== -1) {
@@ -81,13 +97,18 @@ async function extractNameForSearch(rawQuery) {
  * @returns {Promise<string>} 格式化后的搜索结果文本
  */
 export async function searchCharacterInfo(query) {
+  return (await searchCharacterReference(query)).text;
+}
+
+/** 图片独立于文本传递，避免 base64 进入人格生成提示词及搜索缓存。 */
+export async function searchCharacterReference(query) {
   // 先用 LLM 提取核心角色名 + 作品上下文，提升萌娘百科搜索命中率
   const { name: searchName, context } = await extractNameForSearch(query);
 
   // 没有作品上下文 → 原创角色描述 → 跳过搜索，让 LLM 自行发挥
   if (!context) {
     console.log(`[webSearch] no work context, skipping search (original character): "${searchName}"`);
-    return '';
+    return { text: '', referenceImage: '' };
   }
 
   const timed = (name, promise) => promise.then(
@@ -134,6 +155,28 @@ export async function searchCharacterInfo(query) {
   // 3. 对最匹配的那一条补全文：走 MediaWiki API，不走 HTML 爬虫
   //    （真机实测：HTML 页面被 Cloudflare 拦（403）或超时，API 0.4 秒就回来）
   const best = allResults[0];
+  // 上游 v4.3.0：萌娘百科页面深度抓取（infobox + 参考立绘），失败再用 MediaWiki API 兜底。
+  // 只对萌娘源、且现有正文不足 600 字的那条做，避免每次搜索都多打一次爬虫。
+  if (best && String(best.source || '').includes('moegirl.org.cn') && (best.content || '').length < 600) {
+    const scrapeUrl = toSafeMoegirlScrapeUrl(best.source);
+    if (scrapeUrl) {
+      try {
+        const pageData = await scrapeMoegirlPage(scrapeUrl);
+        if (pageData?.reference_image && !best.reference_image) best.reference_image = pageData.reference_image;
+        if (pageData?.reference_image_info && !best.reference_image_info) best.reference_image_info = pageData.reference_image_info;
+        const infoboxLen = pageData?.infobox?.length || 0;
+        const contentLen = pageData?.content?.length || 0;
+        if (pageData?.content && (infoboxLen > 0 || contentLen >= 600)) {
+          best.content = pageData.content;
+          console.log(`[webSearch] deep scraped moegirl page (${contentLen} chars) for "${best.title}"`);
+        } else if (infoboxLen === 0 && contentLen > 0) {
+          console.log(`[webSearch] low quality scrape (infobox=0, body=${contentLen} chars), discarding`);
+        }
+      } catch (err) {
+        console.warn(`[webSearch] moegirl deep scrape failed: ${err.message}`);
+      }
+    }
+  }
   if (best && (best.content || '').length < 600) {
     const full = await fetchFullPageExtract('https://mzh.moegirl.org.cn/api.php', best.title)
       || await fetchFullPageExtract('https://zh.moegirl.org.cn/api.php', best.title);
@@ -144,13 +187,16 @@ export async function searchCharacterInfo(query) {
     }
   }
 
-  if (allResults.length === 0) return '';
+  if (allResults.length === 0) return { text: '', referenceImage: '' };
 
   // 只把最匹配的一两条喂给模型：条数多了反而稀释重点
-  return allResults
+  const text = allResults.filter(r => r.content)
     .slice(0, 2)
     .map((r, i) => `[${i + 1}] ${r.title}\n${r.content}\n来源: ${r.source}`)
     .join('\n\n');
+  const reference = allResults.find(r => r.reference_image) || allResults.find(r => r.reference_image_info);
+  return { text, referenceImage: reference?.reference_image || '',
+    ...(reference?.reference_image_info ? { referenceImageInfo: reference.reference_image_info } : {}) };
 }
 
 /**
@@ -462,4 +508,98 @@ function extractInfoboxFromText(bodyText) {
   }
 
   return { infobox: infoboxLines.join('\n'), cleanBody };
+}
+
+/**
+ * 调用 Python 爬虫服务获取萌娘百科页面内容
+ */
+async function scrapeMoegirlPage(pageUrl) {
+  // 汇点兜底：无论调用方来源如何，送进爬虫的必须是萌娘百科页面
+  if (!/^https:\/\/([^/]+\.)?moegirl\.org\.cn\//.test(String(pageUrl))) {
+    console.warn(`[webSearch] scrapeMoegirlPage blocked non-moegirl url: ${pageUrl}`);
+    return null;
+  }
+  console.log(`[webSearch] scrapeMoegirlPage calling python: ${pageUrl}`);
+  try {
+    const data = await callMoegirlScraper(pageUrl, false);
+    const pyInfoboxLen = data.infobox?.length || 0;
+    const bodyLen = data.content?.length || 0;
+    console.log(`[webSearch] python scrape done: infobox=${pyInfoboxLen} chars, body=${bodyLen} chars`);
+
+    let infoboxText = data.infobox || '';
+    let bodyText = data.content || '';
+
+    // Python 未提取到信息框 → Node.js 侧从正文文本中解析（安全网）
+    if (!infoboxText && bodyText.includes('基本资料')) {
+      console.log('[webSearch] Python infobox empty, falling back to Node.js text parsing');
+      const parsed = extractInfoboxFromText(bodyText);
+      if (parsed.infobox) {
+        infoboxText = parsed.infobox;
+        bodyText = parsed.cleanBody;
+        console.log(`[webSearch] Node.js infobox extracted: ${infoboxText.length} chars`);
+      }
+    }
+
+    // 组装内容：信息框前置，正文置后
+    if (infoboxText) {
+      data.content = infoboxText + '\n\n【正文描述】\n' + bodyText;
+      data.content = data.content.slice(0, 8000);
+    }
+    return data;
+  } catch (err) {
+    console.warn(`[webSearch] python scrape call failed: ${err.message}`);
+    return referenceFailure(pageUrl, 'service_error', '立绘获取失败，请检查抓取服务后重试');
+  }
+}
+
+function referenceFailure(pageUrl, status, message, retryAfter = 0) {
+  return { source: pageUrl, content: '', reference_image: '', reference_image_info: {
+    page_url: pageUrl, status, message, retry_after: retryAfter,
+  } };
+}
+
+async function callMoegirlScraper(pageUrl, imageOnly, signal) {
+  try {
+    const timeout = AbortSignal.timeout(65000);
+    const res = await fetch(`http://localhost:8765/${imageOnly ? 'scrape-image' : 'scrape'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: pageUrl }),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = JSON.stringify((await res.json()).detail || ''); } catch { /* legacy service */ }
+      if (res.status === 429 || /\b429\b/.test(detail)) {
+        return referenceFailure(pageUrl, 'rate_limited', '萌娘百科请求过于频繁，请稍后重试立绘', 5);
+      }
+      if (/\b403\b/.test(detail)) return referenceFailure(pageUrl, 'blocked', '萌娘百科要求访问验证，暂时无法获取立绘');
+      return referenceFailure(pageUrl, 'service_error', res.status === 404 && imageOnly
+        ? '抓取服务尚未更新，请重启向量服务后重试立绘' : '立绘获取失败，请检查抓取服务后重试');
+    }
+    const data = await res.json();
+    const image = typeof data.reference_image === 'string' ? data.reference_image : '';
+    const info = data.reference_image_info || {};
+    return { ...data, reference_image: image, reference_image_info: {
+      page_url: pageUrl,
+      status: image ? 'ready' : (info.status || 'service_error'),
+      message: image ? '' : (info.message || '抓取服务未返回图片状态，请重启向量服务后重试'),
+      retry_after: Math.max(0, Number(info.retry_after) || 0),
+    } };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return referenceFailure(pageUrl, error.name === 'TimeoutError' ? 'timeout' : 'service_error',
+      error.name === 'TimeoutError' ? '获取立绘超时，请重试' : '无法连接抓取服务，请检查服务后重试立绘');
+  }
+}
+
+/** Retry only the already-selected article's image. No name extraction, persona generation or DB writes. */
+export async function fetchCharacterReferenceImage(rawPageUrl, { signal } = {}) {
+  const pageUrl = toSafeMoegirlScrapeUrl(rawPageUrl);
+  if (!pageUrl) {
+    const error = new Error('请提供有效的萌娘百科页面地址');
+    error.status = 400;
+    throw error;
+  }
+  const result = await callMoegirlScraper(pageUrl, true, signal);
+  return { reference_image: result.reference_image, reference_image_info: result.reference_image_info };
 }

@@ -54,6 +54,7 @@ import { migrateCohabitationSchema } from './cohabitationRepository.js';
 import { migrateInterCharacterEventSchema } from './interCharacterEventSchema.js';
 import { migrateWorldTimelineSchema } from './worldTimelineSchema.js';
 import { migrateCharacterBondSchema } from './characterBondSchema.js';
+import { migratePhotoStudioSchema } from './photoStudioSchema.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -222,6 +223,7 @@ function runStartupDbMaintenance(database) {
 // ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
 // moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
 function cleanupOrphanedInFlight(database) {
+  database.prepare("UPDATE photo_studio_jobs SET status = 'failed', stage = 'failed', error = '服务重启导致拍摄中断，请重新拍摄', finished_at = datetime('now') WHERE status = 'running'").run();
   recoverInterruptedDiaries(database);
   recoverSpeechJobs(database);
   recoverExpressionStandingJobs(database);
@@ -1182,6 +1184,7 @@ function initSchema(db) {
   migrateInterCharacterEventSchema(db);
   migrateWorldTimelineSchema(db);
   migrateCharacterBondSchema(db);
+  migratePhotoStudioSchema(db);
 
   // 迁移: moment_comments 新增 auto_trigger + thread_root_id（朋友圈关系网互动）
   migrateMomentAutoTrigger(db);

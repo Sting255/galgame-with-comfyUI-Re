@@ -17,8 +17,10 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { submitWorkflow, apiToGui } from './comfyClient.js';
+import { submitWorkflow, apiToGui, guiToApi } from './comfyClient.js';
 import { POSE_LORA_FILE } from './poseControl.js';
+import { randomizeWorkflowSeeds } from './imageWorkflowMetadata.js';
+import { markLoraWorkflow, recomposeLoraWorkflow } from './imageLoraProvenance.js';
 import { config, getNovelaiApiKey } from '../config.js';
 import { generateNovelaiImage } from './novelaiClient.js';
 import { acquireSlot, releaseSlot } from './llmConcurrency.js';
@@ -342,8 +344,14 @@ function buildWorkflow(promptText, overrides = {}) {
   }
 
   // 动态注入 LoraLoaderModelOnly 节点链
+  const originalIds = new Set(wf.nodes.map(n => n.id));
   if (hasLoras) {
     injectLoraNodes(wf, loras);
+  }
+  const loraIds = wf.nodes.filter(n => !originalIds.has(n.id)).map(n => n.id);
+  // 无有效模型链/触发词入口的自定义模板继续保留原行为，不声明可分类重生。
+  if (!hasLoras || loraIds.length === loras.length) {
+    markLoraWorkflow(wf, { globals: globalLoras, characters: providedLoras, scene: overrides.scene, loraIds });
   }
 
   console.log(`[imageSkill] Workflow built: ${path.basename(wfPath)} (${pathToMode(wfPath)})${hasLoras ? ` (${loras.length} lora(s))` : ''}`);
@@ -530,19 +538,28 @@ async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
   loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
   characterNegative, poseJson, sceneKey,
+  sourceWorkflow,
+  imageProvider = config.comfyui.imageProvider,
 } = {}) {
-  if (config.comfyui.imageProvider === 'novelai') {
+  if (!sourceWorkflow && imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
     // but does not use either character or global LoRA data.
     return submitNovelaiImage(rawPrompt, { artist, onProgress });
   }
 
   // 1. 最终阀门
-  let finalPrompt = finalizeCountTags(rawPrompt);
+  let finalPrompt = sourceWorkflow ? rawPrompt : finalizeCountTags(rawPrompt);
   console.log(`[imageSkill] Final prompt: ${finalPrompt}`);
 
   // 2. 构建 workflow
-  const { wf, wfMode } = buildWorkflow(finalPrompt, {
+  const recomposed = sourceWorkflow ? recomposeLoraWorkflow(
+    sourceWorkflow.prompt || guiToApi(sourceWorkflow.workflow), sourceWorkflow.generation,
+    filterGlobalLoras(config.comfyui.globalLora || [], sourceWorkflow.generation?.scene),
+  ) : null;
+  let { wf, wfMode } = sourceWorkflow ? {
+    wf: randomizeWorkflowSeeds(recomposed.prompt),
+    wfMode: 'original',
+  } : buildWorkflow(finalPrompt, {
     artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
     characterNegative,
     // 同场景稳定种子：调用方传 sceneKey 时，连续几张图共用一套 base（每张 +1）
@@ -572,7 +589,8 @@ async function submitWithRetry(rawPrompt, {
 
   for (let attempt = 0; ; attempt++) {
     if (attempt > 0) {
-      console.log(`[imageSkill] ComfyUI submit retry ${attempt} — re-randomizing seed`);
+      console.log(`[imageSkill] ComfyUI submit retry ${attempt}/${submitRetries} — re-randomizing seed`);
+      if (sourceWorkflow) wf = randomizeWorkflowSeeds(wf);
       for (const node of wf.nodes || []) {
         if (node.type === 'KSampler' && node.widgets_values.length > 1 && node.widgets_values[1] === 'randomize') {
           node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
@@ -584,7 +602,7 @@ async function submitWithRetry(rawPrompt, {
     try {
       const result = await submitWorkflow(wf, (p) => {
         if (onProgress) onProgress({ stage: 'generating', ...p });
-      }, { poseJson: activePoseJson });
+      }, { poseJson: activePoseJson, generation: recomposed?.generation });
       if (result.images.length > 0) {
         console.log(`\n🎨 [imageSkill] 图片生成完成: ${result.images.length} 张 (workflow: ${wfMode}, promptId: ${result.promptId})`);
         return { success: true, images: result.images, source: 'api', promptId: result.promptId, wfMode };
@@ -714,6 +732,15 @@ async function _execute(rawPrompt, opts) {
   // 来源快照要记「这张图锚了谁、锚了什么」（方案 A04）
   let identityForProvenance = null;
   try {
+    // 原图重生完全跳过提示词加工与当前角色/全局配置，仍共用并发槽与提交重试。
+    if (opts.sourceWorkflow) {
+      if (_limitEnabled()) {
+        await acquireSlot();
+        slotAcquired = true;
+      }
+      return await submitWithRetry('', opts);
+    }
+
     // 0. 送进 CLIP 之前先剥掉模型回显的生图规范原文（2026-10-01 修，见 groupImagePrompt.js 长注释）。
     //    放在这里而不是各调用点，是为了让 event / newspaper / moments / schedule / group / chat /
     //    touch / toy / portrait / standalone / maibot **所有**生图入口一次生效。

@@ -240,6 +240,29 @@ export function extractAppearanceIdentityCorpus(basePrompt, fallbackName = '') {
  * @param {string} basePrompt
  * @returns {{ before: string, after: string }}
  */
+/** Direct image workflows need appearance prose, without LLM outfit arbitration or persona text. */
+export function buildCharacterImageAppearance(character) {
+  let text = extractEditableAppearanceBody(character?.base_prompt);
+  // Old saved cards can contain an injected outfit wrapper. Default still means the base appearance.
+  const legacyBase = /【基础外观[^】]*】([\s\S]*?)(?=【着装裁定|$)/.exec(text);
+  if (legacyBase) text = legacyBase[1].trim();
+  if (/【(?:限时服饰|角色专属形态|着装裁定)/.test(text)) return '';
+  // Original characters sometimes use "中文名 (English Name) has ..." instead of a series tag.
+  text = text.replace(/[\p{Script=Han}·]+\s*\(([A-Za-z][A-Za-z .'\-]{0,60})\)\s+(?=has\b|wearing\b)/u, '$1 ');
+  // Discard a legacy tag prefix when a complete English identity sentence is also present.
+  const identity = /[A-Za-z][A-Za-z0-9 .'\-:]{0,60}?\s*\\?\([^()\r\n]{1,80}\\?\)\s+(?:has|wearing)\b/.exec(text);
+  if (identity) text = text.slice(identity.index);
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+export function extractCharacterEnglishName(character) {
+  const appearance = buildCharacterImageAppearance(character);
+  const tagged = /^([A-Za-z][A-Za-z0-9 .'\-:]{0,60}?)\s*\\?\([^()]+\\?\)\s+(?:has|wearing)\b/.exec(appearance);
+  const plain = /^([A-Za-z][A-Za-z0-9 .'\-:]{0,60}?)\s+(?:has|wearing)\b/.exec(appearance);
+  const name = tagged?.[1] || plain?.[1];
+  if (name) return name.trim();
+  return /^[A-Za-z][A-Za-z0-9_ .'\-:]*$/.test(character?.name || '') ? character.name.replace(/_/g, ' ').trim() : '';
+}
 export function splitAppearanceSection(basePrompt) {
   const base = String(basePrompt || '');
   const m = base.match(APPEARANCE_HEADING_RE);
@@ -290,10 +313,12 @@ export function isAppearanceOnlyPromptChange(oldBase, newBase) {
 }
 
 /**
- * 组装角色完整外观段（含标题「## 你的外观」与生效外观注入）。
- * 供需要单独拿外观段的场景使用（如表情包 system3，自行决定是否保留标题行）。
+ * 组装角色外观段（默认含标题「## 你的外观」与生效外观注入）。
+ * 供需要单独拿外观段的场景使用；直接生图时可省略标题，保留完整外观与注入正文。
  * @param {object} character - 至少含 base_prompt（注入查询需要 id）
- * @param {object} [opts] - 同 buildCharacterPersona 的 opts.outfits
+ * @param {object} [opts]
+ * @param {'auto'|null|Array|{limited,exclusive}} [opts.outfits='auto'] - 同 buildCharacterPersona 的 opts.outfits
+ * @param {boolean} [opts.includeHeading=true] - false 时只返回外观正文
  * @returns {string} base_prompt 无外观段且无生效外观时返回 ''
  */
 export function buildCharacterAppearanceSection(character, opts = {}) {
@@ -312,7 +337,9 @@ export function buildCharacterAppearanceSection(character, opts = {}) {
   // 外观段是所有生图路径的必经之处，玩具接在这里 ⇒ 私聊图 / 群聊图 / 朋友圈图 / 亲密图 / 立绘 /
   // 报纸…全部自动带上。没戴（或玩具服务尚未加载）⇒ 空串 ⇒ 零注入、与改动前逐字节一致。
   const toys = wornToysBrief(character?.id, { scene: opts.scene, person: owner });
-  return toys ? `${withOutfits}\n${toys}` : withOutfits;
+  const section = toys ? `${withOutfits}\n${toys}` : withOutfits;
+  // 上游 v4.3.0：照相馆等只需要外观正文，不需要「## 你的外观」标题行
+  return opts.includeHeading === false ? section.replace(APPEARANCE_HEADING_RE, '').trim() : section;
 }
 
 /**
@@ -414,7 +441,7 @@ export function buildCharacterPersona(character, opts = {}) {
 
 // 角色身份标签：外观段通常以 "Name (Series) has ..." 开头；限时服饰会把它包在
 // 「1. 日常装：...」之后，因此在外观段整段里搜，而不是只认第一行。
-const CHARACTER_IDENTITY_TAG_RE = /([A-Za-z][A-Za-z0-9 .'\-:]{1,50}?)\s*\\?\(([^()]{2,60})\\?\)\s+has\b/;
+const CHARACTER_IDENTITY_TAG_RE = /([A-Za-z][A-Za-z0-9 .'\-:]{1,50}?)\s*\\?\(([^()\\]{2,60})\\?\)\s+(?:has|wearing)\b/;
 // 2026-11-08：多数角色卡的外观段是 danbooru tag 串（`1girl, solo, Hyacine (Honkai: Star Rail), ...`），
 // 没有 "has" 句式，上面那条正则命中不到 ⇒ 冷门角色失去唯一的身份锚点。补一条 tag 串形态。
 const CHARACTER_TAG_IDENTITY_RE = /(?:^|[,:;]\s*)([A-Za-z][A-Za-z0-9 .'\-]{1,40}?)\s*\\?\(([^()]{2,60})\\?\)/g;

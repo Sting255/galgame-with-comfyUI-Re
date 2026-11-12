@@ -20,6 +20,7 @@ import chatRoutes from './src/routes/chat.js';
 import ttsRoutes from './src/routes/tts.js';
 import memoryRoutes from './src/routes/memory.js';
 import imagesRoutes from './src/routes/images.js';
+import photoStudioRoutes from './src/routes/photoStudio.js';
 import charactersRoutes from './src/routes/characters.js';
 import emojiRoutes from './src/routes/emoji.js';
 import intimateRoutes from './src/routes/intimate.js';
@@ -158,6 +159,8 @@ app.use((req, res, next) => {
   if (req.method === 'POST' && normalizedPath === '/api/data/import') return next();
   return apiJsonParser(req, res, next);
 });
+// 上游 v4.3.0：照相馆（photo studio）
+app.use('/api/photo-studio', godCommitGuard, wrapRouterAsync(photoStudioRoutes));
 
 // 静态文件（Vue 前端，构建后）
 // 带内容哈希的资源（/assets/*，含字体）可长缓存；index.html 保持可即时更新

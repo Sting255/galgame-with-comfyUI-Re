@@ -6,10 +6,10 @@
        永远解析不到宿主（遮罩退到 body），而且那套轮询把测试文件挂死过 —— 已按上游退回。 -->
   <Teleport :to="anchor || 'body'" defer>
     <Transition name="modal-fade" :duration="transitionMs" @after-leave="afterLeave">
-      <div v-if="isOpen" ref="overlay" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating }" :style="overlayStyle" @pointerdown="onBackdropPointerDown" @click.self="onBackdropClick">
-        <div ref="panel" class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic' }, panelClass]" role="dialog" :aria-modal="floating ? undefined : true" :aria-label="title || undefined" tabindex="-1" @click.stop>
+      <div v-if="isOpen" ref="overlay" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating, 'is-full-height': fullHeight }" :style="overlayStyle" @pointerdown="onBackdropPointerDown" @click.self="onBackdropClick">
+        <div ref="panel" class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic', 'modal-film': variant === 'film' }, panelClass]" role="dialog" :aria-modal="floating ? undefined : true" :aria-label="title || undefined" tabindex="-1" @click.stop>
           <div class="modal-header">
-            <slot name="title"><h3 class="modal-title">{{ title }}</h3></slot>
+            <slot name="title"><h3 class="modal-title" :class="{ 'has-title-icon': !!$slots['title-icon'] }"><span v-if="$slots['title-icon']" class="modal-title-icon" aria-hidden="true"><slot name="title-icon" /></span>{{ title }}</h3></slot>
             <span v-if="$slots['header-extra']" class="modal-header-extra"><slot name="header-extra" /></span>
             <slot v-if="showClose" name="close" :close="close" :disabled="closeDisabled || checkingClose">
               <linshe-button variant="icon" :disabled="closeDisabled || checkingClose" aria-label="关闭" @click="close()">✕</linshe-button>
@@ -42,7 +42,7 @@
 // 与 beforeClose。`close` 只表示"用户要求关闭"，**不等于已经离场**；真正卸载完要听
 // `after-leave`（Transition 的离场动画结束点），父层用 v-if 卸载时必须听它，不要用
 // setTimeout 猜时长 —— 猜早了卸早了，猜晚了闪一下。
-import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount, provide } from 'vue'
 
 import LinsheButton from './LinsheButton.vue'
 import { registerModal, nextModalLayer } from './modalStack.js'
@@ -56,6 +56,7 @@ const props = defineProps({
   transitionMs: { type: Number, default: undefined },
   wide: { type: Boolean, default: false },   // 面板加宽（.modal-wide）
   full: { type: Boolean, default: false },   // 大型管理面板（.modal-full）
+  fullHeight: { type: Boolean, default: false }, // 撑满可用高度，宽度仍由原尺寸档位控制
   floating: { type: Boolean, default: false }, // 右下角无阻挡工具窗，复用统一面板皮肤
   panelClass: { type: [String, Array, Object], default: '' },
   bodyClass: { type: [String, Array, Object], default: '' },
@@ -84,6 +85,8 @@ const isOpen = computed(() => props.modelValue || props.visible)
 const isAnchored = computed(() => !!props.anchor)
 const overlay = ref(null), panel = ref(null), checkingClose = ref(false)
 const activeLayer = ref(undefined)
+// Teleport 到 body 的附属工具仍需跟随本窗口的动态栈层级。
+provide('linsheModalLayer', computed(() => activeLayer.value ?? props.zIndex ?? 10000))
 const overlayStyle = computed(() => ({
   ...(props.transitionMs !== undefined ? { '--linshe-modal-duration': `${props.transitionMs}ms` } : {}),
   ...(activeLayer.value !== undefined ? { zIndex: activeLayer.value } : {}),
@@ -165,17 +168,41 @@ onBeforeUnmount(() => {
    长标题可换行而不是把关闭键顶出面板 */
 :slotted(.modal-heading-content) { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1; min-width: 0; flex-wrap: wrap; }
 .modal-title { min-width: 0; overflow-wrap: anywhere; }
-.modal-header-extra { flex-wrap: wrap; }
+.modal-title-icon { display:inline-flex; flex:none; width:1em; height:1em; }
+.modal-title-icon :deep(svg) { display:block; width:100%; height:100%; }
 .linshe-modal:focus { outline: none; }
 .linshe-modal .modal-body.modal-workspace-body { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .linshe-modal .modal-body.modal-form-body { display: flex; flex-direction: column; gap: 12px; }
 .modal-form-body :deep(> *) { flex-shrink: 0; }
 .modal-header-extra {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 6px 12px;
+  min-width: 0;
   margin-left: auto;
-  margin-right: 10px;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+/* 统计内容只提供语义标记，排版与主题统一由弹窗维护。 */
+.modal-header-extra :deep(.modal-header-stat) {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.modal-header-extra :deep(.modal-header-stat-value) {
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 700;
+}
+.modal-header-extra :deep(.modal-header-stat-value.is-active) {
+  color: color-mix(in srgb, var(--accent) 55%, var(--text-primary));
 }
 
 .linshe-modal-lining {
@@ -215,6 +242,22 @@ onBeforeUnmount(() => {
 /* 面板宽度上限改按宿主宽度算：基座的 94vw/96vw 是视口口径，宿主被侧栏占去一块后会顶出边界 */
 .linshe-modal-overlay.is-host-anchored .modal-panel { max-width: 100%; }
 
+/* 社交帖子与数字报刊共用阅读窗尺寸，移动端继续使用下方统一适配。 */
+.linshe-modal-overlay.is-full-height > .modal-panel {
+  height: 100%;
+  max-height: 100%;
+}
+@media (min-width: 768px) {
+  .linshe-modal-overlay.is-full-height { padding-block: 0; }
+  .linshe-modal-overlay:has(> .media-reader-panel) {
+    padding-block: 10px;
+  }
+  .media-reader-panel {
+    height: 100dvh;
+    max-height: 100%;
+  }
+}
+
 /* 移动端：保留 PC 的「圆角浮层」观感 —— 面板圆角、描边、白色内衬一律不动，
    只把遮罩留白从 20px 收紧到 8px，并把刘海 / 挖孔 / 手势条的安全区让给遮罩
    （面板靠遮罩内边距避开异形屏，因此头部不再需要单独加 safe-area 上内边距）。
@@ -250,6 +293,52 @@ onBeforeUnmount(() => {
   }
 }
 
+@media (max-width: 480px) {
+  .modal-header:has(.modal-header-extra) { flex-wrap: wrap; row-gap: 8px; }
+  .modal-header-extra { order: 1; flex-basis: 100%; }
+}
+
 /* 操作区自带底部留白；有 footer 时不再叠加内衬的底部间距。 */
 .linshe-modal-lining.has-footer { margin-bottom: 0; }
+/* 传媒的漫画阅读变体；默认弹窗不受影响。 */
+.modal-film {
+  --modal-bg: var(--studio-paper);
+  --modal-border: 1px solid var(--studio-ink);
+  --modal-radius: 4px;
+  --modal-shadow: 6px 6px 0 var(--studio-shadow);
+  --modal-backdrop: none;
+  --modal-lining-bg: var(--studio-paper);
+  --modal-lining-border: none;
+  --modal-lining-radius: 0;
+  --modal-lining-margin: 0 12px 12px;
+  --modal-lining-margin-mobile: 0 6px 6px;
+  --modal-lining-pad: 12px;
+  color: var(--studio-ink);
+}
+.modal-film .modal-header { padding:16px 24px; border-bottom:2px solid var(--studio-ink); background:url('../../assets/studio-photocopy.svg'),var(--studio-paper); }
+.modal-film .modal-title { color:var(--studio-ink); font-size:24px; font-weight:900; letter-spacing:-.04em; }
+.modal-film .modal-title::before { content:'✳'; color:var(--studio-tag); margin-right:10px; }
+.modal-film .modal-title.has-title-icon::before { content:none; }
+.modal-film .modal-title-icon { color:var(--studio-tag); }
+.modal-film .modal-footer { border-top:1px dashed var(--studio-ink); padding:12px 24px; }
+.modal-film .modal-body { scrollbar-color:var(--studio-muted) transparent; }
+@media(max-width:600px) { .modal-film .modal-header,.modal-film .modal-footer { padding:12px; }.modal-film .modal-title { font-size:20px; } }
+.modal-comic {
+  --modal-bg: var(--media-paper);
+  --modal-border: 3px solid var(--media-ink);
+  --modal-radius: 4px;
+  --modal-shadow: 8px 8px 0 var(--media-ink);
+  --modal-backdrop: none;
+  --modal-lining-bg: var(--media-paper);
+  --modal-lining-border: none;
+  --modal-lining-radius: 0;
+  --modal-lining-margin: 0;
+  --modal-lining-margin-mobile: 0;
+  --modal-lining-pad: 0;
+}
+.modal-comic .modal-header { background: var(--media-ink); color: var(--media-light); padding: 10px 18px; }
+.modal-comic .modal-title { color: var(--media-light); font-size: 14px; letter-spacing: .16em; }
+.modal-comic .modal-title::before { content: '✦'; color: var(--accent); font-size: 24px; }
+.modal-comic .modal-footer { border-top: 3px solid var(--media-ink); padding: 14px 20px; }
+@media (max-width: 600px) { .modal-comic .modal-footer { padding: 12px; } }
 </style>

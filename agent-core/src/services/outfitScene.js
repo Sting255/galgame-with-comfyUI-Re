@@ -28,9 +28,11 @@
  * 否则角色会在街上"兜底成裸体"。睡眠时段也**绝不标裸体**（睡觉一律穿睡衣）。
  */
 
-import { getDb, getSystemRules } from '../db/index.js';
+import { getDb } from '../db/index.js';
+import { getSystemRulesWithWorld } from '../db/worldRepository.js';
+import { getWorldIntegrationRule } from '../builtinRules.js';
 import { registerSceneOutfitProvider } from './sceneOutfitRegistry.js';
-import { splitAppearanceSection } from './characterPersona.js';
+import { splitAppearanceSection, buildCharacterAppearanceSection } from './characterPersona.js';
 import { getIdentityBody } from './identityAnchor.js';
 import { buildSceneOutfitMessages, normalizeDesignScenes, parseSceneOutfitDesign } from './sceneOutfitPrompt.js';
 import { pickFabricAndColors } from './clothingLibrary.js';
@@ -230,6 +232,26 @@ export function setCharacterBody(characterId, body) {
   return { ok: true, updated: r.changes };
 }
 
+/** 日程衣柜始终包含默认服饰；保留旧名称和 ID，但外观以人物卡为准，不补写服装表。 */
+export function buildScheduleOutfitCandidates(outfits, character = null) {
+  const savedDefault = outfits.find(o => o.scene === 'work');
+  const appearance = character ? buildCharacterAppearanceSection(character, { outfits: null }).trim() : '';
+  return [{
+    ...savedDefault,
+    scene: 'work',
+    sceneLabel: LABEL_BY_KEY.work,
+    name: savedDefault?.name || DEFAULT_NAME_BY_SCENE.work,
+    description: appearance || savedDefault?.description || '沿用人物卡中的默认外观与服饰。',
+  }, ...outfits.filter(o => o.scene !== 'work' && o.name?.trim() && o.description?.trim())];
+}
+
+function scheduleOutfits(characterId) {
+  if (!characterId) return [];
+  const character = getDb().prepare('SELECT base_prompt FROM characters WHERE id = ?').get(characterId);
+  if (!character) return [];
+  return buildScheduleOutfitCandidates(listSceneOutfits(characterId), character);
+}
+
 /** 批量写入场景服装（供「一键生成」用）。同名同场景则更新描述，避免重复堆叠 */
 export function upsertSceneOutfits(characterId, outfits) {
   const db = getDb();
@@ -349,7 +371,9 @@ export async function generateSceneOutfits(character, opts = {}) {
     : '';
 
   const msgs = buildSceneOutfitMessages({
-    systemRules: getSystemRules({ roleplay: false }),
+    systemRules: getSystemRulesWithWorld({ roleplay: false }),
+    // 上游 v4.3.0：把世界观原文作为独立规则层注入，服装设计必须落在世界设定内
+    worldRule: getWorldIntegrationRule('world_outfit'),
     persona,
     shortPrompt: character?.short_prompt,
     displayName,
@@ -546,7 +570,7 @@ export function getSceneOutfitForNow(characterId, date = getProgramNow()) {
   // 「白天可兜底」的服装：排除睡眠、也排除私密裸体
   const dayOutfits = outfits.filter(o => o.scene !== 'sleep' && o.scene !== PRIVATE_SCENE);
   const byName = new Map(outfits.map(o => [o.name, o]));
-  const byId = new Map(outfits.map(o => [String(o.id), o]));
+  const byId = new Map(outfits.filter(o => o.id != null).map(o => [String(o.id), o]));
 
   const acts = todayActivities(characterId, date);
   const idx = acts.length ? findCurrentIndex(acts, nowMinutes(date)) : -1;
@@ -582,7 +606,10 @@ export function getSceneOutfitForNow(characterId, date = getProgramNow()) {
     const text = String(o).trim();
     if (!text) continue;
     const hit = byName.get(text) || byId.get(text);
-    if (hit) return { outfit: hit, scene: hit.scene, source: 'schedule' };
+    if (hit) {
+      if (hit.scene === 'sleep' && Number(cur.replyDelay) !== -1) return fallback;
+      return { outfit: hit, scene: hit.scene, source: 'schedule' };
+    }
     // 标注了但匹配不到（LLM 编了个名字）→ 继续往前找，别停在一个无效值上
   }
 
@@ -622,11 +649,12 @@ export function asPersonaOutfits(sceneOutfit) {
  * @returns {string|null}
  */
 export function buildOutfitAnnotateLayer(characterId) {
-  return buildOutfitAnnotation(listSceneOutfits(characterId));
+  return buildOutfitAnnotation(scheduleOutfits(characterId));
 }
 
 /** 系统角色可显式提供独立衣柜，复用同一日程着装规范。 */
-export function buildOutfitAnnotation(outfits) {
+export function buildOutfitAnnotation(outfits, character = null) {
+  outfits = buildScheduleOutfitCandidates(outfits, character);
   if (outfits.length < 2) return null;   // 只有一套就没什么可分配的
 
   // 清单里给的是「组合后的自包含文本」—— 模型要照着这个判断"哪一套像什么场合"，
@@ -663,7 +691,7 @@ export function buildOutfitAnnotation(outfits) {
 - 用不到就完全不出现这个值 —— 不要为了"丰富"而给角色安排裸体时段。` : '';
 
   return `## 着装标注（额外要求）
-这个角色在一天中会换衣服。可选服装如下：
+默认服饰是角色清醒时的常态形象，只有明确理由才换其他衣服。可选服装如下：
 ${list}
 
 请在生成日程时，为**每个时段**额外输出一个字段 \`outfit\`：

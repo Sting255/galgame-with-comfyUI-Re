@@ -1,0 +1,54 @@
+import express from 'express';
+import { createPhotoStudioService, getRecognizedPoseCatalog, photoStudioCapability, POSE_GALLERY_DIR } from '../services/photoStudioService.js';
+import { getStudioBackgrounds, generateStudioBackground } from '../services/photoStudioBackgrounds.js';
+import { describeStudioPose } from '../services/photoStudioPose.js';
+import { queryStudioCatalog } from '../services/photoStudioCatalog.js';
+
+const router = express.Router();
+const studio = createPhotoStudioService();
+router.use('/assets', express.static(POSE_GALLERY_DIR, { maxAge: '7d', index: false, dotfiles: 'deny' }));
+router.get('/catalog', async (req, res) => {
+  try {
+    const poses = await getRecognizedPoseCatalog();
+    if (!Object.keys(req.query).length) return res.json({ poses });
+    const { entries, ...pagination } = queryStudioCatalog(poses, req.query, { poses: true });
+    res.json({ poses: entries, ...pagination });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+router.get('/capability', async (_req, res) => res.json(await photoStudioCapability()));
+router.get('/characters', (_req, res) => res.json({ characters: studio.listCharacters() }));
+router.get('/backgrounds', (req, res) => {
+  try {
+    const catalog = getStudioBackgrounds();
+    if (!Object.keys(req.query).length) return res.json(catalog);
+    const { entries, ...pagination } = queryStudioCatalog(catalog.entries, req.query);
+    res.json({ ...catalog, entries, ...pagination });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+router.post('/describe-pose', async (req, res) => {
+  try { res.json(await describeStudioPose(req.body || {})); }
+  catch (error) { res.status(error.status || 502).json({ error: error.message }); }
+});
+router.post('/background-draft', async (req, res) => {
+  try { res.json(await generateStudioBackground(req.body?.description)); }
+  catch (error) { res.status(error.status || 502).json({ error: error.message }); }
+});
+router.get('/jobs', (_req, res) => res.json({ jobs: studio.list() }));
+router.post('/prompt-preview', async (req, res) => {
+  try { res.json(await studio.preview(req.body || {})); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+router.post('/clothing-draft', async (req, res) => {
+  try { res.json(await studio.clothingDraft(req.body || {})); }
+  catch (error) { res.status(error.status || 502).json({ error: error.message }); }
+});
+router.get('/jobs/:id', (req, res) => {
+  const job = studio.job(req.params.id);
+  if (!job) return res.status(404).json({ error: '找不到这次拍摄' });
+  res.json({ job });
+});
+router.post('/jobs', async (req, res) => {
+  try { res.status(202).json({ job: await studio.submit(req.body || {}) }); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+export default router;

@@ -10,6 +10,8 @@ import { currentWorldSignature, withStandingStaleness } from '../services/worldS
 import { chatSync } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { runPersonaGeneration } from '../services/characterGenerator.js';
+import { fetchCharacterReferenceImage } from '../services/webSearch.js';
+import { clearImageJudgeCounter } from './chat.js';
 import { invalidateGalleryCache, dataUriExt } from './images.js';
 import { startEditTask } from '../services/imageEditTasks.js';
 import { deleteByConversation } from '../services/vectorClient.js';
@@ -59,6 +61,15 @@ router.put('/default-assistant', (req, res) => {
   const raw = req.body?.enabled;
   const enabled = !(raw === false || raw === 0 || raw === '0' || raw === 'false');
   res.json({ enabled: setDefaultAssistantEnabled(getDb(), enabled) });
+});
+
+// 上游 v4.3.0：创建角色时从角色卡页面抓取参考立绘
+router.post('/reference-image', async (req, res) => {
+  try {
+    res.json(await fetchCharacterReferenceImage(req.body?.pageUrl));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
 });
 
 router.get('/clothing-library', (_req, res) => res.json(getClothingLibrary()));
@@ -952,7 +963,7 @@ router.post('/generate', async (req, res) => {
   }
 
   try {
-    const { displayName, charName, emotionBaseline, basePrompt, searchFound, searchContext } = await runPersonaGeneration({
+    const { displayName, charName, emotionBaseline, basePrompt, searchFound, searchContext, referenceImage, referenceImageInfo } = await runPersonaGeneration({
       description,
       cachedSearchContext,
     });
@@ -983,6 +994,8 @@ router.post('/generate', async (req, res) => {
         emotion_baseline: emotionBaseline,
         search_found: searchFound,
         search_context: searchContext,
+        reference_image: referenceImage,
+        reference_image_info: referenceImageInfo,
       });
       refreshCharSearch();
 
@@ -1026,6 +1039,8 @@ router.post('/generate', async (req, res) => {
         emotion_baseline: emotionBaseline,
         search_found: searchFound,
         search_context: searchContext,
+        reference_image: referenceImage,
+        reference_image_info: referenceImageInfo,
       });
     }
   } catch (err) {
@@ -2017,7 +2032,7 @@ Cyrene (Honkai: Star Rail) has soft pastel pink hair in a fluffy shoulder-length
 【示例字段要求】
 - 开头固定为「角色名 (作品名)」格式（半角括号，写法与示例一致）：角色名用英文名，作品名用作品的官方英文名，均从用户消息给定的身份信息转换而来，如 宵宫（Yoimiya），来自《原神》→ Yoimiya (Genshin Impact)
 - 角色名之后直接以 has ... / wearing ... 续写，不要主语代词（she/he/they），不要再出现中文、「来自」或书名号
-- 先写脸与发型（发型、发色、瞳色、五官特征、可选的体型），再写服装与饰品，全部以图中可见内容为准
+- 先写脸与发型（简单发型、发色、瞳色、五官特征、可选的体型），再简单描写服装与饰品，全部以图中可见内容为准
 - 只描述静态外观：不要表情、动作、姿势、场景、背景、画质与镜头描述
 - 一段连贯英文，不要换行、不要中文、不要 markdown、列表、引号或任何解释，严格按示例格式输出`;
 

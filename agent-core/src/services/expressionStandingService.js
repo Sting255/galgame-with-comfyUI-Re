@@ -114,7 +114,8 @@ export function previewStandingBatches({ mode, outfitScene = 'work' } = {}) {
 
 export function previewCharacterStandingBatch(id, { outfitScene = 'work', reusePrompts = false } = {}) {
   const char = character(id);
-  return inspectStandingOutfits(reusePrompts || busyCharacters.has(Number(id)) ? [] : [char], outfitScene);
+  const running = busyCharacters.has(Number(id)) && !batchControls.get(Number(id))?.paused;
+  return inspectStandingOutfits(reusePrompts || running ? [] : [char], outfitScene);
 }
 
 /**

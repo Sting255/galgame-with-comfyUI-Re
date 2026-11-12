@@ -332,3 +332,76 @@
   --shadow-glow: 0 4px 18px rgba(var(--accent-rgb), 0.30);
   --focus-ring: 0 0 0 3px rgba(var(--accent-rgb), 0.22);
 }
+
+/* 传媒漫画界面：墨线与纸白保持品牌色，正文表面跟随主题。 */
+:root {
+  --media-ink: #272329;
+  --media-light: #fff8ed;
+  --media-paper: var(--bg-secondary);
+  --media-rule: var(--media-ink);
+}
+[data-theme="dark"] { --media-rule: #a49aa9; }
+
+/* 照相馆：地下摄影厂牌，橙色印记、暖白纸面与墨黑胶卷。 */
+:root {
+  --studio-bg: #ded9d1;
+  --studio-paper: #f7f2e9;
+  --studio-ink: #201e1c;
+  --studio-muted: #625a52;
+  --studio-line: #bcb2a6;
+  --studio-accent: #a33b0d;
+  --studio-accent-soft: #f9d0ad;
+  --studio-film: #191817;
+  --studio-film-edge: #302b27;
+  --studio-film-text: #f7f0e7;
+  --studio-film-muted: #c8bdb1;
+  --studio-perforation: #d5c9b9;
+  --studio-shutter: #ff8a38;
+  --studio-tag: #b84418;
+  --studio-tape: #ff8a38;
+  --studio-shadow: #25180d40;
+}
+[data-theme="dark"] {
+  --studio-tag: #ff9d58;
+  --studio-bg: #201d1b;
+  --studio-paper: #302a26;
+  --studio-ink: #f6efe6;
+  --studio-muted: #cbbeb0;
+  --studio-line: #65564b;
+  --studio-accent: #ff9d58;
+  --studio-accent-soft: #51321e;
+  --studio-film: #121110;
+  --studio-film-edge: #29231f;
+  --studio-perforation: #a89582;
+  --studio-shadow: #00000066;
+}
+
+/* 酒馆专用纸面，按用户指定独立皮肤。 */
+:root, [data-theme="warm"] {
+  --tavern-surface: #fcf8f3;
+  --tavern-paper-center: #fcf4ed;
+  --tavern-paper-edge: #f8ece2;
+  --tavern-paper-line: #c9aa94;
+  --tavern-paper-highlight: #fff9f2;
+  --tavern-paper-shadow: #ae8a6820;
+  --tavern-fold: #edd6c4;
+  --tavern-ink: #302a25;
+  --tavern-muted: #796657;
+  --tavern-coral: #b76c59;
+  --tavern-button-line: #ddc1ad;
+  --tavern-button-ink: #805e46;
+}
+[data-theme="dark"] {
+  --tavern-surface: #302831;
+  --tavern-paper-center: #302831;
+  --tavern-paper-edge: #251f28;
+  --tavern-paper-line: #806358;
+  --tavern-paper-highlight: #56443e;
+  --tavern-paper-shadow: #00000040;
+  --tavern-fold: #45333b;
+  --tavern-ink: #f0e2d5;
+  --tavern-muted: #c5ad99;
+  --tavern-coral: #db9a7f;
+  --tavern-button-line: #785e51;
+  --tavern-button-ink: #e0b995;
+}

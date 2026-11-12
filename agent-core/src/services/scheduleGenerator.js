@@ -57,6 +57,7 @@ function normalizeTags(tags) {
  */
 // 同一角色的自动刷新、手动刷新与补发任务共享正在执行的生成（上游 v4.2.0：宿舍整轮流水线要求串行）。
 const pendingSchedules = new Map();
+const MAX_GENERATION_ATTEMPTS = 5; // 首次生成 + 最多4次纠错重试
 export function generateSchedule(character, direction, options = {}) {
   const key = options.persist === false ? `detached:${character.id}` : character.id;
   if (pendingSchedules.has(key)) return pendingSchedules.get(key);
@@ -203,7 +204,7 @@ ${direction}**
   msgs.push({ role: 'system', content: scheduleInst });
   // msgs[3]: 角色人格（随角色变化，不影响前缀缓存）
   msgs.push({ role: 'system', content: personaMsg });
-  // msgs[3.5]: 着装标注（仅当角色配了 ≥2 套场景服装时才有；没配则完全不加，原提示词不变）
+  // msgs[3.5]: 着装标注（默认服饰加至少一套已配置换装；仅有默认时不加）
   //   放在这里而非 scheduleInst：scheduleInst 是跨角色共享常量（吃 LLM 前缀缓存），
   //   服装列表每个角色都不同，塞进去会让缓存全部失效。
   if (cohabitation.room || cohabitation.events.length) {

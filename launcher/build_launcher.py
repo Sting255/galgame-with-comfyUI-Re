@@ -23,6 +23,16 @@ def build_environment(source=None):
     return env
 
 
+def normalize_executable_integrity(executable):
+    """构建目录可能带可继承的 Low 完整性标签；只修正最终 EXE，不改项目目录权限。"""
+    if os.name != 'nt':
+        return
+    windows = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+    subprocess.run([str(windows / 'System32' / 'icacls.exe'),
+                    str(Path(executable).resolve()), '/setintegritylevel', 'M'],
+                   check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+
 def accept_executable(executable, workspace, env):
     report = workspace / 'self-test.json'
     run_env = {**env, 'LINSHE_LAUNCHER_TEST_RESULT': str(report)}
@@ -55,6 +65,8 @@ def main():
             command += ['--hidden-import', f'PySide6.{module}']
         subprocess.run(command + [str(root / 'main.py')], env=env, cwd=root, check=True)
         exe = work / 'dist' / '邻舍.EXE.exe'
+        # 上游 v4.3.0：先修正 EXE 的完整性标签，否则自检会因 Low 标签无法启动
+        normalize_executable_integrity(exe)
         result = accept_executable(exe, work, env)
         output.parent.mkdir(parents=True, exist_ok=True)
         staged = output.with_suffix('.exe.new')

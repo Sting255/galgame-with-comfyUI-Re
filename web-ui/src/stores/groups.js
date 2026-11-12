@@ -209,13 +209,15 @@ export const useGroupsStore = defineStore('groups', () => {
 
     if (session.loaded) {
       captureLastSeenDivider(lastSeenAt, session, session.serverHasMoreOlder)
+      const entry = { unread: groups.value.find(group => group.id === id)?.unread || 0,
+        generating: !!groups.value.find(group => group.id === id)?.generating }
       scrollSignal.value++
       api.markGroupSeen(id).then(() => {
         if (activeGroupId.value !== id) return
         const g = groups.value.find(g => g.id === id)
         if (g) g.unread = 0
       })
-      return
+      return entry
     }
 
     const data = await api.getGroupMessages(id, { limit: GROUP_SERVER_PAGE_SIZE })
@@ -243,6 +245,7 @@ export const useGroupsStore = defineStore('groups', () => {
       const g = groups.value.find(g => g.id === id)
       if (g) g.unread = 0
     })
+    return { unread: data.group?.unread || 0, generating: !!data.group?.generating }
   }
 
   function leaveGroup() {
@@ -314,6 +317,16 @@ export const useGroupsStore = defineStore('groups', () => {
     } finally {
       session.olderLoading = false
     }
+  }
+
+  function revealLastSeenDivider() {
+    const index = messages.value.findIndex(msg => msg.id === lastSeenDividerId.value)
+    if (index < 0) return false
+    // 分界线居中时，上半屏也需要已读消息，避免被渲染窗口截在顶部。
+    renderStart.value = Math.min(renderStart.value, Math.max(0, index - MESSAGE_WINDOW_EXPAND))
+    const session = _activeSession()
+    if (session) session.renderStart = renderStart.value
+    return true
   }
 
   // ── 播放队列（动态上屏） ──
@@ -720,7 +733,7 @@ export const useGroupsStore = defineStore('groups', () => {
     playing, sending, undoing, sendError, scrollSignal, totalUnread, lullCount, resetLullOnNewDay,
     loadGroups, createGroup, updateGroup, deleteGroup,
     setGroupAvatar,
-    selectGroup, leaveGroup, expandWindow, sendMessage, nudge, undoLastRound,
+    selectGroup, leaveGroup, expandWindow, revealLastSeenDivider, sendMessage, nudge, undoLastRound,
     connectSSE, disconnectSSE, markGroupImageLoaded,
   }
 })

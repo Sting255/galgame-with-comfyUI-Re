@@ -46,7 +46,7 @@ export async function inspectLocalModels() {
 
 export function createLocalSpeechModelManager({ inspect = inspectLocalModels, launch = spawn,
   restart = restartSpeechService, settings = getSpeechSettings, configure = setSpeechSettings,
-  platform = process.platform, env = process.env } = {}) {
+  platform = process.platform, env = process.env, comfyUrl = speechComfyUrl } = {}) {
   let installation = { status: 'idle', model: null, log: '', error: '' }, using = null;
   /**
  * 本地语音现状（A10）：除了逐模型的 installed/error，再给出一个**诊断结论**，

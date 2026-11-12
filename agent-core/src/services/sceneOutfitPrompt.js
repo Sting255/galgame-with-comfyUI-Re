@@ -162,7 +162,7 @@ export function normalizeDesignScenes(scenes = GENERATED_OUTFIT_SCENES) {
  * @param {Array<{scene,name,body,description}>} [o.seeds] 已填分项（反推锚点）
  * @param {string} [o.bodySource] 身体真源（由调用方按锚点优先级挑好）
  */
-export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {}, fabricLayer = '', avoidNote = '', crossCharacter = false }) {
+export function buildSceneOutfitMessages({ systemRules, worldRule = '', persona, shortPrompt, displayName, baseAppearance, scenes, seeds = [], bodySource = '', sceneLabels = {}, fabricLayer = '', avoidNote = '', crossCharacter = false }) {
   const targets = normalizeDesignScenes(scenes);
   // 自定义类型（custom_*）模型不认识 key，必须把用户起的名字告诉它，否则只能瞎编
   const labelOf = scene => sceneLabels[scene] || SCENE_LABELS[scene] || scene;
@@ -190,6 +190,8 @@ export function buildSceneOutfitMessages({ systemRules, persona, shortPrompt, di
   }
   const msgs = [
     { role: 'system', content: systemRules },
+    // 上游 v4.3.0：世界原创服装设计必须在世界观框架内展开（无世界设定时为空，不注入）
+    ...(worldRule ? [{ role: 'system', content: worldRule }] : []),
     { role: 'system', content: DESIGN_RULES },
     { role: 'system', content: `【本次角色人设】\n角色名：${displayName}\n${persona}`
       + (summary ? `\n\n【角色简述（short_prompt）】\n${summary}` : '') },

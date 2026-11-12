@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { config } from '../config.js';
 import { maybeApplyPoseControl } from './poseControl.js';
 import { withImageGpu } from './speechGpu.js';
+import { isApiWorkflow, attachPngWorkflow } from './imageWorkflowMetadata.js';
 
 const getBase = () => config.comfyui.url.replace(/\/+$/, '');
 const getWsBase = () => config.comfyui.url.replace(/^http/, 'ws');
@@ -491,12 +492,28 @@ function formatComfyUIError(errText, status) {
 }
 
 export async function submitWorkflow(guiWorkflow, onProgress, options = {}) {
-  return withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress, options));
+  // 第三参数统一按对象处理：本地传 { poseJson }，上游 v4.3.0 传 generation。
+  const generation = options?.generation || guiWorkflow.extra?.linsheGeneration;
+  // 原图重生直接提交保存的 API 图，避免 API→GUI→API 丢失自定义节点参数。
+  const apiPrompt = isApiWorkflow(guiWorkflow) ? guiWorkflow : guiToApi(guiWorkflow);
+  const result = await withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress, { ...options, generation, apiPrompt }));
+  // 上游 v4.3.0：把本次生成所用的工作流 / LoRA 归因写进 PNG，供「原图重生」还原。
+  const snapshot = {
+    prompt: apiPrompt,
+    ...(Array.isArray(guiWorkflow.nodes) ? { workflow: guiWorkflow } : {}),
+    ...(generation ? { generation } : {}),
+  };
+  for (const image of result.images || []) {
+    const match = image.base64?.match(/^(data:image\/png;base64;)([\s\S]+)$/);
+    if (match) image.base64 = match[1] + attachPngWorkflow(Buffer.from(match[2], 'base64'), snapshot).toString('base64');
+  }
+  return result;
 }
 
 async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   const clientId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const apiPrompt = guiToApi(guiWorkflow);
+  const apiPrompt = options.apiPrompt || guiToApi(guiWorkflow);
+  const generation = options.generation;
   // 姿势控制：options.poseJson（体位骨架）优先，其次设置里的固定参考图；
   // 两者都没有时这里什么都不做，原有链路逐字节不变。
   //
@@ -543,7 +560,7 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
   const body = {
     client_id: clientId,
     prompt: apiPrompt,
-    extra_data: { extra_pnginfo: { workflow: guiWorkflow } },
+    extra_data: { extra_pnginfo: { ...(Array.isArray(guiWorkflow.nodes) ? { workflow: guiWorkflow } : {}), ...(generation ? { linshe_generation: generation } : {}) } },
   };
 
   const res = await fetch(`${getBase()}/api/prompt`, {
@@ -577,7 +594,7 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
 
 // ── WebSocket 实时进度 + 结果监听 ──
 
-function wsProgressAndDownload(clientId, promptId, onProgress) {
+export function wsProgressAndDownload(clientId, promptId, onProgress) {
   const wsUrl = `${getWsBase()}/ws?clientId=${encodeURIComponent(clientId)}`;
   const wsOpts = config.comfyui.tlsVerify !== false ? {} : { rejectUnauthorized: false };
   const ws = new WebSocket(wsUrl, wsOpts);
@@ -615,6 +632,7 @@ function wsProgressAndDownload(clientId, promptId, onProgress) {
 
     // ── 收到 node:null → 立即结算（不等 WebSocket close）──
     async function onExecutionComplete() {
+      if (settled || done) return;
       done = true;
       // 通知调用方 ComfyUI 执行完毕（此时还没下载图片）
       if (onProgress) {
@@ -624,6 +642,7 @@ function wsProgressAndDownload(clientId, promptId, onProgress) {
       await new Promise(r => setTimeout(r, 100));
       try {
         const images = await downloadImagesFromHistory(promptId, /* retries */ 3);
+        if (settled) return;
         if (onProgress) {
           onProgress({ phase: 'done', promptId, imageCount: images.length, progress: 1 });
         }
@@ -640,7 +659,11 @@ function wsProgressAndDownload(clientId, promptId, onProgress) {
     ws.on('message', (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
+        // ComfyUI can broadcast execution events to more than one client. Never
+        // attribute another prompt's progress, completion or error to this job.
+        if (settled || (msg.data?.prompt_id && msg.data.prompt_id !== promptId)) return;
         lastActivity = Date.now();
+        if (done) return;
 
         if (msg.type === 'progress') {
           const { value, max } = msg.data;
@@ -668,6 +691,8 @@ function wsProgressAndDownload(clientId, promptId, onProgress) {
             // node === null → 全部执行完毕，立即结算
             onExecutionComplete();
           }
+        } else if (msg.type === 'execution_success') {
+          void onExecutionComplete();
         } else if (msg.type === 'execution_error') {
           const errMsg = msg.data?.exception_message || msg.data?.traceback || 'Unknown execution error';
           settle({ error: `ComfyUI execution error: ${errMsg}` });
@@ -684,6 +709,7 @@ function wsProgressAndDownload(clientId, promptId, onProgress) {
         (async () => {
           try {
             const images = await downloadImagesFromHistory(promptId, 5);
+            if (settled || done) return;
             if (images.length > 0) {
               if (onProgress) onProgress({ phase: 'done', promptId, imageCount: images.length, progress: 1 });
               settle({ value: { images, promptId } });
@@ -771,7 +797,7 @@ async function pollAndDownload(promptId, onProgress, maxRetries = EXECUTION_TIME
       if (status.completed === false) {
         if (onProgress && i % 10 === 0) {
           // 轮询模式：用时间估算进度（粗糙）
-          onProgress({ phase: 'sampling', progress: Math.min(0.95, i / maxRetries), step: i, max: maxRetries, promptId });
+          onProgress({ phase: 'sampling', progress: Math.min(0.95, i / maxRetries), estimated: true, step: i, max: maxRetries, promptId });
         }
         await sleep(interval);
         continue;

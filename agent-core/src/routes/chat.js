@@ -3187,6 +3187,10 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
  *   · 旁白/第三人称词：心想、暗自、默默地、旁白、她低声…
  *   · **动作描写**：**轻轻叹气** 这种
  */
+// ── 供 characters.js 调用的清理函数（上游 v4.3.0 保留的空实现）──
+export function clearImageJudgeCounter(charId) {
+}
+
 export function sanitizeReplyGuesses(guesses, character) {
   if (!guesses) return null;
   const name = String(character?.display_name || '').trim();
