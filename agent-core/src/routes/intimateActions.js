@@ -694,10 +694,13 @@ router.post('/:id/:action', async (req, res) => {
       console.log(`[intimate-action] ${action.key} position=${persisted.positionKey} pace=${persisted.pace} acc=${persisted.accumulation} penetrating=${persisted.penetrating ? 1 : 0} blocks=${promptInfo.blocks.join(',') || 'none'} failed=${feed.failed.join(',') || 'none'} chars=${promptInfo.chars}`);
       // 真要点模型之前才扣额度（与 touch / aiJudge 同口径：解析失败不白扣）
       quotaAfter = consumeIntimateActionQuota();
+      const llmStarted = Date.now();
       const raw = await chatSync(prompt.messages, {
         temperature: 0.9, max_tokens: 500, label: 'intimate-action', retries: 1,
         signal: upstreamAbort.signal,
       });
+      // 耗时埋点（2026-11-12）：日志里一直只有 chars，没有真实耗时，没法判断「慢」花在哪。
+      console.log(`[intimate-action] 即时反应 ${action.key} 耗时 ${Date.now() - llmStarted}ms（上下文 ${promptInfo.chars} 字符）`);
       parsed = parseReactionOutput(raw);
     } catch (err) {
       console.warn('[intimate-action] 即时反应调用失败，留待下一轮补演:', clientGone ? 'client_disconnected' : (err?.message || err));

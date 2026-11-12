@@ -28,7 +28,7 @@ import { config } from '../config.js';
 const ROUTES_KEY = 'llm_model_routes';
 
 /** 可路由的调用链 */
-export const ROUTE_KEYS = ['angel', 'chat', 'group', 'event', 'schedule', 'moment', 'diary', 'mailbox', 'media', 'town'];
+export const ROUTE_KEYS = ['angel', 'chat', 'group', 'event', 'schedule', 'moment', 'diary', 'mailbox', 'media', 'town', 'intimate'];
 
 /** 中文名（服务端与前端共用一份，避免两边各写一遍翻译） */
 export const ROUTE_LABELS = {
@@ -42,6 +42,9 @@ export const ROUTE_LABELS = {
   mailbox: '信箱',
   media: '媒体',
   town: '小镇',
+  // 2026-11-12：亲密推进 / 触摸的即时反应。高频、每次只要 500 token，但上下文上万字符，
+  // 用主力模型会等 10 秒以上。单独一项，方便给它配一个更快的模型。
+  intimate: '亲密与触摸反应',
 };
 
 /**
@@ -71,6 +74,8 @@ const LABEL_ROUTE_PREFIXES = [
   ['媒体', 'media'],
   ['media', 'media'],
   ['小镇', 'town'],
+  ['intimate-action', 'intimate'],
+  ['touch-reaction', 'intimate'],
 ];
 
 /** 内存缓存：每轮对话要查好几次，不值得每次都读 DB。写入时失效。 */
