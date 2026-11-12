@@ -16,7 +16,7 @@ import { saveBase64Image } from './imagePaths.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
 import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions } from './photoStudioWorkflow.js';
-import { USER_SCOPE } from './characterScope.js';
+import { userVisibleScope } from './characterScope.js';
 
 export const POSE_GALLERY_DIR = fileURLToPath(new URL('../../assets/pose-gallery/', import.meta.url));
 const WORKFLOW_DIR = fileURLToPath(new URL('../../../workflow/', import.meta.url));
@@ -92,8 +92,10 @@ export function createPhotoStudioService({
   // a server restart. Store only successful rewrites, never failures.
   const polishedPrompts = new Map();
   function listCharacters() {
+    // 与酒馆 /api/characters 一致：列出全部角色资料，不按小镇身份、立绘或服装筛选。
     const outfits = db().prepare("SELECT character_id, scene FROM character_outfits WHERE scene IN ('casual', 'home', 'sleep') AND TRIM(COALESCE(description, '')) != ''").all();
-    return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${USER_SCOPE} ORDER BY pinned DESC, id DESC`).all().map(character => ({
+    // 与酒馆 /api/characters 同一可见范围：默认助手开关关着时不出现，开着时出现。
+    return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${userVisibleScope(db())} ORDER BY pinned DESC, id DESC`).all().map(character => ({
       ...character,
       outfitScenes: outfitScenes.filter(scene => scene === 'work' || outfits.some(outfit => outfit.character_id === character.id && outfit.scene === scene)),
     }));
@@ -150,7 +152,7 @@ export function createPhotoStudioService({
     }
     let first;
     if (randomFirst) {
-      const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(second?.id ?? -1);
+      const candidates = db().prepare(`SELECT * FROM characters WHERE ${userVisibleScope(db())} AND id != ? ORDER BY pinned DESC, id DESC`).all(second?.id ?? -1);
       if (!candidates.length) throw Object.assign(new Error(duo ? '双人姿势至少需要两位可用角色' : '没有可选择的角色'), { status: 400 });
       first = random(candidates);
     } else {
@@ -161,7 +163,7 @@ export function createPhotoStudioService({
       if (!randomSecond) {
         if (second.id === first.id) throw Object.assign(new Error('双人姿势需要选择两位不同角色'), { status: 400 });
       } else {
-        const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(first.id);
+        const candidates = db().prepare(`SELECT * FROM characters WHERE ${userVisibleScope(db())} AND id != ? ORDER BY pinned DESC, id DESC`).all(first.id);
         if (!candidates.length) throw Object.assign(new Error('双人姿势至少需要两位可用角色'), { status: 400 });
         second = random(candidates);
       }

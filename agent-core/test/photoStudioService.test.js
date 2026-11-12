@@ -66,9 +66,12 @@ test('the full catalog preserves uncalibrated entries while the studio catalog e
 
 async function fixture(overrides = {}) {
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE characters (id INTEGER PRIMARY KEY, name TEXT, display_name TEXT, base_prompt TEXT, short_prompt TEXT, avatar_path TEXT, standing_url TEXT, archived INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, is_system INTEGER DEFAULT 0);
-    INSERT INTO characters VALUES (1, 'first', 'A', '', '', NULL, NULL, 0, 1, 0);
-    INSERT INTO characters VALUES (2, 'second', 'B', '', '', NULL, NULL, 0, 0, 0);
+  // Match the production character schema: archival belongs to town_actors,
+  // not characters. Inventing that column here hides broken studio queries.
+  // is_system 是本地角色作用域字段（userVisibleScope 依赖它），真实库通过迁移写入。
+  db.exec(`CREATE TABLE characters (id INTEGER PRIMARY KEY, name TEXT, display_name TEXT, base_prompt TEXT, short_prompt TEXT, avatar_path TEXT, standing_url TEXT, pinned INTEGER DEFAULT 0, is_system INTEGER DEFAULT 0);
+    INSERT INTO characters VALUES (1, 'first', 'A', '', '', NULL, NULL, 1, 0);
+    INSERT INTO characters VALUES (2, 'second', 'B', '', '', NULL, NULL, 0, 0);
     CREATE TABLE image_tasks (id INTEGER PRIMARY KEY, prompt_original TEXT, prompt_refined TEXT, status TEXT, output_paths TEXT, workflow_template TEXT, finished_at TEXT, error_message TEXT);
     CREATE TABLE character_outfits (id INTEGER PRIMARY KEY, character_id INTEGER, scene TEXT, description TEXT);`);
   migratePhotoStudioSchema(db);
@@ -637,6 +640,28 @@ test('each participant uses the complete selected outfit without mixing in defau
   } finally { f.db.close(); }
 });
 
+test('照相馆列出酒馆全部角色，不按小镇归档、参与状态、文件夹或图片服装是否齐全筛选', async () => {
+  const f = await fixture();
+  try {
+    f.db.exec(`ALTER TABLE characters ADD COLUMN folder_id INTEGER;
+      UPDATE characters SET folder_id = 7 WHERE id = 1;
+      CREATE TABLE town_actors (character_id INTEGER, archived INTEGER, participating INTEGER);
+      INSERT INTO town_actors VALUES (1, 1, 0), (2, 0, 0);
+      INSERT INTO characters (id, name, display_name) VALUES (3, 'third', 'C');`);
+    const tavernIds = () => f.db.prepare('SELECT id FROM characters ORDER BY id').all().map(row => row.id);
+    const studioIds = () => f.service.listCharacters().map(row => row.id).sort((a, b) => a - b);
+    assert.deepEqual(studioIds(), tavernIds());
+    assert.ok(f.service.listCharacters().every(row => !row.avatar_path && !row.standing_url && row.outfitScenes.includes('work')));
+    for (const characterId of tavernIds()) {
+      assert.match((await f.service.preview({ characterId, poseId: 'pose' })).prompt, /appearance of/);
+    }
+    f.db.exec("INSERT INTO characters (id, name, display_name) VALUES (4, 'fourth', 'D')");
+    assert.deepEqual(studioIds(), tavernIds(), '新招募的角色立即进入照相馆候选列表');
+    f.db.exec('DELETE FROM characters WHERE id = 2');
+    assert.deepEqual(studioIds(), tavernIds(), '已删除的角色不再列出');
+  } finally { f.db.close(); }
+});
+
 test('studio exposes only configured outfits and rejects missing or invalid outfit selections', async () => {
   const f = await fixture({ persona: undefined });
   try {
@@ -650,22 +675,30 @@ test('studio exposes only configured outfits and rejects missing or invalid outf
   } finally { f.db.close(); }
 });
 
-test('both casting slots support random selection and never repeat a partner', async () => {
+test('both casting slots use existing residents without an archived column and never repeat a partner', async () => {
   const f = await fixture({ random: choices => choices[0] });
   try {
-    // 本地角色没有 archived 列（上游这里误用了小镇 actor 的归档字段，真机上会 no such column），
-    // 因此本用例只钉「两个位置都能随机、且不会选到同一个人」。
-    f.db.exec("INSERT INTO characters (id, name, display_name, pinned) VALUES (3, 'third', 'C', 0)");
-    const single = await f.service.preview({ characterId: null, poseId: 'pose' });
-    assert.ok(single.prompt);
-    const pair = await f.service.preview({ characterId: null, secondCharacterId: null, poseId: 'pair-pose' });
-    assert.ok(pair.prompt);
-    const id = 'random-casting-0';
-    await f.service.submit({ id, characterId: null, secondCharacterId: null, poseId: 'pair-pose' });
-    const job = await waitForJob(f.service, id);
-    assert.equal(job.status, 'done');
-    assert.ok(job.character_id && job.character2_id);
-    assert.notEqual(job.character_id, job.character2_id);
+    f.db.exec("DELETE FROM characters WHERE id = 1; INSERT INTO characters (id, name, display_name, pinned) VALUES (3, 'third', 'C', 0)");
+    const cases = [
+      { characterId: null, poseId: 'pose', expected: [3, null] },
+      { characterId: '', secondCharacterId: 2, poseId: 'pair-pose', expected: [3, 2] },
+      { characterId: 2, secondCharacterId: null, poseId: 'pair-pose', expected: [2, 3] },
+      { characterId: null, secondCharacterId: null, poseId: 'pair-pose', expected: [3, 2] },
+    ];
+    for (const [index, { expected, ...input }] of cases.entries()) {
+      const id = `random-casting-${index}`;
+      const preview = await f.service.preview(input);
+      await f.service.submit({ id, ...input });
+      const job = await waitForJob(f.service, id);
+      assert.equal(job.status, 'done');
+      assert.deepEqual([job.character_id, job.character2_id], expected);
+      assert.equal(job.prompt, preview.prompt);
+    }
+    f.db.exec('DELETE FROM characters WHERE id = 3');
+    await assert.rejects(f.service.preview({ characterId: null, poseId: 'pair-pose' }), { status: 400 });
+    await assert.rejects(f.service.preview({ characterId: null, secondCharacterId: 2, poseId: 'pair-pose' }), { status: 400 });
+    f.db.exec('DELETE FROM characters');
+    await assert.rejects(f.service.preview({ characterId: null, poseId: 'pose' }), { status: 400 });
   } finally { f.db.close(); }
 });
 
