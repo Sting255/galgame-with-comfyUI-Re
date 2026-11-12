@@ -38,7 +38,8 @@ import {
 } from './intimateService.js';
 // 时间串一律按 UTC 解析（后端时间串是无时区 UTC，见 目标/编程模式-DeepSeek.md §5.2）
 import { parseSqlUtc } from './programTime.js';
-import { buildImagePromptRuleBlock } from '../builtinRules.js';
+
+
 // 立绘切帧的取值要求 + 匹配器（唯一实现，见该文件顶部注释；2026-10-21 真机 0/27 命中的收口）
 import { formatFacialExpressionRule } from './emojiExpressionMatch.js';
 // 敏感度分档表（climaxStrength 要把"她的倍率"落回档位）—— sensitivityService 只依赖 db，不成环。
@@ -48,11 +49,13 @@ import { SENSITIVITY_TIERS } from './sensitivityService.js';
 import { isSleepLocked } from './sleepLock.js';
 // 2026-11-03 体位骨架（生图跟着体位走）：按形态大类生成 AnimaPoseControl 吃的骨架 JSON
 import { config } from '../config.js';
+import { QUICK_IMAGE_PROMPT_RULE } from '../builtinRules.js';
 import { poseJsonForPositionKey } from './positionPose.js';
 // 84 条全量体位词库（PR#24 融合）：physicalHintOf 在精选表未命中时用它兜底
 import { POSITIONS as PR24_POSITIONS, POSTURE_GROUPS, postureOf, postureOfText, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
 
 // ── 一、常量（档位 / 阈值 / 词表）────────────────────────────────────────────
+
 
 /** prompt 块标签（与 `<intimate_profile>` / `<touch_action>` 同风格） */
 export const INTIMATE_SCENE_TAG = 'intimate_scene';
@@ -1540,7 +1543,7 @@ export function buildIntimateActionPrompt({
   // Authoritative image rules: the author requires this block in EVERY image
   // path. This path lets the LLM write `image_prompt` by itself, so without it a
   // multi-character frame collapses into one person or a merged blob of features.
-  systemParts.push('', buildImagePromptRuleBlock());
+  systemParts.push('', QUICK_IMAGE_PROMPT_RULE);
   const system = systemParts.join('\n');
 
   const recent = (Array.isArray(recentLines) ? recentLines : [])

@@ -65,7 +65,7 @@ import {
   buildConversationReactionPrompt,
   CONVERSATION_RECENT_LINES,
 } from '../services/touchActionService.js';
-import { buildImagePromptRuleBlock } from '../builtinRules.js';
+import { QUICK_IMAGE_PROMPT_RULE } from '../builtinRules.js';
 import {
   emotionToPrompt,
   evolveEmotion,
@@ -1344,11 +1344,11 @@ router.post('/:id/touch/:action', async (req, res) => {
       } catch (err) {
         console.warn('[touch] 场景块注入失败（不影响动作）:', err?.message || err);
       }
-      // 生图规范（原作者要求的那段 MUST：IP 角色写成 `Name \(Series\) \(hair color, eye color, distinctive features\)`
-      // + 每个角色一句完整、各自不同的动作）—— 由**调用方**注入：`touchActionService.js` 是零依赖纯函数模块
-      // （守卫 test/touchActionService.test.js:503 盯着"服务层不 import 任何东西"），它自己取不到规则。
+      // 生图规范：只给 `image_prompt` 一个字段服务。2026-11-12 改用精简版（身份 tag / 多人各自成句 /
+      // 服装归属三条），原来塞整套 1.4 万字符规范，让这个高频小调用每次都慢十几秒。
+      // 仍由**调用方**注入：`touchActionService.js` 是零依赖纯函数模块，自己取不到规则。
       // 放在这里而不是分支里：conversation / 快速版两个构造器共用 `shared`，改一处两条路都覆盖。
-      if (shared && typeof shared === 'object') shared.imagePromptRule = buildImagePromptRuleBlock();
+      if (shared && typeof shared === 'object') shared.imagePromptRule = QUICK_IMAGE_PROMPT_RULE;
       const prompt = reactionMode === 'conversation'
         ? buildConversationReactionPrompt({
           ...shared,
