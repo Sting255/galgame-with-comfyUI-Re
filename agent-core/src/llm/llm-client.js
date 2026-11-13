@@ -756,6 +756,24 @@ export function stripTailRefusal(text) {
 }
 
 /**
+ * 把一次「续写」的返回整理成可拼接的增量。
+ *
+ * 真机 2026-11-14：模型输出被长度截断 → 前端续写发「继续。」→ 这次模型直接回了
+ * 「Sorry, I can't respond to this question.」。旧实现用
+ * `stripTailRefusal(x) || x` 兜底，剥成空后又把拒绝原文捡了回来，拒绝句就这么被
+ * 拼进 JSON 字符串里，字段校验失败、整条奇遇分支作废。
+ *
+ * 口径：剥完是空就返回空串，调用方据此停止续写 —— 既不能拼，也不能拿它当下一轮起点。
+ */
+function continuationIncrement(raw) {
+  const text = String(raw || '');
+  const stripped = stripJsonFence(stripTailRefusal(text)).trim();
+  if (stripped) return stripped;
+  if (isRefusal(text)) console.warn('[incomplete] ▸ 续写返回的是拒答，已丢弃，按「仍未写完」收尾');
+  return '';
+}
+
+/**
  * 把「继续」写出来的增量拼回原文（2026-11-08 用户要的效果）。
  *
  * 三种常见形态都要处理：
@@ -968,7 +986,8 @@ export async function chatSync(messages, opts = {}) {
           // 绝不把两份 JSON 正文粘成一段：真机 2026-11-08 就是这么粘成 9k 字的
           // ```json{…}``````json{…}，连续判 5 次不完整、白烧 5 次调用，最后整段报废。
           // 重写优先：以更新的一份作为下一轮起点。
-          const inc = stripJsonFence(stripTailRefusal(retriedMeta.content) || retriedMeta.content);
+          const inc = continuationIncrement(retriedMeta.content);
+          if (!inc) break;
           meta = {
             content: inc || baseText,
             finishReason: retriedMeta.finishReason || 'length',
@@ -976,7 +995,10 @@ export async function chatSync(messages, opts = {}) {
           result = retried;
         } else {
           // 纯文本：像用户敲「继续」那样，把增量接回原文后面
-          const increment = stripTailRefusal(retriedMeta.content) || retriedMeta.content;
+          const increment = continuationIncrement(retriedMeta.content);
+          // 整段续写就是拒答 ⇒ 不能拼进正文，也不能拿它当下一轮起点。直接收工，
+          // 把已经写到的内容原样返回，交给调用方按「没写完」处理。
+          if (!increment) break;
           meta = {
             content: mergeContinuationText(baseText, increment),
             finishReason: retriedMeta.finishReason,
