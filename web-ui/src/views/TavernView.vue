@@ -126,6 +126,16 @@
         <span class="relation-entry-arrow">›</span>
       </div>
 
+      <!-- 上游 v4.3.0：照相馆（自选姿势/服装/背景拍照） -->
+      <div class="relation-entry card" role="button" tabindex="0" @click="router.push('/photo-studio')" @keydown.enter.prevent="router.push('/photo-studio')" @keydown.space.prevent="router.push('/photo-studio')">
+        <div class="relation-entry-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><circle cx="12" cy="13" r="3"/></svg></div>
+        <div class="relation-entry-text">
+          <span class="relation-entry-title">照相馆</span>
+          <span class="relation-entry-hint">自选姿势、服装与背景，给她拍张照</span>
+        </div>
+        <span class="relation-entry-arrow">›</span>
+      </div>
+
       <!-- 上游 v4.2.0：宿舍安排（同居） -->
       <div class="relation-entry card" role="button" tabindex="0" @click="showCohabitation = true" @keydown.enter.prevent="showCohabitation = true" @keydown.space.prevent="showCohabitation = true">
         <div class="relation-entry-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7" /></svg></div>
