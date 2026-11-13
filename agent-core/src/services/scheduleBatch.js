@@ -15,6 +15,10 @@ import { broadcast } from './unifiedStreamBus.js';
 let active = null;
 let initialization = null;
 const sqlTime = date => date.toISOString().slice(0, 19).replace('T', ' ');
+/** 距当地零点还有多少分钟（1~1440） */
+const minutesUntilMidnight = date => 24 * 60 - (date.getHours() * 60 + date.getMinutes());
+/** 一轮日程批次要跑十几分钟；离零点不足这个数就别起跑，否则收尾时必然跨日作废 */
+const CLOSE_TO_MIDNIGHT_MINUTES = 30;
 const readArray = raw => { try { const value = JSON.parse(raw || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } };
 
 /** 明确约定和奇遇占用属于当天硬约束；普通全天模板不是“全天没空”。 */
@@ -227,6 +231,18 @@ export function maybeStartScheduledBatch({ db = getDb(), now = new Date(), start
     const earliest = db.prepare("SELECT MIN(next_schedule_refresh_at) AS at FROM characters WHERE schedule_enabled=1 AND COALESCE(is_system, 0) = 0").get()?.at || nowSql;
     db.prepare('INSERT INTO schedule_refresh_cycle(id,next_refresh_at) VALUES(1,?)').run(earliest);
     state = { next_refresh_at: earliest };
+  }
+  // 2026-11-14 真机：23:5x 起跑的自动批次跑到 00:10 才收尾，plan.date 已是前一天，
+  // 整轮草稿被丢弃（日志：「生成期间已跨日，本轮草稿保留」）。一轮批次要跑十几分钟，
+  // 所以临近零点就别起跑 —— 把下次刷新压到零点之后，让新一轮从新的一天开始算。
+  // 放在读草稿之前：既然不跑，就不该碰任何状态。
+  if (minutesUntilMidnight(now) <= CLOSE_TO_MIDNIGHT_MINUTES) {
+    const next = new Date(now);
+    next.setHours(24, 5, 0, 0);
+    const stamp = sqlTime(next);
+    db.prepare('UPDATE schedule_refresh_cycle SET next_refresh_at=? WHERE id=1').run(stamp);
+    console.warn(`[scheduleBatch] 距零点不足 ${CLOSE_TO_MIDNIGHT_MINUTES} 分钟，自动刷新推迟到 ${stamp}，避免生成期间跨日把整轮作废`);
+    return null;
   }
   const saved = readCohabitationPlan(db);
   const resume = saved?.kind === 'automatic' && ['failed', 'running'].includes(saved.status);

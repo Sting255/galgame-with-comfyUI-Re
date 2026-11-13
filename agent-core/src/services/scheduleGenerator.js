@@ -232,7 +232,11 @@ ${SCHEDULE_FORMAT_TAIL}`;
 
   let rawResult = '';
   let validationError = '';
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // 2026-11-14 真机：只给一次领域修正（共 2 次尝试）时，刻律德菈「活动时间重叠」、
+  // 三月七「只排到 14:00、没覆盖满 24 小时」都在第二次仍然失败，整轮日程作废 ——
+  // 而模型这类错误的修复率很高，多一次尝试远比让角色卡在旧日程上便宜。
+  const MAX_DOMAIN_ATTEMPTS = 3;
+  for (let attempt = 0; attempt < MAX_DOMAIN_ATTEMPTS; attempt++) {
     const attemptMsgs = msgs.map(m => ({ ...m }));
     if (attempt > 0) {
       attemptMsgs.push({
@@ -288,11 +292,11 @@ ${SCHEDULE_FORMAT_TAIL}`;
       assertCompleteDay(schedule);
     } catch (err) {
       validationError = err?.message || '日程领域校验失败';
-      if (attempt === 0) {
-        console.warn(`[scheduleGen] ${character.display_name} 首次领域校验失败，允许一次领域修正：${validationError}`);
+      if (attempt < MAX_DOMAIN_ATTEMPTS - 1) {
+        console.warn(`[scheduleGen] ${character.display_name} 第 ${attempt + 1}/${MAX_DOMAIN_ATTEMPTS} 次领域校验失败，允许领域修正：${validationError}`);
         continue;
       }
-      console.error(`[scheduleGen] ${character.display_name} 领域修正后仍失败：${validationError}`);
+      console.error(`[scheduleGen] ${character.display_name} 领域修正 ${MAX_DOMAIN_ATTEMPTS} 次后仍失败：${validationError}`);
       throw err;
     }
 
