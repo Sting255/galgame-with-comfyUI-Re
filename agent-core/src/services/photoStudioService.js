@@ -17,6 +17,7 @@ import { broadcast } from './unifiedStreamBus.js';
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
 import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions } from './photoStudioWorkflow.js';
 import { userVisibleScope } from './characterScope.js';
+import { listSceneOutfits } from './outfitScene.js';
 
 export const POSE_GALLERY_DIR = fileURLToPath(new URL('../../assets/pose-gallery/', import.meta.url));
 const WORKFLOW_DIR = fileURLToPath(new URL('../../../workflow/', import.meta.url));
@@ -87,17 +88,28 @@ export function createPhotoStudioService({
   const job = id => db().prepare('SELECT * FROM photo_studio_jobs WHERE id = ?').get(id);
   const notify = (id, terminal = false) => publish(terminal ? 'photo_studio_ready' : 'photo_studio_progress', { job: job(id) });
   const list = () => db().prepare('SELECT * FROM photo_studio_jobs ORDER BY created_at DESC, rowid DESC LIMIT 30').all();
-  const outfitScenes = ['work', 'casual', 'home', 'sleep'];
   // A bounded result cache survives navigation and image-render retries, but not
   // a server restart. Store only successful rewrites, never failures.
   const polishedPrompts = new Map();
+  // 2026-11-13：照相馆衣柜原本只认 work/casual/home/sleep 四种硬编码 scene，完全看不到本项目
+  // 的自定义服装类型（custom_*，标签在 character_outfits.name）。改走项目统一的 listSceneOutfits
+  // 拿该角色全部有效服装（含自定义类型），并带上 sceneLabel（= 用户起的名字）。
+  // private 私密（nude）不放进衣柜，避免在拍摄里点出不该出现的内容。
   function listCharacters() {
     // 与酒馆 /api/characters 一致：列出全部角色资料，不按小镇身份、立绘或服装筛选。
-    const outfits = db().prepare("SELECT character_id, scene FROM character_outfits WHERE scene IN ('casual', 'home', 'sleep') AND TRIM(COALESCE(description, '')) != ''").all();
+    const perCharacter = (cid) => {
+      try {
+        return listSceneOutfits(cid)
+          .filter(o => o.scene !== 'nude')
+          .map(o => ({ scene: o.scene, label: o.sceneLabel || o.name || o.scene }));
+      } catch { return []; }
+    };
     // 与酒馆 /api/characters 同一可见范围：默认助手开关关着时不出现，开着时出现。
     return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${userVisibleScope(db())} ORDER BY pinned DESC, id DESC`).all().map(character => ({
       ...character,
-      outfitScenes: outfitScenes.filter(scene => scene === 'work' || outfits.some(outfit => outfit.character_id === character.id && outfit.scene === scene)),
+      // 衣柜至少要有「默认服装」这一项；其余是该角色已配置但非私密的套（含自定义类型）
+      outfits: [{ scene: 'work', label: '默认服装' }, ...perCharacter(Number(character.id)).filter(o => o.scene !== 'work')],
+      outfitScenes: ['work', ...perCharacter(Number(character.id)).map(o => o.scene).filter(s => s !== 'work')],
     }));
   }
 
@@ -181,13 +193,18 @@ export function createPhotoStudioService({
     const overrides = [randomFirst ? '' : appearanceOverride, randomSecond ? '' : secondAppearanceOverride];
     const characters = [first, ...(second ? [second] : [])].map((character, index) => {
       const scene = scenes[index];
-      if (!outfitScenes.includes(scene)) throw Object.assign(new Error('请选择有效的服装：默认、私服、居家或睡衣'), { status: 400 });
+      // 2026-11-13：衣柜不再只认 work/casual/home/sleep 四种 —— 本项目自定义服装类型
+      // 是 custom_*，必须放行「默认服装 或 该角色已配置的任意套（含自定义类型）」。
+      const isValidScene = scene === 'work' || listSceneOutfits(character.id).some(o => o.scene === scene && o.description?.trim());
+      if (!isValidScene) throw Object.assign(new Error('请选择有效的服装：默认服装或该角色已配置的套装'), { status: 400 });
       let selected = character;
       if (overrides[index].trim()) {
         selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, overrides[index].trim()) };
       } else if (scene !== 'work') {
-        const outfit = character.angel ? angelOutfits(character.angel).find(outfit => outfit.scene === scene)
-          : db().prepare('SELECT description FROM character_outfits WHERE character_id = ? AND scene = ? ORDER BY id ASC LIMIT 1').get(character.id, scene);
+        const inSceneOutfits = listSceneOutfits(character.id).find(o => o.scene === scene);
+        const outfit = inSceneOutfits && inSceneOutfits.description?.trim()
+          ? inSceneOutfits
+          : (character.angel ? angelOutfits(character.angel).find(outfit => outfit.scene === scene) : null);
         if (!outfit?.description?.trim() && !(index === 0 ? randomFirst : randomSecond)) throw Object.assign(new Error(`${character.display_name || character.name}尚未配置所选服装，请选择默认服装或先到人物详情卡配置`), { status: 400 });
         // Scene descriptions contain the complete appearance. Replace, rather than layer over, the default clothes.
         if (outfit?.description?.trim()) selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, outfit.description) };

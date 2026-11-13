@@ -78,7 +78,7 @@
               <span><svg class="random-character-mark" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="30" cy="21" r="8" /><path d="M15 48v-4a15 15 0 0 1 23-13M40 15h12m-5-5 5 5-5 5M38 39h14m-5-5 5 5-5 5M48 52H36m5-5-5 5 5 5" /></svg></span>
               <i v-if="randomSlotSelected">{{ characterSlot === 'first' ? '主角' : '搭档' }}</i>
             </div>
-            <div class="character-contact"><span class="contact-number" aria-hidden="true">00</span><span v-if="randomSlotSelected" class="character-outfit">{{ customOutfits[characterSlot] ? '本次搭配' : outfitLabels[slotOutfits[characterSlot] || 'work'] }}</span></div>
+            <div class="character-contact"><span class="contact-number" aria-hidden="true">00</span><span v-if="randomSlotSelected" class="character-outfit">{{ customOutfits[characterSlot] ? '本次搭配' : (outfitLabels[slotOutfits[characterSlot]] || '默认服装') }}</span></div>
             <span class="character-name">随机角色</span>
           </div>
           <studio-outfit-picker v-for="(character, characterIndex) in sortedCharacters" :key="character.id" :character-id="character.id" :model-value="characterOutfit(character)" @open="selectOutfitCharacter(character)" @update:model-value="selectOutfit(character, $event)">
@@ -294,7 +294,7 @@ function restoreSlotEntries(value) {
     return key != null && Object.hasOwn(value, key) ? [[slot, value[key]]] : []
   }))
 }
-const slotOutfits = ref(Object.fromEntries(Object.entries(restoreSlotEntries(saved.clothingBinding === 'slot' ? saved.slotOutfits : saved.characterOutfits)).filter(([, scene]) => Object.hasOwn(STUDIO_OUTFIT_LABELS, scene))))
+const slotOutfits = ref(Object.fromEntries(Object.entries(restoreSlotEntries(saved.clothingBinding === 'slot' ? saved.slotOutfits : saved.characterOutfits)).filter(([, scene]) => scene && typeof scene === 'string')))
 const customOutfits = ref(restoreCustomOutfits(saved.customOutfits))
 const clothingDrafts = ref(restoreCustomOutfits(saved.clothingDrafts, true))
 function restoreCustomOutfits(value, keepDrafts = false) {
@@ -484,7 +484,14 @@ function characterOutfit(character, slot = outfitSlot(character)) {
   const scene = slotOutfits.value[slot] || 'work'
   return Array.isArray(character.outfitScenes) && !character.outfitScenes.includes(scene) ? 'work' : scene
 }
-function outfitLabel(character) { return customOutfits.value[outfitSlot(character)] ? '本次搭配' : outfitLabels[characterOutfit(character)] }
+// 显示名优先取该角色自己的 outfits 里的 label（后端已返回默认+自定义类型），
+// 自定义类型（custom_*）不在 STUDIO_OUTFIT_LABELS 里，必须走这条，否则显示为空。
+function outfitLabel(character) {
+  if (customOutfits.value[outfitSlot(character)]) return '本次搭配'
+  const scene = characterOutfit(character)
+  const own = Array.isArray(character.outfits) ? character.outfits.find(o => o.scene === scene) : null
+  return own?.label || outfitLabels[scene] || '默认服装'
+}
 function selectOutfitCharacter(character) {
   selectCharacter(character)
 }
