@@ -304,6 +304,14 @@ export function createPhotoStudioService({
           .filter(id => Number(id) > 0)
           .map(id => database.prepare('SELECT * FROM characters WHERE id = ?').get(Number(id)))
           .filter(Boolean),
+        // 角色级负面词（2026-11-13）：照相馆此前漏传，导致「把容易画串的特征推开」这条
+        // 在照相馆完全不生效（其他生图入口都走 composeNegativePrompt）。与身份锚点同源，
+        // 按 job 记录的主角/搭档 id 回查；两人同框时合并成一条负面词。
+        characterNegative: [snapshot.character_id, snapshot.character2_id]
+          .filter(id => Number(id) > 0)
+          .map(id => database.prepare('SELECT negative_prompt FROM characters WHERE id = ?').get(Number(id))?.negative_prompt || '')
+          .filter(Boolean)
+          .join(', '),
         artist: config.comfyui.momentsArtist ?? config.comfyui.artist,
         // Keep LoRA triggers out of AI rewriting; the shared workflow adds them
         // to its dedicated trigger node and loads the models with their saved weights.
