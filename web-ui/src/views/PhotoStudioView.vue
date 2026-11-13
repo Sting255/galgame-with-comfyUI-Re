@@ -12,7 +12,7 @@
       </div>
     </header>
     <Transition name="studio-content" mode="out-in">
-    <div v-if="showHistory" key="history" class="studio-history"><div class="history-heading"><h2>拍摄记录</h2><span>{{ jobs.length }} / 30</span></div><div v-if="jobs.length" class="history-grid"><article v-for="job in jobs" :key="job.id" class="history-item"><img v-if="job.output_url" :src="job.output_url" :alt="`${jobCharacters(job)} · ${job.pose_name}`" @click="openPhoto(job.output_url)" /><div v-else class="history-pending">{{ job.status === 'running' ? '冲印中…' : '拍摄失败' }}</div><div class="history-caption"><strong>{{ jobCharacters(job) }}</strong><span>{{ job.pose_name }}<template v-if="job.width && job.height"> · {{ job.width }} × {{ job.height }}</template></span><small v-if="job.error">{{ job.error }}</small></div></article></div><div v-else class="studio-empty">第一张照片还在等你拍摄。</div></div>
+    <div v-if="showHistory" key="history" class="studio-history"><div class="history-heading"><h2>拍摄记录</h2><span>{{ jobs.length }} / 30</span></div><div v-if="jobs.length" class="history-grid"><article v-for="job in jobs" :key="job.id" class="history-item"><img v-if="job.output_url" :src="job.output_url" :alt="`${jobCharacters(job)} · ${job.pose_name}`" @click="openPhoto(job.output_url)" /><div v-else class="history-pending">{{ job.status === 'running' ? '冲印中…' : '拍摄失败' }}</div><div class="history-caption"><strong>{{ jobCharacters(job) }}</strong><span>{{ job.pose_name }}<template v-if="job.width && job.height"> · {{ job.width }} × {{ job.height }}</template></span><small v-if="job.error">{{ job.error }}</small><studio-button variant="link" size="sm" @click="openDiagnosis(job.id)">诊断</studio-button></div></article></div><div v-else class="studio-empty">第一张照片还在等你拍摄。</div></div>
     <section v-else key="viewfinder" class="studio-body">
       <aside ref="posePanel" class="studio-pose" tabindex="-1">
         <div class="rail-title"><div><h2><span class="panel-number" aria-hidden="true">01</span>姿势底稿</h2></div><span v-if="recognizedPoses.length" class="rail-count">{{ recognizedPoses.length }} 张已识别</span></div><div class="pose-card" @click="poseOpen = true" @keydown.enter.prevent="poseOpen = true" @keydown.space.prevent="poseOpen = true" role="button" tabindex="0" aria-label="打开全屏姿势图库"><img v-if="selectedPose" :src="selectedPose.id === 'custom-upload' ? customPose.imageUrl : poseAsset(selectedPose.thumbnail)" :alt="selectedPose.name" /><div v-else class="pose-placeholder">姿势图库加载中…</div></div><div class="pose-caption"><strong>{{ selectedPose?.name || '请选择一个已识别的姿势' }}</strong><span v-if="selectedPose">{{ selectedPose.category }} · {{ selectedPose.system }}</span></div><div class="studio-pose-tools">
@@ -164,7 +164,28 @@
     </linshe-modal>
     <StudioBackgroundLibrary v-model="backgroundOpen" :value="background" @applied="background = $event" />
     <StudioClothingLibrary v-model="clothingOpen" :slot-key="characterSlot" :outfit="customOutfits[characterSlot] || null" :draft="clothingDrafts[characterSlot] ?? null" @draft-change="saveClothingDraft" @applied="applyClothing" />
-    <linshe-modal v-model="promptOpen" title="拍摄提示词" variant="film" wide :transition-ms="300"><template #close="{ close }"><studio-button variant="icon" aria-label="关闭提示词" @click="close()">×</studio-button></template><p v-if="promptLoading" class="studio-prompt-note" role="status">正在拼装…</p><p v-else-if="promptError" class="studio-prompt-note" role="alert">{{ promptError }}</p><div v-else class="studio-prompt-text" tabindex="0">{{ promptText }}</div></linshe-modal>
+    <linshe-modal v-model="promptOpen" :title="diagnosis ? '拍摄诊断' : '拍摄提示词'" variant="film" wide :transition-ms="300"><template #close="{ close }"><studio-button variant="icon" aria-label="关闭诊断" @click="close()">×</studio-button></template>
+      <p v-if="promptLoading" class="studio-prompt-note" role="status">正在拼装…</p>
+      <p v-else-if="promptError" class="studio-prompt-note" role="alert">{{ promptError }}</p>
+      <div v-else-if="diagnosis" class="studio-diagnosis">
+        <div class="diagnosis-facts">
+          <span>{{ diagnosis.pose }}</span>
+          <span v-if="diagnosis.dimensions.width">{{ diagnosis.dimensions.width }} × {{ diagnosis.dimensions.height }}</span>
+          <span>{{ diagnosis.background.label }}</span>
+          <span v-if="diagnosis.workflow.template">{{ diagnosis.workflow.template }}</span>
+          <span v-if="diagnosis.status !== 'done'" class="is-warn">{{ diagnosis.status }}</span>
+        </div>
+        <p v-if="diagnosis.error" class="studio-prompt-note" role="alert">{{ diagnosis.error }}</p>
+        <section v-for="block in diagnosisBlocks" :key="block.title" class="diagnosis-block">
+          <header><h4>{{ block.title }}</h4><small v-if="block.note">{{ block.note }}</small></header>
+          <div v-if="block.copy" class="studio-prompt-text" tabindex="0">{{ block.copy }}</div>
+          <ul v-else class="diagnosis-list">
+            <li v-for="(item, index) in block.items" :key="index"><strong>{{ item.name }}</strong><span>{{ item.value }}</span></li>
+          </ul>
+        </section>
+      </div>
+      <div v-else class="studio-prompt-text" tabindex="0">{{ promptText }}</div>
+    </linshe-modal>
     <Teleport to="body"><div style="--vel-z-index: 14000"><ImageLightbox :visible="photoOpen" :imgs="lightboxImages" :index="lightboxIndex" :show-regenerate="true" :show-download="true" :show-upscale="true" :show-delete="false" @hide="photoOpen = false" /></div></Teleport>
   </main>
 </template>
@@ -182,7 +203,7 @@ import StudioBackgroundLibrary from '../components/photoStudio/StudioBackgroundL
 import StudioClothingLibrary from '../components/photoStudio/StudioClothingLibrary.vue'
 import CollapseTransition from '../components/CollapseTransition.vue'
 import StudioPromptTools from '../components/photoStudio/StudioPromptTools.vue'
-import { getPhotoStudioPrompt, getPhotoStudioBackgrounds, describePhotoStudioPose } from '../api/index.js'
+import { getPhotoStudioPrompt, getPhotoStudioBackgrounds, describePhotoStudioPose, getPhotoStudioDiagnostics } from '../api/index.js'
 import { STUDIO_OUTFIT_LABELS } from '../utils/studioWardrobe.js'
 import { prepareCameraShutterSound, playCameraShutterSound } from '../utils/cameraShutterSound.js'
 import StudioInput from '../components/photoStudio/StudioInput.vue'
@@ -308,6 +329,39 @@ function restoreCustomOutfits(value, keepDrafts = false) {
   }))
 }
 const clothingOpen = ref(false), promptOpen = ref(false), promptLoading = ref(false), promptText = ref(''), promptError = ref('')
+// 拍摄诊断（2026-11-13）：点开一张照片就能看到它实际的提示词 / 负面词 / 身份锚点 / 工作流，
+// 不用再翻后端日志的 Final prompt 去反推「角色不像」到底是没写还是模型没听。
+const diagnosis = ref(null)
+const diagnosisBlocks = computed(() => {
+  const data = diagnosis.value
+  if (!data) return []
+  const blocks = []
+  if (data.prompts.final) blocks.push({ title: '最终提示词', note: data.prompts.polished ? '已过 AI 润色 · 真正提交给生图的那段' : '未润色 · 真正提交给生图的那段', copy: data.prompts.final })
+  if (data.prompts.polished && data.prompts.original) blocks.push({ title: '拼装稿', note: '润色前的分段原文', copy: data.prompts.original })
+  blocks.push({
+    title: '负面提示词',
+    note: data.negative.composed ? '' : '本次没有任何负面词',
+    items: [
+      { name: '角色级', value: data.negative.character || '（该角色未配置）' },
+      { name: '场景级', value: data.negative.scene || '（未注入）' },
+      { name: '全局', value: data.negative.global || '（未配置）' },
+      { name: '实际生效', value: data.negative.composed || '（空）' },
+    ],
+  })
+  blocks.push({
+    title: '身份锚点',
+    items: data.identity.map(item => ({ name: item.name, value: item.anchor || '（空）这个角色没有身体/身份锚点，出图会漂' })),
+  })
+  blocks.push({
+    title: '工作流与 LoRA',
+    items: [
+      { name: '工作流', value: data.workflow.template || '（未记录）' },
+      { name: '模式', value: data.workflow.mode || '（未记录）' },
+      ...(data.loras.length ? data.loras.map(lora => ({ name: lora.name, value: `权重 ${lora.weight}${lora.trigger ? ` · 触发词 ${lora.trigger}` : ''}` })) : [{ name: 'LoRA', value: '（本次没有加载角色 LoRA）' }]),
+    ],
+  })
+  return blocks
+})
 const polishPreferenceKey = 'photo-studio-polish-enabled'
 const polishInstruction = ref(typeof saved.polishInstruction === 'string' ? saved.polishInstruction : '')
 const polishSettingsOpen = ref(false)
@@ -531,11 +585,25 @@ function applyClothing({ slot: id, outfit }) {
 }
 function showPhotoPrompt() {
   if (!currentPhoto.value) return
-  promptText.value = currentPhoto.value.prompt; promptError.value = ''; promptLoading.value = false
-  promptRevision++; promptOpen.value = true
+  void openDiagnosis(currentPhoto.value.id)
+}
+async function openDiagnosis(jobId) {
+  if (!jobId) return
+  const revision = ++promptRevision
+  diagnosis.value = null
+  promptText.value = ''; promptError.value = ''; promptLoading.value = true; promptOpen.value = true
+  try {
+    const result = await getPhotoStudioDiagnostics(jobId)
+    if (revision === promptRevision && !disposed) diagnosis.value = result.diagnostics
+  } catch (error) {
+    if (revision === promptRevision && !disposed) promptError.value = error.message
+  } finally {
+    if (revision === promptRevision && !disposed) promptLoading.value = false
+  }
 }
 async function previewPrompt() {
   const revision = ++promptRevision
+  diagnosis.value = null
   promptOpen.value = true; promptLoading.value = true; promptError.value = ''; promptText.value = ''
   try { const result = await getPhotoStudioPrompt(shotInput()); if (revision === promptRevision && !disposed) promptText.value = result.prompt }
   catch (error) { if (revision === promptRevision && !disposed) promptError.value = error.message }
@@ -583,6 +651,21 @@ onBeforeUnmount(() => { burst.detachInput(shotInput); disposed = true; poseReque
 .pose-option{min-width:0;cursor:pointer;text-align:left;display:grid;gap:7px;padding:7px;border:1px solid transparent;color:var(--studio-film-text);position:relative;transition:background .3s,transform .3s,border-color .3s}.pose-option:hover{background:var(--studio-film-edge);transform:translateY(-3px)}.pose-option.selected{border-color:var(--studio-shutter)}.pose-option.selected::after{content:'';position:absolute;inset:-3px;border:2px solid var(--studio-shutter);border-radius:30% 3% 24% 4%;transform:rotate(-2deg);pointer-events:none}.pose-option:focus-visible{outline:2px solid var(--studio-shutter);outline-offset:3px}
 .pose-option-image{position:relative;aspect-ratio:3/4;overflow:hidden;background:var(--dialogue-photo-paper);padding:4px}.pose-option-image img{width:100%;height:100%;object-fit:contain}.pose-option-image>span{position:absolute;left:4px;top:4px;padding:3px 6px;background:var(--studio-film);color:var(--studio-film-text);font-size:11px}.pose-option-image>i{position:absolute;right:4px;bottom:4px;padding:4px 8px;display:grid;place-items:center;background:var(--studio-shutter);color:var(--studio-film);font-style:normal;font-weight:900}.pose-option-heading{display:flex;gap:8px;align-items:baseline;min-width:0}.pose-option-heading small{font:italic 700 12px/1.5 monospace;color:var(--studio-shutter);flex-shrink:0}.pose-option-heading strong{font-size:13px;line-height:1.5;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.pose-option>span{font-size:11px;color:var(--studio-film-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .studio-wardrobe-tools{display:grid;gap:4px}.studio-wardrobe-selected{color:var(--studio-tag);white-space:nowrap}.studio-prompt-note{margin:0;font-size:14px;line-height:1.7;color:var(--studio-muted)}.studio-prompt-text{white-space:pre-wrap;font-size:14px;line-height:1.8;color:var(--studio-ink);overflow-wrap:anywhere}
+/* 拍摄诊断：一屏说清这张图是被哪几段文本喂出来的，层级靠间距与细线收敛，不加新色块。 */
+.studio-diagnosis{display:grid;gap:18px}
+.diagnosis-facts{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px;color:var(--studio-muted)}
+.diagnosis-facts>span{padding:2px 8px;border:1px solid var(--studio-line);border-radius:999px}
+.diagnosis-facts>span.is-warn{color:var(--fun-orange);border-color:currentColor}
+.diagnosis-block{display:grid;gap:6px}
+.diagnosis-block>header{display:flex;align-items:baseline;gap:8px}
+.diagnosis-block h4{margin:0;font-size:13px;font-weight:750;letter-spacing:.02em;color:var(--studio-ink)}
+.diagnosis-block>header small{font-size:11px;color:var(--studio-muted)}
+.diagnosis-block .studio-prompt-text{padding:10px 12px;border:1px solid var(--studio-line);border-radius:4px;background:color-mix(in srgb,var(--studio-ink) 3%,var(--studio-paper));max-height:280px;overflow:auto}
+.diagnosis-list{margin:0;padding:0;list-style:none;display:grid;gap:4px}
+.diagnosis-list>li{display:grid;grid-template-columns:96px 1fr;gap:10px;font-size:12.5px;line-height:1.7}
+.diagnosis-list strong{font-weight:750;color:var(--studio-muted)}
+.diagnosis-list span{color:var(--studio-ink);overflow-wrap:anywhere}
+@media(max-width:600px){.diagnosis-list>li{grid-template-columns:1fr;gap:0}}
 .studio-exposure-enter-active{transition:opacity .3s,transform .3s}.studio-exposure-enter-from{opacity:0;transform:translateY(14px)}.studio-exposure-leave-active{transition:opacity .3s,transform .3s,filter .3s}.studio-exposure-leave-to{opacity:0;transform:translateY(-20px) rotate(-4deg) scale(.94);filter:blur(2px)}
 .studio-photo-deck.studio-exposure-leave-active{transform-origin:50% 0;animation:studio-print-away .45s cubic-bezier(.55,0,.8,.4) both;transition:none}
 @keyframes studio-print-away{0%{opacity:1;transform:none}25%{opacity:1;transform:translateY(8px) rotate(-2deg)}100%{opacity:0;transform:translateY(-65%) rotate(9deg) scale(.82);filter:blur(3px)}}

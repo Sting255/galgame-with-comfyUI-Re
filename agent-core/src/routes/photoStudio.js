@@ -47,6 +47,11 @@ router.get('/jobs/:id', (req, res) => {
   if (!job) return res.status(404).json({ error: '找不到这次拍摄' });
   res.json({ job });
 });
+// 拍摄诊断（2026-11-13）：只读，返回这张图实际的提示词、负面词、身份锚点与工作流。
+router.get('/jobs/:id/diagnostics', (req, res) => {
+  try { res.json({ diagnostics: studio.diagnostics(req.params.id) }); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
 router.post('/jobs', async (req, res) => {
   try { res.status(202).json({ job: await studio.submit(req.body || {}) }); }
   catch (error) { res.status(error.status || 500).json({ error: error.message }); }

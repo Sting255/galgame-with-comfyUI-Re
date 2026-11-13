@@ -16,6 +16,7 @@ export const getPhotoStudioCapability = () => request('/photo-studio/capability'
 export const getPhotoStudioCharacters = () => request('/photo-studio/characters')
 export const getPhotoStudioJobs = () => request('/photo-studio/jobs')
 export const getPhotoStudioJob = id => request(`/photo-studio/jobs/${encodeURIComponent(id)}`)
+export const getPhotoStudioDiagnostics = id => request(`/photo-studio/jobs/${encodeURIComponent(id)}/diagnostics`)
 export const createPhotoStudioJob = body => request('/photo-studio/jobs', { method: 'POST', body })
 export const getPhotoStudioPrompt = body => request('/photo-studio/prompt-preview', { method: 'POST', body })
 export const generateStudioClothingDraft = ({ signal, ...body }) => request('/photo-studio/clothing-draft', { method: 'POST', body, signal })

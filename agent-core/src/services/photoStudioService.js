@@ -11,7 +11,7 @@ import { angelOutfits } from './godSays/angelWardrobe.js';
 import { resolveCustomStudioPose } from './photoStudioPose.js';
 import { collectCharacterLoras } from './groupImageLoraMatcher.js';
 import { polishStudioPrompt, getStudioPolishContext, generateStudioClothing, splitStudioTags, studioPoseTags } from './photoStudioPolish.js';
-import { generateImage, getLastWorkflowMode } from './imageSkill.js';
+import { generateImage, getLastWorkflowMode, composeNegativePrompt } from './imageSkill.js';
 import { saveBase64Image } from './imagePaths.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
@@ -366,7 +366,81 @@ export function createPhotoStudioService({
     return { prompt: await clothing({ brief: brief.trim() }) };
   }
 
-  return { submit, preview, clothingDraft, job, list, listCharacters };
+  /**
+   * 拍摄诊断（2026-11-13）：把「这张图到底是被哪几段文本喂出来的」摊给用户看。
+   *
+   * 起因是真机上「角色不像本人 / 上半身出成全身」只能靠翻后端日志的 Final prompt 反推，
+   * 而这些信息本来就躺在库里（job.prompt / negative_extra / 角色锚点 / image_tasks）。
+   * 本函数只读，不参与生图，也不改动任何状态。
+   */
+  function diagnostics(id) {
+    const database = db();
+    const snapshot = job(id);
+    if (!snapshot) throw Object.assign(new Error('没有这张照片的记录'), { status: 404 });
+    const task = database.prepare('SELECT prompt_original, prompt_refined, workflow_template, status, error_message FROM image_tasks WHERE id = ?').get(snapshot.image_task_id) || {};
+    const characterIds = [snapshot.character_id, snapshot.character2_id]
+      .filter(value => Number(value) > 0)
+      .map(Number);
+    const characterRows = characterIds
+      .map(cid => database.prepare('SELECT id, name, display_name, identity_anchor, negative_prompt FROM characters WHERE id = ?').get(cid))
+      .filter(Boolean);
+    // 与 execute() 里的取用完全同源，保证界面上看到的就是真正喂进模型的。
+    const characterNegative = characterRows
+      .map(character => String(character.negative_prompt || '').trim())
+      .filter(Boolean)
+      .join(', ');
+    const globalNegative = String(config.comfyui.negativePrompt || '').trim();
+    const sceneNegative = String(snapshot.negative_extra || '').trim();
+    const backgroundEntry = snapshot.background_id
+      ? getStudioBackgrounds().entries.find(entry => entry.id === snapshot.background_id)
+      : null;
+    const loras = collectCharacterLoras(characterRows).map(lora => ({
+      name: String(lora.path).split(/[\\/]/).pop() || lora.path,
+      trigger: lora.triggerWord || '',
+      weight: lora.weight,
+    }));
+    const participantName = index => (index === 1 ? snapshot.character2_name : snapshot.character_name)
+      || (index === 1 ? '第二位角色' : '主角');
+    return {
+      id: snapshot.id,
+      status: snapshot.status,
+      stage: snapshot.stage,
+      error: snapshot.error || task.error_message || '',
+      created_at: snapshot.created_at,
+      finished_at: snapshot.finished_at,
+      pose: snapshot.pose_name,
+      dimensions: { width: snapshot.width, height: snapshot.height },
+      background: {
+        id: snapshot.background_id || '',
+        label: backgroundEntry?.label || (snapshot.background_id ? snapshot.background_id : '白色背景'),
+      },
+      prompts: {
+        // 拼装稿 = 送进润色前的原始分段提示词；最终稿 = 真正提交给 ComfyUI 的那一段。
+        original: String(task.prompt_original || ''),
+        final: String(snapshot.prompt || ''),
+        polished: Boolean(task.prompt_original && task.prompt_refined && task.prompt_refined !== task.prompt_original),
+      },
+      negative: {
+        character: characterNegative,
+        scene: sceneNegative,
+        global: globalNegative,
+        composed: composeNegativePrompt(characterNegative, globalNegative, sceneNegative),
+      },
+      identity: [snapshot.character_kind === 'angel' ? 'the angel' : participantName(0), snapshot.character2_kind === 'angel' ? 'the angel' : participantName(1)]
+        .filter((name, index) => index === 0 || snapshot.character2_id || snapshot.character2_name)
+        .map((name, index) => ({
+          name,
+          anchor: String(characterRows[index]?.identity_anchor || '').trim(),
+        })),
+      workflow: {
+        template: String(task.workflow_template || ''),
+        mode: config.workflow?.mode || '',
+      },
+      loras,
+    };
+  }
+
+  return { submit, preview, clothingDraft, job, list, listCharacters, diagnostics };
 }
 
 export function savePhoto(dataUri, id) {
