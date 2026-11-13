@@ -7,7 +7,7 @@ import { createHttpLifecycle } from './src/server/httpLifecycle.js';
 import { createAccessControl, loadAccessToken } from './src/server/accessControl.js';
 import { maintenanceStatus } from './src/db/maintenance.js';
 import path from 'path';
-import { readFileSync, statSync } from 'fs';
+import { readFileSync, statSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { config, autoDetectWorkflowMode } from './src/config.js';
 import { getDb, closeDb } from './src/db/index.js';
@@ -200,6 +200,17 @@ app.use('/images', (_req, res, next) => {
 app.use('/images', imageAvifFallback(path.join(DATA_DIR, 'images')));
 app.use('/images', express.static(path.join(DATA_DIR, 'images')));
 app.use('/avatars', express.static(path.join(DATA_DIR, 'avatars'), { maxAge: '30d' }));
+// 内置默认助手的头像文件随包放在 agent-core/assets/ 下，而 /avatars 只映射 data/avatars，
+// 不搬过去的话每个页面都会 404 一张头像、模型卡片上是破图（2026-11-14 全量巡检发现）。
+// 启动补一次即可，已存在就不动；失败不影响启动。
+try {
+  const seededAvatar = path.join(__dirname, 'assets', 'default_assistant_header.png');
+  const targetAvatar = path.join(DATA_DIR, 'avatars', 'default_assistant_header.png');
+  if (existsSync(seededAvatar) && !existsSync(targetAvatar)) {
+    mkdirSync(path.join(DATA_DIR, 'avatars'), { recursive: true });
+    copyFileSync(seededAvatar, targetAvatar);
+  }
+} catch { /* 头像只是展示资源，缺了不该拦住启动 */ }
 
 // 小镇像素素材（独立于 data/images，不进图库/压缩扫描；不带强缓存，素材重生成后刷新即生效）
 //
