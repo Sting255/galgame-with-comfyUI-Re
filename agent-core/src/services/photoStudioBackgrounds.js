@@ -7,6 +7,13 @@ import { chatSync } from './lorebook/runtime.js';
 const catalog = JSON.parse(readFileSync(new URL('../../resources/photo-studio-backgrounds.json', import.meta.url), 'utf8'));
 const byId = new Map(catalog.entries.map(entry => [entry.id, entry]));
 export const DEFAULT_STUDIO_BACKGROUND = 'A plain white background with strong, sharply defined cast shadows from hard directional lighting.';
+/**
+ * 纯白棚拍背景的场景级负面词（2026-11-13）。
+ * 白底＋泳装/跪姿时模型会把场景漂到海边沙滩（真机实测：提示词首尾都写了 plain white background
+ * 仍出成沙滩），正向描述压不住，只能靠负面词把外景可能性推开。
+ * 只在背景就是默认白底时注入，用户自己选了背景库条目或写了自定义背景不注入。
+ */
+export const WHITE_BACKDROP_SCENE_NEGATIVE = 'beach, sand, ocean, sea, shore, coastline, waves, waterfront, palm tree, tropical, outdoor scenery, sky, sunset, horizon';
 export function getStudioBackgrounds() { return catalog; }
 
 export function validateBackgroundPrompt(value) {

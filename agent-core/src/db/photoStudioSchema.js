@@ -20,6 +20,9 @@ export function migratePhotoStudioSchema(db) {
     character_kind: "TEXT NOT NULL DEFAULT 'resident'",
     character2_kind: "TEXT NOT NULL DEFAULT 'resident'",
     background_id: "TEXT NOT NULL DEFAULT ''",
+    // 2026-11-13：本次拍摄的场景级负面词。background_id 为空串时区分不了「默认白底」和
+    // 「自定义背景文字」，所以在 prepare 阶段就把判定结果落库，render 阶段直接取用。
+    negative_extra: "TEXT NOT NULL DEFAULT ''",
   };
   for (const [column, definition] of Object.entries(additions)) {
     if (!existing.has(column)) db.exec(`ALTER TABLE photo_studio_jobs ADD COLUMN ${column} ${definition}`);

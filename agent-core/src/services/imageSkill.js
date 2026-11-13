@@ -101,19 +101,23 @@ const PROMPT_PLACEHOLDER = '请输入画面描述';
 const MAX_CHARACTER_NEGATIVE = 200;
 
 /**
- * 合并最终负面提示词：角色级在前，全局在后。
- * 顺序有意义 —— 靠前的 tag 更容易被模型当主体约束读到；角色级更具体，理应优先。
- * 两者都空时返回空串（调用方据此不覆盖工作流里的默认负面词，保持旧行为）。
+ * 合并最终负面提示词：角色级在前，场景级居中，全局在后。
+ * 顺序有意义 —— 靠前的 tag 更容易被模型当主体约束读到；角色级最具体，理应优先。
+ * 三者都空时返回空串（调用方据此不覆盖工作流里的默认负面词，保持旧行为）。
  * @param {string} characterNegative 角色级负面词
  * @param {string} globalNegative 全局负面词
+ * @param {string} [sceneNegative] 场景级负面词（如照相馆白底场景要压住的海滩/外景）
  * @returns {string}
  */
-export function composeNegativePrompt(characterNegative, globalNegative) {
+export function composeNegativePrompt(characterNegative, globalNegative, sceneNegative) {
   const role = typeof characterNegative === 'string'
     ? characterNegative.trim().slice(0, MAX_CHARACTER_NEGATIVE)
     : '';
+  const scene = typeof sceneNegative === 'string'
+    ? sceneNegative.trim().slice(0, MAX_CHARACTER_NEGATIVE)
+    : '';
   const base = typeof globalNegative === 'string' ? globalNegative.trim() : '';
-  return [role, base].filter(Boolean).join(', ');
+  return [role, scene, base].filter(Boolean).join(', ');
 }
 
 // 按节点 title 注入参数（而非硬编码节点 ID）
@@ -292,7 +296,7 @@ function buildWorkflow(promptText, overrides = {}) {
   if (qualityPrompt) defaults[NODE_TITLES.quality] = qualityPrompt;
   // 负面提示词：非空才覆盖工作流节点里的默认值，留空不注入
   const negativeValue = overrides.negativePrompt ?? config.comfyui.negativePrompt;
-  const negativePrompt = composeNegativePrompt(overrides.characterNegative, negativeValue);
+  const negativePrompt = composeNegativePrompt(overrides.characterNegative, negativeValue, overrides.sceneNegative);
   if (negativePrompt) defaults[NODE_TITLES.negative] = negativePrompt;
 
   for (const node of wf.nodes || []) {
@@ -524,6 +528,7 @@ const MAX_SUBMIT_RETRIES = 2;
  * @param {Array}    [opts.loras]              - [{path, weight, triggerWord}]
  * @param {string}   [opts.customWorkflow]       - 自定义工作流文件名（单人兼容）
  * @param {string}   [opts.characterNegative]    - 角色级负面提示词（排在全局负面词前，截 200 字符）
+ * @param {string}   [opts.sceneNegative]        - 场景级负面提示词（压在角色级之后、全局之前，截 200 字符）
  * @param {string}   [opts.scene]                - 全局 LoRA 的场景过滤；默认也用于工作流选择
  * @param {string}   [opts.workflowScene]        - hybrid 模式下单独用于工作流选择
  * @param {string}   [opts.artist]
@@ -537,7 +542,7 @@ const MAX_SUBMIT_RETRIES = 2;
 async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
   loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
-  characterNegative, poseJson, sceneKey,
+  characterNegative, sceneNegative, poseJson, sceneKey,
   sourceWorkflow,
   imageProvider = config.comfyui.imageProvider,
 } = {}) {
@@ -562,6 +567,7 @@ async function submitWithRetry(rawPrompt, {
   } : buildWorkflow(finalPrompt, {
     artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
     characterNegative,
+    sceneNegative,
     // 同场景稳定种子：调用方传 sceneKey 时，连续几张图共用一套 base（每张 +1）
     // ⚠️ 2026-11-06 修：这一行第一版写成了 opts.sceneKey，但本函数是解构参数、没有 opts
     // ⇒ 所有生图入口（聊天/群聊/朋友圈/事件/触摸/玩具/独立生图）全部 `opts is not defined`。

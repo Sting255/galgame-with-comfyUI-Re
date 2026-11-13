@@ -6,7 +6,7 @@ import { config } from '../config.js';
 import { getDb } from '../db/index.js';
 import { buildCharacterImageAppearance, extractCharacterEnglishName, extractCharacterIdentityTag, replaceAppearanceSection } from './characterPersona.js';
 import { resolveClothingTags } from './clothingLibrary.js';
-import { resolveStudioBackground, getStudioBackgrounds } from './photoStudioBackgrounds.js';
+import { resolveStudioBackground, getStudioBackgrounds, DEFAULT_STUDIO_BACKGROUND, WHITE_BACKDROP_SCENE_NEGATIVE } from './photoStudioBackgrounds.js';
 import { angelOutfits } from './godSays/angelWardrobe.js';
 import { resolveCustomStudioPose } from './photoStudioPose.js';
 import { collectCharacterLoras } from './groupImageLoraMatcher.js';
@@ -134,6 +134,8 @@ export function createPhotoStudioService({
       backgroundId = random(entries).id;
     }
     const backgroundPrompt = resolveStudioBackground({ backgroundId, customBackgroundPrompt });
+    // 只有「背景就是默认纯白棚拍」时才压外景；用户选了背景库条目或写了自定义背景都算有意指定场景，不注入。
+    const negativeExtra = backgroundPrompt === DEFAULT_STUDIO_BACKGROUND ? WHITE_BACKDROP_SCENE_NEGATIVE : '';
     if (typeof polishPrompt !== 'boolean') throw Object.assign(new Error('AI 润色开关无效'), { status: 400 });
     for (const appearance of [appearanceOverride, secondAppearanceOverride]) {
       if (typeof appearance !== 'string' || appearance.length > 30000) throw Object.assign(new Error('服装提示词最多 30000 字'), { status: 400 });
@@ -233,7 +235,7 @@ export function createPhotoStudioService({
       ...studioPoseTags(poseText),
     ])];
     const loras = collectCharacterLoras([first, ...(second ? [second] : [])].filter(character => !character.angel));
-    return { first, second, pose, backgroundId, prompt, dimensions, personas, loras, requiredTags, polishInstruction };
+    return { first, second, pose, backgroundId, negativeExtra, prompt, dimensions, personas, loras, requiredTags, polishInstruction };
   }
 
   async function preview(input) {
@@ -246,7 +248,7 @@ export function createPhotoStudioService({
     if (!/^[a-zA-Z0-9_-]{8,100}$/.test(id || '')) throw Object.assign(new Error('拍摄请求编号无效'), { status: 400 });
     const previous = job(id);
     if (previous) return previous;
-    const { first, second, pose, backgroundId, prompt, dimensions, personas, loras, requiredTags, polishInstruction } = await prepare(input);
+    const { first, second, pose, backgroundId, negativeExtra, prompt, dimensions, personas, loras, requiredTags, polishInstruction } = await prepare(input);
     const supported = await capability();
     if (!supported.available) throw Object.assign(new Error(supported.error), { status: 503 });
     const firstName = first.display_name || first.name;
@@ -257,9 +259,9 @@ export function createPhotoStudioService({
       if (active) throw Object.assign(new Error('已有照片正在拍摄，请等待完成'), { status: 409 });
       const task = db().prepare("INSERT INTO image_tasks (prompt_original, prompt_refined, status) VALUES (?, ?, 'running')").run(prompt, prompt);
       db().prepare(`INSERT INTO photo_studio_jobs
-        (id, character_id, character2_id, character_kind, character2_kind, background_id, character_name, character2_name, pose_id, pose_name, image_task_id, prompt, width, height)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, first.angel ? null : first.id, second?.angel ? null : second?.id ?? null, first.angel ? 'angel' : 'resident', second?.angel ? 'angel' : 'resident', backgroundId,
+        (id, character_id, character2_id, character_kind, character2_kind, background_id, negative_extra, character_name, character2_name, pose_id, pose_name, image_task_id, prompt, width, height)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, first.angel ? null : first.id, second?.angel ? null : second?.id ?? null, first.angel ? 'angel' : 'resident', second?.angel ? 'angel' : 'resident', backgroundId, negativeExtra,
           firstName, secondName, pose.id, `${pose.name} · ${pose.angle}`, Number(task.lastInsertRowid), prompt, dimensions.width, dimensions.height);
       return true;
     })();
@@ -312,6 +314,8 @@ export function createPhotoStudioService({
           .map(id => database.prepare('SELECT negative_prompt FROM characters WHERE id = ?').get(Number(id))?.negative_prompt || '')
           .filter(Boolean)
           .join(', '),
+        // 场景级负面词（2026-11-13）：纯白棚拍背景时压住海滩/外景漂移，见 WHITE_BACKDROP_SCENE_NEGATIVE。
+        sceneNegative: snapshot.negative_extra || '',
         artist: config.comfyui.momentsArtist ?? config.comfyui.artist,
         // Keep LoRA triggers out of AI rewriting; the shared workflow adds them
         // to its dedicated trigger node and loads the models with their saved weights.
