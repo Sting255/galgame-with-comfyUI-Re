@@ -15,7 +15,7 @@ import { generateImage, getLastWorkflowMode } from './imageSkill.js';
 import { saveBase64Image } from './imagePaths.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
-import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions } from './photoStudioWorkflow.js';
+import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions, studioFramingNegative } from './photoStudioWorkflow.js';
 import { userVisibleScope } from './characterScope.js';
 import { listSceneOutfits } from './outfitScene.js';
 
@@ -135,7 +135,7 @@ export function createPhotoStudioService({
     }
     const backgroundPrompt = resolveStudioBackground({ backgroundId, customBackgroundPrompt });
     // 只有「背景就是默认纯白棚拍」时才压外景；用户选了背景库条目或写了自定义背景都算有意指定场景，不注入。
-    const negativeExtra = backgroundPrompt === DEFAULT_STUDIO_BACKGROUND ? WHITE_BACKDROP_SCENE_NEGATIVE : '';
+    const whiteBackdropNegative = backgroundPrompt === DEFAULT_STUDIO_BACKGROUND ? WHITE_BACKDROP_SCENE_NEGATIVE : '';
     if (typeof polishPrompt !== 'boolean') throw Object.assign(new Error('AI 润色开关无效'), { status: 400 });
     for (const appearance of [appearanceOverride, secondAppearanceOverride]) {
       if (typeof appearance !== 'string' || appearance.length > 30000) throw Object.assign(new Error('服装提示词最多 30000 字'), { status: 400 });
@@ -154,6 +154,8 @@ export function createPhotoStudioService({
     }
     if (!pose) throw Object.assign(new Error('请选择有效的姿势和主角'), { status: 400 });
     if (!pose.posePrompt) throw Object.assign(new Error('该姿势的专属提示词尚未校准，请先选择已有完整描述的姿势'), { status: 400 });
+    // 场景级负面词在姿势确定后再合并：白底压外景 + 姿势类型压构图（上半身不许画全身）。
+    const negativeExtra = [whiteBackdropNegative, studioFramingNegative(pose)].filter(Boolean).join(', ');
 
     const duo = isPairPose(pose);
     if (strictParticipants && duo !== hasSecond) throw Object.assign(new Error(duo ? '双人姿势必须指定搭档' : '单人姿势不能加入第二位角色'), { status: 400 });
@@ -208,8 +210,11 @@ export function createPhotoStudioService({
           ? inSceneOutfits
           : (character.angel ? angelOutfits(character.angel).find(outfit => outfit.scene === scene) : null);
         if (!outfit?.description?.trim() && !(index === 0 ? randomFirst : randomSecond)) throw Object.assign(new Error(`${character.display_name || character.name}尚未配置所选服装，请选择默认服装或先到人物详情卡配置`), { status: 400 });
-        // Scene descriptions contain the complete appearance. Replace, rather than layer over, the default clothes.
-        if (outfit?.description?.trim()) selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, outfit.description) };
+        // 本地口径（2026-11-13）：本仓服装是「body 身体真源 + description 只有衣服」两段式，
+        // 必须用 listSceneOutfits 的 text（body + 衣服）整段替换外观段。
+        // 上游 v4.3.0 是按自己「description 自包含整段外观」的口径写的，只取 description，
+        // 落到本仓会把发色/瞳色/体型全丢掉 —— 真机表现就是「角色不像本人」。
+        if (outfit?.description?.trim()) selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, outfit.text || outfit.description) };
       }
       const name = extractCharacterEnglishName(selected) || extractCharacterEnglishName(character) || `the ${index === 0 ? 'first' : 'second'} character`;
       const appearance = persona(selected);

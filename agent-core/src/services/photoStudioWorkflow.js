@@ -6,6 +6,16 @@ export function isPairPose(pose) {
   return /双人|pair/i.test(`${pose?.system || ''} ${pose?.id || ''}`);
 }
 
+/**
+ * 姿势类型决定构图，构图要用负面词兜底（2026-11-13）。
+ * 真机：选「上半身单人」的姿势，正向提示词里写着 upper-body view，9:16 竖幅仍画成全身。
+ * 构图词埋在长句里约束力不够，只能靠负面词把「全身」这种可能直接排除。
+ * 只对上半身单人注入；全身单人 / 双人保持原样，不压构图。
+ */
+export function studioFramingNegative(pose) {
+  return /上半身/.test(`${pose?.system || ''}`) ? 'full body, full-length shot, legs, feet, standing' : '';
+}
+
 export function buildPhotoStudioPrompt({ pose, characters, instruction = '', backgroundPrompt = '' }) {
   const rawPosePrompt = String(pose?.posePrompt || '').trim();
   if (!rawPosePrompt) throw new Error('该姿势的专属提示词尚未校准，请先选择已有完整描述的姿势');
