@@ -23,19 +23,54 @@ const MAX_REFUSAL_CHARS = 200;
 /** 拒答通常只有一段；允许少量换行但不接受多段正文 */
 const MAX_REFUSAL_LINES = 3;
 
+/**
+ * 长文本拒答的上限（2026-11-13 真机）。
+ *
+ * 有的模型不写「我无法…」这种模板句，而是回一整段解释：
+ * 「I appreciate the creative prompt, but I can't participate in this roleplay scenario.
+ *   The world setting depicts ...」
+ * 这类文本 390 字符、以客套话开场，旧的 200 字上限 + 开头锚定两条都躲过去了 ⇒
+ * 拒答被当成正常评论存库，还被别的角色接着回复（真机：刻晴回了一句「又卡带了吧」）。
+ *
+ * 长通道单独判定，要求**同时**命中「第一人称拒绝动词」与「元语境标记」，
+ * 目的是只抓"模型在谈这个任务本身"，不误伤角色台词里的「我不能帮你」之类。
+ */
+const MAX_LONG_REFUSAL_CHARS = 800;
+
+/** 第一人称拒绝 + 具体动作（英文） */
+const LONG_REFUSAL_VERB_EN = /\b(?:i|we)\s+(?:can'?t|cannot|can not|am unable to|am not able to|'m not able to|won'?t|will not|must decline|have to decline)\s+(?:participate|help|assist|provide|create|generate|continue|comply|fulfill|write|produce|build|engage|support|develop|roleplay|take part)\b/i;
+/** 元语境标记：模型在谈"这个角色扮演任务/内容政策"，不是角色在说话（英文） */
+const LONG_REFUSAL_META_EN = /\b(?:roleplay|role-play|world\s*setting|worldbuilding|fictional\s+frame|scenario|narrative|content\s+polic(?:y|ies)|guidelines|creative\s+prompt|sexual\s+exploitation|coercion)\b/i;
+/** 第一人称拒绝 + 具体动作（中文） */
+const LONG_REFUSAL_VERB_ZH = /(?:我|本人)(?:无法|不能|没办法|不可以|不会)(?:参与|提供|协助|创作|继续|生成|满足|完成|配合)/;
+/** 元语境标记（中文） */
+const LONG_REFUSAL_META_ZH = /(?:角色扮演|世界观|虚构|政策|准则|内容规范|性剥削|胁迫)/;
+
+/** 「can't help but」是正常表达，不是拒绝 */
+const REFUSAL_FALSE_FRIEND = /\bcan'?t help but\b/i;
+
+function isLongFormRefusal(t) {
+  if (t.length > MAX_LONG_REFUSAL_CHARS) return false;
+  if (REFUSAL_FALSE_FRIEND.test(t)) return false;
+  const en = LONG_REFUSAL_VERB_EN.test(t) && LONG_REFUSAL_META_EN.test(t);
+  const zh = LONG_REFUSAL_VERB_ZH.test(t) && LONG_REFUSAL_META_ZH.test(t);
+  return en || zh;
+}
+
 const REFUSAL_PATTERNS = [
   // 中文：开口就是「我无法/我不能 + 给到/提供/生成/协助…」
   /^(?:你好|您好|很抱歉|抱歉|对不起|不好意思)?[，,。.！!\s]*(?:我|本人)?(?:无法|不能|没办法|不可以)(?:给到|给出|提供|生成|协助|回答|答复|满足|完成|处理|参与|继续|输出|创作|写|做)/,
   // 中文：句中出现「无法/不能提供（相关/此类/该）内容」
   /(?:无法|不能)(?:给到|提供|生成|协助)(?:相关|此类|该|这|上述)?(?:内容|信息|帮助|回答)/,
   // 中文：自称 AI / 语言模型 / 助手身份
-  /^(?:作为|身为)(?:一个|一名|一位)?(?:AI|ＡＩ|人工智能|语言模型|智能助手|虚拟助手|助手)/,
+  /^(?:作为|身为)\s*(?:一个|一名|一位)?\s*(?:AI|ＡＩ|人工智能|语言模型|智能助手|虚拟助手|助手)/,
   // 中文：明确的能力/政策拒绝
   /(?:超出|不在)(?:了)?我的(?:能力|职责|知识|范围)/,
-  /(?:违反|不符合|涉及)(?:了)?(?:相关)?(?:政策|规定|准则|使用条款|社区准则)/,
+  /(?:违反|不符合|涉及)(?:了)?\s*(?:我的|我们的)?\s*(?:相关)?\s*(?:内容)?\s*(?:政策|规定|准则|使用条款|社区准则)/,
   // 英文：I can't / I cannot / I'm unable to + 动词
   /^(?:i'?m sorry|i am sorry|sorry)[,.]?\s*(?:but\s*)?(?:i|this)\s*(?:can'?t|cannot|can not|am unable to|am not able to)/i,
-  /^(?:i|we)\s*(?:can'?t|cannot|can not|am unable to|am not able to)\s*(?:help|assist|provide|create|generate|continue|comply|fulfill|write|produce)/i,
+  // 「can't help but」是正常表达（"I can't help but laugh"），不能算拒绝
+  /^(?:i|we)\s*(?:can'?t|cannot|can not|am unable to|am not able to)\s*(?:help(?!\s+but)|assist|provide|create|generate|continue|comply|fulfill|write|produce)/i,
   // 英文：As an AI / As a language model
   /^as an? (?:ai|artificial intelligence|language model|assistant)\b/i,
   // 英文：policy / guidelines 拒绝
@@ -66,10 +101,12 @@ export function isRefusal(text) {
   if (typeof text !== 'string') return false;
   const t = normalizeForCheck(text);
   if (!t) return false;
-  if (t.length > MAX_REFUSAL_CHARS) return false;
   const lines = t.split('\n').filter(Boolean);
-  if (lines.length > MAX_REFUSAL_LINES) return false;
-  return REFUSAL_PATTERNS.some(re => re.test(t));
+  // 通道一：短模板句（原有口径，一字未改）
+  if (t.length <= MAX_REFUSAL_CHARS && lines.length <= MAX_REFUSAL_LINES
+    && REFUSAL_PATTERNS.some(re => re.test(t))) return true;
+  // 通道二：整段解释型拒绝（2026-11-13 真机补）
+  return isLongFormRefusal(t);
 }
 
 /**
