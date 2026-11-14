@@ -81,7 +81,7 @@ import { reactionImageUpdate } from '../services/reactionImageUpdate.js';
 import { isSleeping, tempWake, formatScheduleContext } from '../services/scheduleManager.js';
 // 2026-11-03 睡眠锁（催眠手机「无法醒来」）：锁着时触摸弄不醒她，但照样扣睡眠条
 import { isSleepLocked } from '../services/sleepLock.js';
-import { drainSleepBarByTouch, buildPositionPoseJson } from '../services/intimateActionService.js';
+import { drainSleepBarByTouch, buildPositionPoseJson, buildPositionImageTags } from '../services/intimateActionService.js';
 // 敏感度倍率：与推进面板同一个来源（角色持久值），触摸扣睡眠条沿用同一口径
 import { getSensitivity } from '../services/sensitivityService.js';
 // task-30 新喂料块：复用聊天轮/群聊轮的既有 builder，一行不重写
@@ -170,9 +170,15 @@ async function defaultTouchImageGenerator(character, prompt, { scene = 'chat' } 
   const artist = charArtistOverride(character);
   if (artist !== null) opts.artist = artist;
   // 2026-11-03 体位骨架：摸她一下出的图也要按当前体位摆姿势（没有进行中场景时是 null）
+  // 2026-11-15：体位标签必须**前置**。真机实测同一骨架下：文字与体位冲突时，标签尾附压不住
+  // 文字里的身体几何（仍画成仰躺），前置才正确跟随。强度保持 1.0，调高会把画面压烂。
   try {
     const poseRef = buildPositionPoseJson(character.id);
-    if (poseRef) opts.poseJson = poseRef.json;
+    if (poseRef) {
+      opts.poseJson = poseRef.json;
+      const poseTags = buildPositionImageTags(character.id);
+      if (poseTags) prompt = `${poseTags}. ${prompt}`;
+    }
   } catch (err) {
     console.warn('[touch] 体位骨架跳过:', err?.message || err);
   }
@@ -251,7 +257,7 @@ async function generateTouchImageForReaction({ character, action, reactionText, 
       enabled: isGlobalImageEnabled(),
       chanceScale: config.features?.touchImageChanceScale,
     })) return null;
-    const prompt = buildTouchImagePrompt({
+    let prompt = buildTouchImagePrompt({
       actionKey: action?.key || '',
       appearance: buildCharacterAppearanceSection(character, { outfits: 'auto' }),
       reactionText,

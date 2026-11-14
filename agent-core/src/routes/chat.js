@@ -2646,6 +2646,8 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
   // 开关一开，聊天/亲密配图就全变成同一个姿势（真机："还是一样的骨架""根本不遵循"）。
   // 没有进行中的亲密场景时 buildPositionPoseJson 返回 null，行为与不传完全一致。
   let poseJson = '';
+  // 体位英文标签：与骨架同源。骨架负责构图，标签负责让文字与构图说同一件事。
+  let poseTags = '';
   try {
     const charId = parseInt(String(conversationId).replace(/^char_/, ''), 10);
     if (!Number.isNaN(charId)) {
@@ -2653,6 +2655,7 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
         try {
           const poseRef = buildPositionPoseJson(charId);
           if (poseRef?.json) poseJson = poseRef.json;
+          if (poseJson) poseTags = buildPositionImageTags(charId);
         } catch (err) {
           console.warn('[chat] 体位骨架跳过:', err?.message || err);
         }
@@ -2701,7 +2704,14 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
   try {
     // 身份锚点由 imageSkill._execute 统一前置（opts.identity），这里不再各自拼 tag；
     // 分享图 includeCharacter=false 时不传，锚点自然不注入。
-    const result = await generateImage(prompt, {
+    //
+    // 体位标签前置（2026-11-15 真机实测）：有体位骨架时，LLM 写的画面文字里的身体几何
+    // 常常和体位冲突（实测让它写「骑乘」，它写「仰躺」）。此时骨架会被文字压过去 ——
+    // 同一骨架测出来的规律：中性文字+强度2.0 → 骨架生效但画面被压烂；文字一致+强度1.0 → 完美；
+    // 冲突文字+标签**尾附** → 仍被文字带走；冲突文字+标签**前置** → 正确跟随。
+    // 所以这里不指望模型写对，直接把体位标签顶到最前面，强度保持 1.0。
+    const posedPrompt = poseTags ? `${poseTags}. ${prompt}` : prompt;
+    const result = await generateImage(posedPrompt, {
       scene: 'chat',
       ragQuery,
       ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
@@ -3048,18 +3058,8 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
 
   // 4. 先验证 prompt，再写入 raw_messages/messages，避免空 assistant 消息。
   let prompt = extractImagePromptResponse(fullContent);
-  // 体位兜底：无论 prompt 由谁生成（含 planner 预生成那条路），当前体位的英文标签都要进画面。
-  // 没有进行中的亲密场景时这里是空串，普通配图完全不受影响。
-  // 体位标签兜底（既有逻辑）：骨架在 triggerImageGeneration 里统一取，这里只管 prompt 文本。
-  try {
-    const poseTags = buildPositionImageTags(character.id);
-    if (poseTags) {
-      prompt = prompt ? `${prompt}, ${poseTags}` : poseTags;
-      console.log('[chat] position tags appended to image prompt:', poseTags.slice(0, 80));
-    }
-  } catch (err) {
-    console.warn('[chat] position tags skipped:', err.message);
-  }
+  // 体位标签统一在 triggerImageGeneration 里**前置**到 prompt 最前面（2026-11-15 真机实测：
+  // 尾附压不住文字里冲突的身体几何，前置才压得住）。这里不再拼，避免同一串标签出现两遍。
   if (!prompt) {
     console.warn('[chat] needImage: failed to extract prompt, raw:', fullContent.slice(0, 120));
     failPreparingTask(preExistingTaskId, '模型未返回图像描述');
