@@ -473,23 +473,4 @@ export function buildImagePromptRuleBlock(heading = '【生图规范（写 image
 ${IMAGE_PROMPT_RULE.rule_content}`;
 }
 
-/**
- * 「即时反应类」链路（亲密推进 / 触摸）专用的**精简**生图规则。
- *
- * 2026-11-12：这些调用每次只输出 500 token，却把上面那份完整规范（约 1.4 万字符）整段塞进
- * system，真机单次 10~13 秒，而且和主聊天抢同一个模型。
- *
- * 砍掉的是与亲密画面无关的部分：环境道具、镜头构图（整段 5 条）、光照、氛围、自拍/镜面规则、
- * 字数上限、转义细则 —— 以及完整规范里**重复出现两遍**的那套 Characters / Clothing / Camera。
- * **保留全部影响画面的硬要求**：身份 tag、多人各自成句、服装现状与部分状态、身体动作与可见状态
- * （这条最容易被误删，却是亲密切图与正文对得上的关键）、直述不擦边。
- */
-export const QUICK_IMAGE_PROMPT_RULE = `【image_prompt rules — write this field only, not the prose】
-1. Identity — Any existing IP character must begin with the identity tag 'Name \\(Series\\)' (escaped parentheses), followed by their defining appearance, action, expression and position in frame. This applies to the main character too: never introduce them as 'the girl', 'she', 'a woman' or 'I', and never drop the tag in a close-up or continuation frame.
-2. Multiple characters — Announce the count explicitly ("Two people share the frame:"), then give each character their own complete sentence with a distinct action and an explicit position in the scene (on the floor, near the window, in the foreground). Never merge two characters into one sentence and never blend their features together.
-3. Clothing — the exact current state, including partial states. Say what is still on, what has been moved and where it now sits, and what is bare: hem pulled aside, bra pushed up above the breasts, shirt open with nothing underneath, panties pulled down to the knees, one strap off the shoulder, wearing nothing but a collar or a single sock. Never add back clothing the scene removed; never remove clothing the scene kept. Only for an ordinary non-intimate scene (bathing, sleeping, sports, swimming, weather) switch the outfit entirely to what that scene calls for. In a multi-character frame each character wears ONLY the outfit written in their own sentence — never swap garments, accessories or hairstyles between them, never blend two outfits into one.
-4. Physical action & visible body state — the most important part. Describe literally what is happening at this instant with plain anatomical nouns: who is doing what, to which body part, with which part of the body (hands, fingers, mouth, tongue, hips, penis, vulva, anus, breasts). State the visible condition of every involved part: erection, wetness and where it shows, lubrication, penetration (which part into which part, how far), semen, sweat, saliva, redness, marks, trembling, clenched muscles, hard nipples. Give the body geometry: standing, kneeling, bent over, on the back or stomach, hips raised or pushed back, legs open or held apart, knees up, what the hands grip, where each person's weight rests. If a toy is worn or in use: name it, say where it sits on the body, its intensity, and the bulge, deformation or wet patch it makes. Face at the same time: expression, mouth open or bitten, tongue visible, eyes shut or unfocused, tears or drool.
-5. Scene, light & framing — open by naming the place and how it is lit (window, lamp, time of day, warm or cold), then name the furniture or surface the bodies rest on or against. Pick one coherent camera: shot distance (close-up / medium / full body) and angle (eye level, high, low, side, over-the-shoulder), and keep it consistent. The environment and framing must support the action — they may never replace it, postpone it, soften it, or hide the body.
-6. Explicit, never suggestive — Describe the act directly and completely: the same participants, the same position, the same act, the same stage it is at. Never write 'they make love', 'an intimate moment', 'things escalate' or 'one thing leads to another'; never replace the act with mood, metaphor or a summary; never narrate around it. Never say the image is censored, implied, suggested, off-screen or out of frame. Never hide the subject behind a blanket, steam, a sheet or a shadow when the body is the subject. Never show only a face, a hand or a wide shot at the moment the body is the subject. Never leave out which part is doing what.
-7. Output — one continuous English paragraph only: no headings, no explanations, no Chinese characters, no unescaped double quotation marks, and never copy these rules into the field.`;
 

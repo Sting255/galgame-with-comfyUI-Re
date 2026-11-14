@@ -49,7 +49,7 @@ import { SENSITIVITY_TIERS } from './sensitivityService.js';
 import { isSleepLocked } from './sleepLock.js';
 // 2026-11-03 体位骨架（生图跟着体位走）：按形态大类生成 AnimaPoseControl 吃的骨架 JSON
 import { config } from '../config.js';
-import { QUICK_IMAGE_PROMPT_RULE } from '../builtinRules.js';
+import { buildImagePromptRuleBlock } from '../builtinRules.js';
 import { poseJsonForPositionKey } from './positionPose.js';
 // 84 条全量体位词库（PR#24 融合）：physicalHintOf 在精选表未命中时用它兜底
 import { POSITIONS as PR24_POSITIONS, POSTURE_GROUPS, postureOf, postureOfText, getPosition as getPr24Position, resolvePositionKey as resolvePr24Key } from './positionLibrary.js';
@@ -1543,7 +1543,7 @@ export function buildIntimateActionPrompt({
   // Authoritative image rules: the author requires this block in EVERY image
   // path. This path lets the LLM write `image_prompt` by itself, so without it a
   // multi-character frame collapses into one person or a merged blob of features.
-  systemParts.push('', QUICK_IMAGE_PROMPT_RULE);
+  systemParts.push('', buildImagePromptRuleBlock());
   const system = systemParts.join('\n');
 
   const recent = (Array.isArray(recentLines) ? recentLines : [])

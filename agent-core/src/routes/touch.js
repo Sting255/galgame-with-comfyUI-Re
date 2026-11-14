@@ -65,7 +65,7 @@ import {
   buildConversationReactionPrompt,
   CONVERSATION_RECENT_LINES,
 } from '../services/touchActionService.js';
-import { QUICK_IMAGE_PROMPT_RULE } from '../builtinRules.js';
+import { buildImagePromptRuleBlock } from '../builtinRules.js';
 import {
   emotionToPrompt,
   evolveEmotion,
@@ -1348,7 +1348,7 @@ router.post('/:id/touch/:action', async (req, res) => {
       // 服装归属三条），原来塞整套 1.4 万字符规范，让这个高频小调用每次都慢十几秒。
       // 仍由**调用方**注入：`touchActionService.js` 是零依赖纯函数模块，自己取不到规则。
       // 放在这里而不是分支里：conversation / 快速版两个构造器共用 `shared`，改一处两条路都覆盖。
-      if (shared && typeof shared === 'object') shared.imagePromptRule = QUICK_IMAGE_PROMPT_RULE;
+      if (shared && typeof shared === 'object') shared.imagePromptRule = buildImagePromptRuleBlock();
       const prompt = reactionMode === 'conversation'
         ? buildConversationReactionPrompt({
           ...shared,
