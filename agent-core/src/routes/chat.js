@@ -2641,9 +2641,22 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
   let identitySource = null;
   // 角色级负面词（2026-11-06）：只在「这张图里有该角色本人」时注入，规则跟随 includeCharacter
   let characterNegative = '';
+  // 体位骨架（2026-11-15）：亲密场景里她此刻的体位必须进画面。
+  // 此前这条链路从不传 poseJson，于是 imageSkill 的姿势注入会回落到设置页那张全局参考图 ——
+  // 开关一开，聊天/亲密配图就全变成同一个姿势（真机："还是一样的骨架""根本不遵循"）。
+  // 没有进行中的亲密场景时 buildPositionPoseJson 返回 null，行为与不传完全一致。
+  let poseJson = '';
   try {
     const charId = parseInt(String(conversationId).replace(/^char_/, ''), 10);
     if (!Number.isNaN(charId)) {
+      if (includeCharacter) {
+        try {
+          const poseRef = buildPositionPoseJson(charId);
+          if (poseRef?.json) poseJson = poseRef.json;
+        } catch (err) {
+          console.warn('[chat] 体位骨架跳过:', err?.message || err);
+        }
+      }
       const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override, negative_prompt, base_prompt, short_prompt FROM characters WHERE id = ?').get(charId);
       if (char) {
         if (includeCharacter) identitySource = char;
@@ -2702,6 +2715,9 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
       ...frozenImageConfig,
       ...loraOpts,
       characterNegative,
+      // 体位骨架（2026-11-15）：有进行中的亲密场景时按她此刻的体位出图，
+      // 并由此跳过设置页那张全局参考图（imageSkill 里 poseJson 优先）。
+      ...(poseJson ? { poseJson } : {}),
       // 身份锚点：角色本人在画面里才传（imageSkill 统一前置，缺锚点时会从卡里现算）
       ...(identitySource ? { identity: identitySource } : {}),
     });
