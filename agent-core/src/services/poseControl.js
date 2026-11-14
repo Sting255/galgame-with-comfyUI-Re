@@ -152,82 +152,6 @@ function attachControlTail(apiPrompt, { unetKey, vaeKey, ks, width, height, stre
 }
 
 /**
- * 在 API prompt 上注入姿态控制。
- * @param {object} apiPrompt guiToApi 的结果（会被就地修改）
- * @param {{ imageName: string, strength?: number }} opts
- * @returns {{ applied: boolean, reason?: string, resolution?: number }}
- */
-export function applyPoseControl(apiPrompt, { imageName, strength = 1 } = {}) {
-  if (!apiPrompt || typeof apiPrompt !== 'object') throw new Error('工作流为空，无法接入姿势控制');
-  if (!imageName) throw new Error('缺少姿势参考图');
-
-  const gate = loraGate();
-  if (gate) return gate;
-
-  removePreviousInjection(apiPrompt);
-
-  const nodes = pickControlNodes(apiPrompt);
-  if (!nodes.ok) return { applied: false, reason: nodes.reason };
-  const { unet, vae, ks } = nodes;
-
-  // 骨架分辨率跟生成分辨率的长边一致（适配器按 512/768/1024 训练，取最近的训练档）
-  // ⚠ 本仓工作流的宽高是 **PrimitiveInt 节点连进来的**（guiToApi 之后 width 是 ['节点id', 0]），
-  //   直接 Number() 会拿到 NaN 并回退到默认值 ⇒ 骨架被缩到默认尺寸、与 latent 不匹配，
-  //   报的错是 "The size of tensor a (32) must match the size of tensor b (64)"。
-  const latent = pickNode(apiPrompt, 'EmptyLatentImage');
-  let width = resolveNumberInput(apiPrompt, latent?.[1]?.inputs, 'width') ?? 768;
-  let height = resolveNumberInput(apiPrompt, latent?.[1]?.inputs, 'height') ?? 1024;
-
-  // 生成尺寸要跟参考图的宽高比对得上：AnimaPoseControl 渲染出来是正方形画布，
-  // 竖构图骨架塞进横图会被压扁一半，模型直接不跟随（实测 768×512 + 竖参考 = 完全无视骨架，
-  // 768×1024 同样参考 = 精准跟随）。比例差超过 20% 就把长边保持不变、按参考图重算短边。
-  const refAspect = Number(config.comfyui?.poseControlAspect) || 0;
-  let adjusted = null;
-  if (refAspect > 0) {
-    const targetAspect = width / height;
-    if (Math.abs(targetAspect - refAspect) / refAspect > 0.2) {
-      const longSide = Math.max(width, height);
-      let w = refAspect >= 1 ? longSide : Math.round(longSide * refAspect);
-      let h = refAspect >= 1 ? Math.round(longSide / refAspect) : longSide;
-      w = Math.max(256, Math.round(w / 8) * 8);
-      h = Math.max(256, Math.round(h / 8) * 8);
-      adjusted = { from: `${width}x${height}`, to: `${w}x${h}` };
-      width = w;
-      height = h;
-      // 原宽高是 PrimitiveInt 连线，这里直接写数字覆盖，保证 latent 与骨架同尺寸
-      if (latent) {
-        latent[1].inputs.width = width;
-        latent[1].inputs.height = height;
-      }
-    }
-  }
-  // ⚠ 固定 1024：官方实测跟随准确率 512≈0.59 / 768≈0.67 / 1024≈0.83，
-  //   实测 768 档出图几乎不跟随（骨架明明检出了，模型就是不理），1024 才稳定。
-  //   代价是姿态检测本身慢一点，但相比整张图的时间可以忽略。
-  const detectRes = 1024;
-
-  apiPrompt[`${PREFIX}load`] = { class_type: 'LoadImage', inputs: { image: imageName } };
-  apiPrompt[`${PREFIX}detect`] = {
-    class_type: 'AnimaPoseControl',
-    inputs: {
-      image: [`${PREFIX}load`, 0],
-      style: 'R0_thin',      // 官方唯一训练过的渲染样式，换别的只当兜底
-      hands: true,
-      face: true,
-      feet: true,
-      redetect: true,
-      resolution: detectRes,
-      pose_json: '',
-    },
-  };
-  attachControlTail(apiPrompt, {
-    unetKey: unet[0], vaeKey: vae[0], ks, width, height, strength,
-  });
-
-  return { applied: true, resolution: detectRes, width, height, adjusted };
-}
-
-/**
  * 直接用骨架 JSON 注入姿势控制（跳过图片检测）。
  *
  * 为什么必须走这条路：AnimaPoseControl 的 detect() 写死取 kp_all[0]，只认单个人 ——
@@ -328,19 +252,9 @@ export function maybeApplyPoseControl(apiPrompt, { poseJson } = {}) {
     }
   }
 
-  if (c.poseControlEnabled !== true) return { applied: false, reason: 'disabled' };
-  const imageName = String(c.poseControlImage || '').trim();
-  if (!imageName) return { applied: false, reason: 'no-image' };
-  try {
-    const r = applyPoseControl(apiPrompt, { imageName, strength: c.poseControlStrength });
-    if (r.applied) {
-      const tail = r.adjusted ? `，尺寸按参考图从 ${r.adjusted.from} 调整为 ${r.adjusted.to}` : '';
-      console.log(`[poseControl] 已注入姿势控制：${imageName}（骨架 ${r.resolution}）${tail}`);
-    }
-    else console.warn(`[poseControl] 跳过：${r.reason}`);
-    return r;
-  } catch (err) {
-    console.warn('[poseControl] 注入失败，按无姿势出图：', err.message);
-    return { applied: false, reason: err.message };
-  }
+  // 2026-11-15 用户裁定：上传固定参考图那条路整块移除。
+  // 原因是他实测「有参考也不绑定，根本没用」，而它的副作用很硬 —— 只要开关是开的，
+  // 所有没带体位骨架的生图（聊天 / 朋友圈 / 事件 / 立绘）都会被套成同一张参考图的姿势。
+  // 现在姿势控制只剩一种来源：亲密场景按当前体位现算骨架。
+  return { applied: false, reason: 'no-position' };
 }

@@ -80,31 +80,17 @@
           </Transition>
         </div>
 
-        <!-- ── 姿势参考（Anima Control Pose）：上传一张图，出图时骨架跟着它走 ── -->
+        <!-- 体位骨架（2026-11-15）：参考图那条路已按用户要求整块移除 —— 上传的参考图
+             既不绑定又碍眼，留着只会让人以为它在起作用。现在只剩一种姿势控制：
+             亲密场景按推进面板的当前体位现算骨架。 -->
         <div v-if="imageProvider !== 'novelai'" class="pose-ref-section">
           <div class="pose-ref-header">
-            <span class="pose-ref-title">姿势参考</span>
-            <linshe-switch
-              v-model="poseEnabled" size="sm" on-text="已启用" off-text="已关闭"
-              aria-label="姿势参考" :disabled="poseSaving || !poseImage"
-              @change="onPoseToggle"
-            />
+            <span class="pose-ref-title">体位骨架</span>
           </div>
-          <div class="pose-ref-row">
-            <div class="pose-ref-copy">
-              <div class="pose-ref-desc">上传一张姿势参考图，出图时人物骨架跟着它走，外观和画风仍由角色设定决定。</div>
-              <div class="pose-ref-hint">实验性功能（官方预览版，偶尔漏姿势或手部崩）；每张约多 6 秒。当前：{{ poseImage || '未选择参考图' }}</div>
-            </div>
-            <linshe-button variant="secondary" size="sm" :loading="poseUploading" @click="pickPoseReference">
-              {{ poseImage ? '换一张' : '选择参考图' }}
-            </linshe-button>
-          </div>
-          <!-- 体位骨架（2026-11-03）：亲密场景出图按推进面板当前体位摆姿势。
-               它不是参考图，是现算骨架 ⇒ 有进行中场景时优先于上面的参考图。 -->
           <div class="pose-ref-row pose-ref-row--body">
             <div class="pose-ref-copy">
-              <div class="pose-ref-desc">体位骨架：亲密场景出图时，按推进面板当前的体位摆姿势（骑乘就跨坐、后入就趴跪）。</div>
-              <div class="pose-ref-hint">不依赖参考图，按体位现算骨架；有进行中的亲密场景时优先于上面的参考图。普通聊天、立绘、朋友圈配图不受影响。</div>
+              <div class="pose-ref-desc">亲密场景出图时，按推进面板当前的体位摆姿势（骑乘就跨坐、后入就趴跪）。</div>
+              <div class="pose-ref-hint">按体位现算骨架，不需要参考图。普通聊天、立绘、朋友圈配图不受影响。</div>
             </div>
             <linshe-switch
               v-model="poseFromPosition"
@@ -132,14 +118,6 @@
               @change="onPosePortraitToggle"
             />
           </div>
-          <div v-if="!poseInputDirReady" class="pose-ref-dir">
-            <div class="pose-ref-hint">还要告诉程序 ComfyUI 的 input 目录在哪（参考图必须落在这里才能被读到）：</div>
-            <div class="pose-ref-dir-row">
-              <linshe-input v-model="poseInputDir" size="sm" placeholder="例如 D:\ComfyUI-aki-v3\ComfyUI\input" aria-label="ComfyUI input 目录" />
-              <linshe-button variant="secondary" size="sm" :loading="poseDirSaving" @click="savePoseInputDir">保存</linshe-button>
-            </div>
-          </div>
-          <input ref="poseFileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="onPoseFileChosen" />
         </div>
 
         <div v-if="imageProvider !== 'novelai'" class="hiresfix-section">
@@ -1707,7 +1685,7 @@ import DataBackupPanel from '../components/settings/DataBackupPanel.vue'
 import LlmProfilesPanel from '../components/settings/LlmProfilesPanel.vue'
 import { useLlmProfiles } from '../composables/useLlmProfiles.js'
 import { canUseDeepseekSetup, initialLlmSetupMode, readLlmSetupPreference, writeLlmSetupPreference } from '../utils/llmSetup.js'
-import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, uploadPoseReference, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval, getModelRoutes, saveModelRoutes } from '../api/index.js'
+import { getConfig, updateComfyConfig, updateLlmConfig, testLlmConnection, setLlmFreeEgg, fetchLlmModels, fetchLlmApiKey, updateFeatureFlag, updateAntiRepetitionPenalty, imageProviderHealth, testStyle, testHires, updateHiresSettings, updateProactiveFreq, updateEventFreq, updateMomentFreq, updateBackgroundConcurrency, updateDisturbMode, updateDisturbSettings, getArtistFavorites, addArtistFavorite, deleteArtistFavorite, listCharacters, restoreWorkflow, getWorkflows, updateWorkflowMode, updateWorkflowScene, getPoseControl, updatePoseControl, addLlmProfile, deleteLlmProfile, activateLlmProfile, syncActiveLlmProfile, getNovelaiProfiles, addNovelaiProfile, deleteNovelaiProfile, activateNovelaiProfile, updateGroupSummaryInterval, getModelRoutes, saveModelRoutes } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
@@ -1791,46 +1769,24 @@ const hiresLoraCount = computed(() => (hiresLoras.value || []).filter(l => l.pat
 // 打开＝细化阶段强制 CFG 1.0 / 12 步（忽略 hiresSteps/hiresCfg）；关闭＝沿用那两个值。切换即时生效。
 const hiresTurbo = ref(true)
 
-// ── 姿势参考（Anima Control Pose）──
-// 开关打开后，所有走 ComfyUI 的生图都会带上姿势控制（后端在 comfyClient 里按 config 决定是否注入）。
-const poseEnabled = ref(false)
+// ── 体位骨架（Anima Control Pose）──
+// 2026-11-15 用户定：上传固定参考图那条路已整块移除（既不绑定又碍眼），
+// 现在只剩「按当前体位现算骨架」这一种姿势控制，因此这里不再有 poseEnabled / poseImage。
 // 体位骨架（2026-11-03）：默认开 —— "生图跟着体位走"的主开关；后端字段缺失时按开显示（与 config.js 默认 true 一致）
 const poseFromPosition = ref(true)
 // 体位骨架竖构图（2026-11-04）：默认开 —— 横图会把满画布骨架画成近景特写
 const poseFromPositionPortrait = ref(true)
-const poseImage = ref('')
-const poseInputDir = ref('')
-const poseInputDirReady = ref(false)
 const poseSaving = ref(false)
-const poseUploading = ref(false)
-const poseDirSaving = ref(false)
-const poseFileInput = ref(null)
 
 async function loadPoseControl() {
   try {
     const d = await getPoseControl()
-    poseEnabled.value = !!d.enabled
     poseFromPosition.value = d.poseFromPosition !== false
     poseFromPositionPortrait.value = d.poseFromPositionPortrait !== false
-    poseImage.value = d.image || ''
-    poseInputDir.value = d.inputDir || ''
-    poseInputDirReady.value = !!d.inputDirReady
-  } catch { /* 读不到就保持默认（关闭），不打断设置页其它配置 */ }
+  } catch { /* 读不到就保持默认，不打断设置页其它配置 */ }
 }
 
-async function onPoseToggle(v) {
-  poseSaving.value = true
-  try {
-    const d = await updatePoseControl({ enabled: !!v })
-    poseEnabled.value = !!d.enabled
-    toastFn?.(d.enabled ? '姿势参考已开启（每张约多 6 秒）' : '姿势参考已关闭', 'success')
-  } catch (e) {
-    poseEnabled.value = !v
-    toastFn?.(e.message || '保存失败', 'error')
-  } finally { poseSaving.value = false }
-}
-
-/** 体位骨架开关：与固定参考图是两件事，各自保存 */
+/** 体位骨架开关：只保留「按体位现算骨架」这一种姿势控制 */
 async function onPoseFromPositionToggle(v) {
   poseSaving.value = true
   try {
@@ -1853,44 +1809,6 @@ async function onPosePortraitToggle(v) {
     poseFromPositionPortrait.value = !v
     toastFn?.(e.message || '保存失败', 'error')
   } finally { poseSaving.value = false }
-}
-
-function pickPoseReference() { poseFileInput.value?.click() }
-
-async function onPoseFileChosen(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  if (!file) return
-  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { toastFn?.('请选择 PNG / JPG / WEBP 图片', 'error'); return }
-  if (file.size > 12 * 1024 * 1024) { toastFn?.('图片不能超过 12MB', 'error'); return }
-  poseUploading.value = true
-  try {
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = () => reject(reader.error)
-      reader.readAsDataURL(file)
-    })
-    const d = await uploadPoseReference(base64)
-    poseImage.value = d.image || d.name || ''
-    poseEnabled.value = !!d.enabled
-    toastFn?.('姿势参考图已就绪', 'success')
-  } catch (err) {
-    toastFn?.(err.message || '上传失败', 'error')
-  } finally { poseUploading.value = false }
-}
-
-async function savePoseInputDir() {
-  poseDirSaving.value = true
-  try {
-    await updatePoseControl({ inputDir: poseInputDir.value })
-    const info = await getPoseControl()
-    poseInputDir.value = info.inputDir || ''
-    poseInputDirReady.value = !!info.inputDirReady
-    toastFn?.(poseInputDirReady.value ? 'input 目录已保存' : '目录不存在或无法访问', poseInputDirReady.value ? 'success' : 'error')
-  } catch (e) {
-    toastFn?.(e.message || '保存失败', 'error')
-  } finally { poseDirSaving.value = false }
 }
 
 // ── 细化精度三档（D1 用户裁决：精度可选高中低，默认 8 步）──

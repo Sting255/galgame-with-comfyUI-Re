@@ -11,7 +11,7 @@ import { charArtistOverride } from '../services/characterImageOpts.js';
 import { buildImageCrossRefInfo, buildUserImageCrossRefInfo, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
 import { resolveAngelImageReference } from '../services/godSays/angelImageReference.js';
 import { config, getNovelaiApiKey, updatePoseControl } from '../config.js';
-import { savePoseReference, resolvePoseInputDir } from '../services/poseReference.js';
+import { resolvePoseInputDir } from '../services/poseReference.js';
 import { checkNovelaiConnection } from '../services/novelaiClient.js';
 import { getState, updateServiceConfig, startFullCompression, cancelCompression } from '../services/imageCompressor.js';
 import { getAllImageDirs, IMAGE_CATEGORIES, LEGACY_CATEGORY, saveBase64Image, getImageDir } from '../services/imagePaths.js';
@@ -84,21 +84,6 @@ router.get('/pose-control', (req, res) => {
 router.put('/pose-control', (req, res) => {
   const { enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait } = req.body || {};
   res.json(updatePoseControl({ enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait }));
-});
-
-// 上传姿势参考图：body = { base64: 'data:image/png;base64,...' }
-// 落进 ComfyUI 的 input/ 目录，返回可直接交给 LoadImage 的文件名。
-router.post('/pose-reference', (req, res) => {
-  try {
-    const { base64 } = req.body || {};
-    const saved = savePoseReference(base64);
-    // 传上来就顺手选中 + 打开开关：用户上传一张图就是想用它
-    const aspect = saved.width && saved.height ? saved.width / saved.height : 0;
-    const next = updatePoseControl({ image: saved.name, enabled: true, aspect });
-    res.json({ ok: true, name: saved.name, width: saved.width, height: saved.height, ...next });
-  } catch (err) {
-    res.status(err.status || 400).json({ error: err.message || '参考图保存失败' });
-  }
 });
 
 router.get('/gallery', async (req, res) => {
