@@ -227,9 +227,10 @@ async function generateGroupImage(group, speaker, prompt, targetMsgId, emit, opt
       ? { width: config.comfyui.momentsWidth, height: config.comfyui.momentsHeight }
       : {};
     const runner = typeof options.generateImage === 'function' ? options.generateImage : generateImage;
-    // 发图者与实际入画角色都走统一身份锚点；speaker 优先，按角色 id 去重。
+    // 已识别出入画角色时只锚他们，A 发图只画 B 就不能再注入 A；零匹配才回退发图者。
+    const identityCharacters = matchedCharacters.length > 0 ? matchedCharacters : [speaker];
     const identity = [...new Map(
-      [speaker, ...matchedCharacters]
+      identityCharacters
         .filter(character => Number(character?.id) > 0)
         .map(character => [Number(character.id), character]),
     ).values()];
