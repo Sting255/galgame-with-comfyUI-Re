@@ -22,6 +22,7 @@ import { checkCharacterPublishable, filterPublishable, GATE_REASON } from './pub
 
 const HEARTBEAT_KEY = 'runtime.last_seen_at';
 const CURSOR_KEY = 'runtime.offline_cursor';   // 补算进行到哪一刻（断点续跑）
+const PENDING_TAIL_KEY = 'runtime.offline_pending_tail';
 const MIN_GAP_MS = 3 * 3600_000;      // 3 小时以内当作连续，不补
 const CHUNK_MS = 6 * 3600_000;        // 每片 6 小时
 const MAX_CHUNKS = 4;                 // 最多精细补 24 小时
@@ -62,6 +63,27 @@ function writeCursor(date) {
 
 function clearCursor() {
   try { setSetting(CURSOR_KEY, ''); } catch { /* 忽略 */ }
+}
+
+function readPendingTail() {
+  try {
+    const raw = getSetting(PENDING_TAIL_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    const from = new Date(value.from);
+    const to = new Date(value.to);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null;
+    return { from, to, days: Number(value.days) || 0, summary: String(value.summary || '') };
+  } catch { return null; }
+}
+
+function writePendingTail(tail, summary) {
+  setSetting(PENDING_TAIL_KEY, JSON.stringify({
+    from: tail.from.toISOString(),
+    to: tail.to.toISOString(),
+    days: tail.days,
+    summary,
+  }));
 }
 
 /** 补算起点：有断点就从断点继续（崩溃后不整段重算），否则用上次在线时间 */
@@ -339,8 +361,11 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
   if (running) return { ran: false, chunks: 0, reason: 'already_running' };
   let plan;
   try {
-    // 有断点时从断点继续：崩溃后不整段重算（幂等键能防重复数据，但防不住重复花调用）
-    plan = planOfflineChunks(now, resolveResumePoint(lastSeen));
+    const pendingTail = readPendingTail();
+    // 概况延期后只重试概况；重新分片会把 tail 变成普通 chunk，重复烧 LLM。
+    plan = pendingTail
+      ? { shouldRun: true, chunks: [], tail: pendingTail, gapHours: +(pendingTail.days * 24).toFixed(1) }
+      : planOfflineChunks(now, resolveResumePoint(lastSeen));
   } catch (err) {
     console.warn('[offline] plan failed:', err?.message || err);
     return { ran: false, chunks: 0, reason: 'plan_failed' };
@@ -355,7 +380,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
     let characters = loadCharacters();
     if (!characters.length) {
       console.warn('[offline] 没有可编年的角色，跳过');
-      return { ran: false, chunks: 0, reason: 'no_characters' };
+      return { ran: false, chunks: 0, reason: plan.tail && !plan.chunks.length ? 'deferred' : 'no_characters' };
     }
     const worldSetting = (() => { try { return getWorldSetting() || ''; } catch { return ''; } })();
     const digest = buildTimelineDigest();
@@ -363,7 +388,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
     const recentRows = recentWorldTimeline(3, { hours: 24 * 30 });
     console.log(`[offline] 开始补算：离线 ${plan.gapHours}h，${plan.chunks.length} 片${plan.tail ? ' + 1 条概况' : ''}`);
 
-    let prevSummary = '';
+    let prevSummary = plan.tail?.summary || '';
     let prevLead = '';
     let written = 0;
     let deferred = null;
@@ -418,7 +443,10 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
 
     if (plan.tail) {
       characters = loadCharacters();
-      if (!characters.length) return { ran: written > 0, chunks: written, reason: 'deferred' };
+      if (!characters.length) {
+        writePendingTail(plan.tail, prevSummary);
+        return { ran: written > 0, chunks: written, reason: 'deferred' };
+      }
       try {
         const summary = `你不在的这段时间（约 ${plan.tail.days} 天）：${prevSummary || '世界照常运转，没什么特别的事'}`;
         recordWorldTimeline({
@@ -437,6 +465,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
 
     touchLastSeen(true);
     clearCursor();   // 跑完了：清断点，下次从心跳开始算
+    setSetting(PENDING_TAIL_KEY, '');
     setSetting('runtime.offline_backfilled_at', now.toISOString());
     console.log(`[offline] 补算完成：写入 ${written} 条`);
     return { ran: true, chunks: written };
