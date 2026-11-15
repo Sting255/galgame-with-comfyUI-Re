@@ -3,10 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { DEFAULT_STUDIO_BACKGROUND } from '../src/services/photoStudioBackgrounds.js';
-import { migratePhotoStudioSchema } from '../src/db/photoStudioSchema.js';
+import { getDb } from '../src/db/index.js';
 import { createPhotoStudioService, getPoseCatalog, getRecognizedPoseCatalog, savePhoto } from '../src/services/photoStudioService.js';
 import { getImageDir } from '../src/services/imagePaths.js';
 import { config } from '../src/config.js';
@@ -65,16 +64,17 @@ test('the full catalog preserves uncalibrated entries while the studio catalog e
 });
 
 async function fixture(overrides = {}) {
-  const db = new Database(':memory:');
-  // Match the production character schema: archival belongs to town_actors,
-  // not characters. Inventing that column here hides broken studio queries.
-  // is_system 是本地角色作用域字段（userVisibleScope 依赖它），真实库通过迁移写入。
-  db.exec(`CREATE TABLE characters (id INTEGER PRIMARY KEY, name TEXT, display_name TEXT, base_prompt TEXT, short_prompt TEXT, avatar_path TEXT, standing_url TEXT, pinned INTEGER DEFAULT 0, is_system INTEGER DEFAULT 0);
-    INSERT INTO characters VALUES (1, 'first', 'A', '', '', NULL, NULL, 1, 0);
-    INSERT INTO characters VALUES (2, 'second', 'B', '', '', NULL, NULL, 0, 0);
-    CREATE TABLE image_tasks (id INTEGER PRIMARY KEY, prompt_original TEXT, prompt_refined TEXT, status TEXT, output_paths TEXT, workflow_template TEXT, finished_at TEXT, error_message TEXT);
-    CREATE TABLE character_outfits (id INTEGER PRIMARY KEY, character_id INTEGER, scene TEXT, description TEXT);`);
-  migratePhotoStudioSchema(db);
+  // 服装读取走生产 getDb()；夹具必须使用同一真实内存库，否则服务主体与衣柜会读到两个库。
+  // 每例结束都会关闭句柄，下一例由 getDb() 重新建库并执行完整迁移。
+  const db = getDb();
+  db.exec(`DELETE FROM photo_studio_jobs;
+    DELETE FROM image_tasks;
+    DELETE FROM character_outfits;
+    DELETE FROM characters;
+    INSERT INTO characters (id, name, display_name, base_prompt, short_prompt, avatar_path, standing_url, pinned, is_system, identity_anchor, negative_prompt)
+      VALUES (1, 'first', 'A', '', '', NULL, NULL, 1, 0, '', ''),
+             (2, 'second', 'B', '', '', NULL, NULL, 0, 0, '', ''),
+             (99, 'default', 'System', '', '', NULL, NULL, 1, 1, '', '');`);
   const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#fff' } }).png().toBuffer();
   const calls = [];
   const service = createPhotoStudioService({
@@ -276,7 +276,6 @@ test('studio forwards the selected actors LoRA weights and exact trigger words o
   for (const pair of [false, true]) for (const polishPrompt of [false, true]) {
     const f = await fixture({ polish: async () => 'A polished portrait with the selected clothes and pose.' });
     try {
-      f.db.exec("ALTER TABLE characters ADD COLUMN loras TEXT DEFAULT '[]'");
       f.db.prepare('UPDATE characters SET loras = ? WHERE id = 1').run(JSON.stringify([main]));
       f.db.prepare('UPDATE characters SET loras = ? WHERE id = 2').run(JSON.stringify([partner, { ...main, weight: 1 }]));
       await f.service.submit({ ...request, poseId: pair ? 'pair-pose' : 'pose', secondCharacterId: 2,
@@ -292,7 +291,6 @@ test('random partners contribute LoRA and the submitted configuration stays froz
   let finish;
   const f = await fixture({ random: values => values[0], polish: () => new Promise(resolve => { finish = resolve; }) });
   try {
-    f.db.exec("ALTER TABLE characters ADD COLUMN loras TEXT DEFAULT '[]'");
     f.db.prepare('UPDATE characters SET loras = ? WHERE id = 1').run('invalid JSON');
     f.db.prepare('UPDATE characters SET loras = ? WHERE id = 2').run(JSON.stringify([{ path: 'partner.safetensors', triggerWord: 'original_tag' }]));
     await f.service.submit({ ...request, poseId: 'pair-pose', polishPrompt: true });
@@ -611,7 +609,7 @@ test('studio defaults to the original clothes and substitutes English names in p
   try {
     f.db.prepare('UPDATE characters SET display_name = ?, base_prompt = ? WHERE id = ?').run('琪亚娜', 'Personality\n## 你的外观\nKiana Kaslana (Honkai Impact 3rd) has white hair, wearing a white uniform.', 1);
     f.db.prepare('UPDATE characters SET display_name = ?, base_prompt = ? WHERE id = ?').run('芽衣', 'Personality\n## 你的外观\nRaiden Mei (Honkai Impact 3rd) has purple hair, wearing a purple uniform.', 2);
-    f.db.prepare('INSERT INTO character_outfits (character_id, scene, description) VALUES (?, ?, ?)').run(1, 'sleep', 'Kiana Kaslana (Honkai Impact 3rd) has white hair, wearing pink pajamas.');
+    f.db.prepare('INSERT INTO character_outfits (character_id, name, scene, description) VALUES (?, ?, ?, ?)').run(1, '睡衣', 'sleep', 'Kiana Kaslana (Honkai Impact 3rd) has white hair, wearing pink pajamas.');
     await f.service.submit({ ...request, poseId: 'pair-pose', secondCharacterId: 2 });
     const job = await waitForJob(f.service, request.id);
     assert.equal(job.status, 'done');
@@ -628,10 +626,10 @@ test('each participant uses the complete selected outfit without mixing in defau
   const f = await fixture({ persona: undefined });
   try {
     f.db.prepare('UPDATE characters SET base_prompt = ?').run('Personality\n## 你的外观\nDefault (Game) has black hair, wearing a uniform.');
-    const insert = f.db.prepare('INSERT INTO character_outfits (character_id, scene, description) VALUES (?, ?, ?)');
-    insert.run(1, 'casual', 'Kiana (Game) has white hair, wearing a blue dress.');
-    insert.run(2, 'sleep', 'Mei (Game) has purple hair, wearing pink pajamas.');
-    await f.service.submit({ ...request, poseId: 'pair-pose', secondCharacterId: 2, outfitScene: 'casual', secondOutfitScene: 'sleep' });
+    const insert = f.db.prepare('INSERT INTO character_outfits (character_id, name, scene, description) VALUES (?, ?, ?, ?)');
+    insert.run(1, '便服', 'custom_casual', 'Kiana (Game) has white hair, wearing a blue dress.');
+    insert.run(2, '睡衣', 'sleep', 'Mei (Game) has purple hair, wearing pink pajamas.');
+    await f.service.submit({ ...request, poseId: 'pair-pose', secondCharacterId: 2, outfitScene: 'custom_casual', secondOutfitScene: 'sleep' });
     const job = await waitForJob(f.service, request.id);
     assert.match(job.prompt, /Kiana \\\(Game\\\) has white hair, wearing a blue dress\./);
     assert.match(job.prompt, /Mei \\\(Game\\\) has purple hair, wearing pink pajamas\./);
@@ -640,22 +638,21 @@ test('each participant uses the complete selected outfit without mixing in defau
   } finally { f.db.close(); }
 });
 
-test('照相馆列出酒馆全部角色，不按小镇归档、参与状态、文件夹或图片服装是否齐全筛选', async () => {
+test('照相馆仅列出用户角色，不按小镇归档、参与状态、文件夹或图片服装是否齐全筛选', async () => {
   const f = await fixture();
   try {
-    f.db.exec(`ALTER TABLE characters ADD COLUMN folder_id INTEGER;
-      UPDATE characters SET folder_id = 7 WHERE id = 1;
-      CREATE TABLE town_actors (character_id INTEGER, archived INTEGER, participating INTEGER);
-      INSERT INTO town_actors VALUES (1, 1, 0), (2, 0, 0);
-      INSERT INTO characters (id, name, display_name) VALUES (3, 'third', 'C');`);
-    const tavernIds = () => f.db.prepare('SELECT id FROM characters ORDER BY id').all().map(row => row.id);
+    f.db.exec(`UPDATE characters SET folder_id = 7 WHERE id = 1;
+      INSERT INTO town_actors (actor_id, character_id, archived, participating) VALUES ('actor-1', 1, 1, 0), ('actor-2', 2, 0, 0);
+      INSERT INTO characters (id, name, display_name, base_prompt) VALUES (3, 'third', 'C', '');`);
+    const tavernIds = () => f.db.prepare('SELECT id FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id').all().map(row => row.id);
     const studioIds = () => f.service.listCharacters().map(row => row.id).sort((a, b) => a - b);
     assert.deepEqual(studioIds(), tavernIds());
     assert.ok(f.service.listCharacters().every(row => !row.avatar_path && !row.standing_url && row.outfitScenes.includes('work')));
     for (const characterId of tavernIds()) {
       assert.match((await f.service.preview({ characterId, poseId: 'pose' })).prompt, /appearance of/);
     }
-    f.db.exec("INSERT INTO characters (id, name, display_name) VALUES (4, 'fourth', 'D')");
+    assert.match((await f.service.preview({ characterId: 99, poseId: 'pose' })).prompt, /appearance of System/, '按 id 指定系统角色仍允许单独拍摄');
+    f.db.exec("INSERT INTO characters (id, name, display_name, base_prompt) VALUES (4, 'fourth', 'D', '')");
     assert.deepEqual(studioIds(), tavernIds(), '新招募的角色立即进入照相馆候选列表');
     f.db.exec('DELETE FROM characters WHERE id = 2');
     assert.deepEqual(studioIds(), tavernIds(), '已删除的角色不再列出');
@@ -665,10 +662,10 @@ test('照相馆列出酒馆全部角色，不按小镇归档、参与状态、�
 test('studio exposes only configured outfits and rejects missing or invalid outfit selections', async () => {
   const f = await fixture({ persona: undefined });
   try {
-    f.db.exec("INSERT INTO character_outfits (character_id, scene, description) VALUES (1, 'home', 'home clothes'), (1, 'sleep', '  '), (1, 'work', 'stale work clothes'), (2, 'casual', 'casual clothes')");
-    assert.deepEqual(f.service.listCharacters().map(char => [char.id, char.outfitScenes]), [[1, ['work', 'home']], [2, ['work', 'casual']]]);
+    f.db.exec("INSERT INTO character_outfits (character_id, name, scene, description) VALUES (1, '居家', 'custom_home', 'home clothes'), (1, '睡衣', 'sleep', ''), (1, '常服', 'work', 'stale work clothes'), (2, '便服', 'custom_casual', 'casual clothes')");
+    assert.deepEqual(f.service.listCharacters().map(char => [char.id, char.outfitScenes]), [[1, ['work', 'custom_home']], [2, ['work', 'custom_casual']]]);
     await assert.rejects(f.service.submit({ ...request, outfitScene: 'invalid' }), error => error.status === 400);
-    await assert.rejects(f.service.submit({ ...request, outfitScene: 'casual' }), error => error.status === 400 && /尚未配置/.test(error.message));
+    await assert.rejects(f.service.submit({ ...request, outfitScene: 'custom_casual' }), error => error.status === 400 && /尚未配置/.test(error.message));
     await assert.rejects(f.service.submit({ ...request, poseId: 'pair-pose', secondCharacterId: 2, secondOutfitScene: 'sleep' }), error => error.status === 400);
     assert.equal(f.service.list().length, 0);
     assert.equal(f.db.prepare('SELECT count(*) AS n FROM image_tasks').get().n, 0);
@@ -678,7 +675,7 @@ test('studio exposes only configured outfits and rejects missing or invalid outf
 test('both casting slots use existing residents without an archived column and never repeat a partner', async () => {
   const f = await fixture({ random: choices => choices[0] });
   try {
-    f.db.exec("DELETE FROM characters WHERE id = 1; INSERT INTO characters (id, name, display_name, pinned) VALUES (3, 'third', 'C', 0)");
+    f.db.exec("DELETE FROM characters WHERE id = 1; INSERT INTO characters (id, name, display_name, base_prompt, pinned) VALUES (3, 'third', 'C', '', 0)");
     const cases = [
       { characterId: null, poseId: 'pose', expected: [3, null] },
       { characterId: '', secondCharacterId: 2, poseId: 'pair-pose', expected: [3, 2] },
@@ -707,8 +704,8 @@ test('a random protagonist keeps slot clothing, uses available scenes and falls 
   try {
     f.db.prepare('UPDATE characters SET base_prompt = ? WHERE id = 1').run('## 你的外观\nwhite hair, blue eyes, white coat');
     f.db.prepare('UPDATE characters SET base_prompt = ? WHERE id = 2').run('## 你的外观\nblack hair, purple eyes, blue coat');
-    f.db.exec("INSERT INTO character_outfits (character_id, scene, description) VALUES (1, 'home', 'white hair, blue eyes, home dress')");
-    const input = { characterId: null, secondCharacterId: null, poseId: 'pair-pose', outfitScene: 'home', secondOutfitScene: 'sleep', clothingTags: ['striped_shirt'], customClothingPrompt: 'blue coat', secondClothingTags: ['skirt'], appearanceOverride: 'stale protagonist appearance', secondAppearanceOverride: 'stale partner appearance' };
+    f.db.exec("INSERT INTO character_outfits (character_id, name, scene, description) VALUES (1, '居家', 'custom_home', 'white hair, blue eyes, home dress')");
+    const input = { characterId: null, secondCharacterId: null, poseId: 'pair-pose', outfitScene: 'custom_home', secondOutfitScene: 'sleep', clothingTags: ['striped_shirt'], customClothingPrompt: 'blue coat', secondClothingTags: ['skirt'], appearanceOverride: 'stale protagonist appearance', secondAppearanceOverride: 'stale partner appearance' };
     const available = await f.service.preview(input);
     assert.match(available.prompt, /home dress/);
     assert.match(available.prompt, /blue coat/);
@@ -822,7 +819,7 @@ test('random partners inherit slot clothing tags, custom text and an available w
   const f = await fixture({ persona: undefined, random: choices => choices[0] });
   try {
     f.db.prepare('UPDATE characters SET base_prompt = ?').run('## 你的外观\nblack hair, blue eyes, white uniform');
-    f.db.prepare('INSERT INTO character_outfits (character_id, scene, description) VALUES (?, ?, ?)').run(2, 'sleep', 'black hair, blue eyes, pink pajamas');
+    f.db.prepare('INSERT INTO character_outfits (character_id, name, scene, description) VALUES (?, ?, ?, ?)').run(2, '睡衣', 'sleep', 'black hair, blue eyes, pink pajamas');
     const input = { ...request, poseId: 'pair-pose', secondOutfitScene: 'sleep', secondClothingTags: ['skirt'], secondCustomClothingPrompt: 'red silk scarf' };
     const preview = await f.service.preview(input);
     assert.match(preview.prompt, /pink pajamas/);

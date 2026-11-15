@@ -16,8 +16,8 @@ import { saveBase64Image } from './imagePaths.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
 import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions, studioFramingNegative } from './photoStudioWorkflow.js';
-import { userVisibleScope } from './characterScope.js';
-import { listSceneOutfits } from './outfitScene.js';
+import { USER_SCOPE } from './characterScope.js';
+import { isValidSceneKey, listSceneOutfits } from './outfitScene.js';
 
 export const POSE_GALLERY_DIR = fileURLToPath(new URL('../../assets/pose-gallery/', import.meta.url));
 const WORKFLOW_DIR = fileURLToPath(new URL('../../../workflow/', import.meta.url));
@@ -91,21 +91,20 @@ export function createPhotoStudioService({
   // A bounded result cache survives navigation and image-render retries, but not
   // a server restart. Store only successful rewrites, never failures.
   const polishedPrompts = new Map();
-  // 2026-11-13：照相馆衣柜原本只认 work/casual/home/sleep 四种硬编码 scene，完全看不到本项目
-  // 的自定义服装类型（custom_*，标签在 character_outfits.name）。改走项目统一的 listSceneOutfits
-  // 拿该角色全部有效服装（含自定义类型），并带上 sceneLabel（= 用户起的名字）。
+  // 走项目统一的 listSceneOutfits 拿该角色已配置的非空服装（含 custom_*），
+  // 并带上 sceneLabel（内置标签或用户自定义名称）。
   // private 私密（nude）不放进衣柜，避免在拍摄里点出不该出现的内容。
   function listCharacters() {
     // 与酒馆 /api/characters 一致：列出全部角色资料，不按小镇身份、立绘或服装筛选。
     const perCharacter = (cid) => {
       try {
         return listSceneOutfits(cid)
-          .filter(o => o.scene !== 'nude')
+          .filter(o => o.scene !== 'nude' && o.description?.trim())
           .map(o => ({ scene: o.scene, label: o.sceneLabel || o.name || o.scene }));
       } catch { return []; }
     };
-    // 与酒馆 /api/characters 同一可见范围：默认助手开关关着时不出现，开着时出现。
-    return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${userVisibleScope(db())} ORDER BY pinned DESC, id DESC`).all().map(character => ({
+    // 列表与随机选角始终只使用用户角色；按 id 指定系统角色仍走 loadCharacter 原口径。
+    return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${USER_SCOPE} ORDER BY pinned DESC, id DESC`).all().map(character => ({
       ...character,
       // 衣柜至少要有「默认服装」这一项；其余是该角色已配置但非私密的套（含自定义类型）
       outfits: [{ scene: 'work', label: '默认服装' }, ...perCharacter(Number(character.id)).filter(o => o.scene !== 'work')],
@@ -168,7 +167,7 @@ export function createPhotoStudioService({
     }
     let first;
     if (randomFirst) {
-      const candidates = db().prepare(`SELECT * FROM characters WHERE ${userVisibleScope(db())} AND id != ? ORDER BY pinned DESC, id DESC`).all(second?.id ?? -1);
+      const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(second?.id ?? -1);
       if (!candidates.length) throw Object.assign(new Error(duo ? '双人姿势至少需要两位可用角色' : '没有可选择的角色'), { status: 400 });
       first = random(candidates);
     } else {
@@ -179,7 +178,7 @@ export function createPhotoStudioService({
       if (!randomSecond) {
         if (second.id === first.id) throw Object.assign(new Error('双人姿势需要选择两位不同角色'), { status: 400 });
       } else {
-        const candidates = db().prepare(`SELECT * FROM characters WHERE ${userVisibleScope(db())} AND id != ? ORDER BY pinned DESC, id DESC`).all(first.id);
+        const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(first.id);
         if (!candidates.length) throw Object.assign(new Error('双人姿势至少需要两位可用角色'), { status: 400 });
         second = random(candidates);
       }
@@ -197,10 +196,9 @@ export function createPhotoStudioService({
     const overrides = [randomFirst ? '' : appearanceOverride, randomSecond ? '' : secondAppearanceOverride];
     const characters = [first, ...(second ? [second] : [])].map((character, index) => {
       const scene = scenes[index];
-      // 2026-11-13：衣柜不再只认 work/casual/home/sleep 四种 —— 本项目自定义服装类型
-      // 是 custom_*，必须放行「默认服装 或 该角色已配置的任意套（含自定义类型）」。
-      const isValidScene = scene === 'work' || listSceneOutfits(character.id).some(o => o.scene === scene && o.description?.trim());
-      if (!isValidScene) throw Object.assign(new Error('请选择有效的服装：默认服装或该角色已配置的套装'), { status: 400 });
+      // 这里只校验场景类型；是否已配置由下面分别处理：随机槽回退人物卡，指定槽给出明确错误。
+      const randomSlot = index === 0 ? randomFirst : randomSecond;
+      if (scene !== 'work' && !isValidSceneKey(scene)) throw Object.assign(new Error('请选择有效的服装：默认服装或该角色已配置的套装'), { status: 400 });
       let selected = character;
       if (overrides[index].trim()) {
         selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, overrides[index].trim()) };
@@ -209,7 +207,7 @@ export function createPhotoStudioService({
         const outfit = inSceneOutfits && inSceneOutfits.description?.trim()
           ? inSceneOutfits
           : (character.angel ? angelOutfits(character.angel).find(outfit => outfit.scene === scene) : null);
-        if (!outfit?.description?.trim() && !(index === 0 ? randomFirst : randomSecond)) throw Object.assign(new Error(`${character.display_name || character.name}尚未配置所选服装，请选择默认服装或先到人物详情卡配置`), { status: 400 });
+        if (!outfit?.description?.trim() && !randomSlot) throw Object.assign(new Error(`${character.display_name || character.name}尚未配置所选服装，请选择默认服装或先到人物详情卡配置`), { status: 400 });
         // 本地口径（2026-11-13）：本仓服装是「body 身体真源 + description 只有衣服」两段式，
         // 必须用 listSceneOutfits 的 text（body + 衣服）整段替换外观段。
         // 上游 v4.3.0 是按自己「description 自包含整段外观」的口径写的，只取 description，
