@@ -1651,6 +1651,7 @@ export function regeneratePostImage(postId) {
   const db = getDb();
   const post = db.prepare('SELECT * FROM media_posts WHERE id = ?').get(postId);
   if (!post) return { ok: false, error: '内容不存在' };
+  if (post.image_status === 'discarded') return { ok: false, error: '内容已丢弃' };
   if (!canRegenerateImage(post)) return { ok: false, error: '这条内容没有生图提示词，无法重新生图' };
 
   let cleared = 0;
