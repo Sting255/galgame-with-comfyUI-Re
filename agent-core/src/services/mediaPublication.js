@@ -22,21 +22,21 @@ export function publishMediaPostIfReady(postId) {
   const db = getDb();
   const published = db.transaction(() => {
     const post = db.prepare('SELECT * FROM media_posts WHERE id = ?').get(postId);
-    if (!post || post.published_seq !== null || !mediaImagesReady(post)) return null;
+    if (!post || post.published_seq !== null || post.image_status === 'discarded') return null;
 
-    // ── 发布闸门（A03）──────────────────────────────────────────────────
-    // 帖子从生成到配图齐全要等几分钟（一次补一批图）。这段空档里作者可能已经睡下 ——
-    // 睡着的人"刚发了条帖"是最出戏的一种。可恢复（睡眠）就**不分配游标**，
-    // 让它在原地等：后续每次补图/打开页面都会重新过闸门，醒来自然发布。
-    // 其他理由（角色已删除 / 开关关闭）不拦：帖子已生成完，媒体是公共信息流，
-    // 不因为作者当下状态而整条丢弃。
     if (post.author_type === 'character' && post.character_id) {
-      const gate = checkCharacterPublishable(db, post.character_id);
-      if (!gate.allowed && gate.reason === GATE_REASON.SLEEPING) {
-        console.log(`[media] post #${postId} 发布延期：作者 ${gate.detail?.name || post.character_id} 睡眠中`);
+      const gate = checkCharacterPublishable(db, post.character_id, { flag: 'moments_disabled' });
+      if (!gate.allowed) {
+        const terminal = gate.reason === GATE_REASON.NOT_FOUND || gate.reason === GATE_REASON.SYSTEM;
+        if (terminal) {
+          db.prepare("UPDATE media_posts SET image_status = 'discarded', image_error = ? WHERE id = ? AND published_seq IS NULL")
+            .run(gate.reason, postId);
+        }
+        console.log(`[media] post #${postId} ${terminal ? '丢弃' : '发布延期'}：${gate.reason}`);
         return null;
       }
     }
+    if (!mediaImagesReady(post)) return null;
 
     const previous = Number(db.prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'media_publication_sequence'").pluck().get()) || 0;
     const lastId = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'media_posts'").pluck().get() || 0;

@@ -1222,6 +1222,7 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
     SELECT p.id, p.payload_json FROM media_posts p
     JOIN media_outlets o ON o.id = p.outlet_id
     WHERE json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.portal') = 1
+      AND p.image_status != 'discarded'
       AND (p.published_seq IS NULL OR p.image_status != 'done')
       ${scope.sql}
     ORDER BY (p.published_seq IS NULL) DESC, p.id DESC
@@ -1565,6 +1566,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
     SELECT p.id, p.payload_json FROM media_posts p
     JOIN media_outlets o ON o.id = p.outlet_id
     WHERE json_type(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.panels') = 'array'
+      AND p.image_status != 'discarded'
       ${scope.sql}
       AND EXISTS (
         SELECT 1 FROM json_each(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.panels') panel
