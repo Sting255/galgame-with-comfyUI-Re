@@ -39,6 +39,7 @@ import https from "node:https";
 import http from "node:http";
 // 使用说明.txt 的正文正源（2026-10-17 从本文件抽出，见 scripts/usage-guide.mjs 的文件头说明）
 import { buildUsageGuideText } from "./usage-guide.mjs";
+import { BACKEND_PROBE_SCRIPT, findSensitiveArchiveMembers } from "./lib/releaseSafety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -533,11 +534,11 @@ async function main() {
   } else {
     log("下载嵌入模型 (~155MB)...");
     const r = await exec(pyExe, ["download_model.py"], { cwd: VECTOR_SVC, print: true });
-    if (!r.ok) {
-      warn("模型下载失败，用户首次启动时会自动下载");
-    } else {
-      ok("模型下载完成");
+    if (!r.ok || !existsSync(modelFile)) {
+      fail("模型下载失败，完整 Release 必须自带向量模型，终止打包!");
+      process.exit(1);
     }
+    ok("模型下载完成");
   }
 
   // ═══════════════════════════════════════════
@@ -647,9 +648,17 @@ async function main() {
     // robocopy 排除目录
     // （.mimosa / logs 见文件头「打包排除」：兜底路径是唯一会把它们带进包的地方；
     //   e2e\node_modules 由 node_modules 这个目录名整体覆盖）
-    const robocopyExclude = [".git", "node_modules", "release", "__pycache__", ".cache", ".mimosa", "logs"];
-    // 运行时临时快照（如 agent-core/townstate.tmp.json）不属于发布内容，别带进用户包里
-    const robocopyExcludeFiles = ["*.tmp.json", ".access-token"];
+    const robocopyExclude = [
+      ".git", "node_modules", "release", "__pycache__", ".cache", ".mimosa", "logs",
+      ".claude", ".pai", ".playwright-cli",
+      resolve(AGENT_CORE, "data"),
+      resolve(VECTOR_SVC, "chroma_data"),
+    ];
+    // 密钥、配对凭证、本机配置和本地备份一律不进入候选目录。
+    const robocopyExcludeFiles = [
+      "*.tmp.json", ".access-token", ".env", ".env.local", "launcher_config.json",
+      "settings.local.json", "*.tar.gz",
+    ];
     const rcOk = await robocopy(ROOT, RELEASE_DIR, robocopyExclude, robocopyExcludeFiles);
     if (!rcOk) { fail("文件复制失败!"); process.exit(1); }
   } else {
@@ -687,11 +696,10 @@ async function main() {
     const releaseNode = resolve(RELEASE_DIR, "runtime", "nodejs", "node.exe");
     const releaseCore = resolve(RELEASE_DIR, "agent-core");
     const releaseSqliteTest = await exec(releaseNode, [
-      "-e",
-      "const Database=require('better-sqlite3');const db=new Database(':memory:');db.prepare('SELECT 1').get();db.close();",
-    ], { cwd: releaseCore, shell: false });
+      "-e", BACKEND_PROBE_SCRIPT,
+    ], { cwd: releaseCore, shell: false, env: { DB_PATH: ":memory:", LOG_TO_FILE: "false" } });
     if (!releaseSqliteTest.ok) {
-      fail("release 中的 better-sqlite3 验证失败，终止打包!");
+      fail("release 中的 Express / better-sqlite3 验证失败，终止打包!");
       if (releaseSqliteTest.stderr) log(`  ${releaseSqliteTest.stderr.slice(-1000)}`);
       process.exit(1);
     }
@@ -713,10 +721,11 @@ async function main() {
     log("复制嵌入模型...");
     const modelDst = resolve(RELEASE_DIR, "vector-service", "models");
     ensureDir(modelDst);
-    await robocopy(
+    const rcOk = await robocopy(
       resolve(VECTOR_SVC, "models"),
       modelDst
     );
+    if (!rcOk) { fail("向量模型复制失败，终止打包!"); process.exit(1); }
     ok("vector-service\\models");
   }
 
@@ -802,6 +811,26 @@ async function main() {
     `Compress-Archive -Path '${RELEASE_DIR}\\*' -DestinationPath '${zipFile}' -Force`
   ]);
   if (!zipResult.ok) { fail("zip 创建失败!"); process.exit(1); }
+
+  // 直接读取最终 zip 的成员名，不读文件内容；默认头像之外不允许任何玩家数据。
+  const zipMembersResult = await exec(resolve(PY_DIR, "python.exe"), [
+    "-c",
+    "import json,sys,zipfile;print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist(),ensure_ascii=False))",
+    zipFile,
+  ], { shell: false });
+  if (!zipMembersResult.ok) { fail("无法读取最终 zip 成员清单，终止交付!"); process.exit(1); }
+  let zipMembers;
+  try { zipMembers = JSON.parse(zipMembersResult.stdout); }
+  catch { fail("最终 zip 成员清单不是合法 JSON，终止交付!"); process.exit(1); }
+  const sensitiveMembers = findSensitiveArchiveMembers(zipMembers, {
+    allowedDataFiles: ["agent-core/data/avatars/default_assistant_header.png"],
+  });
+  if (sensitiveMembers.length) {
+    for (const item of sensitiveMembers.slice(0, 20)) fail(`禁止交付: ${item.path}（${item.reason}）`);
+    fail(`最终 zip 含 ${sensitiveMembers.length} 个敏感文件，终止交付!`);
+    process.exit(1);
+  }
+  ok("最终 zip 敏感路径检查通过");
 
   const { statSync } = await import("node:fs");
   const zipSizeMB = Math.round(statSync(zipFile).size / (1024 * 1024));

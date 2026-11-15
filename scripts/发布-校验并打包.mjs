@@ -41,6 +41,7 @@ import { createRequire } from 'node:module'
 // 使用说明.txt 的正文正源（2026-10-17 从 build-release.mjs 抽出；两份脚本共用这一份，见 ③-0）
 import { buildUsageGuideText } from './usage-guide.mjs'
 import { syncReleaseEnv, inspectReleaseEnv } from './lib/releaseLocalConfig.mjs'
+import { backendDependenciesPresent, findSensitiveArchiveMembers, parse7zMemberPaths, probePackagedBackend } from './lib/releaseSafety.mjs'
 import { resolveServicePort } from '../agent-core/src/utils/servicePort.js'
 import { resolveEnvPath } from '../agent-core/src/utils/envFile.js'
 
@@ -709,7 +710,7 @@ if (incremental) {
   ])
   const SKIP_FILE = /\.(tar\.gz|apk|log)$/i
   // 顶层的维护文件同样不该进用户包（AGENTS.md 里还写着本机路径与协作约定）
-  const SKIP_TOP_FILE = /^(AGENTS\.md|\.gitattributes|\.gitignore|\.zcodeignore)$/i
+  const SKIP_TOP_FILE = /^(AGENTS\.md|\.gitattributes|\.gitignore|\.zcodeignore|\.env(?:\.local)?)$/i
   for (const e of fs.readdirSync(REPO, { withFileTypes: true })) {
     if (SKIP_TOP.has(e.name)) continue
     if (e.isFile() && SKIP_FILE.test(e.name)) continue
@@ -754,6 +755,9 @@ if (incremental) {
 {
   const nmSrc = path.join(SRC, 'node_modules')
   const nmDst = path.join(DELIVER, 'agent-core', 'node_modules')
+  if (!backendDependenciesPresent(SRC)) {
+    die('仓库缺 agent-core/node_modules 或 Express/better-sqlite3，完整包不能缺少后端运行依赖')
+  }
   if (fs.existsSync(nmSrc)) {
     fs.mkdirSync(nmDst, { recursive: true })
     const rc = spawnSync('robocopy', [
@@ -765,8 +769,21 @@ if (incremental) {
     }
     log('   已补入 agent-core/node_modules（后端运行依赖）')
   } else {
-    log('   ⚠️ 仓库缺 agent-core/node_modules —— 包里不会有依赖，换机能启动才怪')
+    die('仓库缺 agent-core/node_modules，完整包不能缺少后端运行依赖')
   }
+}
+
+// 用交付镜像内的 Node 与依赖做启动前探针；只创建内存库，不读取任何真实 DB。
+{
+  const releaseNode = path.join(DELIVER, 'runtime', 'nodejs', 'node.exe')
+  const releaseCore = path.join(DELIVER, 'agent-core')
+  if (!fs.existsSync(releaseNode)) die(`交付镜像缺随包 Node：${releaseNode}`)
+  if (!backendDependenciesPresent(releaseCore)) die('交付镜像缺 Express 或 better-sqlite3，拒绝打包')
+  const probe = probePackagedBackend({ nodeExe: releaseNode, coreDir: releaseCore })
+  if (!probe.ok) {
+    die(`随包后端依赖探针失败：${String(probe.stderr || probe.error?.message || probe.stdout || '未知错误').slice(-1200)}`)
+  }
+  log('   随包 Node + Express + better-sqlite3（内存库）探针通过 ✓')
 }
 
 // 便携 Node 的 **npm 本体**（runtime/nodejs/node_modules）。
@@ -1003,7 +1020,10 @@ if (WITH_DATA) {
 
 // ── ⑤ 校验：压缩方法 + 关键条目 ──────────────────────────────────────────
 log('\n── 校验包 ─────────────────────────────────────────')
-const listing = spawnSync(SEVENZIP, ['l', '-slt', outFile], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stdout || ''
+const listingResult = spawnSync(SEVENZIP, ['l', '-slt', outFile], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+if (listingResult.status !== 0) die(`无法读取候选包的 -slt 成员清单：${listingResult.stderr || '未知错误'}`)
+const listing = listingResult.stdout || ''
+const archivePaths = parse7zMemberPaths(listing)
 const methods = new Map()
 for (const m of listing.matchAll(/^Method = (.*)$/gm)) methods.set(m[1] || '(目录)', (methods.get(m[1] || '(目录)') || 0) + 1)
 const methodText = [...methods.entries()].map(([k, v]) => `${v}x${k}`).join(' | ')
@@ -1097,10 +1117,10 @@ if (hasGitLogs && !needGitLogs) die('包内缺少 .git\\logs（交付目录里�
 // 本机配置文件：**从包内清单里断言"没有它"**（2026-10-17 §P1-2 起；2026-10-18 加 launcher_config）。
 // 为什么不能只靠 syncDir 的排除规则：那是"我以为它没进去"，而真正要证明的是
 // **包里确实没有**。历史上正是这类"排除了但实际还在"的缝出的问题（发布门禁三处先例）。
-// ⚠️ 用 `l` 的清单匹配：包内没这项 ⇒ 清单里搜不到 `agent-core\.env`（要连 `.env.example` 一起排除干扰）。
+// ⚠️ 用 `l -slt` 的成员 Path 匹配：包内没这项 ⇒ 清单里搜不到 `agent-core\.env`（要连 `.env.example` 一起排除干扰）。
 {
   let envCheck
-  try { envCheck = inspectReleaseEnv(plain, keepEnv) } catch (error) { die(error.message) }
+  try { envCheck = inspectReleaseEnv(listing, keepEnv) } catch (error) { die(error.message) }
   const { envInPkg, exampleInPkg } = envCheck
   if (envInPkg) {
     // 2026-11-04：PACK_KEEP_ENV=1 是**明确的"我要带 Key 的自用包"**，此时不该中止 ——
@@ -1116,28 +1136,23 @@ if (hasGitLogs && !needGitLogs) die('包内缺少 .git\\logs（交付目录里�
   }
   if (!exampleInPkg) log('   ⚠️ 包内没有 .env.example —— 换机器的人没有配置模板可参考（不阻断，建议补）')
 
-  // `launcher_config.json`（2026-10-18 补）：它是启动器的本机用户配置，`comfyui_exe` 指向
-  // **打包这台机器**的路径。包内若带它，别人一开启动器就指到不存在的地址。
-  // 匹配 `3.6.2-r\launcher_config.json`（仓库根那份）；顺带挡 `agent-core\` 下的误放。
-  const esc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const lcInPkg = new RegExp(`${esc(DELIVER_NAME)}\\\\launcher_config\\.json(?:\\s|$)`, 'm').test(plain)
-    || new RegExp(`${esc(DELIVER_NAME)}\\\\agent-core\\\\launcher_config\\.json(?:\\s|$)`, 'm').test(plain)
-  if (lcInPkg) die('包内含 launcher_config.json（含打包机器的 ComfyUI 绝对路径）⇒ 交付链剥离失败，拒绝交付')
-  log('   launcher_config.json 不在包内 ✓（缺失即全新用户初始状态：启动器会自动写默认配置）')
+  // 所有敏感路径统一根据 -slt 成员 Path 判定，不再混用普通清单的 Name 列。
+  const sensitive = findSensitiveArchiveMembers(archivePaths, { keepEnv, allowData: WITH_DATA })
+  if (sensitive.length) {
+    const detail = sensitive.slice(0, 20).map(item => `${item.path}（${item.reason}）`).join('、')
+    die(`包内含禁止交付的本机数据/敏感项：${detail}，拒绝交付`)
+  }
+  log('   launcher_config、根级/散落 env、配对凭证、玩家数据与用户向量库均未违规进入包内 ✓')
 
+  const esc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const plainSlash = plain.split('\\').join('/')
   const forbidden = [
-    [new RegExp(`${esc(DELIVER_NAME)}/vector-service/chroma_data/`, 'i'), '用户向量库 chroma_data'],
-    [new RegExp(`${esc(DELIVER_NAME)}/agent-core/data/(?:agent\\.db(?:-(?:wal|shm))?|\\.access-token|files(?:/|\\.))`, 'i'), '玩家数据库/运行文件'],
     [new RegExp(`${esc(DELIVER_NAME)}/方案/`, 'i'), '仓库验收/方案目录'],
     [new RegExp(`${esc(DELIVER_NAME)}/目标/`, 'i'), '仓库开发目标目录'],
   ]
   const violations = forbidden.filter(([pattern]) => pattern.test(plainSlash)).map(([, label]) => label)
-  const archivePaths = [...plain.matchAll(/^\s*Path = (.+?)\s*$/gm)].map((match) => match[1].replace(/\\/g, '/'))
-  const rootEnv = archivePaths.includes(`${DELIVER_NAME}/.env`)
-  if (rootEnv) violations.push('仓库根 .env')
-  if (violations.length) die(`包内含禁止交付的本机数据/敏感项：${violations.join('、')}，拒绝交付`)
-  log('   用户向量库、玩家数据、方案/目标目录与根级 .env 均不在包内 ✓')
+  if (violations.length) die(`包内含禁止交付的开发资料：${violations.join('、')}，拒绝交付`)
+  log('   方案/目标目录不在包内 ✓')
 }
 
 const sizeMb = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1)
