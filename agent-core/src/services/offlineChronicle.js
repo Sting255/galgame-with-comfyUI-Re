@@ -18,6 +18,7 @@ import { recordWorldTimeline, recentWorldTimeline } from './worldTimeline.js';
 import { applyMemoryActions } from './memory/memoryRepository.js';
 import { config } from '../config.js';
 import { toSqlUtc } from './programTime.js';
+import { checkCharacterPublishable, filterPublishable, GATE_REASON } from './publishGate.js';
 
 const HEARTBEAT_KEY = 'runtime.last_seen_at';
 const CURSOR_KEY = 'runtime.offline_cursor';   // 补算进行到哪一刻（断点续跑）
@@ -126,11 +127,16 @@ export function planOfflineChunks(now = new Date(), lastSeen = null, opts = {}) 
 
 function loadCharacters(limit = MAX_CHARACTERS) {
   try {
-    return getDb().prepare(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT id, display_name, name, short_prompt, base_prompt
-      FROM characters WHERE COALESCE(is_system, 0) = 0
+      FROM characters
+      WHERE COALESCE(is_system, 0) = 0 AND COALESCE(moments_disabled, 0) = 0
       ORDER BY id ASC LIMIT ?
     `).all(limit) || [];
+    const { allowed } = filterPublishable(db, rows.map(row => row.id), { flag: 'moments_disabled' });
+    const byId = new Map(rows.map(row => [Number(row.id), row]));
+    return allowed.map(id => byId.get(id)).filter(Boolean);
   } catch { return []; }
 }
 
@@ -217,6 +223,8 @@ async function generateChunk({ chunk, prevSummary, digest, characters, worldSett
 
 function writeCharacterMemory(character, { from, to, mood, note, events }) {
   try {
+    const gate = checkCharacterPublishable(getDb(), character.id, { flag: 'moments_disabled' });
+    if (!gate.allowed) return;
     const label = fmt(from) + '～' + fmt(to).slice(11);
     const eventText = events.map(e => `「${e.title}」${e.summary}`).join('；');
     const judgment = `那段时间（${label}，用户不在）${mood}${note ? `：${note}` : ''}${eventText ? `。当时发生的事：${eventText.slice(0, 120)}` : ''}`;
@@ -253,6 +261,11 @@ function publishOfflineMoment(character, { chunk, events = [], mood = null }) {
     const db = getDb();
     const key = `offline:${chunk.from.toISOString()}`;
     if (db.prepare('SELECT id FROM moment_posts WHERE god_delivery_key = ?').get(key)) return null;
+    const gate = checkCharacterPublishable(db, character.id, { flag: 'moments_disabled' });
+    if (!gate.allowed) {
+      console.log(`[offline] moment ${gate.retryAt || gate.reason === GATE_REASON.FLAG_OFF ? 'deferred' : 'dropped'}: ${gate.reason}`);
+      return null;
+    }
     // 心境与事件之间要有句读，否则会读成"怀念，又觉得现在也还行 林晚在租住的公寓里…"
     const moodText = mood?.mood ? (/[。！？…」]$/.test(mood.mood) ? mood.mood : `${mood.mood}。`) : '';
     const text = [moodText, events[0]?.summary].filter(Boolean).join(' ').trim().slice(0, 120);
@@ -339,7 +352,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
 
   running = true;
   try {
-    const characters = loadCharacters();
+    let characters = loadCharacters();
     if (!characters.length) {
       console.warn('[offline] 没有可编年的角色，跳过');
       return { ran: false, chunks: 0, reason: 'no_characters' };
@@ -353,10 +366,37 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
     let prevSummary = '';
     let prevLead = '';
     let written = 0;
+    let deferred = null;
     for (const chunk of plan.chunks) {
       try {
+        const sourceId = `offline:${chunk.from.toISOString()}`;
+        const existing = getDb().prepare('SELECT title, summary FROM world_timeline WHERE source_id = ?').get(sourceId);
+        if (existing) {
+          prevSummary = existing.summary || prevSummary;
+          recentRows.unshift(existing);
+          writeCursor(chunk.to);
+          continue;
+        }
+
+        characters = loadCharacters();
+        if (!characters.length) {
+          deferred = 'no_publishable_characters';
+          break;
+        }
         const data = await generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
         if (!data) { console.warn(`[offline] 第 ${chunk.index} 片没有可用输出，跳过`); continue; }
+
+        const { blocked } = filterPublishable(getDb(), characters.map(c => c.id), { flag: 'moments_disabled' });
+        if (blocked.length) {
+          if (blocked.some(item => item.reason === GATE_REASON.SLEEPING || item.reason === GATE_REASON.FLAG_OFF)) {
+            deferred = blocked.map(item => `${item.id}:${item.reason}`).join(',');
+            break;
+          }
+          console.warn(`[offline] 第 ${chunk.index} 片参与角色已终止，丢弃本次公开`);
+          writeCursor(chunk.to);
+          continue;
+        }
+
         persistChunk(chunk, data, characters);
         writeCursor(chunk.to);   // 断点：下一片之前崩溃，下次从这里继续
         written += 1;
@@ -371,7 +411,14 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
       await new Promise(resolve => setTimeout(resolve, 1200));   // 片间留间隔，别打满
     }
 
+    if (deferred) {
+      console.log(`[offline] 补算延期，保留游标：${deferred}`);
+      return { ran: written > 0, chunks: written, reason: 'deferred' };
+    }
+
     if (plan.tail) {
+      characters = loadCharacters();
+      if (!characters.length) return { ran: written > 0, chunks: written, reason: 'deferred' };
       try {
         const summary = `你不在的这段时间（约 ${plan.tail.days} 天）：${prevSummary || '世界照常运转，没什么特别的事'}`;
         recordWorldTimeline({
