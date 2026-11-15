@@ -58,6 +58,13 @@ function ensureDir(dir) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
+export function mergeAndroidLocalProperties(existingProperties, sdkDir) {
+  const retained = String(existingProperties || "").split(/\r?\n/)
+    .filter(line => !/^\s*sdk\.dir\s*[:=]/.test(line));
+  const sdkProperty = `sdk.dir=${sdkDir.replace(/\\/g, "\\\\")}`;
+  return [...retained, sdkProperty].join("\n").replace(/^\n+/, "").replace(/\n*$/, "\n");
+}
+
 function downloadFile(url, dest, timeoutSec = 600) {
   return new Promise((resolvePromise) => {
     const proto = url.startsWith("https") ? https : http;
@@ -299,9 +306,11 @@ export async function buildApk() {
     "\n84831b9409646a918e30573bab4c9c91346d8abd\n", "ascii");
   ok("Android SDK 就绪");
 
-  // local.properties 指向便携 SDK
-  writeFileSync(resolve(ANDROID_DIR, "local.properties"),
-    `sdk.dir=${SDK_DIR.replace(/\\/g, "\\\\")}\n`, "utf-8");
+  // local.properties 指向便携 SDK；保留本机签名配置，不能只写 sdk.dir 把密钥字段抹掉。
+  const localPropertiesPath = resolve(ANDROID_DIR, "local.properties");
+  const existingProperties = existsSync(localPropertiesPath) ? readFileSync(localPropertiesPath, "utf-8") : "";
+  const nextProperties = mergeAndroidLocalProperties(existingProperties, SDK_DIR);
+  writeFileSync(localPropertiesPath, nextProperties, "utf-8");
 
   // 应用图标同步已下沉到 gradle 的 syncAppIcon 任务（app/build.gradle.kts），
   // npm run apk 与 Android Studio 两条构建路径均自动生效

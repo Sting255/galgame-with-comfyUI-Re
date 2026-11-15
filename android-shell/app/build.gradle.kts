@@ -1,7 +1,26 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val signingProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
+fun signingValue(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: signingProperties.getProperty(name)?.takeIf { it.isNotBlank() }
+
+val releaseSigning = listOf(
+    "LINSHE_RELEASE_KEYSTORE",
+    "LINSHE_RELEASE_STORE_PASSWORD",
+    "LINSHE_RELEASE_KEY_ALIAS",
+    "LINSHE_RELEASE_KEY_PASSWORD",
+).associateWith(::signingValue)
+val missingReleaseSigning = releaseSigning.filterValues { it == null }.keys
+val releaseStoreFile = releaseSigning["LINSHE_RELEASE_KEYSTORE"]?.let(rootProject::file)
 
 android {
     namespace = "com.linshe.shell"
@@ -17,22 +36,18 @@ android {
 
     signingConfigs {
         create("release") {
-            // 固定签名（随仓库分发，自用信任模型）：任何机器构建的包签名一致，可互相覆盖升级
-            storeFile = rootProject.file("release.keystore")
-            storePassword = "linshe-release"
-            keyAlias = "linshe"
-            keyPassword = "linshe-release"
+            releaseStoreFile?.let { storeFile = it }
+            releaseSigning["LINSHE_RELEASE_STORE_PASSWORD"]?.let { storePassword = it }
+            releaseSigning["LINSHE_RELEASE_KEY_ALIAS"]?.let { keyAlias = it }
+            releaseSigning["LINSHE_RELEASE_KEY_PASSWORD"]?.let { keyPassword = it }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // keystore 缺失时回退 debug 签名，保证仍能出包（但签名将绑定构建机）
-            signingConfig = if (rootProject.file("release.keystore").exists())
-                signingConfigs.getByName("release")
-            else
-                signingConfigs.getByName("debug")
+            // 缺签名配置时由 validateReleaseSigning 明确失败，绝不静默回退 debug。
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -49,6 +64,25 @@ android {
         // 自用壳应用，lint 问题不阻塞 release 构建
         checkReleaseBuilds = false
         abortOnError = false
+    }
+}
+
+val validateReleaseSigning = tasks.register("validateReleaseSigning") {
+    doLast {
+        if (missingReleaseSigning.isNotEmpty()) {
+            throw GradleException(
+                "release 缺少签名配置：${missingReleaseSigning.joinToString()}。" +
+                    "请用同名环境变量或 android-shell/local.properties 注入；不会回退 debug 签名。"
+            )
+        }
+        if (releaseStoreFile?.isFile != true) {
+            throw GradleException("LINSHE_RELEASE_KEYSTORE 指向的私钥文件不存在")
+        }
+    }
+}
+tasks.configureEach {
+    if (name == "assembleRelease" || name == "packageRelease" || name == "bundleRelease") {
+        dependsOn(validateReleaseSigning)
     }
 }
 

@@ -6,9 +6,31 @@
 - 网页内按返回键先打开角色列表，再按一次把 App 退到桌面；地址设置页保留退出确认
 - 支持 `<input type="file">` 文件上传（头像上传）
 - 允许明文 HTTP（局域网地址）
-- release 构建使用仓库内固定 keystore（`release.keystore`，v1.8 起）签名，
-  任何机器构建的包签名一致、可互相覆盖升级；keystore 缺失时回退 debug 签名。
-  从 v1.7 及更早（debug 签名）升级到 v1.8+ 需卸载重装一次
+- release 使用本机私钥签名，仓库不再携带固定 keystore 或密码；缺配置会明确失败，不会回退 debug 签名。
+  `assembleDebug` 仍使用 Android 默认 debug 签名，不受 release 配置影响。
+- 旧固定签名已轮换：旧签名 APK 升级前必须先备份并卸载，再安装新签名 APK，步骤见下文。
+
+## release 签名配置（只保存在本机）
+
+可以通过同名环境变量注入，也可以写入已被 `.gitignore` 忽略的 `android-shell/local.properties`；环境变量优先。四项缺一不可：
+
+```properties
+LINSHE_RELEASE_KEYSTORE=keystores/linshe-release.jks
+LINSHE_RELEASE_STORE_PASSWORD=替换为本机随机密码
+LINSHE_RELEASE_KEY_ALIAS=linshe
+LINSHE_RELEASE_KEY_PASSWORD=替换为本机随机密码
+```
+
+`LINSHE_RELEASE_KEYSTORE` 可写绝对路径或相对 `android-shell/` 的路径。`android-shell/*.jks`、`*.keystore`、`keystores/` 与 `local.properties` 均已忽略，**不要把新私钥或密码提交、发聊天或写进构建日志**。
+
+私钥和密码由你自行备份；丢失后无法给同一签名 lineage 继续发布覆盖升级包。`npm run apk` 会继承环境变量，并在写入便携 SDK 路径时保留 `local.properties` 中的签名项。
+
+### 旧签名 APK 的迁移
+
+1. 在电脑网页「设置 → 数据备份」导出全部数据，需要换机配置时勾选「包含模型配置」。
+2. 卸载手机上的旧签名 APK。
+3. 安装使用本机新私钥签名的 APK，重新连接电脑并输入配对码。
+4. 在电脑网页恢复刚才导出的备份并等待重启完成。
 
 ## 通知推送（仅局域网内生效）
 
