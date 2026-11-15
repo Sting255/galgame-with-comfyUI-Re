@@ -10,6 +10,7 @@ import {
   generateTownNpcNextBranch, concludeTownNpcEvent,
 } from '../services/town/townNpcEventGenerator.js';
 import { matchAll } from '../services/characterSearch.js';
+import { USER_SCOPE } from '../services/characterScope.js';
 import {
   addSSEClient,
   removeSSEClient,
@@ -477,6 +478,7 @@ router.post('/generate', async (req, res) => {
     const candidates = db.prepare(`
       SELECT * FROM characters
       WHERE events_disabled = 0
+        AND ${USER_SCOPE}
         AND id NOT IN (SELECT character_id FROM character_events WHERE status IN ('pending','open','engaged'))
       ORDER BY RANDOM() LIMIT 1
     `).all();

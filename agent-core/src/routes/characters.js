@@ -621,9 +621,9 @@ router.post('/schedule-enabled-all', (req, res) => {
   const enabled = req.body?.enabled ? 1 : 0;
   const r = enabled
     ? db.prepare(`UPDATE characters SET schedule_enabled = 1, next_schedule_refresh_at = NULL
-                  WHERE schedule_enabled = 0`).run()
+                  WHERE schedule_enabled = 0 AND ${USER_SCOPE}`).run()
     : db.prepare(`UPDATE characters SET schedule_enabled = 0, next_schedule_refresh_at = NULL
-                  WHERE schedule_enabled = 1 OR schedule_enabled IS NULL`).run();
+                  WHERE (schedule_enabled = 1 OR schedule_enabled IS NULL) AND ${USER_SCOPE}`).run();
   console.log(`[char] Schedule generation ${enabled ? 'enabled' : 'disabled'} for ${r.changes} character(s)`);
   res.json({ ok: true, schedule_enabled: enabled, changed: r.changes });
 });

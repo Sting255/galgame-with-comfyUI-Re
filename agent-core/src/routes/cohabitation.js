@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../db/index.js';
 import { residenceState } from '../db/cohabitationRepository.js';
+import { USER_SCOPE } from '../services/characterScope.js';
 
 const router = Router();
 const failure = message => Object.assign(new Error(message), { status: 400 });
@@ -17,7 +18,7 @@ function characterExists(db, value) {
 const run = fn => (req, res) => { try { res.json(fn(req, getDb())); } catch (error) { res.status(error.status || 500).json({ error: error.message }); } };
 router.get('/', run((_req, db) => ({
   ...residenceState(db),
-  characters: db.prepare("SELECT id,display_name,avatar_path FROM characters ORDER BY id").all(),
+  characters: db.prepare(`SELECT id,display_name,avatar_path FROM characters WHERE ${USER_SCOPE} ORDER BY id`).all(),
 })));
 router.post('/rooms', run((req, db) => db.transaction(() => {
   const name = roomName(req.body.name || '宿舍');

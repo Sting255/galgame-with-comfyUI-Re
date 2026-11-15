@@ -3,6 +3,7 @@ import { getDb, getSystemRules, getWorldSetting } from '../db/index.js';
 import { chatSync } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
+import { USER_SCOPE } from '../services/characterScope.js';
 
 const router = Router();
 
@@ -63,7 +64,7 @@ router.post('/deduce', async (req, res) => {
       fromName = centerChar.name;
     }
 
-    const allChars = db.prepare('SELECT * FROM characters').all();
+    const allChars = db.prepare(`SELECT * FROM characters WHERE ${USER_SCOPE}`).all();
     const excludeSet = new Set([
       ...(isUserMode ? [] : [centerName]),
       'default',
