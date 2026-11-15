@@ -461,6 +461,8 @@ export function startDiaryGeneration(characterId, opts = {}) {
     };
   }
 
+  const snapshot = db.prepare('SELECT * FROM character_diaries WHERE character_id = ? AND diary_date = ?').get(characterId, dateKey) || null;
+
   // 先占位：今天那篇标成 generating（已有正文的保留正文，前端可继续显示旧内容）
   db.prepare(`
     INSERT INTO character_diaries (character_id, diary_date, status, updated_at)
@@ -480,14 +482,14 @@ export function startDiaryGeneration(characterId, opts = {}) {
   task.onProgress({ stage: 'text', progress: 0 });
 
   const readContent=()=>db.prepare('SELECT title,mood,weather,content,image_prompts,images FROM character_diaries WHERE character_id=? AND diary_date=?').get(characterId,dateKey);
-  const promise = runDiaryGeneration({ db, character, dateKey, name, task, approvedDraft: opts.draft, readContent, expectedContent: JSON.stringify(readContent()), dependencies:opts.dependencies||{} })
+  const promise = runDiaryGeneration({ db, character, dateKey, name, task, snapshot, approvedDraft: opts.draft, readContent, expectedContent: JSON.stringify(readContent()), dependencies:opts.dependencies||{} })
     .finally(() => { inflight.delete(key); });
   inflight.set(key, promise);
 
   return { started: true, date: dateKey, generating: true, diary: getDiary(characterId, dateKey) };
 }
 
-async function runDiaryGeneration({ db, character, dateKey, name, task, approvedDraft, readContent, expectedContent, dependencies }) {
+async function runDiaryGeneration({ db, character, dateKey, name, task, snapshot, approvedDraft, readContent, expectedContent, dependencies }) {
   const characterId = character.id;
   let lastText = null;
   const assertCurrent=()=>{
@@ -599,18 +601,34 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
     const log = deferred ? console.log : console.error;
     log(`[diaryGenerator] char #${characterId} ${dateKey} ${deferred ? 'deferred' : cancelled ? 'cancelled' : 'failed'}:`, err.message);
     const message = (err?.message || '日记生成失败').slice(0, 200);
-    // 文字已生成、只是配图失败时保留正文，用户可原地重新生成
-    if (err.code!=='DIARY_CONFLICT' || JSON.stringify(readContent())===expectedContent) db.prepare(`
-      UPDATE character_diaries
-      SET status = 'failed', error_message = ?, updated_at = datetime('now')
-      WHERE character_id = ? AND diary_date = ?
-    `).run(message, characterId, dateKey);
+    if (deferred || cancelled) {
+      if (snapshot) {
+        db.prepare(`
+          UPDATE character_diaries
+          SET title = ?, mood = ?, weather = ?, content = ?, images = ?, image_prompts = ?, resolutions = ?,
+              handwriting_font = ?, status = ?, error_message = ?, created_at = ?, updated_at = ?
+          WHERE character_id = ? AND diary_date = ?
+        `).run(snapshot.title, snapshot.mood, snapshot.weather, snapshot.content, snapshot.images,
+          snapshot.image_prompts, snapshot.resolutions, snapshot.handwriting_font, snapshot.status,
+          snapshot.error_message, snapshot.created_at, snapshot.updated_at, characterId, dateKey);
+      } else {
+        db.prepare("DELETE FROM character_diaries WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
+          .run(characterId, dateKey);
+      }
+    } else if (err.code!=='DIARY_CONFLICT' || JSON.stringify(readContent())===expectedContent) {
+      // 普通失败保留本轮正文，用户可原地重试；只有 gate 拒绝回滚未公开内容。
+      db.prepare(`
+        UPDATE character_diaries
+        SET status = 'failed', error_message = ?, updated_at = datetime('now')
+        WHERE character_id = ? AND diary_date = ?
+      `).run(message, characterId, dateKey);
+    }
     broadcast('diary_error', {
       character_id: characterId,
       character_name: name,
       date: dateKey,
       error: message,
-      hasText: Boolean(lastText),
+      hasText: deferred || cancelled ? Boolean(snapshot?.content) : Boolean(lastText),
       deferred,
       cancelled,
       reason: err.gate?.reason || null,
