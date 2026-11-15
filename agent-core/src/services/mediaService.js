@@ -1289,6 +1289,7 @@ export async function generatePortalSection(postId, sectionKey) {
   const db = getDb();
   const row = db.prepare('SELECT * FROM media_posts WHERE id = ?').get(postId);
   if (!row) return { ok: false, error: '内容不存在' };
+  if (row.image_status === 'discarded') return { ok: false, error: '内容已丢弃' };
   const payload = safeParse(row.payload_json, null);
   if (!isPortalPayload(payload)) return { ok: false, error: '这条内容不是门户结构' };
 
