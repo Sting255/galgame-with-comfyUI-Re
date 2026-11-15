@@ -396,8 +396,10 @@ export function applyIdentityAnchorToPrompt(prompt, anchor) {
   const tag = tagMatch ? tagMatch[0].trim() : '';
   const lowerText = text.toLowerCase();
   if (tag) {
-    const bareName = tag.replace(/\s*\([^)]*\)\s*$/, '').trim();
-    if (lowerText.includes(tag.toLowerCase()) || (bareName && lowerText.includes(bareName.toLowerCase()))) {
+    // 只有完整 `Name (Series)`（含 danbooru 转义括号）才算身份已存在。
+    // 只写 bareName 时仍须前置锚点，否则作品信息与整段身体特征都会被误跳过。
+    const escapedTag = tag.replace(/[()]/g, bracket => `\\${bracket}`);
+    if (lowerText.includes(tag.toLowerCase()) || lowerText.includes(escapedTag.toLowerCase())) {
       return text;
     }
   }

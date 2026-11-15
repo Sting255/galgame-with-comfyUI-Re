@@ -90,13 +90,46 @@ export function extractEditableAppearanceBody(basePrompt) {
  *   - baseLabel：原正文的降级标注（写明冲突描述无效）；
  *   - tail：着装裁定，安插在原正文之后收尾（收尾位置权重最高，压制基础外观标签带偏）。
  * 着装裁定按生效外观组合分三种（两者都有 / 只有限时 / 只有专属）；无任何生效外观时返回 null。
- * @param {{limited?: Array<{name,description}>, exclusive?: {name,description}|null}} outfits
+ * 场景服装与可整体替换的换装道具混合时，按服装项分别裁定，不共用一个全局身体锁。
+ * @param {{limited?: Array<{name,description,bodyLocked?:boolean}>, exclusive?: {name,description}|null, bodyLocked?:boolean}} outfits
  * @returns {{lead: string, baseLabel: string, tail: string}|null} 无任何生效外观时返回 null
  */
 export function buildOutfitInjectionBlocks(outfits, opts = {}) {
-  const limited = Array.isArray(outfits?.limited) ? outfits.limited : [];
+  const inputLimited = Array.isArray(outfits?.limited) ? outfits.limited : [];
   const exclusive = outfits?.exclusive || null;
-  if (limited.length === 0 && !exclusive) return null;
+  if (inputLimited.length === 0 && !exclusive) return null;
+
+  // 自动合并时，场景服装把 bodyLocked 留在自己的服装项上；换装道具/专属形态不带这个标志。
+  // 纯场景服装沿用原有锁定文案；混合外观必须分开裁定，不能把整批 limited 一刀切地锁住或放开。
+  const lockedLimited = inputLimited.filter(item => item?.bodyLocked === true);
+  const replaceableLimited = inputLimited.filter(item => item?.bodyLocked !== true);
+  if (outfits?.bodyLocked !== true && lockedLimited.length > 0 && (replaceableLimited.length > 0 || exclusive)) {
+    const owner = String(opts?.owner || '').trim();
+    const own = owner ? `${owner}的` : '';
+    const replaceable = buildOutfitInjectionBlocks({ limited: replaceableLimited, exclusive }, opts);
+    const locked = buildOutfitInjectionBlocks({ limited: lockedLimited, exclusive: null, bodyLocked: true }, opts);
+    const order = replaceableLimited.length > 0 && exclusive
+      ? '限时服饰 > 角色专属形态 > 当前服装（仅服装） > 基础外观'
+      : `${replaceableLimited.length > 0 ? '限时服饰' : '角色专属形态'} > 当前服装（仅服装） > 基础外观`;
+    const replaceableName = replaceableLimited.length > 0 && exclusive ? '限时服饰与角色专属形态' : (replaceableLimited.length > 0 ? '限时服饰' : '角色专属形态');
+    const tailLines = [
+      owner ? `【${own}着装裁定（只适用于${owner}一个人；优先级：${order}，逐条执行）】` : `【着装裁定（优先级：${order}，逐条执行）】`,
+      `- ${own}${replaceableName}仍可整体替换其明确描写的部位与属性（包括发型、发色、瞳色、体型）；当前服装的身体锁不限制这类换装道具或形态变化。`,
+      `- ${own}当前服装只替换**服装、鞋袜、配饰**：对未被${replaceableName}明确改写的身体部位，必须沿用基础外观与上面的身体特征；当前服装文本中的发色、发型、瞳色、肤色、体型与身体标记描述一律不采用。`,
+      `- ${own}基础外观中与当前服装冲突的旧衣服、旧鞋袜不画；但当前服装不得覆盖${replaceableName}带来的形态变化，也不得把${replaceableName}限制成只能换衣服。`,
+    ];
+    if (owner) tailLines.push(`- **以上整段只属于${owner}一个人**：不要把别人的衣服饰品、身体特征或形态变化写到${owner}身上，也不要把${owner}的内容写到别人身上。`);
+    return {
+      lead: [replaceable?.lead, locked?.lead].filter(Boolean).join('\n\n'),
+      baseLabel: owner
+        ? `【${own}基础外观（身体与默认服装的基准；${replaceableName}可整体替换其明确描写的属性，当前服装只换衣服、不改身体）】`
+        : `【基础外观（身体与默认服装的基准；${replaceableName}可整体替换其明确描写的属性，当前服装只换衣服、不改身体）】`,
+      tail: tailLines.join('\n'),
+    };
+  }
+
+  const limited = outfits?.bodyLocked !== true && lockedLimited.length > 0 ? lockedLimited : inputLimited;
+  const bodyLocked = outfits?.bodyLocked === true || lockedLimited.length > 0;
 
   // 归属（2026-10-02 用户：「角色的衣服容易串到一起」）：
   //   下面这些话原本是**无主**的 ——「画面必须完整呈现以下全部要素」「着装裁定（优先级…）」。
@@ -110,8 +143,6 @@ export function buildOutfitInjectionBlocks(outfits, opts = {}) {
   // 2026-11-08：场景服装（按日程穿的这一身）只许换衣服，不许改人。
   // 以前它和「换装道具/变身」共用同一套替换规则，规则里明写了「发型、发色…整体替换」，
   // 于是服装描述里一旦混进发色/瞳色，角色本身的身份就被替换掉 —— 冷门/LoRA 角色直接飘成别人。
-  const bodyLocked = outfits?.bodyLocked === true;
-
   const leadParts = [];
   if (limited.length > 0) {
     // 2026-11-07：`body` 里通常带着角色原本那身（"wearing a white sleeveless dress..."）。
@@ -368,7 +399,10 @@ function resolveOutfits(character, outfits, outfitScene = 'current') {
 function mergeScene(character, limited, outfitScene = 'current') {
   const scene = getSceneOutfitProvider(character?.id, { scene: outfitScene });
   if (!scene?.limited?.length) return limited;
-  return [...limited, ...scene.limited];
+  // 锁定语义属于场景服装本身，不能提升为整批 limited 的全局标志：
+  // 同批的换装道具/角色专属形态仍允许整体替换发型、身体等属性。
+  const sceneLimited = scene.limited.map(item => ({ ...item, bodyLocked: scene.bodyLocked === true }));
+  return [...limited, ...sceneLimited];
 }
 
 /**
