@@ -653,14 +653,22 @@ async function main() {
       ".claude", ".pai", ".playwright-cli",
       resolve(AGENT_CORE, "data"),
       resolve(VECTOR_SVC, "chroma_data"),
+      resolve(ROOT, "android-shell", "keystores"),
     ];
     // 密钥、配对凭证、本机配置和本地备份一律不进入候选目录。
     const robocopyExcludeFiles = [
-      "*.tmp.json", ".access-token", ".env", ".env.local", "launcher_config.json",
-      "settings.local.json", "*.tar.gz",
+      "*.tmp.json", ".access-token", ".env", ".env.*", "local.properties", "launcher_config.json",
+      "settings.local.json", "*.tar.gz", "*.jks", "*.keystore", "*.p12", "*.pfx",
     ];
     const rcOk = await robocopy(ROOT, RELEASE_DIR, robocopyExclude, robocopyExcludeFiles);
     if (!rcOk) { fail("文件复制失败!"); process.exit(1); }
+    // .env.* 必须全排除；只把明确模板补回来，其它 production/local 变体不得搭便车。
+    const envExample = resolve(AGENT_CORE, ".env.example");
+    if (existsSync(envExample)) {
+      const { copyFileSync } = await import("node:fs");
+      ensureDir(resolve(RELEASE_DIR, "agent-core"));
+      copyFileSync(envExample, resolve(RELEASE_DIR, "agent-core", ".env.example"));
+    }
   } else {
     // 修正 remote URL：clone 会把 origin 设为本机路径，客户电脑上不存在
     const remoteResult = await exec("git", ["remote", "set-url", "origin", GITHUB_REPO_URL], { cwd: RELEASE_DIR });

@@ -41,7 +41,7 @@ import { createRequire } from 'node:module'
 // 使用说明.txt 的正文正源（2026-10-17 从 build-release.mjs 抽出；两份脚本共用这一份，见 ③-0）
 import { buildUsageGuideText } from './usage-guide.mjs'
 import { syncReleaseEnv, inspectReleaseEnv } from './lib/releaseLocalConfig.mjs'
-import { backendDependenciesPresent, findSensitiveArchiveMembers, parse7zMemberPaths, probePackagedBackend } from './lib/releaseSafety.mjs'
+import { backendDependenciesPresent, findSensitiveArchiveMembers, isSensitiveSourceFile, parse7zMemberPaths, probePackagedBackend } from './lib/releaseSafety.mjs'
 import { resolveServicePort } from '../agent-core/src/utils/servicePort.js'
 import { resolveEnvPath } from '../agent-core/src/utils/envFile.js'
 
@@ -629,7 +629,7 @@ function syncDir(from, to) {
       // robocopy 直拷、不看 gitignore** ⇒ 整份进包，包体积从 1.1 GB 涨到 2.3 GB。
       // 启动器真正要交付的是仓库根那份 `邻舍.EXE.exe`（build_launcher.py 的 --output）。
       const rel = path.relative(REPO, s).split(path.sep).join('/')
-      if (rel === 'launcher/build_cache' || rel === 'launcher/build' || rel === 'launcher/dist') continue
+      if (rel === 'launcher/build_cache' || rel === 'launcher/build' || rel === 'launcher/dist' || rel === 'android-shell/keystores') continue
       syncDir(s, d)
     } else {
       // ── 文件级排除（2026-10-17 复查 §P1-2 / §P2-4；2026-10-18 补 launcher_config）──
@@ -651,7 +651,7 @@ function syncDir(from, to) {
       //   `ConfigManager._load()` 在文件不存在时会 `self._data = {}` + `_save()` **自动写一份默认配置**
       //   （`comfyui_exe: ""`）—— 也就是说"没有这个文件"正是全新用户的正确初始状态。
       //   放一份模板反而多一个要维护的副本（且它本就被 gitignore，放仓库里也违背原意）。
-      if (e.name === '.env' || e.name === '.env.local' || e.name === 'settings.local.json') continue
+      if (isSensitiveSourceFile(e.name) || e.name === 'settings.local.json') continue
       if (e.name === 'launcher_config.json') continue
       fs.copyFileSync(s, d)
     }
@@ -708,12 +708,12 @@ if (incremental) {
     // ⇒ 被当文件复制 ⇒ EPERM，打包直接崩（本轮连崩两次都是它）。
     '.pai',
   ])
-  const SKIP_FILE = /\.(tar\.gz|apk|log)$/i
+  const SKIP_FILE = /\.(tar\.gz|apk|log|jks|keystore|p12|pfx)$/i
   // 顶层的维护文件同样不该进用户包（AGENTS.md 里还写着本机路径与协作约定）
-  const SKIP_TOP_FILE = /^(AGENTS\.md|\.gitattributes|\.gitignore|\.zcodeignore|\.env(?:\.local)?)$/i
+  const SKIP_TOP_FILE = /^(AGENTS\.md|\.gitattributes|\.gitignore|\.zcodeignore)$/i
   for (const e of fs.readdirSync(REPO, { withFileTypes: true })) {
     if (SKIP_TOP.has(e.name)) continue
-    if (e.isFile() && SKIP_FILE.test(e.name)) continue
+    if (e.isFile() && (SKIP_FILE.test(e.name) || isSensitiveSourceFile(e.name))) continue
     if (e.isFile() && SKIP_TOP_FILE.test(e.name)) continue
     const from = path.join(REPO, e.name)
     const to = path.join(DELIVER, e.name)

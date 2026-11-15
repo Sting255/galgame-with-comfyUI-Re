@@ -61,6 +61,8 @@ android-shell/*.iml
 # Android release 私钥只留本机；旧公开 keystore 已按批准轮换移除
 android-shell/*.keystore
 android-shell/*.jks
+android-shell/*.p12
+android-shell/*.pfx
 android-shell/keystores/
 # 应用图标由 build-apk.mjs 从 android-shell/app-icon.png|jpg 同步生成
 android-shell/app/src/main/res/drawable-nodpi/ic_launcher_image.*

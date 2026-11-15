@@ -15,13 +15,13 @@
 可以通过同名环境变量注入，也可以写入已被 `.gitignore` 忽略的 `android-shell/local.properties`；环境变量优先。四项缺一不可：
 
 ```properties
-LINSHE_RELEASE_KEYSTORE=keystores/linshe-release.jks
+LINSHE_RELEASE_KEYSTORE=C:/secure/linshe.jks
 LINSHE_RELEASE_STORE_PASSWORD=替换为本机随机密码
 LINSHE_RELEASE_KEY_ALIAS=linshe
 LINSHE_RELEASE_KEY_PASSWORD=替换为本机随机密码
 ```
 
-`LINSHE_RELEASE_KEYSTORE` 可写绝对路径或相对 `android-shell/` 的路径。`android-shell/*.jks`、`*.keystore`、`keystores/` 与 `local.properties` 均已忽略，**不要把新私钥或密码提交、发聊天或写进构建日志**。
+`LINSHE_RELEASE_KEYSTORE` 可写绝对路径或相对 `android-shell/` 的路径。**在 Java Properties 中，Windows 绝对路径必须用正斜杠或双反斜杠**：推荐 `C:/secure/linshe.jks`；若写反斜杠则必须是 `C:\\secure\\linshe.jks`，单个 `\` 可能被当成转义。`android-shell/*.jks`、`*.keystore`、`*.p12`、`*.pfx`、`keystores/` 与 `local.properties` 均已忽略，**不要把新私钥或密码提交、发聊天或写进构建日志**。
 
 私钥和密码由你自行备份；丢失后无法给同一签名 lineage 继续发布覆盖升级包。`npm run apk` 会继承环境变量，并在写入便携 SDK 路径时保留 `local.properties` 中的签名项。
 

@@ -24,9 +24,16 @@ export function parse7zMemberPaths(listing) {
     .map(match => normalizeMemberPath(match[1]))
 }
 
+/** 源文件复制阶段的统一排除口径；.env.example 是唯一明确放行的配置模板。 */
+export function isSensitiveSourceFile(fileName) {
+  const name = String(fileName || '').toLowerCase()
+  const envFile = (name === '.env' || name.startsWith('.env.')) && name !== '.env.example'
+  return envFile || name === 'local.properties' || /\.(?:jks|keystore|p12|pfx)$/.test(name)
+}
+
 /**
  * 返回归档中禁止交付的文件。目录条目不代表数据内容，直接跳过。
- * keepEnv 只允许显式自用包携带 agent-core 配置；根级或其它目录的 env 仍拒绝。
+ * keepEnv 只允许显式自用包携带 agent-core/.env 或 .env.local，不放行其它变体。
  */
 export function findSensitiveArchiveMembers(members, {
   keepEnv = false,
@@ -42,9 +49,11 @@ export function findSensitiveArchiveMembers(members, {
     const lowerRel = rel.toLowerCase()
     const base = rel.split('/').pop().toLowerCase()
     let reason = ''
-    if (base === '.env' || base === '.env.local') {
+    if ((base === '.env' || base.startsWith('.env.')) && base !== '.env.example') {
       const allowedSelfUseEnv = keepEnv && (lowerRel === 'agent-core/.env' || lowerRel === 'agent-core/.env.local')
-      if (!allowedSelfUseEnv) reason = '本机密钥配置'
+      if (!allowedSelfUseEnv) reason = '本机密钥配置或 env 变体'
+    } else if (base === 'local.properties' || lowerRel.startsWith('android-shell/keystores/') || /\.(?:jks|keystore|p12|pfx)$/.test(base)) {
+      reason = 'Android 签名材料或本机配置'
     } else if (base === 'launcher_config.json') {
       reason = '本机启动器配置'
     } else if (base === '.access-token') {
