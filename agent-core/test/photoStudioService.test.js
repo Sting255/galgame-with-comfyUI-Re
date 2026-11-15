@@ -64,9 +64,13 @@ test('the full catalog preserves uncalibrated entries while the studio catalog e
 });
 
 async function fixture(overrides = {}) {
-  // 服装读取走生产 getDb()；夹具必须使用同一真实内存库，否则服务主体与衣柜会读到两个库。
+  // 服装读取走生产 getDb()；夹具必须使用同一内存库，否则服务主体与衣柜会读到两个库。
   // 每例结束都会关闭句柄，下一例由 getDb() 重新建库并执行完整迁移。
+  config.dbPath = ':memory:';
+  assert.equal(process.env.DB_PATH, ':memory:', '测试预加载必须在配置导入前强制使用内存库');
+  assert.equal(config.dbPath, ':memory:', '照相馆测试禁止访问真实数据库路径');
   const db = getDb();
+  assert.equal(db.name, ':memory:', '实际 SQLite 连接必须是内存库');
   db.exec(`DELETE FROM photo_studio_jobs;
     DELETE FROM image_tasks;
     DELETE FROM character_outfits;
