@@ -530,6 +530,7 @@ export async function generateEmojiImage(row, char, artist = '@ebora') {
     persistPreparation: false,
     ...getEmojiResolution(),
     artist: finalArtist,
+    identity: char,
     ...(loras.length > 0 ? { loras } : {}),
     ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}),
   });

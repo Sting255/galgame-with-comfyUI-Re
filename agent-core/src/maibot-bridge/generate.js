@@ -40,7 +40,7 @@ export function startImageTask({ character, conversationId, prompt, assistantMsg
   const charArtist = charArtistOverride(character);
   if (charArtist !== null) loraOpts.artist = charArtist;
 
-  generateImage(prompt, { ragQuery, scene: 'chat', ragTimeoutMs: RAG_TIMEOUT_FAST_MS, ...loraOpts })
+  generateImage(prompt, { ragQuery, scene: 'chat', ragTimeoutMs: RAG_TIMEOUT_FAST_MS, identity: character, ...loraOpts })
     .then((result) => {
       if (result.success && result.images.length > 0) {
         const urls = [];

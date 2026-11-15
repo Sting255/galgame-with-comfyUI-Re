@@ -261,7 +261,7 @@ export function startStandingBatch(id, { slotIds, requirement = '', outfitScene 
           const opts = JSON.parse(row.config_json);
           // 最终阀门：不论提示词来自本次生成、库里复用还是用户手改，进 ComfyUI 前一律补上固定前置（solo 开头）。
           const framedPrompt = frameStandingPrompt(prompt);
-          const result = await imageGenerator(framedPrompt, { ...opts, scene: 'portrait', workflowScene: null, promptScene: 'avatar', priority: 'high', disableRAG: true, alreadyPrepared: true, persistPreparation: false });
+          const result = await imageGenerator(framedPrompt, { ...opts, scene: 'portrait', workflowScene: null, promptScene: 'avatar', priority: 'high', disableRAG: true, alreadyPrepared: true, persistPreparation: false, identity: char });
           if (!result.success || !result.images?.length) throw new Error(result.error || '未返回立绘图片');
           await commitImage(id, slot.id, decodeImage(result.images[0].base64));
         },
