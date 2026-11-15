@@ -211,7 +211,7 @@ async function main() {
         if (existsSync(venvPy)) return venvPy;
         return "python";
       },
-      args: ["-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8765"],
+      args: ["-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "8765"],
     },
     {
       name: "agent-core",

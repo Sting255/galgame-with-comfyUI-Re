@@ -9,7 +9,7 @@ MODEL_PATH = os.getenv("MODEL_PATH", "./models/jina-embeddings-v2-base-zh")
 USE_QUANTIZED = os.getenv("USE_QUANTIZED", "true").lower() == "true"
 
 # Server
-HOST = os.getenv("HOST", "0.0.0.0")
+HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8765"))
 
 # ONNX Embedding 调优

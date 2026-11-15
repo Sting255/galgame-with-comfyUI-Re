@@ -118,7 +118,7 @@ SERVICES = {
             "uvicorn",
             "server:app",
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--port",
             "8765",
             "--no-access-log",
@@ -143,13 +143,17 @@ class PortCleaner(QObject):
     output = Signal(str, str)  # (service_name, text)
     finished = Signal(bool)  # 是否确认清理成功
 
+    def __init__(self, project_path, parent=None):
+        super().__init__(parent)
+        self._project_path = project_path
+
     def run(self):
         """在后台线程中执行（由 QThread.started 触发）。"""
         success = False
         try:
             import psutil
 
-            ports = [svc["port"] for svc in SERVICES.values()]
+            ports = [SERVICES["vector"]["port"], service_port(self._project_path)]
             keywords = [
                 "agent-core", "vector-service", "web-ui",
                 "app.js", "server:app", "uvicorn", "nodemon",
@@ -161,6 +165,12 @@ class PortCleaner(QObject):
                     try:
                         proc = psutil.Process(conn.pid)
                         name = proc.name().lower()
+                        if not belongs_to_project(proc, self._project_path):
+                            self.output.emit(
+                                "system",
+                                f"[ERROR] 端口 {conn.laddr.port} 被非本项目进程 {name} (PID {conn.pid}) 占用，未终止该进程",
+                            )
+                            continue
                         if name in ("node.exe", "python.exe"):
                             cmdline = " ".join(proc.cmdline()).lower()
                             if any(kw.lower() in cmdline for kw in keywords):
@@ -493,7 +503,7 @@ class ServiceRunner(QObject):
 
         # 在后台线程中执行 psutil 端口清理，避免阻塞 GUI
         self._cleaner_thread = QThread(self)
-        self._cleaner_worker = PortCleaner()
+        self._cleaner_worker = PortCleaner(self._project_path)
         self._cleaner_worker.moveToThread(self._cleaner_thread)
         self._cleaner_worker.output.connect(self.output)
         self._cleaner_thread.started.connect(self._cleaner_worker.run)
