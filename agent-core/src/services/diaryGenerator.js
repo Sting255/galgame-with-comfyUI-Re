@@ -42,6 +42,7 @@ import { getTodaySchedule } from './scheduleManager.js';
 import { startBackgroundTask } from './imageEditTasks.js';
 import { config } from '../config.js';
 import { getLocalDateKey } from '../utils/localDate.js';
+import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
@@ -49,6 +50,21 @@ const DIARY_IMAGE_COUNT = 3;
 
 /** 同一角色同一天正在生成中的任务：`${charId}:${date}` → task */
 const inflight = new Map();
+
+function diaryGateError(gate) {
+  const terminal = gate.reason === GATE_REASON.NOT_FOUND || gate.reason === GATE_REASON.SYSTEM;
+  const reason = gate.reason === GATE_REASON.SLEEPING ? '角色正在睡眠'
+    : gate.reason === GATE_REASON.FLAG_OFF ? '日程功能已关闭'
+      : terminal ? '角色已删除或为系统角色' : '角色当前不可发布';
+  return Object.assign(new Error(`日记${terminal ? '取消' : '延期'}：${reason}`), {
+    code: terminal ? 'DIARY_CANCELLED' : 'DIARY_DEFERRED',
+    gate,
+  });
+}
+
+function checkDiaryGate(db, characterId) {
+  return checkCharacterPublishable(db, characterId, { flag: 'schedule_enabled' });
+}
 
 // ══════════════════════════════════════════════════════════════
 //  静态 prompt 层（逐字节稳定，禁止内插日期 / 用户名等每次变化的内容）
@@ -376,8 +392,11 @@ function diaryActivities(characterId,dateKey,readOnly=false) {
   try { const parsed=JSON.parse(row?.schedule_json||'[]'); return Array.isArray(parsed)?parsed:parsed.activities||[]; } catch {return [];}
 }
 export async function generateDiaryDraft(characterId, {date} = {}) {
-  const character=getDb().prepare('SELECT * FROM characters WHERE id=?').get(characterId);
+  const db = getDb();
+  const character=db.prepare('SELECT * FROM characters WHERE id=?').get(characterId);
   if (!character) throw Object.assign(new Error('角色不存在'),{status:404});
+  const gate = checkDiaryGate(db, characterId);
+  if (!gate.allowed) throw Object.assign(diaryGateError(gate), { status: 409 });
   const dateKey=date || getLocalDateKey();
   const scheduleText=formatScheduleForDiary(diaryActivities(characterId,dateKey,true));
   const messages=buildDiaryMessages({character,dateKey,scheduleText});
@@ -409,6 +428,37 @@ export function startDiaryGeneration(characterId, opts = {}) {
 
   if (inflight.has(key)) {
     return { started: false, date: dateKey, generating: true, diary: getDiary(characterId, dateKey) };
+  }
+
+  const gate = checkDiaryGate(db, characterId);
+  if (!gate.allowed) {
+    const error = diaryGateError(gate);
+    db.prepare("UPDATE character_diaries SET status = 'failed', error_message = ?, updated_at = datetime('now') WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
+      .run(error.message, characterId, dateKey);
+    const deferred = error.code === 'DIARY_DEFERRED';
+    const cancelled = error.code === 'DIARY_CANCELLED';
+    broadcast('diary_error', {
+      character_id: characterId,
+      character_name: character.display_name || character.name || '',
+      date: dateKey,
+      error: error.message,
+      hasText: false,
+      deferred,
+      cancelled,
+      reason: gate.reason,
+      retry_at: gate.retryAt,
+    });
+    return {
+      started: false,
+      date: dateKey,
+      generating: false,
+      deferred,
+      cancelled,
+      reason: gate.reason,
+      retryAt: gate.retryAt,
+      error: error.message,
+      diary: getDiary(characterId, dateKey),
+    };
   }
 
   // 先占位：今天那篇标成 generating（已有正文的保留正文，前端可继续显示旧内容）
@@ -445,6 +495,10 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
       throw Object.assign(new Error('生成期间角色或日记已改变，未覆盖新内容'),{code:'DIARY_CONFLICT'});
     }
   };
+  const assertPublishable = () => {
+    const gate = checkDiaryGate(db, characterId);
+    if (!gate.allowed) throw diaryGateError(gate);
+  };
   try {
     // ── 步骤1：角色当日日程 ──
     let activities = [];
@@ -474,6 +528,7 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
     lastText = diary;
 
     assertCurrent();
+    assertPublishable();
     db.prepare(`
       UPDATE character_diaries
       SET title = ?, mood = ?, weather = ?, content = ?, image_prompts = ?,
@@ -499,6 +554,8 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
       onProgress: (p) => task.onProgress(p),
     });
     if (ok.length === 0) throw new Error('三张配图全部生成失败');
+    assertCurrent();
+    assertPublishable();
 
     // ── 步骤5：落盘 + 记录 image_tasks ──
     const ts = Date.now();
@@ -522,6 +579,7 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
     }
 
     assertCurrent();
+    assertPublishable();
     db.prepare(`
       UPDATE character_diaries
       SET images = ?, resolutions = ?, status = 'completed', error_message = NULL, updated_at = datetime('now')
@@ -536,7 +594,10 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
     broadcast('diary_done', { character_id: characterId, character_name: name, date: dateKey, diary: saved });
     task.succeed({ diaryId: saved?.id || null, date: dateKey, characterId });
   } catch (err) {
-    console.error(`[diaryGenerator] char #${characterId} ${dateKey} failed:`, err.message);
+    const deferred = err.code === 'DIARY_DEFERRED';
+    const cancelled = err.code === 'DIARY_CANCELLED';
+    const log = deferred ? console.log : console.error;
+    log(`[diaryGenerator] char #${characterId} ${dateKey} ${deferred ? 'deferred' : cancelled ? 'cancelled' : 'failed'}:`, err.message);
     const message = (err?.message || '日记生成失败').slice(0, 200);
     // 文字已生成、只是配图失败时保留正文，用户可原地重新生成
     if (err.code!=='DIARY_CONFLICT' || JSON.stringify(readContent())===expectedContent) db.prepare(`
@@ -550,6 +611,10 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, approved
       date: dateKey,
       error: message,
       hasText: Boolean(lastText),
+      deferred,
+      cancelled,
+      reason: err.gate?.reason || null,
+      retry_at: err.gate?.retryAt || null,
     });
     task.fail(err);
   }

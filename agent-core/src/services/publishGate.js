@@ -104,12 +104,9 @@ export function checkCharacterPublishable(db, characterId, opts = {}) {
       // 传了不认识的 flag 是调用方的 bug，不要静默放过
       throw new Error(`publishGate: unknown flag "${opts.flag}"`);
     }
-    if (row[column] === 1) {
-      // schedule_enabled 语义相反：1 = 开，0 = 关；其余 *_disabled 是 1 = 关
-      if (column !== 'schedule_enabled') {
-        return deny(GATE_REASON.FLAG_OFF, null, { characterId: id, name: row.display_name, flag: column });
-      }
-    } else if (column === 'schedule_enabled') {
+    // schedule_enabled 语义相反且 NULL 兼容旧角色（视为开）；其余 *_disabled 是 1 = 关。
+    const disabled = column === 'schedule_enabled' ? row[column] === 0 : row[column] === 1;
+    if (disabled) {
       return deny(GATE_REASON.FLAG_OFF, null, { characterId: id, name: row.display_name, flag: column });
     }
   }
