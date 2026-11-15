@@ -33,6 +33,7 @@ import { getActiveOutfits } from './outfitService.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
 import { ITEM_EFFECTS, WORLD_OUTFIT_CHANCE } from './itemService.js';
 import { parseCharacterLoras as parseCharacterLorasImpl } from './characterLoras.js';
+import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
 
 export const NEWSPAPER_NAME = '邻舍日报';
 export const NEWSPAPER_TAGLINE = '今日事 · 早知道';
@@ -52,6 +53,7 @@ let consecutiveFails = 0;
 
 let generating = null;      // 当天生成任务的去重句柄
 let lastFailedAt = 0;
+let deferredUntil = 0;
 let refillingImages = null; // 当天缺图补印的去重句柄
 let lastImageRefillFailedAt = 0;
 
@@ -283,6 +285,7 @@ export function maybeGenerateDailyNewspaper(now = getProgramNow()) {
   const existing = getTodayNewspaper();
   // 当天报纸已出：只剩补图一条路（生成中途重启 / ComfyUI 当时没开 / 单张失败都靠这里兜底）
   if (existing) return maybeRefillTodayImages(existing);
+  if (Date.now() < deferredUntil) return null;
   // 失败冷却分两档：第一次失败 20 秒后就重试（网关抖一下能自愈），连续失败才退到 15 分钟
   const cooldown = consecutiveFails <= 1 ? FAIL_RETRY_FAST_MS : FAIL_RETRY_DELAY_MS;
   if (Date.now() - lastFailedAt < cooldown) return null;
@@ -290,6 +293,11 @@ export function maybeGenerateDailyNewspaper(now = getProgramNow()) {
   generating = generateDailyNewspaper()
     .then(() => { consecutiveFails = 0; return { ok: true }; })
     .catch(err => {
+      if (err.code === 'NEWSPAPER_PUBLISH_DEFERRED') {
+        deferredUntil = Date.now() + FAIL_RETRY_DELAY_MS;
+        console.log(`[newspaper] 发布延期：${err.message}`);
+        return { ok: false, deferred: true, error: err.message, retryAt: new Date(deferredUntil).toISOString() };
+      }
       lastFailedAt = Date.now();
       consecutiveFails += 1;
       console.error(`[newspaper] Daily generation failed: ${err.message}（第 ${consecutiveFails} 次，`
@@ -342,17 +350,24 @@ function maybeRefillTodayImages(row) {
 
 // ── 生成 ──
 
+function checkNewspaperCharacter(db, characterId) {
+  const momentsGate = checkCharacterPublishable(db, characterId, { flag: 'moments_disabled' });
+  if (!momentsGate.allowed) return momentsGate;
+  return checkCharacterPublishable(db, characterId, { flag: 'events_disabled', skipSleepCheck: true });
+}
+
 /** 抽当天特稿主角（同步查询；导出供回归测试——此函数曾被误写成 async 导致调用处拿到 Promise） */
 export function pickFeaturedCharacter(db) {
   // 需要同时具备聊天（事件注入）与朋友圈（吐槽帖）两条链路，两边都禁用的角色不抽。
   // 注意必须是同步函数：曾误写成 async 而调用处没 await，featured 变成 Promise，
   // id/display_name 全变 undefined，报纸主角链接与提示词一起失效。
-  return db.prepare(`
+  const candidates = db.prepare(`
     SELECT id, display_name, avatar_path, short_prompt, base_prompt, loras
     FROM characters
     WHERE events_disabled = 0 AND (moments_disabled IS NULL OR moments_disabled = 0) AND COALESCE(is_system, 0) = 0
-    ORDER BY RANDOM() LIMIT 1
-  `).get() || null;
+    ORDER BY RANDOM()
+  `).all();
+  return candidates.find(character => checkNewspaperCharacter(db, character.id).allowed) || null;
 }
 
 // 变身日概率（世界状态日内，变身 vs 服装 = 50% vs 50%；本地口径保留五五开，上游是 0.4）
@@ -460,6 +475,17 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
       console.log(`[newspaper] Raw LLM response:\n${raw}`);
       throw err;
     }
+  }
+
+  const finalGate = checkNewspaperCharacter(db, featured.id);
+  if (!finalGate.allowed) {
+    if (finalGate.reason === GATE_REASON.NOT_FOUND || finalGate.reason === GATE_REASON.SYSTEM) {
+      console.warn(`[newspaper] 主角在生成期间已终止，丢弃本期：${finalGate.reason}`);
+      return null;
+    }
+    const err = new Error(`${featured.display_name}：${finalGate.reason}`);
+    err.code = 'NEWSPAPER_PUBLISH_DEFERRED';
+    throw err;
   }
 
   // ── 落库（文字先上线，配图后台逐张补）──
