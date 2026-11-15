@@ -227,6 +227,12 @@ async function generateGroupImage(group, speaker, prompt, targetMsgId, emit, opt
       ? { width: config.comfyui.momentsWidth, height: config.comfyui.momentsHeight }
       : {};
     const runner = typeof options.generateImage === 'function' ? options.generateImage : generateImage;
+    // 发图者与实际入画角色都走统一身份锚点；speaker 优先，按角色 id 去重。
+    const identity = [...new Map(
+      [speaker, ...matchedCharacters]
+        .filter(character => Number(character?.id) > 0)
+        .map(character => [Number(character.id), character]),
+    ).values()];
     const result = await runner(preparedPrompt, {
       ragQuery: options.ragQuery,
       scene: 'group',
@@ -242,6 +248,7 @@ async function generateGroupImage(group, speaker, prompt, targetMsgId, emit, opt
       },
       ...resolutionOverrides,
       ...loraOpts,
+      identity,
     });
     if (result.promptRefined) {
       db.prepare(`UPDATE image_tasks SET prompt_refined = ? WHERE id = ?`).run(result.promptRefined, taskId);

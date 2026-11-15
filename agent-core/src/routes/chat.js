@@ -1848,7 +1848,8 @@ ${coreRules}
         width: config.comfyui.width, height: config.comfyui.height,
         artist: config.comfyui.imageProvider === 'novelai' ? config.comfyui.novelaiArtist : config.comfyui.artist,
       } };
-      snapshot.crossCharacters = snapshot.crossRefCharIdsForImage.map(id => db.prepare('SELECT loras,artist_override FROM characters WHERE id=?').get(id)).filter(Boolean);
+      // 冻结完整身份字段：异步出图时既要合并 LoRA，也要读取各入画角色已保存的身份锚点。
+      snapshot.crossCharacters = snapshot.crossRefCharIdsForImage.map(id => db.prepare('SELECT id, identity_anchor, loras, artist_override FROM characters WHERE id=?').get(id)).filter(Boolean);
       return queuePrivateImage(db, { conversationId, userRawId: userRawMsgId, scene, snapshot, ...binding, notify: notifyImage,
         execute: async ({ taskId, rawId, messageId }, frozen) => {
           const output = await requestNonEmptyImagePrompt(() => chatWithLorebook(frozen.msgs, { temperature: 0.7, label: '私聊生图', lorebook: frozen.lorebook }), { emptyRetries: 1 });
@@ -2636,9 +2637,9 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
 
   // 查找角色 lora 设置
   let loraOpts = {};
-  // 身份锚点来源：LLM 写的英文描述不一定带 `Name (Series)`，缺了模型就只能靠先验认人，
-  // 冷门/LoRA 角色会直接画成路人（2026-11-08 用户反馈）。有该角色本人入镜时兜底补在最前。
-  let identitySource = null;
+  // 身份锚点来源：LLM 写的英文描述不一定带 `Name (Series)`，缺了模型就只能靠先验认人。
+  // 主角色（本人入镜时）与交叉引用角色分别收集，最后按 id 去重一起交给 imageSkill。
+  const identitySources = [];
   // 角色级负面词（2026-11-06）：只在「这张图里有该角色本人」时注入，规则跟随 includeCharacter
   let characterNegative = '';
   // 体位骨架（2026-11-15）：亲密场景里她此刻的体位必须进画面。
@@ -2660,9 +2661,9 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
           console.warn('[chat] 体位骨架跳过:', err?.message || err);
         }
       }
-      const char = frozenCharacter || db.prepare('SELECT custom_workflow, loras, artist_override, negative_prompt, base_prompt, short_prompt FROM characters WHERE id = ?').get(charId);
+      const char = frozenCharacter || db.prepare('SELECT id, identity_anchor, custom_workflow, loras, artist_override, negative_prompt, base_prompt, short_prompt FROM characters WHERE id = ?').get(charId);
       if (char) {
-        if (includeCharacter) identitySource = char;
+        if (includeCharacter) identitySources.push(char);
         if (includeCharacter && typeof char.negative_prompt === 'string') characterNegative = char.negative_prompt;
         const loras = includeCharacter ? _parseLoras(char) : [];
         if (loras.length > 0 || (includeCharacter && char.custom_workflow) || charArtistOverride(char) !== null) {
@@ -2682,7 +2683,8 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
 
   // 合并交叉引用角色 LoRA（去重，主角色优先）
   if (crossRefCharIds.length > 0) {
-    const crossChars = frozenCrossCharacters || crossRefCharIds.map(id => db.prepare('SELECT loras, artist_override FROM characters WHERE id = ?').get(id)).filter(Boolean);
+    const crossChars = frozenCrossCharacters || crossRefCharIds.map(id => db.prepare('SELECT id, identity_anchor, loras, artist_override FROM characters WHERE id = ?').get(id)).filter(Boolean);
+    identitySources.push(...crossChars);
     const crossLoras = crossChars.flatMap(c => _parseLoras(c));
     if (crossLoras.length > 0) {
       const allLoras = [...(loraOpts.loras || []), ...crossLoras];
@@ -2711,6 +2713,11 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
     // 冲突文字+标签**尾附** → 仍被文字带走；冲突文字+标签**前置** → 正确跟随。
     // 所以这里不指望模型写对，直接把体位标签顶到最前面，强度保持 1.0。
     const posedPrompt = poseTags ? `${poseTags}. ${prompt}` : prompt;
+    const identity = [...new Map(
+      identitySources
+        .filter(character => Number(character?.id) > 0)
+        .map(character => [Number(character.id), character]),
+    ).values()];
     const result = await generateImage(posedPrompt, {
       scene: 'chat',
       ragQuery,
@@ -2728,8 +2735,8 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
       // 体位骨架（2026-11-15）：有进行中的亲密场景时按她此刻的体位出图，
       // 并由此跳过设置页那张全局参考图（imageSkill 里 poseJson 优先）。
       ...(poseJson ? { poseJson } : {}),
-      // 身份锚点：角色本人在画面里才传（imageSkill 统一前置，缺锚点时会从卡里现算）
-      ...(identitySource ? { identity: identitySource } : {}),
+      // 身份锚点：主角色仅本人入镜时加入；crossRef 按实际引用加入，imageSkill 统一逐个前置。
+      ...(identity.length > 0 ? { identity } : {}),
     });
     if (result.success && result.images.length > 0) {
       const urls = [];
