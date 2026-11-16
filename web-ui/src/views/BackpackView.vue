@@ -65,7 +65,7 @@
           <TransitionGroup v-if="store.activeEffects.length" name="effect-list" tag="div" class="effect-list">
             <article v-for="ef in store.activeEffects" :key="ef.id" class="effect-card" :class="'card-' + ef.kind">
               <div class="effect-thumb" :class="'thumb-' + ef.kind">
-                <img v-if="ef.item_image_url" :src="ef.item_image_url" alt=""/>
+                <img v-if="ef.item_image_url" :src="ef.item_image_url" alt="" loading="lazy" decoding="async"/>
                 <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
                   <path :d="effectIconPath(ef.kind)"/>
                 </svg>
@@ -204,7 +204,7 @@
           <div class="char-grid">
             <div v-for="char in sortedCharacters" :key="char.id" class="char-card" @click="pickCharacter(char)">
               <div class="char-card-inner">
-                <img v-if="char.avatar_path" :src="char.avatar_path" class="char-avatar"/>
+                <img v-if="char.avatar_path" :src="char.avatar_path" class="char-avatar" loading="lazy" decoding="async"/>
                 <span v-else class="char-avatar char-avatar-fallback">{{ (char.display_name || char.name || '?')[0] }}</span>
                 <span class="char-name">{{ char.display_name || char.name }}</span>
               </div>

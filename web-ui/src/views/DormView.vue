@@ -26,7 +26,8 @@
         </header>
         <ul v-if="room.members.length" class="dorm-members">
           <li v-for="member in room.members" :key="member.id" class="dorm-member">
-            <img v-if="member.avatar_path" :src="member.avatar_path" alt="" class="dorm-avatar" />
+            <!-- P2-04：成员头像按需加载（同一房间可能有十几个成员） -->
+            <img v-if="member.avatar_path" :src="member.avatar_path" alt="" class="dorm-avatar" loading="lazy" decoding="async" />
             <span v-else class="dorm-avatar is-blank" aria-hidden="true">{{ (member.display_name || '?').slice(0, 1) }}</span>
             <span class="dorm-member-name">{{ member.display_name }}</span>
           </li>

@@ -71,3 +71,28 @@ export function applyThemeMode(mode) {
 export function initTheme() {
   applyThemeMode(getSavedThemeMode())
 }
+
+/**
+ * 跨标签页同步主题（P2-03）。
+ *
+ * 场景：用户在标签 A 切成暗夜，标签 B 仍停在暖色，直到刷新。
+ * localStorage 的 storage 事件只在**其它**标签页写入时触发（本页写入不触发），
+ * 所以这里不会和本页的 setThemeMode 打架。
+ *
+ * @returns {() => void} 取消监听
+ */
+export function watchThemeAcrossTabs() {
+  if (typeof window === 'undefined') return () => {}
+  const onStorage = event => {
+    // key 为 null = 整个 localStorage 被清空（clear()），同样回到默认主题
+    if (event.key !== null && event.key !== THEME_MODE_STORAGE_KEY) return
+    const mode = getSavedThemeMode()
+    // 只改 DOM 与主题属性，不再回写 localStorage（避免 ping-pong）
+    applyTheme(mode === 'auto' ? resolveThemeByTime() : mode)
+    try {
+      window.dispatchEvent(new CustomEvent('linshe:theme-changed', { detail: { mode } }))
+    } catch { /* 事件派发失败不影响主题已生效 */ }
+  }
+  window.addEventListener('storage', onStorage)
+  return () => window.removeEventListener('storage', onStorage)
+}

@@ -109,7 +109,9 @@
             class="discussion-item"
           >
             <span class="comment-avatar" aria-hidden="true">
-              <img v-if="comment.author_avatar" :src="comment.author_avatar" alt="" />
+              <!-- P2-04：评论头像在长正文之下，属视口外内容，补 lazy/async。
+                   首屏主图（reader-image）刻意不加——它几乎总在首屏，加 lazy 反而拖慢。 -->
+              <img v-if="comment.author_avatar" :src="comment.author_avatar" alt="" loading="lazy" decoding="async" />
               <span v-else>{{ (comment.author || '匿').slice(0, 1) }}</span>
             </span>
             <div class="comment-main">

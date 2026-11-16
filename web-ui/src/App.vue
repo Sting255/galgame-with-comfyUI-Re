@@ -109,6 +109,7 @@ const changelogDialog = ref(null)
 const themeAutoTimer = ref(null)
 let stopPageZoomHint
 let stopSpeechPreparationHint
+let _stopThemeSync = null
 
 // App 级 SSE 订阅的退订函数（P0-06）。
 //
@@ -294,6 +295,8 @@ onMounted(async () => {
   // 按时间主题：打开期间每分钟 + 回到前台时刷新
   themeAutoTimer.value = window.setInterval(() => settings.refreshTheme(), 60_000)
   window.addEventListener('focus', settings.refreshTheme)
+  // P2-03：跟随其它标签页的主题变更（storage 事件只在别的标签页写入时触发）
+  _stopThemeSync = settings.followThemeAcrossTabs()
   loadUserConfig()  // 应用启动即加载，不阻塞渲染
   update.check()  // 版本更新检查：设置页「有更新噢」标签与侧边栏红点共用；失败静默
   await chat.loadCharacters()
@@ -386,6 +389,9 @@ onUnmounted(() => {
   window.removeEventListener('linshe:notification-opened', closeMobileSidebar)
   if (themeAutoTimer.value) window.clearInterval(themeAutoTimer.value)
   window.removeEventListener('focus', settings.refreshTheme)
+  // P2-03：退订跨标签主题同步，否则往返立绘页会累积监听器
+  _stopThemeSync?.()
+  _stopThemeSync = null
   if (window.__linsheHandleAndroidBack === handleAndroidBack) {
     delete window.__linsheHandleAndroidBack
   }

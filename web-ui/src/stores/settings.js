@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '../api/index.js'
-import { getSavedTheme, getSavedThemeMode, applyTheme, applyThemeMode, resolveThemeByTime } from '../theme.js'
+import { getSavedTheme, getSavedThemeMode, applyTheme, applyThemeMode, resolveThemeByTime, watchThemeAcrossTabs } from '../theme.js'
 
 export const useSettingsStore = defineStore('settings', () => {
   const comfyWidth = ref(1600)
@@ -193,5 +193,28 @@ export const useSettingsStore = defineStore('settings', () => {
     applyTheme(theme.value)
   }
 
-  return { comfyWidth, comfyHeight, eventWidth, eventHeight, imageProvider, imageGenMode, realtimeAffinityDisplay, bgmMuted, hasApiKey, weatherCity, theme, themeMode, savingKeys, loadError, isSaving, loadComfyConfig, setComfySize, setEventSize, setImageProvider, setImageGenMode, setRealtimeAffinityDisplay, setBgmMuted, setHasApiKey, setWeatherCity, setThemeMode, refreshTheme }
+  /**
+   * 跟随其它标签页的主题变更（P2-03）。
+   *
+   * watchThemeAcrossTabs() 已经改了 <html data-theme>，但 store 里的
+   * themeMode / theme 两个 ref 不会自动更新 ⇒ 设置页会显示旧选中项。
+   * 这里订阅它派发的自定义事件来同步状态。返回取消函数。
+   */
+  function followThemeAcrossTabs() {
+    if (typeof window === 'undefined') return () => {}
+    const stopWatch = watchThemeAcrossTabs()
+    const onChanged = event => {
+      const mode = event?.detail?.mode
+      if (!['warm', 'dark', 'auto'].includes(mode)) return
+      themeMode.value = mode
+      theme.value = mode === 'auto' ? resolveThemeByTime() : mode
+    }
+    window.addEventListener('linshe:theme-changed', onChanged)
+    return () => {
+      stopWatch()
+      window.removeEventListener('linshe:theme-changed', onChanged)
+    }
+  }
+
+  return { comfyWidth, comfyHeight, eventWidth, eventHeight, imageProvider, imageGenMode, realtimeAffinityDisplay, bgmMuted, hasApiKey, weatherCity, theme, themeMode, savingKeys, loadError, isSaving, loadComfyConfig, setComfySize, setEventSize, setImageProvider, setImageGenMode, setRealtimeAffinityDisplay, setBgmMuted, setHasApiKey, setWeatherCity, setThemeMode, refreshTheme, followThemeAcrossTabs }
 })

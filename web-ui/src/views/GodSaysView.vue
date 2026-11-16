@@ -218,7 +218,7 @@
       <div class="god-composer" @paste="onComposerPaste">
         <div v-if="draftImages.length" class="composer-images">
           <figure v-for="(image, index) in draftImages" :key="image.id" class="composer-image">
-            <img v-if="image.url" :src="image.url" alt="" />
+            <img v-if="image.url" :src="image.url" alt="" loading="lazy" decoding="async" />
             <div v-else class="composer-image-pending" role="status" aria-label="图片处理中"></div>
             <button type="button" class="composer-image-remove" aria-label="移除这张图片" @click="removeImage(index)">
               <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.2 3.2l5.6 5.6M8.8 3.2l-5.6 5.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
