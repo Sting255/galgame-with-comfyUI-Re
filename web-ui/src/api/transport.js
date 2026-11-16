@@ -7,6 +7,17 @@ export const REQUEST_TIMEOUTS = Object.freeze({
   sseConnect: 15_000,
   errorBody: 5_000,
   chatConnect: 8_000,
+  // SSE 读阶段的两种 deadline（P0-05）。
+  //
+  // 原来只给「拿到响应头」设了 deadline：服务端回了 200 + headers 之后再也不发帧，
+  // 或发到一半断掉，`reader.read()` 会永远挂着。群聊的表现是乐观气泡永远停在「发送中」，
+  // 后续消息全被 _dispatchChain 堵住，离开页面也不会释放。
+  //
+  // sseFirstEvent：连上之后多久必须看到第一帧（后端一轮剧本至少会先发 generate_start/msg_saved）
+  sseFirstEvent: 20_000,
+  // sseIdle：已开始收帧后，两帧之间允许的最大静默。生图阶段可能长时间无输出，
+  // 所以给得比首帧宽；真正的长任务是靠后端持续发心跳/进度事件维持的。
+  sseIdle: 120_000,
 })
 
 function abortError(reason) {
@@ -425,14 +436,59 @@ export async function rejectStreamResponse(res, path, { signal = null, abortBody
 /**
  * SSE 按空行派发完整帧；event: 行仍立即回调 (name, undefined)，供 chat store
  * 记录 lastEvent。多个 data: 行在帧结束时拼成 JSON。CRLF 可跨 chunk。
+ *
+ * 读阶段 deadline（P0-05）：
+ *   firstEventMs 连上后多久必须收到第一帧，否则按超时失败
+ *   idleMs       两帧之间允许的最大静默，超过即判定链路已死
+ * 两者都不设时行为与旧版一致（无限等待）。任一触发都会 cancel reader 并抛
+ * `REQUEST_TIMEOUT` 结构化错误，调用方据此进入失败态而不是永远挂着。
  */
-export async function consumeSSE(res, onEvent, { path = '' } = {}) {
+export async function consumeSSE(res, onEvent, {
+  path = '',
+  firstEventMs = REQUEST_TIMEOUTS.sseFirstEvent,
+  idleMs = REQUEST_TIMEOUTS.sseIdle,
+} = {}) {
   if (!res.body?.getReader) throw new TypeError('SSE response body is not readable')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let eventType = null
   let dataLines = []
+  // 0 = 还没收到任何帧（用 firstEventMs），1 = 已开始收帧（用 idleMs）
+  let phase = 0
+  let deadlineTimer = null
+  let deadlineError = null
+
+  const armDeadline = () => {
+    if (deadlineTimer !== null) clearTimeout(deadlineTimer)
+    const budget = phase === 0 ? firstEventMs : idleMs
+    if (!Number.isFinite(budget) || budget <= 0) { deadlineTimer = null; return }
+    deadlineTimer = setTimeout(() => {
+      deadlineTimer = null
+      deadlineError = requestError(
+        phase === 0
+          ? `连接已建立但 ${Math.ceil(budget / 1000)} 秒内没有收到任何数据（${path || 'stream'}）`
+          : `数据流已 ${Math.ceil(budget / 1000)} 秒没有新内容（${path || 'stream'}）`,
+        { code: 'REQUEST_TIMEOUT', path },
+      )
+      // cancel 让 read() 立即 reject，不必等远端 socket 自己断
+      try {
+        const cancellation = reader.cancel(deadlineError)
+        if (cancellation && typeof cancellation.catch === 'function') void cancellation.catch(() => {})
+      } catch { /* reader 已释放 */ }
+    }, budget)
+  }
+
+  const clearDeadline = () => {
+    if (deadlineTimer !== null) clearTimeout(deadlineTimer)
+    deadlineTimer = null
+  }
+
+  /** 收到任意一帧就推进 phase 并重置静默计时 */
+  const noteActivity = () => {
+    phase = 1
+    armDeadline()
+  }
 
   const dispatch = () => {
     const currentEvent = eventType || 'message'
@@ -465,6 +521,9 @@ export async function consumeSSE(res, onEvent, { path = '' } = {}) {
   }
 
   const processLine = line => {
+    // 任何一行（含 `: keep-alive` 注释）都算链路还活着：
+    // 后端可能长时间没有业务事件，只靠心跳注释维持连接，那不算「无活动」。
+    if (line !== '') noteActivity()
     if (line === '') {
       dispatch()
       return
@@ -502,6 +561,7 @@ export async function consumeSSE(res, onEvent, { path = '' } = {}) {
   }
 
   try {
+    armDeadline()
     for (;;) {
       const { done, value } = await reader.read()
       if (done) {
@@ -510,21 +570,28 @@ export async function consumeSSE(res, onEvent, { path = '' } = {}) {
         dispatch()
         return
       }
+      // 先喂数据再重置计时：drainLines 里每行都会 noteActivity，
+      // 这里兜住「一个 chunk 里没有任何完整行」的情况。
+      noteActivity()
       buffer += decoder.decode(value, { stream: true })
       drainLines(false)
     }
   } catch (error) {
+    // deadline 触发的 cancel 会让 read() 抛 AbortError，这里要换回我们自己的
+    // 结构化超时错误，否则调用方只会看到一个莫名的 AbortError。
+    const failure = deadlineError || error
     // 回调异常发生在解析循环里，异步 cancel 可能迟迟不 settle；立即返回，
     // 但挂上 catch 并在后面尝试 releaseLock，避免未处理拒绝。
     try {
-      const cancellation = reader.cancel(error)
+      const cancellation = reader.cancel(failure)
       if (cancellation && typeof cancellation.catch === 'function') {
         void cancellation.catch(() => {})
       }
     } catch { /* preserve original error */ }
     try { reader.releaseLock() } catch { /* reader remains locked until cancel settles */ }
-    throw error
+    throw failure
   } finally {
+    clearDeadline()
     try { reader.releaseLock() } catch { /* reader already released */ }
   }
 }

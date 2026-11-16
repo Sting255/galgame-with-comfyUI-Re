@@ -22,7 +22,22 @@ export const useGroupsStore = defineStore('groups', () => {
   // 内存窗口只负责限制 DOM；服务端分页由下面的每群独立游标负责。
   const { renderStart, visibleMessages, hasMoreOlder: windowHasMoreOlder } = useMessageWindow(messages)
   const playing = ref(false)        // 播放队列是否正在逐条上屏
-  const sending = ref(false)
+  // ── 按群的活动流（P0-05）──
+  //
+  // 原来只有一个全局 `sending` 布尔值 + 一条 `_dispatchChain`：
+  //   · A 群的流挂住（半断连接 / 后端永不结束）⇒ sending 永远为 true，B 群也发不出去；
+  //   · 离开页面没有取消入口，controller 也没保存，只能等它自己结束；
+  //   · 失败时只写 sendError，乐观气泡留在列表里，没有终态也没有重试。
+  // 现在按群记录 { abort, startedAt }，sending 变成「当前群是否有活跃流」的派生值。
+  //
+  // 注意：Map 不是响应式的，增删时手动 ++ _streamTick 让 computed 重算。
+  // 这两个声明必须在 sending 之前，否则 computed 首次求值会撞上 TDZ。
+  const _activeStreams = new Map()   // groupId → { abort, startedAt }
+  const _streamTick = ref(0)
+  const sending = computed(() => {
+    void _streamTick.value
+    return isSending(activeGroupId.value)
+  })
   const undoing = ref(false)
   // 发送失败的可见反馈（视图监听到就 toast 并清空）
   const sendError = ref(null)
@@ -430,6 +445,10 @@ export const useGroupsStore = defineStore('groups', () => {
     const tempMsg = {
       id: `temp_${clientMsgId}`, role: 'user', content: text,
       speaker_character_id: null, created_at: new Date().toISOString(), images: [],
+      // 投递状态（P0-05）：sending → sent / failed。失败时视图能给出重试入口，
+      // 而不是让气泡永远停在「发送中」。
+      delivery: 'sending',
+      clientMsgId,
     }
     session.messages.push(tempMsg)
     _setGroupPreview({ ...tempMsg, group_id: groupId })
@@ -490,18 +509,65 @@ export const useGroupsStore = defineStore('groups', () => {
     _dispatchChain = _dispatchChain.then(() => _dispatch(items)).catch(() => {})
   }
 
+  // ── 按群的活动流（P0-05）──
+  //
+  // 记录见文件顶部：_activeStreams / _streamTick / sending 都在 store 初始化时声明。
+  // 这里只放操作函数。
+
+  /** 某个群当前是否有未结束的发言流；不传则看是否有任何群在发 */
+  function isSending(groupId) {
+    if (groupId === null || groupId === undefined) return _activeStreams.size > 0
+    return _activeStreams.has(Number(groupId)) || _activeStreams.has(groupId)
+  }
+
+  /** 取消某个群（或全部）正在进行的发言流。只改变本地等待，不代表服务端已取消那一轮。 */
+  function cancelStream(groupId) {
+    const targets = (groupId === null || groupId === undefined)
+      ? [..._activeStreams.keys()]
+      : [groupId]
+    let cancelled = 0
+    for (const key of targets) {
+      const entry = _activeStreams.get(key)
+      if (!entry) continue
+      _activeStreams.delete(key)
+      try { entry.abort?.() } catch { /* 已经结束 */ }
+      cancelled += 1
+    }
+    _streamTick.value += 1
+    return cancelled
+  }
+
+  /** 把某条乐观气泡标成失败，让视图能显示「重试 / 已失败」而不是永远转圈 */
+  function _markUserMessagesFailed(items, reason) {
+    for (const item of items) {
+      const msg = item.tempMsg
+      if (!msg) continue
+      msg.delivery = 'failed'
+      msg.deliveryError = reason || '发送失败'
+    }
+    scrollSignal.value++
+  }
+
   async function _dispatch(items) {
     const groupId = items[0].groupId
     // 用户打断播放：抛弃未推完的分句，正在推的那条作为"+1"保留，后端同步删库
     const truncateAfterId = groupId === activeGroupId.value ? _interruptPlayback() : null
-    sending.value = true
+    // 同一群同时只允许一条流：后来的直接排队（_dispatchChain 已保证串行），
+    // 这里再挡一次，避免同群并发把 sending 计数搞乱。
+    if (_activeStreams.has(groupId)) {
+      _queueDispatch(items)
+      return
+    }
+    const abortable = api.groupChatStream(
+      groupId,
+      items.map(i => ({ text: i.text, client_msg_id: i.client_msg_id })),
+      truncateAfterId,
+    )
+    _activeStreams.set(groupId, { abort: abortable.abort, startedAt: Date.now() })
+    _streamTick.value += 1
+    for (const item of items) if (item.tempMsg) item.tempMsg.delivery = 'sending'
     try {
-      const { stream } = api.groupChatStream(
-        groupId,
-        items.map(i => ({ text: i.text, client_msg_id: i.client_msg_id })),
-        truncateAfterId,
-      )
-      const reader = stream.getReader()
+      const reader = abortable.stream.getReader()
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -512,6 +578,7 @@ export const useGroupsStore = defineStore('groups', () => {
           if (matched) {
             const tempId = matched.tempMsg.id
             matched.tempMsg.id = data.id
+            matched.tempMsg.delivery = 'sent'
             const group = groups.value.find(g => g.id === groupId)
             if (group?.last_message_id === tempId) group.last_message_id = data.id
           }
@@ -531,13 +598,23 @@ export const useGroupsStore = defineStore('groups', () => {
       }
       // 群列预览由 _drainQueue 在气泡真正上屏时逐条更新，
       // 此处不立即重载 DB 最后一句，否则会越过播放队列抢跑。
+      for (const item of items) {
+        // 流正常结束但用户气泡还没拿到服务端 id：说明这一轮没有落库成功
+        if (item.tempMsg && item.tempMsg.delivery !== 'sent') item.tempMsg.delivery = 'sent'
+      }
     } catch (e) {
-      console.warn('[groups] sendMessage failed:', e.message)
+      const cancelled = e?.name === 'AbortError'
+      console.warn('[groups] sendMessage failed:', e?.message)
       // 用户气泡已经乐观上屏了。失败后如果不告诉用户，那条气泡会永远留在列表里，
       // 用户以为发出去了、一直在等一条不会到来的回复（2026-10-22 修）。
-      sendError.value = { message: e?.message || '发送失败', groupId, at: Date.now() }
+      // P0-05：现在还会把气泡标成失败并允许重试，而不是只弹一次 toast。
+      if (!cancelled) {
+        _markUserMessagesFailed(items, e?.message)
+        sendError.value = { message: e?.message || '发送失败', groupId, at: Date.now() }
+      }
     } finally {
-      sending.value = false
+      _activeStreams.delete(groupId)
+      _streamTick.value += 1
     }
   }
 
@@ -547,7 +624,7 @@ export const useGroupsStore = defineStore('groups', () => {
   /** 触发角色继续聊。返回 true 表示后端接受了触发（消息稍后经统一 SSE 到达） */
   async function nudge() {
     const groupId = activeGroupId.value
-    if (!groupId || sending.value || _nudging) return false
+    if (!groupId || isSending(groupId) || _nudging) return false
     _nudging = true
     try {
       const r = await api.nudgeGroup(groupId)
@@ -563,7 +640,7 @@ export const useGroupsStore = defineStore('groups', () => {
   async function undoLastRound() {
     const groupId = activeGroupId.value
     if (!groupId) throw new Error('当前没有打开群聊')
-    if (sending.value || playing.value) throw new Error('当前回复还没有结束，请稍后再撤回')
+    if (isSending(groupId) || playing.value) throw new Error('当前回复还没有结束，请稍后再撤回')
     if (undoing.value) return null
 
     undoing.value = true
@@ -728,6 +805,37 @@ export const useGroupsStore = defineStore('groups', () => {
     _unsubs = []
   }
 
+  /** 离开群聊页时调用：取消该群的活跃流，避免后台挂着一条永远不会结束的连接 */
+  function cancelGroupStream(groupId) {
+    return cancelStream(groupId ?? activeGroupId.value)
+  }
+
+  /**
+   * 重试一条投递失败的用户消息（P0-05）。
+   * 不重新插入气泡，只把同一条内容再发一次；成功时 tempMsg 会被服务端 id 替换。
+   */
+  function retryFailedMessage(message) {
+    if (!message || message.delivery !== 'failed') return false
+    const groupId = activeGroupId.value
+    if (!groupId) return false
+    const session = _getSession(groupId)
+    if (!session) return false
+    const target = session.messages.find(m => m === message || m.id === message.id)
+    if (!target) return false
+    const text = String(target.content || '')
+    if (!text.trim()) return false
+    target.delivery = 'sending'
+    delete target.deliveryError
+    scrollSignal.value++
+    _queueDispatch([{
+      text,
+      client_msg_id: target.clientMsgId || `g${groupId}_${Date.now()}_retry`,
+      tempMsg: target,
+      groupId,
+    }])
+    return true
+  }
+
   return {
     groups, activeGroupId, activeGroup, messages, visibleMessages, hasMoreOlder, lastSeenDividerId,
     playing, sending, undoing, sendError, scrollSignal, totalUnread, lullCount, resetLullOnNewDay,
@@ -735,6 +843,7 @@ export const useGroupsStore = defineStore('groups', () => {
     setGroupAvatar,
     selectGroup, leaveGroup, expandWindow, revealLastSeenDivider, sendMessage, nudge, undoLastRound,
     connectSSE, disconnectSSE, markGroupImageLoaded,
+    isSending, cancelGroupStream, retryFailedMessage,
   }
 })
 

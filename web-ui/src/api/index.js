@@ -638,7 +638,7 @@ export function chatStream(characterId, message, clientMsgId, imageMode = 'smart
           } else {
             emitStream({ type: 'data', event, data })
           }
-        })
+        }, { path: `/characters/${characterId}/chat` })
         endStream()
       } catch (err) {
         failStream(err)
@@ -761,7 +761,7 @@ export function groupChatStream(groupId, items, truncateAfterMsgId = null) {
           if (data !== undefined) {
             emitStream({ type: 'data', event, data })
           }
-        })
+        }, { path: `/groups/${groupId}/chat` })
         endStream()
       } catch (err) {
         if (controller.signal.aborted) endStream()

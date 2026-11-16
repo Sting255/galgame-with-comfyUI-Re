@@ -790,6 +790,13 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
     if (event === 'token' && data?.emojiKeys?.length) publishStandingKeys(standingTurn, data.emojiKeys);
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
+  // 心跳（P0-05）：生图与长文本生成期间可能几十秒没有任何业务事件。
+  // 前端有「无活动超时」，没有心跳会被误判成断流。注释行是 SSE 合法 no-op。
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded || res.destroyed) { clearInterval(heartbeat); return; }
+    try { res.write(':keepalive\n\n'); } catch { clearInterval(heartbeat); }
+  }, 15000);
+  res.on('close', () => clearInterval(heartbeat));
 
   try {
     // 1. 保存用户消息（双表：raw_messages 完整原文 + messages 单条展示）
@@ -828,6 +835,7 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
       send('response_end', {});
       send('dialogue_saved', { raw_id: completedReply.rawId });
       getStandingDisplay().complete(standingTurn);
+      clearInterval(heartbeat);
       res.end();
       return;
     }
@@ -2465,6 +2473,7 @@ ${coreRules}
     console.error('Chat error:', err);
     send('error', { message: err.message });
   } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 });

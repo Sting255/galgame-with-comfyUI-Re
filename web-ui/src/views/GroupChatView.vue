@@ -90,7 +90,7 @@
             <div v-if="msg.role !== 'user' && !isSameSpeaker(idx)" class="speaker-name">{{ msg.speaker_name || '?' }}</div>
             <div
               v-if="msg.content" class="msg-bubble"
-              :class="{ 'has-speech': canSpeak(msg), 'speech-revealed': touchedSpeechBubble === msg.id }"
+              :class="{ 'has-speech': canSpeak(msg), 'speech-revealed': touchedSpeechBubble === msg.id, 'msg-failed': msg.delivery === 'failed' }"
               @pointerup="revealSpeechBubble($event, msg.id)"
             >
               <div class="msg-text">{{ msg.content }}</div>
@@ -101,6 +101,12 @@
                 :character-id="msg.speaker_character_id" :character-name="msg.speaker_name || memberOf(msg)?.display_name"
                 :message-id="msg.id" :group-id="store.activeGroupId" :touch-target="isMobile"
               />
+            </div>
+            <!-- 投递失败（P0-05）：气泡留在原位，但明确标出失败并可重试，
+                 不让用户对着一条永远转圈的消息干等。 -->
+            <div v-if="msg.role === 'user' && msg.delivery === 'failed'" class="msg-delivery-failed">
+              <span>{{ msg.deliveryError || '发送失败' }}</span>
+              <linshe-button variant="link" size="sm" @click="store.retryFailedMessage(msg)">重试</linshe-button>
             </div>
             <!-- 本次会话内的生图任务：与私聊同款遮罩/进度/错误气泡；历史图片直接展示 -->
             <ImageGenBubble
@@ -1159,6 +1165,9 @@ onUnmounted(() => {
   clearTimeout(autoScrollTimer)
   teardownResizeObserver()
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  // 离开页面时取消本群的发言流（P0-05）：否则挂住的连接会一直留着，
+  // 用户以为已经离开，后台却还在等一条永远不会到来的结束帧。
+  store.cancelGroupStream()
   store.leaveGroup()
 })
 
@@ -1748,8 +1757,19 @@ async function clearGroupAvatar() {
 }
 .message.assistant .msg-bubble {
   background:var(--bg-secondary); color:var(--text-primary);
-  border-radius: 4px 14px 14px 14px;
-  box-shadow: var(--shadow-hard-sm);
+  border-radius: 4px 14px 14px 14px;  box-shadow: var(--shadow-hard-sm);
+}
+/* 投递失败的用户气泡：降低不透明度并加虚线描边，配合下方「发送失败 · 重试」一行 */
+.message.user .msg-bubble.msg-failed {
+  opacity: 0.72;
+  outline: 1px dashed rgba(255, 255, 255, 0.55);
+  outline-offset: -3px;
+}
+.msg-delivery-failed {
+  display: flex; align-items: center; gap: 6px;
+  margin: 4px 4px 0;
+  font-size: 12px; color: var(--danger);
+  justify-content: flex-end;
 }
 .msg-text { font-size:14px; line-height:1.6; white-space:pre-wrap; }
 

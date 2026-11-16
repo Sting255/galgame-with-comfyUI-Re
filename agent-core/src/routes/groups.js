@@ -401,7 +401,18 @@ router.post('/:id/chat', async (req, res) => {
   // 登记为"活跃前台聊天流"：记忆整理 daemon 据此让路（1v1 聊天在 chat.js 同样登记）
   chatStreamStarted();
   res.on('close', () => chatStreamEnded());
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const send = (event, data) => {
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  // 心跳（P0-05）：本轮剧本与生图可能长时间没有任何业务事件。
+  // 前端现在有「无活动超时」（sseIdle），没有心跳就会被误判成链路已死。
+  // 注释行在 SSE 规范里是合法的 no-op，前端解析时也把它当作「链路还活着」。
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded || res.destroyed) { clearInterval(heartbeat); return; }
+    try { res.write(':keepalive\n\n'); } catch { clearInterval(heartbeat); }
+  }, 15000);
+  res.on('close', () => clearInterval(heartbeat));
 
   try {
     // 打断截断：上一轮仍在生成时跳过（引擎还在写新行，删了也白删）
@@ -436,6 +447,7 @@ router.post('/:id/chat', async (req, res) => {
     console.error(`[groups] chat error for group ${groupId}:`, err.message);
     send('error', { message: err.message });
   } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 });
