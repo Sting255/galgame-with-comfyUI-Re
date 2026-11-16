@@ -59,6 +59,46 @@ class MainActivity : AppCompatActivity() {
 
     private val prefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
 
+    /**
+     * P0-03：判断某个 URL 是否属于「已批准来源」。
+     *
+     * 已批准来源 = 用户在设置页填的那个服务地址的 origin（scheme + host + port）。
+     * 只有它能在 WebView 内部导航；其它一切（外链、别的站点、非 http 协议）
+     * 都交给系统浏览器/处理器，壳内不再承载，因此也拿不到原生桥。
+     *
+     * 用 Uri 解析而不是字符串前缀比较：`http://192.168.1.5:3099.evil.com` 这种
+     * 前缀攻击用 startsWith 是挡不住的。
+     */
+    private fun isApprovedOrigin(target: Uri): Boolean {
+        val approved = runCatching { Uri.parse(prefs.getString(KEY_URL, null) ?: return false) }.getOrNull()
+            ?: return false
+        if (approved.scheme != target.scheme) return false
+        if (!approved.host.equals(target.host, ignoreCase = true)) return false
+        val approvedPort = if (approved.port > 0) approved.port else defaultPortFor(approved.scheme)
+        val targetPort = if (target.port > 0) target.port else defaultPortFor(target.scheme)
+        return approvedPort == targetPort
+    }
+
+    private fun defaultPortFor(scheme: String?): Int = when (scheme?.lowercase()) {
+        "https" -> 443
+        "http" -> 80
+        else -> -1
+    }
+
+    /**
+     * 桥方法的第一道闸：当前页面必须仍在已批准来源上。
+     *
+     * addJavascriptInterface 挂上之后对所有页面可见，无法按页面撤销；
+     * 所以每个桥方法自己先确认「现在这个页面是不是我们的」。
+     * 页面若被重定向到外站（shouldOverrideUrlLoading 已拦，这里是第二道），
+     * 桥调用会直接失败而不是默默执行。
+     */
+    private fun requireApprovedOrigin(): String? {
+        val current = webView.url ?: return "当前没有已加载的页面"
+        val uri = runCatching { Uri.parse(current) }.getOrNull() ?: return "页面地址无效"
+        return if (isApprovedOrigin(uri)) null else "当前页面不是已批准来源，原生桥不可用"
+    }
+
     private val notifyToggleIds = mapOf(
         SseNotificationService.CAT_CHAT to R.id.notifyChat,
         SseNotificationService.CAT_MOMENTS to R.id.notifyMoments,
@@ -130,22 +170,32 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            // P0-03：不再全局放行混合内容。
+            // 原来 MIXED_CONTENT_ALWAYS_ALLOW 会让 HTTPS 页面里的 HTTP 资源照常加载，
+            // 在不可信网络上等于放弃传输保密性。Compatibility 只放行"被动混合内容"
+            // （图片等），脚本类混合内容仍然拦截。
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             useWideViewPort = true
             loadWithOverviewMode = true
         }
 
-        // 网页调用的原生存储桥（图片详情「下载」按钮），见 web-ui ImageLightbox
+        // 网页调用的原生存储桥（图片详情「下载」按钮），见 web-ui ImageLightbox。
+        // P0-03：桥对象仍常驻（addJavascriptInterface 无法按页面切换），
+        // 但 WebBridge 的每个方法都会先校验当前页面 origin，
+        // 不是已批准来源就抛错——见 WebBridge 内的 requireApprovedOrigin。
         webView.addJavascriptInterface(WebBridge(), "AndroidBridge")
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView, request: WebResourceRequest
             ): Boolean {
-                val url = request.url.toString()
-                if (url.startsWith("http://") || url.startsWith("https://")) return false
-                // 非 http 协议（tel:/mailto: 等）交给系统
-                runCatching { startActivity(Intent(Intent.ACTION_VIEW, request.url)) }
+                val url = request.url
+                // P0-03：只允许在 WebView 内部导航到**已批准来源**。
+                // 原来是「http/https 一律放行」，于是用户点一条外链就留在壳里，
+                // 而壳里挂着原生桥 —— 第三方页面因此获得了保存文件等能力。
+                // 现在：已批准来源留在 WebView；其它 http(s) 与所有非 http 协议交系统浏览器/处理器。
+                if (isApprovedOrigin(url)) return false
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, url)) }
                 return true
             }
 
@@ -418,8 +468,33 @@ class MainActivity : AppCompatActivity() {
      * "ok" 成功；"permission_pending" 已发起存储权限弹窗，授权后自动落盘；其余为错误信息。
      */
     inner class WebBridge {
+        /**
+         * P0-02：网页配对成功后把设备令牌下发给原生层，供后台 SSE 使用。
+         *
+         * 网页里的 HttpOnly Cookie 不会共享给 HttpURLConnection，所以后台通知
+         * 必须有自己的凭证。令牌由服务端按设备签发，网页拿到后经这里交过来，
+         * 加密存在 Keystore 保护的偏好里。
+         *
+         * 与 saveImage 同样先过 origin 校验：只有我们的页面才能下发/清除令牌。
+         */
+        @JavascriptInterface
+        fun setDeviceToken(token: String?): String {
+            requireApprovedOrigin()?.let { return it }
+            DeviceTokenStore.save(this@MainActivity, token)
+            return "ok"
+        }
+
+        /** 当前是否已有设备令牌（网页据此显示「后台通知已授权」） */
+        @JavascriptInterface
+        fun hasDeviceToken(): Boolean {
+            if (requireApprovedOrigin() != null) return false
+            return DeviceTokenStore.hasToken(this@MainActivity)
+        }
+
         @JavascriptInterface
         fun saveImage(name: String?, dataUrl: String?): String {
+            // P0-03：先确认当前页面仍属于已批准来源，否则拒绝执行
+            requireApprovedOrigin()?.let { return it }
             val mime = Regex("^data:(image/[a-z0-9.+-]+);base64,").find(dataUrl ?: "")?.groupValues?.get(1)
                 ?: return "图片数据格式错误"
             val base64 = (dataUrl ?: "").substringAfter(";base64,", "")

@@ -113,7 +113,8 @@ const httpLifecycle = createHttpLifecycle();
 app.use(httpLifecycle.middleware);
 
 // 中间件
-app.use('/api/access/session', express.json({ limit: '1kb' }));
+// /api/access/* 在鉴权中间件**之前**就要有 JSON 解析：配对与设备令牌签发都读 body。
+app.use('/api/access', express.json({ limit: '4kb' }));
 app.use(createAccessControl({
   token: loadAccessToken(process.env.LINSHE_ACCESS_TOKEN_PATH || (config.dbPath === ':memory:' ? null : path.join(DATA_DIR, '.access-token'))),
   development: config.isDev,

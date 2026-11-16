@@ -28,6 +28,8 @@ class SseNotificationService : Service() {
     companion object {
         private const val SERVICE_NOTIFICATION_ID = 1
         private const val CHANNEL_SERVICE = "service"
+        // P0-02：凭证失效提示的独立通知 id（不与具体消息通知抢位置）
+        private const val NOTIFY_ID_REPAIR = 2
 
         const val CAT_CHAT = "chat"
         const val CAT_MOMENTS = "moments"
@@ -172,8 +174,23 @@ class SseNotificationService : Service() {
         // 服务端每 30s 心跳，90s 读不到即判定死链
         conn.readTimeout = 90000
         conn.setRequestProperty("Accept", "text/event-stream")
+        // P0-02：带上设备令牌。
+        //
+        // 原来这里只有 Accept 头。远程 /api/stream 需要配对 Cookie 或 Bearer，
+        // 而网页里的 HttpOnly Cookie 不会共享给 HttpURLConnection ⇒
+        // 「网页配对成功、后台通知永远收不到」，且 401 被当成普通断线无限重连。
+        // 令牌由网页配对成功后通过受 origin 保护的原生桥下发并持久化（见 DeviceTokenStore）。
+        DeviceTokenStore.load(this)?.let { conn.setRequestProperty("Authorization", "Bearer $it") }
         currentConn = conn
         try {
+            val status = conn.responseCode
+            if (status == 401 || status == 403) {
+                // 凭证失效：停止本轮重连，等网页重新配对下发新令牌。
+                // 继续退避重试只会无意义地打服务端，用户也永远看不到「需要重新配对」。
+                notifyRepairRequired(status)
+                running = false
+                return false
+            }
             conn.inputStream.bufferedReader().use { reader ->
                 var event = ""
                 val data = StringBuilder()
@@ -202,6 +219,33 @@ class SseNotificationService : Service() {
             conn.disconnect()
         }
         return gotData
+    }
+
+    /**
+     * 凭证被拒时给用户一条可执行的提示（P0-02）。
+     * 只提示一次，避免每次服务重启都弹一条。
+     */
+    private fun notifyRepairRequired(status: Int) {
+        val prefs = getSharedPreferences("shell", MODE_PRIVATE)
+        val lastNotice = prefs.getLong("sse_repair_notice_at", 0L)
+        if (System.currentTimeMillis() - lastNotice < 10 * 60_000L) return
+        prefs.edit().putLong("sse_repair_notice_at", System.currentTimeMillis()).apply()
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("通知已断开")
+            .setContentText("设备凭证已失效（HTTP $status），请在网页里重新配对")
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        runCatching { NotificationManagerCompat.from(this).notify(NOTIFY_ID_REPAIR, notification) }
     }
 
     private fun sleepQuiet(ms: Long) {

@@ -2,6 +2,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
+import { verifyDeviceToken, issueDeviceToken, listDeviceTokens, revokeDeviceToken, revokeAllDeviceTokens } from './deviceTokens.js';
+
+const BEARER_PREFIX = 'bearer ';
+
+/**
+ * 设备令牌校验的安全包装（P0-02）。
+ *
+ * 鉴权中间件不能因为 DB 未就绪/读失败就抛异常把请求打成 500：
+ * 那种情况下应当按「未授权」处理，让客户端走配对流程。
+ */
+function verifyDeviceTokenSafe(authorizationHeader) {
+  const header = String(authorizationHeader || '').trim();
+  if (header.length <= BEARER_PREFIX.length) return false;
+  if (header.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX) return false;
+  const value = header.slice(BEARER_PREFIX.length).trim();
+  if (!value) return false;
+  try {
+    return verifyDeviceToken(undefined, value);
+  } catch {
+    return false;
+  }
+}
 
 export function loadAccessToken(file) {
   if (!file) return randomBytes(24).toString('base64url');
@@ -61,6 +83,11 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
       if (key === cookieName) cookie = value.join('=');
     }
     const authorized = local || sameSecret(cookie, session) || sameSecret(req.headers.authorization, `Bearer ${token}`);
+    // P0-02：设备令牌（Bearer 的另一种合法取值）。
+    // 根配对码是全局的，撤销一台等于撤销所有；原生 SSE 需要每设备独立、可单独撤销的凭证。
+    // 这里只在根配对码不匹配时才去查设备令牌，避免常规路径多一次 DB 读取。
+    const deviceAuthorized = !authorized && verifyDeviceTokenSafe(req.headers.authorization);
+    const isAuthorized = authorized || deviceAuthorized;
     // 让路由能区分「本机直连」与「已配对远程设备」。
     // 背景（P0-01）：/api/maibot 注释写「仅本机使用」，但它挂在 /api 下会被配对 Cookie 放行，
     // 于是已配对设备能读写 MaiBot 管理凭据。写权限必须按这个标记再收一次。
@@ -72,7 +99,8 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
     catch { return res.status(400).json({ error: '无效的访问路径' }); }
     if (pathname === '/api/access' && req.method === 'GET') {
       res.setHeader('Cache-Control', 'no-store');
-      return res.json({ authorized, local, ...(local ? { pairingCode: token } : {}) });
+      // 设备令牌也算已授权：原生 SSE 用 Bearer 时，网页这边同样应看到「已连接」
+      return res.json({ authorized: isAuthorized, local, ...(local ? { pairingCode: token } : {}) });
     }
     if (pathname === '/api/access/session' && req.method === 'POST') {
       const now = Date.now();
@@ -89,10 +117,38 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
       res.cookie(cookieName, session, { httpOnly: true, sameSite: 'strict', secure: req.secure, path: '/', maxAge: 30 * 24 * 3600_000 });
       return res.json({ ok: true });
     }
+    // ── 设备令牌签发（P0-02）──
+    //
+    // 配对成功后，网页把这里的令牌交给原生层（Android 桥），原生 SSE 用 Bearer 连接。
+    // 只允许**已授权**的请求签发：否则任何能访问 /api/access/session 的人都能自助发令牌。
+    if (pathname === '/api/access/device-token' && req.method === 'POST') {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!isAuthorized) return res.status(401).json({ error: '请先完成配对再申请设备令牌', code: 'PAIRING_REQUIRED' });
+      try {
+        const issued = issueDeviceToken(undefined, { label: req.body?.label || '' });
+        // 原文只在这里出现一次，之后任何接口都只给元数据
+        return res.json({ ok: true, ...issued });
+      } catch (error) {
+        return res.status(500).json({ error: `签发设备令牌失败：${error.message}` });
+      }
+    }
+    if (pathname === '/api/access/device-tokens' && req.method === 'GET') {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!isAuthorized) return res.status(401).json({ error: '请先完成配对', code: 'PAIRING_REQUIRED' });
+      return res.json({ tokens: listDeviceTokens() });
+    }
+    if (pathname === '/api/access/device-tokens/revoke' && req.method === 'POST') {
+      res.setHeader('Cache-Control', 'no-store');
+      // 撤销是敏感操作：只允许本机（远程设备不能互相踢下线）
+      if (!local) return res.status(403).json({ error: '撤销设备令牌请在运行邻舍的电脑本机操作' });
+      const id = String(req.body?.id || '').trim();
+      if (id) return res.json(revokeDeviceToken(undefined, id));
+      return res.json(revokeAllDeviceTokens(undefined));
+    }
     // 健康检查不含聊天/配置内容，启动器必须能在配对前检查实例身份。
     if (pathname === '/api/health') return next();
     const protectedPath = /^\/(api(?:\/|$)|images(?:\/|$)|avatars(?:\/|$)|town-assets(?:\/|$))/.test(pathname);
-    if (protectedPath && !authorized) return res.status(401).json({ error: '请先在本机设置页获取配对码并连接此设备', code: 'PAIRING_REQUIRED' });
+    if (protectedPath && !isAuthorized) return res.status(401).json({ error: '请先在本机设置页获取配对码并连接此设备', code: 'PAIRING_REQUIRED' });
     if (!local && (pathname === '/api/shutdown' || pathname === '/api/config/llm/key' || /^\/api\/data(?:\/|$)/.test(pathname))) {
       return res.status(403).json({ error: '数据备份、恢复与密钥操作请在电脑本机完成' });
     }

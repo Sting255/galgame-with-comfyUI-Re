@@ -21,15 +21,39 @@
 import { ref, onMounted } from 'vue'
 import LinsheInput from './ui/LinsheInput.vue'
 import LinsheButton from './ui/LinsheButton.vue'
-import { getDeviceAccess, pairDevice } from '../api/access.js'
+import { getDeviceAccess, pairDevice, requestDeviceToken } from '../api/access.js'
 const authorized = ref(false)
 const loading = ref(true)
 const busy = ref(false)
 const code = ref('')
 const error = ref('')
+
+/**
+ * 把设备令牌交给原生层（P0-02）。
+ *
+ * 只有 Android 壳里有 AndroidBridge；网页端（含桌面浏览器）走的是 HttpOnly Cookie，
+ * 不需要也不该拿到这个令牌。桥调用失败静默：网页功能不受影响，只是后台通知没授权。
+ */
+async function pushTokenToNative() {
+  const bridge = window.AndroidBridge
+  if (!bridge || typeof bridge.setDeviceToken !== 'function') return
+  try {
+    // 已经下发过就不重复申请，避免每次进页面都多一条令牌记录
+    if (typeof bridge.hasDeviceToken === 'function' && bridge.hasDeviceToken() === true) return
+    const issued = await requestDeviceToken('android-shell')
+    if (issued?.token) bridge.setDeviceToken(issued.token)
+  } catch (e) {
+    console.warn('[access] 设备令牌下发失败（后台通知将不可用）:', e?.message || e)
+  }
+}
+
 async function check() {
   loading.value = true
-  try { authorized.value = (await getDeviceAccess()).authorized; error.value = '' }
+  try {
+    authorized.value = (await getDeviceAccess()).authorized
+    error.value = ''
+    if (authorized.value) await pushTokenToNative()
+  }
   catch (e) { error.value = e.message }
   finally { loading.value = false }
 }
