@@ -20,13 +20,24 @@
         <linshe-button v-if="exportInfoError" variant="link" size="sm" :disabled="controlsDisabled" @click="refreshExportInfo">重试读取</linshe-button>
         <div class="toggle-row">
           <div>
-            <div class="tl">包含模型配置（含 API Key）</div>
-            <div class="td">归档里会带上 config\.env；里面有你的密钥，这份备份不要发给别人</div>
+            <div class="tl">包含凭据（API Key / Token）</div>
+            <div class="td">模型、语音、NovelAI、MaiBot 的密钥都存在数据库里，默认导出会被清空；勾选后才随包带走。含凭据的备份不要发给别人</div>
+          </div>
+          <linshe-switch
+            v-model="exportIncludeSecrets"
+            :disabled="controlsDisabled"
+            aria-label="导出时包含凭据（API Key / Token）"
+          />
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="tl">附带 config\.env</div>
+            <div class="td">除数据库之外，磁盘上的 .env 也一并打包；它同样含有密钥</div>
           </div>
           <linshe-switch
             v-model="exportIncludeConfig"
             :disabled="controlsDisabled"
-            aria-label="导出时包含模型配置（含 API Key）"
+            aria-label="导出时附带 config/.env"
           />
         </div>
 
@@ -130,8 +141,14 @@ async function loadAccess() {
 }
 // 2026-11-06 真机：默认改成「带上」——用户导入备份后模型全挂（OPENAI_API_KEY missing），
 // 才发现导出时没勾这个开关，而换包/重装场景下这份配置丢了要手动重填一遍。
-// 开关仍在界面上，面板里的警示文案（备份含密钥、不要外发）保留。
+//
+// 2026-11-16（P0-04）拆分：以前这个开关只决定要不要带 .env，但 Key 本来就在 SQLite 里，
+// 「不勾 = 不含密钥」是假话。现在拆成两个开关：
+//   exportIncludeSecrets → 数据库内的 provider 凭据（默认关，后端会真的清空值）
+//   exportIncludeConfig  → 磁盘上的 config/.env（默认开，换机后不用重填）
+// 换机场景仍然开箱可用：.env 里有 LLM Key，数据库里的那份清空也不影响启动。
 const exportIncludeConfig = ref(true)
+const exportIncludeSecrets = ref(false)
 const exportBusy = ref(false)
 const importBusy = ref(false)
 const exportInfoLoading = ref(false)
@@ -166,7 +183,10 @@ async function onExportData() {
   exportBusy.value = true
   importNotice.value = null
   try {
-    const { fileName, bytes } = await downloadDataArchive(exportIncludeConfig.value)
+    const { fileName, bytes } = await downloadDataArchive({
+      includeConfig: exportIncludeConfig.value,
+      includeSecrets: exportIncludeSecrets.value,
+    })
     toastFn?.(`已导出 ${fileName}（${formatBytes(bytes)}）`, 'success')
     await refreshExportInfo()
   } catch (err) {

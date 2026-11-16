@@ -1191,11 +1191,15 @@ function backupHttpError(res, path, signal, abortBody) {
 
 /**
  * 触发浏览器下载整个数据归档。
- * @param {boolean} includeConfig 是否把 config/.env（含 API Key）一起打包
+ * @param {object} options
+ * @param {boolean} [options.includeConfig] 是否把 config/.env（含 API Key）一起打包
+ * @param {boolean} [options.includeSecrets] 是否保留数据库内的 provider 凭据。
+ *   默认 false：后端会在快照副本上清空 LLM / NovelAI / TTS / MaiBot / Vertex 的 Key，
+ *   结构保留、值置空，导入后需要重新填写。只有显式勾选才带走。
  * @returns {Promise<{fileName:string, bytes:number}>}
  */
-export async function downloadDataArchive(includeConfig = false) {
-  const path = `/data/export?includeConfig=${includeConfig ? 1 : 0}`
+export async function downloadDataArchive({ includeConfig = false, includeSecrets = false } = {}) {
+  const path = `/data/export?includeConfig=${includeConfig ? 1 : 0}&includeSecrets=${includeSecrets ? 1 : 0}`
   return withDeadline(async signal => {
     const res = await fetch(`${BASE}${path}`, { signal })
     if (!res.ok) {

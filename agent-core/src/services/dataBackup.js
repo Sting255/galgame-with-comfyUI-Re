@@ -45,6 +45,7 @@ import { refresh as refreshCharSearch } from './characterSearch.js';
 import { withDatabaseMaintenance, requireDatabaseRecovery } from '../db/maintenance.js';
 import { validateBackupDatabase } from './backup/databaseValidation.js';
 import { createRestoreJournal } from './backup/restoreFiles.js';
+import { inspectSnapshotSecrets, SECRET_CLASSES } from './backup/secretScrubber.js';
 import {
   TYPE_DIR, TYPE_FILE,
   writeTarGz, readTarGzStream, isGzip,
@@ -466,7 +467,14 @@ async function snapshotDbTo(file) {
 
 /**
  * 生成一份 .tar.gz 备份（流式写文件，不整包进内存）。
- * @param {{includeConfig?:boolean, roots?:object, outDir?:string}} options
+ *
+ * @param {object} options
+ * @param {boolean} [options.includeConfig] 是否附带 `.env`
+ * @param {boolean} [options.includeSecrets] 是否保留数据库内的凭据。
+ *   为 false（默认）时**在快照副本上清空**秘密值——保留结构，只置空值，
+ *   这样导入端不会因为缺字段而解析失败。见 backup/secretScrubber.js。
+ * @param {object} [options.roots]
+ * @param {string|null} [options.outDir]
  * @returns {Promise<{file:string, workDir:string, fileName:string, bytes:number, manifest:object, cleanup:Function}>}
  */
 /**
@@ -478,7 +486,7 @@ async function snapshotDbTo(file) {
  */
 let exportRunning = false;
 
-export async function createBackup({ includeConfig = false, roots = resolveRoots(), outDir = null } = {}) {
+export async function createBackup({ includeConfig = false, includeSecrets = false, roots = resolveRoots(), outDir = null } = {}) {
   if (exportRunning) {
     throw new BackupError('已经在导出一份备份了，请等它完成', { status: 429, detail: '导出是重内存操作，同时跑多份会显著抬高内存峰值' });
   }
@@ -490,7 +498,7 @@ export async function createBackup({ includeConfig = false, roots = resolveRoots
     const cleanup = async () => { await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {}); };
 
     try {
-      return await buildBackupInto(workDir, { includeConfig, roots, started, cleanup });
+      return await buildBackupInto(workDir, { includeConfig, includeSecrets, roots, started, cleanup });
     } catch (err) {
       // 生成中途失败：临时目录不留尸体（成功的归档由调用方 cleanup）
       await cleanup();
@@ -502,9 +510,12 @@ export async function createBackup({ includeConfig = false, roots = resolveRoots
   }
 }
 
-async function buildBackupInto(workDir, { includeConfig, roots, started, cleanup }) {
+async function buildBackupInto(workDir, { includeConfig, includeSecrets, roots, started, cleanup }) {
   const snapshotFile = path.join(workDir, 'agent.db');
   await snapshotDbTo(snapshotFile);
+  // 秘密分类必须作用在快照上：运行中的库一个字都不改。
+  // includeSecrets=false 时这里会真的把 Key 清空，而不是只改 UI 文案。
+  const secrets = inspectSnapshotSecrets(snapshotFile, { scrub: !includeSecrets });
   const dbBytes = (await fs.promises.stat(snapshotFile)).size;
 
   // 用户资产：avatars / town（含 town/assets）/ **images**，目录条目一并带上（空目录也能还原）
@@ -546,6 +557,13 @@ async function buildBackupInto(workDir, { includeConfig, roots, started, cleanup
     app: BACKUP_APP,
     exportedAt: started.toISOString(),
     includeConfig: Boolean(envInfo),
+    // 秘密分类：只写类别名，绝不写值或键名。
+    // secretsIncluded=false 表示快照库里的凭据已被清空（结构保留），导入端据此提示重新填写。
+    secretsIncluded: Boolean(includeSecrets),
+    secretClasses: includeSecrets
+      ? [...new Set([...(envInfo ? ['env'] : []), ...secrets.classes])]
+      : [],
+    scrubbedSecretClasses: includeSecrets ? [] : [...new Set([...(envInfo ? ['env'] : []), ...secrets.classes])],
     dbBytes,
     files: manifestFiles,
     counts,
@@ -829,7 +847,16 @@ async function extractAndValidate(gzipFile, stagingRoot, maxBytes) {
     throw bad('备份数据库损坏或不是邻舍数据库', error.message);
   }
 
-  return { manifest, files, dirs, includeConfig, totalBytes: state.totalBytes };
+  return {
+    manifest,
+    files,
+    dirs,
+    includeConfig,
+    // 秘密分类（旧归档没有这两个字段：按「未知」处理，导入后提示用户核对凭据）
+    secretsIncluded: manifest.secretsIncluded === undefined ? null : manifest.secretsIncluded === true,
+    scrubbedSecretClasses: Array.isArray(manifest.scrubbedSecretClasses) ? manifest.scrubbedSecretClasses : [],
+    totalBytes: state.totalBytes,
+  };
 }
 
 // ── 导入：备份 + 落地 ────────────────────────────────────────────────
@@ -1078,6 +1105,13 @@ async function runImport(gzipFile, { maxBytes = getMaxArchiveBytes(), roots = re
         parts.push('数据库已在当前进程内重新打开，可以立即继续使用');
       }
       if (envApplied) parts.push('config/.env 已写入，其中的配置（如 LLM_API_KEY）需重启进程才会加载');
+      // 秘密分类提示：脱敏归档导入后模型/语音会没有 Key，必须让用户知道要重填，
+      // 而不是等到第一次生成失败才发现。
+      if (checked.secretsIncluded === false) {
+        parts.push('这份归档导出时未包含凭据（数据库内的 API Key / Token 已被清空），模型与语音设置需要重新填写');
+      } else if (checked.secretsIncluded === null) {
+        parts.push('这份归档来自旧版本，无法判断是否包含凭据；建议在设置页核对一次模型与语音的 Key');
+      }
 
       if (holdUntilRestart) closeDb();
       return {
@@ -1085,6 +1119,8 @@ async function runImport(gzipFile, { maxBytes = getMaxArchiveBytes(), roots = re
           files: checked.files.size,
           bytes: checked.totalBytes,
           counts,
+          secretsIncluded: checked.secretsIncluded,
+          scrubbedSecretClasses: checked.scrubbedSecretClasses,
         },
         backupPath,
         restartRecommended,

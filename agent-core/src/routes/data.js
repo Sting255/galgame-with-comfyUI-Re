@@ -1,9 +1,16 @@
 /**
  * 一键导出 / 一键导入 接口
  *
- *   GET  /api/data/export?includeConfig=0|1   → 200 流式返回 linshe-backup-<YYYYMMDD-HHmm>.tar.gz
+ *   GET  /api/data/export?includeConfig=0|1&includeSecrets=0|1
+ *                                            → 200 流式返回 linshe-backup-<YYYYMMDD-HHmm>.tar.gz
  *   GET  /api/data/export/info                → 200 { ok, dbBytes, counts, lastExportAt }
  *   POST /api/data/import                     → 200 { ok, restored, backupPath, restartRecommended, message }
+ *
+ * 秘密分类（P0-04）：
+ *   includeSecrets=1 → 保留数据库内的 provider 凭据（LLM / NovelAI / TTS / MaiBot / Vertex）
+ *   includeSecrets=0（默认）→ 在快照副本上清空这些值，结构保留
+ *   includeConfig=1 仍单独控制是否附带 config/.env
+ *   两者都关闭才是真正的「无凭据备份」；manifest 里记录类别，导入端据此提示重填。
  *
  * 实现口径：
  *   - 导出**先落临时文件再发**：生成过程中出错返回 500 JSON，绝不会吐半个归档给前端；
@@ -82,9 +89,11 @@ router.get('/export/info', asyncHandler(async (req, res) => {
 
 router.get('/export', asyncHandler(async (req, res) => {
   const includeConfig = String(req.query.includeConfig ?? '0') === '1';
+  // 默认不导出秘密：以前「不勾配置」仍会把库里的 Key 一起带走，文案是错的。
+  const includeSecrets = String(req.query.includeSecrets ?? '0') === '1';
   let backup = null;
   try {
-    backup = await createBackup({ includeConfig });
+    backup = await createBackup({ includeConfig, includeSecrets });
   } catch (err) {
     console.error('[data] 导出失败:', err.message);
     // 429 = 已经有一份在导出了（重内存操作不并发），要如实告诉用户"稍后再试"，
