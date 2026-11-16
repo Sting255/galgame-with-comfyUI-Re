@@ -43,10 +43,14 @@
           role="tab"
           class="scene-standing-chip"
           :class="{ active: sceneView === s.scene, 'is-fallback': s.is_fallback, 'is-empty': !s.image_url }"
+          :aria-selected="sceneView === s.scene"
+          tabindex="0"
           :title="s.image_url
             ? (s.is_fallback ? `${s.sceneLabel}（用默认立绘兜底）` : s.sceneLabel)
             : `${s.sceneLabel}（还没配图，可点「上传本场景」或生成）`"
           @click="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
+          @keydown.enter.prevent="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
+          @keydown.space.prevent="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
         >{{ s.sceneLabel }}</div>
       </div>
       <div
@@ -245,6 +249,11 @@ function onFileChange(e) {
 /* 没配图的场景也列出来（可选中后上传），但视觉上弱化，避免误以为已有图 */
 .scene-standing-chip.is-empty { opacity: 0.55; border-style: dashed; }
 .scene-standing-chip.is-empty.active { opacity: 0.85; border-style: solid; }
+/* P2-02：页签可聚焦后必须看得见焦点 */
+.scene-standing-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .standing-stale {
   display: flex;

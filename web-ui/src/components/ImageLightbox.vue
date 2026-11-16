@@ -134,10 +134,20 @@ function injectActionBar() {
   const mkBtn = (key, cls, attrs, label, onClick) => {
     const btn = document.createElement('div')
     btn.setAttribute('role', 'button')
+    // P2-02：注入的按钮要能用键盘到达与触发。
+    // 原来只有 role="button"，没有 tabindex、也没有 Enter/Space 处理 ——
+    // 键盘用户能看到操作栏却按不到，读屏也只念出「按钮」而无法聚焦操作。
+    btn.setAttribute('tabindex', '0')
     for (const [k, v] of Object.entries(attrs)) btn.setAttribute(k, v)
     if (cls) btn.className = cls
     btn.innerHTML = BTN_SVGS[key] + (label != null ? `<span>${label}</span>` : '')
     btn.addEventListener('click', (e) => { e.stopPropagation(); onClick() })
+    btn.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      e.preventDefault()
+      e.stopPropagation()
+      onClick()
+    })
     return btn
   }
 
@@ -503,6 +513,15 @@ async function onDelete() {
   transform: translateX(-2px);
 }
 .vel-rail-btn.is-disabled { opacity: 0.6; cursor: not-allowed; }
+/* P2-02：键盘焦点要看得见（暗色遮罩上默认 outline 几乎不可见） */
+.vel-rail-btn:focus-visible,
+[data-vel-download]:focus-visible,
+[data-vel-delete]:focus-visible,
+[data-vel-regenerate]:focus-visible,
+[data-vel-upscale]:focus-visible {
+  outline: 2px solid #8db6f9;
+  outline-offset: 2px;
+}
 .vel-rail-btn.accent { color: #8db6f9; border-color: rgba(96,165,250,0.32); }
 .vel-rail-btn.accent:hover:not(.is-disabled) { color: #b3d0fc; }
 .vel-rail-btn.danger { color: #f87a7a; border-color: rgba(239,68,68,0.3); }
