@@ -300,6 +300,8 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadMessages(charId) {
     clearTouchPlaceholder()
+    // 历史重载会把同样的消息 id 再走一遍：清空幂等集合，否则真实消息会被当成重复丢弃
+    _resetSeenMessageIds()
     const request = ++historySeq
     const revision = imageRevision
     try {
@@ -1228,10 +1230,47 @@ export const useChatStore = defineStore('chat', () => {
     touchPlaceholderTimer = setTimeout(clearTouchPlaceholder, TOUCH_PLACEHOLDER_TIMEOUT_MS)
   }
 
+  /**
+   * 已上屏的消息 id 集合（P0-06 第二道防线）。
+   *
+   * 主防线是 App.vue 里所有 SSE 订阅都能退订；但「退订漏了」或「后端重连后补发」
+   * 仍可能让同一个事件被处理两次。用消息 id 做幂等，重复投递直接跳过，
+   * 至少不会出现「同一条主动消息在聊天里出现两遍、提示音响两次」。
+   *
+   * 只记 id，不记内容：id 由后端分配，重连补发时保持不变。
+   */
+  const _seenMessageIds = new Set()
+
+  function _markSeenMessage(id) {
+    if (id === null || id === undefined) return false
+    const key = String(id)
+    if (_seenMessageIds.has(key)) return true
+    _seenMessageIds.add(key)
+    // 防止无限增长：超过 2000 条时丢掉最早的一半（Set 保序）
+    if (_seenMessageIds.size > 2000) {
+      const drop = _seenMessageIds.size - 1000
+      let i = 0
+      for (const old of _seenMessageIds) {
+        if (i++ >= drop) break
+        _seenMessageIds.delete(old)
+      }
+    }
+    return false
+  }
+
+  /** 切换角色 / 重新加载历史时清空：历史消息重新加载后 id 会再出现一次 */
+  function _resetSeenMessageIds() {
+    _seenMessageIds.clear()
+  }
+
   function handleProactiveMessage(data) {
     // 她的真消息到了 —— 撤掉等待期占位（这是最主要的移除路径）
     clearTouchPlaceholder()
     const charId = data.character_id
+
+    // 幂等：同一条主动消息重复投递（重连补发 / 退订遗漏）只处理一次。
+    // 占位清理在幂等检查之前做，因为它本身是幂等的。
+    if (_markSeenMessage(data.msg_id)) return
 
     // 更新角色列表中的预览 + 冒泡到最上面
     const char = characters.value.find(c => c.id === charId)
@@ -1320,6 +1359,8 @@ export const useChatStore = defineStore('chat', () => {
     // 如果是当前活跃角色，直接追加到消息列表
     if (activeCharId.value === charId && data.messages?.length) {
       for (const msg of data.messages) {
+        // 幂等：同一条延迟回复重复投递只上屏一次
+        if (_markSeenMessage(msg.id)) continue
         messages.value.push({
           id: msg.id || uid(),
           role: 'assistant',

@@ -110,6 +110,17 @@ const themeAutoTimer = ref(null)
 let stopPageZoomHint
 let stopSpeechPreparationHint
 
+// App 级 SSE 订阅的退订函数（P0-06）。
+//
+// 背景：进入手机独立立绘页（StandingDisplayView）会卸载整个 App 组件，
+// 返回时重新挂载。原来三个 onStreamEvent 没保存退订函数，卸载只断开了 proactive 连接，
+// 于是每往返一次就多注册一套 handler：延迟回复、图片更新、日程 Toast/提示音
+// 会随往返次数成倍重复处理。
+//
+// 现在所有 App 级订阅统一 push 进这个数组，onUnmounted 里全部调用。
+// 订阅注册也集中到 onMounted 的同一段里，避免以后新增时又漏掉。
+const _appStreamUnsubs = []
+
 // 独立于数据加载，首屏及窗口缩放稳定后检查；复用全局暖纸 Toast。
 onMounted(() => {
   stopPageZoomHint = observePageZoomHint(window, toast)
@@ -302,22 +313,22 @@ onMounted(async () => {
 
   // 私聊两段式反应的**后半段**（专题 §八 8.2）：她的文字反应先上屏，图好了再补到那条气泡上。
   // payload（后端定，未落地前按此写）：{ msg_id, raw_id, images }；找不到 msg_id 会安全忽略。
-  onStreamEvent('proactive_message_update', (data) => {
+  _appStreamUnsubs.push(onStreamEvent('proactive_message_update', (data) => {
     chat.handleProactiveMessageUpdate(data)
-  })
+  }))
 
   // 订阅日程延迟回复 SSE 事件
-  onStreamEvent('delayed_reply', (data) => {
+  _appStreamUnsubs.push(onStreamEvent('delayed_reply', (data) => {
     chat.handleDelayedReply(data)
     // 非当前活跃角色 → 播放提示音 + 红点（延迟回复也应有通知）
     if (data.character_id !== chat.activeCharId) {
       playNotificationSound()
       proactive.addProactive(data)
     }
-  })
+  }))
 
   // 日程更改成功（手动编辑 / 聊天约定 / 跨天约定应用）→ 右上角提示
-  onStreamEvent('schedule_changed', async (data) => {
+  _appStreamUnsubs.push(onStreamEvent('schedule_changed', async (data) => {
     const name = data.display_name || '角色'
     // 基准是**程序世界的今天**（日程日期键属于世界钟；不拿现实日期冒充，也不在前端算偏移）
     const todayKey = await programDateKeyNow()
@@ -326,7 +337,7 @@ onMounted(async () => {
     } else {
       toast(`「${name}」日程已更新`, 'success')
     }
-  })
+  }))
 
   // 信箱新回信 → 播放提示音
   watch(() => mailbox.unreadCount, (newVal, oldVal) => {
@@ -377,6 +388,11 @@ onUnmounted(() => {
   window.removeEventListener('focus', settings.refreshTheme)
   if (window.__linsheHandleAndroidBack === handleAndroidBack) {
     delete window.__linsheHandleAndroidBack
+  }
+  // 先退订 App 级 SSE handler，再断开主动聊天连接。
+  // 漏掉这一步的后果见 _appStreamUnsubs 的注释：往返一次立绘页就多一套 handler。
+  for (const unsub of _appStreamUnsubs.splice(0)) {
+    try { unsub?.() } catch { /* 单个退订失败不影响其余清理 */ }
   }
   proactive.disconnectSSE()
 })
