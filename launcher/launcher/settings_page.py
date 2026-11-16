@@ -31,9 +31,18 @@ class ClickableLabel(QLabel):
 
 # 需要迁移的数据项（相对于项目根目录）
 # type: "dir" 递归复制整个目录, "file" 复制单个文件
+#
+# P2-09（2026-11-16）：**不再迁移 vector-service/chroma_data**。
+#
+# 原来这里把派生向量索引一起复制过去，与网页备份的口径正好相反——
+# 备份刻意不打包 Chroma（那是可重建派生物），恢复后按当前嵌入 provider 重建。
+# 复制旧索引有两个具体问题：
+#   · 换过嵌入模型时旧语料与新 provider 的向量空间不一致，召回静默失效；
+#   · 旧索引与 SQLite 快照不是同一时刻的，两边行数对不上时更难排查。
+# 现在与备份一致：只迁业务数据；索引由 agent-core 启动时的一致性探针发现
+# 「库里说已索引、向量库为空」并自动重建（memoryRepository.ensureVectorIndexConsistency）。
 MIGRATE_ITEMS = [
     ("dir",  "agent-core/data"),
-    ("dir",  "vector-service/chroma_data"),
     ("file", "agent-core/.env"),
 ]
 
@@ -587,7 +596,9 @@ class SettingsPage(QWidget):
             f"目标 (当前版本):\n  {target}\n\n"
             f"将复制以下内容：\n"
             f"{item_lines}"
-            f"\n\n目标目录中已有的文件将被覆盖。\n\n确定要执行迁移吗？",
+            f"\n\n目标目录中已有的文件将被覆盖。\n"
+            f"向量索引不迁移（属于可重建的派生数据），新版本首次启动会自动重建。\n\n"
+            f"确定要执行迁移吗？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

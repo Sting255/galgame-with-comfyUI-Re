@@ -583,8 +583,17 @@ export async function reindexAllMemories() {
   return { total, queued: total, tripleTotal, tripleQueued: tripleTotal };
 }
 
-/** 少于这么多条「已索引」的 active 记忆就不做一致性判断（新装/新建库本来就该是空的） */
-const MIN_ACTIVE_INDEXED_FOR_CHECK = 20;
+/**
+ * 少于这么多条「已索引」的 active 记忆就不做一致性判断。
+ *
+ * 2026-11-16（P2-09）从 20 降到 1：原值是为了「新装/新建库本来就该是空的」不误报，
+ * 但 `!row` 已经覆盖了那种情况（没有任何 indexed 行）。
+ * 真正的场景是启动器「数据迁移」——它现在不再复制 chroma_data（与网页备份同口径），
+ * 迁移后 SQLite 说「已索引」而向量库是空的。库小的时候（<20 条）原来会跳过判断，
+ * 于是召回永久缺失且没有任何提示。降到 1 之后，只要有一条 indexed 行就验一次，
+ * 向量库为空必然暴露并重建。
+ */
+const MIN_ACTIVE_INDEXED_FOR_CHECK = 1;
 
 /** 恢复代际的存储键：每次恢复写一个递增计数 + 时间戳 */
 const RESTORE_GENERATION_KEY = 'memory_restore_generation';
