@@ -13,7 +13,18 @@
         <span class="nav-label">聊天</span>
       </router-link>
 
-      <div class="nav-item" data-nav="moments" :class="{ active: $route.path.startsWith('/moments') }" title="朋友圈" @click="handleMomentsClick">
+      <div
+        class="nav-item"
+        data-nav="moments"
+        role="link"
+        tabindex="0"
+        :aria-current="$route.path.startsWith('/moments') ? 'page' : undefined"
+        :class="{ active: $route.path.startsWith('/moments') }"
+        title="朋友圈"
+        @click="handleMomentsClick"
+        @keydown.enter.prevent="handleMomentsClick"
+        @keydown.space.prevent="handleMomentsClick"
+      >
         <div class="nav-icon-wrap">
           <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
             <path d="M679.17 398.982V126.497s-133.338-71.481-288.989-16.366l288.99 288.851z m25.245 160.303V137.748s157.63 71.434 202.052 244.963L704.415 559.285z m-84.8 122.527l290.99-273.649s51.488 83.709-25.293 273.649H619.614z m-148.586 34.695h393.014S816.6 845.102 646.788 898.195L471.03 716.507z m-128.293-86.811v256.18s102.072 65.365 276.878 21.477L342.736 629.696z m-227.366 13.25l199.075-178.62v406.207c0-0.001-120.272-41.75-199.075-227.587z m-5.045-28.57S64.787 467.442 128.48 339.824h273.81L110.326 614.377z m35.357-303.193s57.603-130.594 214.21-191.87l186.894 191.87H145.682z" />
@@ -23,7 +34,18 @@
         <span class="nav-label">朋友圈</span>
       </div>
 
-      <div class="nav-item" data-nav="events" :class="{ active: $route.path.startsWith('/events') }" title="奇遇" @click="handleEventsClick">
+      <div
+        class="nav-item"
+        data-nav="events"
+        role="link"
+        tabindex="0"
+        :aria-current="$route.path.startsWith('/events') ? 'page' : undefined"
+        :class="{ active: $route.path.startsWith('/events') }"
+        title="奇遇"
+        @click="handleEventsClick"
+        @keydown.enter.prevent="handleEventsClick"
+        @keydown.space.prevent="handleEventsClick"
+      >
         <div class="nav-icon-wrap">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10" />
@@ -47,7 +69,18 @@
         <span class="nav-label">传媒</span>
       </router-link>
 
-      <div class="nav-item" data-nav="schedule" :class="{ active: $route.path.startsWith('/schedule') }" title="日程" @click="handleScheduleClick">
+      <div
+        class="nav-item"
+        data-nav="schedule"
+        role="link"
+        tabindex="0"
+        :aria-current="$route.path.startsWith('/schedule') ? 'page' : undefined"
+        :class="{ active: $route.path.startsWith('/schedule') }"
+        title="日程"
+        @click="handleScheduleClick"
+        @keydown.enter.prevent="handleScheduleClick"
+        @keydown.space.prevent="handleScheduleClick"
+      >
         <div class="nav-icon-wrap">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -370,6 +403,14 @@ onUnmounted(() => {
 .nav-item:hover {
   background: rgba(var(--accent-rgb), 0.08);
   color: var(--text-bright);
+}
+
+/* P1-20：一级导航必须能用键盘到达。原来朋友圈/奇遇/日程是裸 div + click，
+   Tab 键跳不过去、读屏也认不出是链接。现在补了 role="link" + tabindex="0"
+   与 Enter/Space 处理，焦点环也要可见。 */
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .nav-item.active {

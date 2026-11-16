@@ -3,19 +3,23 @@
    组件内的重复副本（modal-pop/spin/waterflow 等）应删除并改用此处。
    ═══════════════════════════════════════════════════════ */
 
-/* ── 页面切换：fade + 上浮 + 微缩放 ── */
+/* ── 页面切换：fade + 上浮 + 微缩放 ──
+   P1-20：统一到 --dur-interaction（300ms）。原来写 0.28s，
+   与 AGENTS.md 的「页面/窗口切换 0.3 秒」差一档，肉眼能看出比弹窗更快。 */
 .page-enter-active,
 .page-leave-active {
-  transition: opacity 0.28s var(--ease-out), transform 0.28s var(--ease-out);
+  transition: opacity var(--dur-interaction) var(--ease-out), transform var(--dur-interaction) var(--ease-out);
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
 }
 .page-enter-from { opacity: 0; transform: translateY(10px) scale(0.995); }
 .page-leave-to { opacity: 0; transform: translateY(-4px); }
 
-/* ── 弹窗：遮罩淡入 + 面板 Q 弹 ── */
-.modal-fade-enter-active { transition: opacity 0.25s ease; }
-.modal-fade-leave-active { transition: opacity 0.18s ease; }
+/* ── 弹窗：遮罩淡入 + 面板 Q 弹 ──
+   P1-20：进出都统一 300ms。原来进 0.25s / 出 0.18s，
+   关闭比打开快一档，收尾会显得「被抽走」。 */
+.modal-fade-enter-active,
+.modal-fade-leave-active { transition: opacity var(--dur-interaction) ease; }
 .modal-fade-enter-from, .modal-fade-leave-to { opacity: 0; }
 .modal-fade-enter-active .modal-panel,
 .modal-fade-enter-active .modal-card,

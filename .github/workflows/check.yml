@@ -40,3 +40,26 @@ jobs:
         run: npm --prefix web-ui run lint
       - name: Production build
         run: npm --prefix web-ui run build
+
+  # P1-22：后端保留测试单独一个 job。
+  #
+  # 为什么拆开：上面那个 job 用 `--ignore-scripts` 装后端依赖（为了绕开 runner 镜像
+  # 的 node-gyp 波动），代价是 better-sqlite3 的 .node 根本不存在 ⇒ 后端测试跑不了。
+  # 而「CI 绿灯」必须包含真实测试，否则 lint + build 全绿也说明不了任何业务正确性。
+  #
+  # 这里改为正常安装（允许编译原生模块），装不上就是明确失败——比「跳过测试但显示绿」
+  # 诚实得多。测试本身强制 DB_PATH=:memory:（test/force-memory-db.cjs），不碰玩家库。
+  backend-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: agent-core/package-lock.json
+      - name: Install backend dependencies (native build enabled)
+        run: npm ci --prefix agent-core
+      - name: Backend regression tests (in-memory DB)
+        run: npm --prefix agent-core test

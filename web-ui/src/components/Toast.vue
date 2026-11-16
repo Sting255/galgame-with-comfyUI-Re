@@ -37,7 +37,16 @@
             <p class="live-toast-message" :class="{ 'is-title': item.description }">{{ item.message }}</p>
             <p v-if="item.description" class="live-toast-note">{{ item.description }}</p>
           </div>
-          <div class="live-toast-close" role="button" aria-label="关闭" @click.stop="dismiss(item.id)">
+          <!-- P1-20：关闭按钮补 tabindex + Enter/Space，键盘用户也能关掉 Toast -->
+          <div
+            class="live-toast-close"
+            role="button"
+            tabindex="0"
+            aria-label="关闭"
+            @click.stop="dismiss(item.id)"
+            @keydown.enter.prevent.stop="dismiss(item.id)"
+            @keydown.space.prevent.stop="dismiss(item.id)"
+          >
             <svg viewBox="0 0 10 10" fill="none" aria-hidden="true">
               <path d="M1.6 1.6l6.8 6.8M8.4 1.6 1.6 8.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>

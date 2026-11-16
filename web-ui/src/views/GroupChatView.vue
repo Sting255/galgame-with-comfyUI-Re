@@ -720,6 +720,10 @@ async function loadGroupToys () {
   try {
     // 群聊口径：服务端据此给出**群里**的逐件门控（群聊成人开关关着 = 每件 allowed:false）
     const res = await api.fetchToys(charId, groupToyScene())
+    // P1-21：响应归属校验。
+    // 面板里换成员很快（点另一个头像就换），A 的响应晚到会把 B 的玩具列表覆盖掉——
+    // 用户看到的是「B 的名字 + A 的道具」。回包时确认仍是同一个角色、面板还开着才写。
+    if (panelCharacterId.value !== charId || !showToyPanel.value) return
     groupWornToys.value = Array.isArray(res?.worn) ? res.worn : []
     groupToyOptions.value = Array.isArray(res?.available) ? res.available : []
   } catch {

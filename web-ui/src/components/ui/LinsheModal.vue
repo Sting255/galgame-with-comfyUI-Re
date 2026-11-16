@@ -7,9 +7,9 @@
   <Teleport :to="anchor || 'body'" defer>
     <Transition name="modal-fade" :duration="transitionMs" @after-leave="afterLeave">
       <div v-if="isOpen" ref="overlay" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored, 'is-floating': floating, 'is-full-height': fullHeight }" :style="overlayStyle" @pointerdown="onBackdropPointerDown" @click.self="onBackdropClick">
-        <div ref="panel" class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic', 'modal-film': variant === 'film' }, panelClass]" role="dialog" :aria-modal="floating ? undefined : true" :aria-label="title || undefined" tabindex="-1" @click.stop>
+        <div ref="panel" class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full, 'modal-comic': variant === 'comic', 'modal-film': variant === 'film' }, panelClass]" role="dialog" :aria-modal="floating ? undefined : true" :aria-labelledby="titleId" :aria-label="titleId ? undefined : (title || undefined)" tabindex="-1" @click.stop>
           <div class="modal-header">
-            <slot name="title"><h3 class="modal-title" :class="{ 'has-title-icon': !!$slots['title-icon'] }"><span v-if="$slots['title-icon']" class="modal-title-icon" aria-hidden="true"><slot name="title-icon" /></span>{{ title }}</h3></slot>
+            <slot name="title"><h3 :id="titleId" class="modal-title" :class="{ 'has-title-icon': !!$slots['title-icon'] }"><span v-if="$slots['title-icon']" class="modal-title-icon" aria-hidden="true"><slot name="title-icon" /></span>{{ title }}</h3></slot>
             <span v-if="$slots['header-extra']" class="modal-header-extra"><slot name="header-extra" /></span>
             <slot v-if="showClose" name="close" :close="close" :disabled="closeDisabled || checkingClose">
               <linshe-button variant="icon" :disabled="closeDisabled || checkingClose" aria-label="关闭" @click="close()">✕</linshe-button>
@@ -84,6 +84,10 @@ const emit = defineEmits(['update:modelValue', 'close', 'after-leave', 'close-er
 const isOpen = computed(() => props.modelValue || props.visible)
 const isAnchored = computed(() => !!props.anchor)
 const overlay = ref(null), panel = ref(null), checkingClose = ref(false)
+// P1-20：标题用 aria-labelledby 指向真实标题元素，而不是把标题文本复制一份进 aria-label。
+// 好处是读屏念的是用户实际看到的那个标题（含 #title 插槽的自定义内容），
+// 标题里如果有强调/换行也能被正确朗读。没有标题时退回 aria-label（为空则不设）。
+const titleId = `linshe-modal-title-${Math.random().toString(36).slice(2, 9)}`
 const activeLayer = ref(undefined)
 // Teleport 到 body 的附属工具仍需跟随本窗口的动态栈层级。
 provide('linsheModalLayer', computed(() => activeLayer.value ?? props.zIndex ?? 10000))
