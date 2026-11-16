@@ -35,6 +35,73 @@ function saveScheduleJson(characterId, schedule) {
 }
 
 /**
+ * 回收「上一轮进程留下的 generating」（P1-07）。
+ *
+ * 问题：`generating` 是落在 schedule_json 里的持久状态，而原来只有成功（sent）与
+ * 失败回滚（pending）两条出路。进程在生成中途被杀（重启 / 崩溃 / 用户关程序），
+ * 那条就永远停在 generating —— collectDueSpecialMoments 的
+ * `specialMomentStatus !== 'pending' → continue` 会把它永久跳过，
+ * 那一场日程的特殊朋友圈从此不会出现，也没有任何日志。
+ *
+ * 口径：
+ *   · **只在启动时调用一次**。运行中的 tick 绝不碰 generating，否则会把正在生成的
+ *     长任务重置成 pending，造成重复出图。
+ *   · 仍在窗口内 → 退回 pending，让本轮正常重跑。
+ *   · 已出窗口 → 标记 expired，遵守「过时不候」的既定语义。
+ *
+ * @returns {{recovered:number, expired:number}}
+ */
+export function recoverInterruptedSpecialMoments(now = getProgramNow()) {
+  const db = getDb();
+  let recovered = 0;
+  let expired = 0;
+  let rows = [];
+  try {
+    rows = db.prepare(`
+      SELECT d.character_id, d.schedule_json
+      FROM daily_schedules d
+      WHERE d.schedule_date = ?
+    `).all(getProgramDateKey(now));
+  } catch (err) {
+    console.warn('[specialMoment] 启动回收读取失败:', err?.message || err);
+    return { recovered: 0, expired: 0 };
+  }
+
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  for (const row of rows) {
+    let schedule;
+    try { schedule = JSON.parse(row.schedule_json); } catch { continue; }
+    if (!Array.isArray(schedule)) continue;
+    let changed = false;
+    for (const act of schedule) {
+      if (!act || act.specialMomentStatus !== 'generating') continue;
+      const startMin = toMin(act.startTime);
+      const endMin = toMin(act.endTime);
+      if (startMin === null || endMin === null || endMin <= startMin) {
+        // 跨午夜等无法判定的条目：保守回 pending，交给正常扫描按窗口处理
+        act.specialMomentStatus = 'pending';
+        recovered += 1;
+      } else if (nowMin >= startMin && nowMin < endMin) {
+        act.specialMomentStatus = 'pending';
+        recovered += 1;
+      } else {
+        act.specialMomentStatus = 'expired';
+        expired += 1;
+      }
+      changed = true;
+    }
+    if (changed) {
+      db.prepare('UPDATE daily_schedules SET schedule_json = ? WHERE character_id = ? AND schedule_date = ?')
+        .run(JSON.stringify(schedule), row.character_id, getProgramDateKey(now));
+    }
+  }
+  if (recovered || expired) {
+    console.log(`[specialMoment] 启动回收：${recovered} 条 generating 退回 pending、${expired} 条判过期`);
+  }
+  return { recovered, expired };
+}
+
+/**
  * 扫描今日所有角色的特殊日程：
  * - 时段内且 pending → 标记 generating 并返回待生成列表
  * - 已过时段且 pending → 标记 expired（过时不候）
@@ -138,6 +205,15 @@ let timer = null;
 export function startSpecialMomentScheduler() {
   if (timer) return;
   console.log('[specialMoment] Scheduler started (interval:', CHECK_INTERVAL / 60000, 'min)');
+  // P1-07：先回收上一轮进程留下的 generating，再开始扫描。
+  // 顺序不能反：先扫的话 collectDueSpecialMoments 会把它们当成「正在进行」继续跳过。
+  // 只在启动时做这一次——tick 里绝不动 generating，否则会把正在生成的长任务重置成
+  // pending 造成重复出图。
+  try {
+    recoverInterruptedSpecialMoments();
+  } catch (err) {
+    console.error('[specialMoment] startup recovery error:', err.message);
+  }
   // 启动即检查一次：项目启动时检查所有角色的日程，过时标记 expired，在窗口内的立即发送
   processSpecialMoments().catch(err => console.error('[specialMoment] startup check error:', err.message));
   timer = setInterval(() => {
