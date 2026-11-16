@@ -691,6 +691,11 @@ function useItemInTransaction(itemId, characterId, options) {
     const next = saveAffinity(characterId, loadAffinity(characterId) + FAVOR_DELTA, false);
     summary = `${char.display_name} 的亲密度提升了（当前 ${Math.round(next)}）`;
   } else {
+    // 未注册的 effect.kind：这是**防御分支**，不是「大量道具没实现」的证据。
+    // 当前已注册的效果是 clothes / hairstyle / transform / buff / mood / favor
+    // （见文件顶部的 effect 注册表与上面的 dispatch）。
+    // 走到这里说明新增了一种 kind 但忘了在分发里实现 —— 此时拒绝使用比静默什么都不做安全，
+    // 因为下面紧接着就会把道具标记为 consumed，用户会白丢一件。
     return { ok: false, error: '该道具类型尚未实现' };
   }
 
