@@ -142,24 +142,16 @@ function _connect() {
     // 角色资产「一键后台生成」进度：AssetGenerationModal 有订阅，2026-10-02 补进白名单
     // （它另有 2.5s 轮询兜底，所以这条死订阅一直没被用户发现）
     asset_generation_progress: d => _dispatch('asset_generation_progress', d),
-    // AI 小镇（世界页）
-    town_move:            d => _dispatch('town_move', d),
-    town_bubble:          d => _dispatch('town_bubble', d),
-    town_encounter_start: d => _dispatch('town_encounter_start', d),
-    town_encounter_end:   d => _dispatch('town_encounter_end', d),
-    town_ping:            d => _dispatch('town_ping', d),
-    town_state_updated:   d => _dispatch('town_state_updated', d),
-    town_init_progress:   d => _dispatch('town_init_progress', d),
-    town_map_updated:     d => _dispatch('town_map_updated', d),
-    // 玩家换图（出行）：player 级事件，不受地图过滤，是别的标签页/设备出行时本端换场的入口
-    town_player_map_changed: d => _dispatch('town_player_map_changed', d),
-    town_assets_updated:  d => _dispatch('town_assets_updated', d),
-    // 小镇 NPC 服务 / 打工（图片叙事）与货架换货
+    // ── 小镇（世界页）已于 2026-10-20 剥离（P2-01 清理，2026-11-16）──
+    // 原来这里登记了 13 个 town_* 事件（town_move / town_bubble / town_encounter_* /
+    // town_ping / town_state_updated / town_init_progress / town_map_updated /
+    // town_player_map_changed / town_assets_updated / town_npc_stock_*）。
+    // 后台 /api/town 路由已完全不挂载，前端也没有任何订阅方（全仓零引用），
+    // 这些登记只是让 SSE 分发多跑一遍空 Map 查找。已整段删除。
+    //
+    // 仍保留的三个与「背包 / 酒馆服务」有关，被 TownServiceStage 订阅：
     town_npc_service_ready:    d => _dispatch('town_npc_service_ready', d),
     town_npc_service_progress: d => _dispatch('town_npc_service_progress', d),
-    town_npc_stock_ready:      d => _dispatch('town_npc_stock_ready', d),
-    town_npc_stock_rolled:     d => _dispatch('town_npc_stock_rolled', d),
-    town_npc_stock_progress:   d => _dispatch('town_npc_stock_progress', d),
     // 小镇货摊买来的道具送给角色：礼物叙事（图片 + 描述）
     item_gift_ready:           d => _dispatch('item_gift_ready', d),
     item_gift_progress:        d => _dispatch('item_gift_progress', d),

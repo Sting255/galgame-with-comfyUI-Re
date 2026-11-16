@@ -266,20 +266,18 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     // 媒体内容页的自动抓帖间隔（分钟，上游 v3.9.0 合并）。0 = 关闭（只手动刷新）。
     // 档位表在 services/mediaService.js 的 MEDIA_AUTO_STEPS，这里只存当前选中值。
     mediaAutoMinutes: Math.max(0, parseInt(process.env.MEDIA_AUTO_MINUTES ?? '20', 10) || 0), // 默认 20 分钟一档
-    // ── AI 小镇（世界页）：**默认关**（2026-10-19 改）──
-    // 小镇玩法尚未定稿，先默认不运行（不占运行资源、界面不出现入口）。
+    // ── AI 小镇（世界页）：**已整体剥离**（2026-10-20），下面是历史开关 ──
     //
-    // ⚠️ 三个必须知道的口径（见 目标/20261019-小镇剥离方案v2.md）：
-    //  1. **只关"行为"，表照建**。非小镇代码有 105 处直接读 town_* 表
-    //     （routes/events.js 20 处、services/newspaperService.js 15 处、routes/moments.js 5 处…），
-    //     不建表会直接 `no such table` ⇒ 所以**不要**给 db/index.js 的 town 迁移加守卫。
-    //  2. 文件**不删**。上游也在持续改小镇（v3.10.0 改了 18 个），删了以后就拿不到；
-    //     软关让上游更新照收、放原路径，随时可开回来。
-    //  3. 开启方式：设 `FEATURE_TOWN=true`（或写入 .env）。
+    // ⚠️ 2026-11-16（P2-01）更正：这里以前写「开启方式：设 FEATURE_TOWN=true」，
+    // 那是**错的**。世界页、路由、渲染器、调度器与 store 都已删除，
+    // 把 FEATURE_TOWN 设成 true 也不会让小镇回来 —— 只会让残留的服务试着往
+    // 一个不存在的界面推事件。开关留着只为兼容旧 .env，不再具备「开启玩法」的能力。
     //
-    // 实现口径：`FEATURE_TOWN === 'true'`（显式开启）而非 `!== 'false'`（默认开启）。
-    // 老口径是 `!== 'false'`，语义是"默认开、可关"；新口径是"默认关、可开"——
-    // 这才是"剥离"该有的语义。
+    // 仍然成立的两条口径：
+    //  1. **表照建**。非小镇代码仍有多处直接读 town_* 表
+    //     （routes/events.js、newspaperService、routes/moments 等），
+    //     不建表会直接 `no such table` ⇒ 不要给 db/index.js 的 town 迁移加守卫。
+    //  2. 文件**不删**。上游仍在改小镇，保留原路径便于将来同步上游时不产生大面积冲突。
     town: process.env.FEATURE_TOWN === 'true',
     // 三个子开关**级联**到主开关：主开关关 ⇒ 全部关（避免出现"主关子开"的半开状态）。
     // 传 `FEATURE_TOWN=true` 后，仍可用 `FEATURE_TOWN_LLM=false` 单独关掉 LLM 事件。
