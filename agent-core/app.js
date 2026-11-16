@@ -81,7 +81,7 @@ import { pruneWorldTimeline } from './src/services/worldTimeline.js';
 import { pruneInterCharacterEvents } from './src/services/groupInterCharacterEvents.js';
 import { applyFromConfig } from './src/services/llmConcurrency.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
-import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
+import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, ensureIndexedProviderFingerprint, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
 import { initFileLogging, getFileLogging } from './src/utils/fileLogger.js';
 import { installRuntimeHealthConsoleHook, getRuntimeFailures, getSelfCheck, setSelfCheckResult } from './src/services/runtimeHealth.js';
 import { getImageQueueStatus } from './src/services/imageSkill.js';
@@ -569,6 +569,18 @@ ensurePoseControlAssetsOnBoot();
     if (ok) {
       console.log('[vector] connected');
       setImmediate(() => ensureDefaultMemoryIndexes().catch(error => console.warn('[memory] default index initialization failed:', error.message)));
+      // 2026-11-16：provider 指纹检查排在一致性探针**之前**。
+      // 升级后默认 provider 变过（内置云端服务已删、回落本地模型）时，
+      // 旧库里的 indexed 行与新 provider 的向量空间不一致；探针在这种情况下
+      // 只会报「维度不符、不重建」，留下永久静默的召回缺失。指纹检查是确定性的，
+      // 可以直接把不匹配的行标 stale 并重建。
+      setImmediate(() => {
+        try {
+          ensureIndexedProviderFingerprint();
+        } catch (error) {
+          console.warn('[memory] provider 指纹检查失败（不影响启动）:', error.message);
+        }
+      });
       // 2026-10-01：向量库 ↔ 库的一致性自检（换过库 / 导入过数据之后，chroma 里的记忆会与库里对不上，
       // 而库里「已索引」的标记让系统以为一切正常 ⇒ 403 条记忆的向量检索静默失效）。串在默认索引之后跑。
       setImmediate(() => ensureVectorIndexConsistency().catch(error => console.warn('[memory] 向量索引自检失败（不影响启动）:', error.message)));

@@ -644,6 +644,105 @@ export function getMemoryRestoreGeneration(db = getDb()) {
   }
 }
 
+/** 上一次成功索引时用的 provider 指纹（''=从未记录过） */
+const INDEXED_PROVIDER_KEY = 'memory_indexed_provider_fingerprint';
+
+/**
+ * 启动时检测「当前 provider 与库里已索引的那份不一致」（2026-11-16 补）。
+ *
+ * 为什么需要它：P0-09 的恢复代际只覆盖「从备份恢复」。但还有一条同样沉默的路径——
+ * **直接升级后默认 provider 变了**（例如删掉内置云端服务、回落本地模型），
+ * 旧库里 400 条记忆仍标着 `embedding_state='indexed'` 与旧指纹，
+ * 而查询向量来自新 provider ⇒ 维度不一致、召回静默失效。
+ *
+ * 判据：库里出现过的 `embedding_profile` 集合里，只要有**任何一个不等于当前指纹**
+ * 且仍有 indexed 行，就说明索引与当前 provider 不匹配。
+ *
+ * 动作：把这些行标 stale 并唤醒重建。与恢复代际共用同一套机制，
+ * 但**不递增** restore_generation（那是备份恢复的语义，混用会掩盖真正的恢复事件）。
+ *
+ * 只在启动时调用一次：写入新指纹后下次启动就不会再触发。
+ *
+ * @param {object} [db]
+ * @returns {{changed:boolean, from:string, to:string, stale:number}}
+ */
+export function ensureIndexedProviderFingerprint(db = getDb()) {
+  let current = '';
+  try {
+    current = String(getPreferredMemoryEmbeddingProfile().fingerprint || '');
+  } catch (err) {
+    return { changed: false, from: '', to: '', stale: 0 };
+  }
+  if (!current) return { changed: false, from: '', to: '', stale: 0 };
+
+  let previous = '';
+  try {
+    previous = String(db.prepare(
+      `SELECT setting_value FROM system_settings WHERE setting_key = ?`,
+    ).pluck().get(INDEXED_PROVIDER_KEY) || '');
+  } catch { /* 表还没建：下面按首次处理 */ }
+
+  // 已索引行用到了哪些 profile（只看还标着 indexed 的，stale/failed 本来就会重建）
+  let profiles = [];
+  try {
+    profiles = db.prepare(`
+      SELECT DISTINCT embedding_profile AS p FROM memory_fragments
+      WHERE status = 'active' AND embedding_state = 'indexed'
+        AND COALESCE(embedding_profile, '') <> ''
+    `).all().map(row => String(row.p));
+  } catch {
+    return { changed: false, from: previous, to: current, stale: 0 };
+  }
+
+  const mismatched = profiles.filter(p => p !== current);
+  // 三种情况需要处理：
+  //   ① 记录过指纹且变了；② 从没记录过但已有索引行（老库升级）；③ 索引行里有别的指纹
+  const needsFix = (previous && previous !== current) || (!previous && profiles.length > 0) || mismatched.length > 0;
+  if (!needsFix) {
+    if (!previous) {
+      try {
+        db.prepare(`
+          INSERT INTO system_settings(setting_key, setting_value, updated_at)
+          VALUES (?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP
+        `).run(INDEXED_PROVIDER_KEY, current);
+      } catch { /* 非关键 */ }
+    }
+    return { changed: false, from: previous, to: current, stale: 0 };
+  }
+
+  let stale = 0;
+  try {
+    stale = db.prepare(`
+      UPDATE memory_fragments SET embedding_state = 'stale', embedding_error = NULL
+      WHERE status = 'active' AND embedding_state = 'indexed'
+        AND COALESCE(embedding_profile, '') <> ?
+    `).run(current).changes;
+    stale += db.prepare(`
+      UPDATE memory_fragments SET embedding_state = 'stale', embedding_error = NULL
+      WHERE status = 'active' AND embedding_state = 'indexed'
+        AND COALESCE(embedding_profile, '') = ''
+    `).run().changes;
+    db.prepare(`
+      INSERT INTO system_settings(setting_key, setting_value, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP
+    `).run(INDEXED_PROVIDER_KEY, current);
+    enqueueFollowUpsForProcessingUpserts(db, PRIORITY_RETRY);
+    wakeMemoryIndexWorker();
+  } catch (err) {
+    console.warn('[memory] 嵌入 provider 变更后的重建入队失败:', err?.message || err);
+  }
+
+  if (stale > 0) {
+    console.warn(
+      `[memory] 嵌入 provider 已变（${previous || '未记录'} → ${current}）：`
+      + `${stale} 条记忆的向量索引与当前 provider 不匹配，已标 stale 并按当前 provider 重建。`,
+    );
+  }
+  return { changed: stale > 0, from: previous, to: current, stale };
+}
+
 /**
  * 向量库 ↔ 数据库的一致性自检（2026-10-01 补，真机发现）。
  *
