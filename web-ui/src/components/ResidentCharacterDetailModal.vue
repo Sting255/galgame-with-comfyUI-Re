@@ -199,7 +199,9 @@
                             :disabled="outfitGenerating || outfitBatchRunning || standingBusy || !workOutfitText"
                             title="只生成服装描述，不出立绘（省时间）"
                             @click="generateOtherSceneOutfits({ withStanding: false })"
-                          >只生成描述</linshe-button>
+                          >
+只生成描述
+</linshe-button>
                         </div>
                         <linshe-tabs v-model="detail.sceneTab" :options="sceneTabOptions" size="sm" aria-label="外观服装分类" />
                         <!-- 自定义服装类型（2026-11-07）：每个角色各加各的，类型名交给 LLM 结合世界观生成 -->
@@ -279,7 +281,9 @@
                                 variant="secondary" size="sm" :loading="outfitBriefGenerating"
                                 :disabled="outfitBatchRunning || outfitBriefGenerating || !outfitBrief.trim()"
                                 @click="generateOutfitByBrief"
-                              >{{ outfitBriefGenerating ? '生成中…约 15 秒' : '按这个生成' }}</linshe-button>
+                              >
+{{ outfitBriefGenerating ? '生成中…约 15 秒' : '按这个生成' }}
+</linshe-button>
                             </div>
                             <linshe-input
                               v-model="activeSceneOutfit.description" type="textarea" rows="10" :disabled="outfitBatchRunning"
@@ -436,8 +440,7 @@
       <template #title>
         <div class="modal-heading-content">
             <h3>LoRA 设置 — {{ character?.display_name }}</h3>
-
-          </div>
+</div>
       </template>
 
       <div class="modal-content-section">
@@ -567,16 +570,14 @@
               </linshe-button>
             </div>
           </div>
-
-    </linshe-modal>
+</linshe-modal>
 
     <!-- ── 外观 / 形态设置弹窗 ── -->
     <linshe-modal :visible="showOutfitModal" :title="`外观 / 形态 — ${character?.display_name || ''}`" wide :z-index="11000" @close="closeOutfitModal" panel-class="character-outfit-modal">
       <template #title>
         <div class="modal-heading-content">
           <h3>外观 / 形态 — {{ character?.display_name }}</h3>
-
-        </div>
+</div>
       </template>
 
       <div class="modal-content-section">
@@ -643,8 +644,7 @@
               </linshe-button>
             </div>
           </div>
-
-    </linshe-modal>
+</linshe-modal>
 
     <!-- ── 修正外观弹窗（共享组件）：上传 / 粘贴 / 拖拽参考图，邻舍分析后重写「## 你的外观」── -->
     <AppearanceRefineModal

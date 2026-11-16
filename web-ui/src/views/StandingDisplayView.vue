@@ -15,7 +15,8 @@
           </div>
         </Transition>
         <div :key="feedback" class="standing-feedback" :class="{ react: feedback > 0 }">
-          <div class="standing-sway"><div class="standing-breath">
+          <div class="standing-sway">
+<div class="standing-breath">
             <Transition name="standing-expression">
               <div v-if="visual.imageUrl" :key="visual.imageUrl" class="standing-image" :style="{ width: `${visualGeometry.width}px`, height: `${visualGeometry.height}px` }">
                 <!-- 立绘互动（上游 v3.9.0 合并）：空手触摸 —— 形变包住图片，命中层与波纹叠在上面。
@@ -27,7 +28,8 @@
                 <StandingTouchRipple v-if="reaction && !reaction.passive" :key="reaction.id" :style="ripplePosition" />
               </div>
             </Transition>
-          </div></div>
+          </div>
+</div>
         </div>
       </div>
     </Transition>

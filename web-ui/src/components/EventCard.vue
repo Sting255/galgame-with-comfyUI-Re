@@ -16,7 +16,7 @@
         <span class="preview-title">{{ event.title }}</span>
       </div>
       <span v-if="!compact" class="preview-badge" :class="{ urgent: countdownMinutes < 10 }">
-        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /><polyline points="12,6 12,12 16,14" /></svg>
         {{ countdownText }}
       </span>
       <span v-else class="preview-badge history-time">{{ formatTime(event.ended_at || event.expires_at) }}</span>
@@ -59,7 +59,9 @@
           :loading="regenBusy"
           :disabled="regenBusy"
           @click.stop="doRegenImage"
-        >{{ regenBusy ? '正在重画…' : '重新配图' }}</linshe-button>
+        >
+{{ regenBusy ? '正在重画…' : '重新配图' }}
+</linshe-button>
       </template>
       <template v-else>
         <span>{{ regenError || '配图生成中…' }}</span>
@@ -71,7 +73,9 @@
           :loading="regenBusy"
           :disabled="regenBusy"
           @click.stop="doRegenImage"
-        >{{ regenBusy ? '正在重画…' : '重新配图' }}</linshe-button>
+        >
+{{ regenBusy ? '正在重画…' : '重新配图' }}
+</linshe-button>
       </template>
     </div>
 
@@ -90,7 +94,7 @@
       <div v-if="detailOpen" class="detail-overlay">
         <!-- 关闭按钮 -->
         <linshe-button variant="icon" size="lg" class="detail-close" @click="closeDetail">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
         </linshe-button>
         <!-- 标题浮层 -->
         <div class="detail-title-bar">
@@ -171,11 +175,11 @@
                   </div>
                   <label class="vn-choice-c">
                     <span class="vn-input-bar">
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
                     </span>
                     <input v-model="customText" class="vn-input" :placeholder="event.choice_c_label || '自定义行动…'" @keyup.enter="onChoose('C')" />
                     <div class="vn-submit" role="button" tabindex="0" :class="{ 'is-disabled': !customText.trim() }" :aria-disabled="!customText.trim()" @click="onChoose('C')" @keydown.enter.prevent="onChoose('C')" @keydown.space.prevent="onChoose('C')" title="确定">
-                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19,12 12,19 5,12"/></svg>
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19" /><polyline points="19,12 12,19 5,12" /></svg>
                     </div>
                   </label>
                 </div>
@@ -194,7 +198,7 @@
                 title="回到上一次选择"
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="15,18 9,12 15,6"/>
+                  <polyline points="15,18 9,12 15,6" />
                 </svg>
                 <span>回到上一次选择</span>
               </div>

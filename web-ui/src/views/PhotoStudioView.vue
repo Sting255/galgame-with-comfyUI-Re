@@ -164,7 +164,8 @@
     </linshe-modal>
     <StudioBackgroundLibrary v-model="backgroundOpen" :value="background" @applied="background = $event" />
     <StudioClothingLibrary v-model="clothingOpen" :slot-key="characterSlot" :outfit="customOutfits[characterSlot] || null" :draft="clothingDrafts[characterSlot] ?? null" @draft-change="saveClothingDraft" @applied="applyClothing" />
-    <linshe-modal v-model="promptOpen" :title="diagnosis ? '拍摄诊断' : '拍摄提示词'" variant="film" wide :transition-ms="300"><template #close="{ close }"><studio-button variant="icon" aria-label="关闭诊断" @click="close()">×</studio-button></template>
+    <linshe-modal v-model="promptOpen" :title="diagnosis ? '拍摄诊断' : '拍摄提示词'" variant="film" wide :transition-ms="300">
+<template #close="{ close }"><studio-button variant="icon" aria-label="关闭诊断" @click="close()">×</studio-button></template>
       <p v-if="promptLoading" class="studio-prompt-note" role="status">正在拼装…</p>
       <p v-else-if="promptError" class="studio-prompt-note" role="alert">{{ promptError }}</p>
       <div v-else-if="diagnosis" class="studio-diagnosis">

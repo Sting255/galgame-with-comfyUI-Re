@@ -11,7 +11,8 @@
         <div class="igb-ring-container">
           <svg viewBox="0 0 80 80" class="igb-ring">
             <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(0,0,0,0.06)" stroke-width="3" />
-            <circle cx="40" cy="40" r="34" fill="none" :stroke="ringColor"
+            <circle
+cx="40" cy="40" r="34" fill="none" :stroke="ringColor"
               stroke-width="3" stroke-linecap="round"
               :stroke-dasharray="circumference"
               :stroke-dashoffset="dashOffset"

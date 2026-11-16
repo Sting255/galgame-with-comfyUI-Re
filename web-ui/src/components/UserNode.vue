@@ -30,7 +30,9 @@
     <div
       class="un-avatar"
       :style="avatarStyle"
-    >{{ avatarUrl ? '' : (nickname || '我').charAt(0) }}</div>
+    >
+{{ avatarUrl ? '' : (nickname || '我').charAt(0) }}
+</div>
 
     <!-- 名字 -->
     <div class="un-name">{{ nickname || '我' }}</div>

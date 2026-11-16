@@ -11,8 +11,8 @@
         <span class="gallery-count" v-if="totalCount > 0">共 {{ totalCount }} 张</span>
         <linshe-button class="btn-compress" variant="secondary" @click="showModal = true">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px">
-            <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
-            <line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>
+            <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
+            <line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
           </svg>图片压缩
         </linshe-button>
       </div>
@@ -32,13 +32,17 @@
                   variant="chip"
                   :active="compressType === 'oxipng'"
                   @click="onTypeChange('oxipng')"
-                >OxiPng 无损</linshe-button>
+                >
+OxiPng 无损
+</linshe-button>
                 <linshe-button
                   class="toggle-btn"
                   variant="chip"
                   :active="compressType === 'avif'"
                   @click="onTypeChange('avif')"
-                >AVIF 有损</linshe-button>
+                >
+AVIF 有损
+</linshe-button>
               </div>
               <div class="type-desc">
                 {{ compressType === 'oxipng' ? '无损重编码 PNG，画质几乎不变，预计大小下降70%' : '转为 AVIF 格式（较新格式，过旧浏览器不支持） 有损压缩，小图压缩会微微失真，大图没区别，预计大小下降95%' }}
@@ -48,7 +52,9 @@
                 variant="primary"
                 @click="onStartCompress"
                 :disabled="task?.processing"
-              >{{ task?.processing ? '压缩中...' : '立刻压缩' }}</linshe-button>
+              >
+{{ task?.processing ? '压缩中...' : '立刻压缩' }}
+</linshe-button>
             </div>
 
             <div class="section-divider"></div>
@@ -62,13 +68,17 @@
                   variant="chip"
                   :active="scheduleEnabled"
                   @click="onScheduleToggle(true)"
-                >开启</linshe-button>
+                >
+开启
+</linshe-button>
                 <linshe-button
                   class="toggle-btn"
                   variant="chip"
                   :active="!scheduleEnabled"
                   @click="onScheduleToggle(false)"
-                >关闭</linshe-button>
+                >
+关闭
+</linshe-button>
               </div>
               <div class="type-desc" v-if="scheduleEnabled">
                 白天每 10 分钟压缩 3 张 · 凌晨 2-5 点每 10 分钟压缩 15 张

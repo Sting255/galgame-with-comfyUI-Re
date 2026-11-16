@@ -423,7 +423,9 @@
               :loading="vertexValidating"
               :disabled="vertexValidating || (!vertexServiceAccount.trim() && !hasVertexServiceAccount)"
               @click="validateVertexAccount"
-            >验证 JSON</linshe-button>
+            >
+验证 JSON
+</linshe-button>
             <span class="vertex-status" aria-live="polite">{{ vertexValidation || (vertexServiceAccount.trim() ? '新 JSON 尚未验证 / 保存' : hasVertexServiceAccount ? '服务账号已配置' : '缺少服务账号') }}</span>
           </div>
           <label class="fl llm-label" for="vertex-region">地区</label>
@@ -543,7 +545,7 @@
             :options="thinkingModeOptions"
             size="sm"
             aria-label="思考模式"
-            @update:modelValue="onThinkingModePick"
+            @update:model-value="onThinkingModePick"
           />
         </div>
 

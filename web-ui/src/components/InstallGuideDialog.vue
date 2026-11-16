@@ -4,16 +4,15 @@
       <div class="modal-heading-content">
             <div class="guide-mark" aria-hidden="true">
               <svg viewBox="0 0 20 20" fill="none">
-                <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.6"/>
-                <path d="M10 8.7V13M10 5.9h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.6" />
+                <path d="M10 8.7V13M10 5.9h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
               </svg>
             </div>
             <div class="guide-title-wrap">
               <h3>{{ title }}</h3>
               <p v-if="intro">{{ intro }}</p>
             </div>
-
-      </div>
+</div>
     </template>
 
           <div class="guide-body">

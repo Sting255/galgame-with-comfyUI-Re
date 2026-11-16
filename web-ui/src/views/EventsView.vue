@@ -49,13 +49,14 @@
 
     <!-- 事件库管理弹窗 -->
     <LibraryModal v-model="libraryOpen" type="event-types" @published="store.loadEvents()" />
-    <EventCard v-if="linkedEvent" :key="`town-story:${linkedEvent.id}`" :event="linkedEvent" initial-open
-      @updated="onEventUpdated" @closed="closeLinkedEvent" />
+    <EventCard
+v-if="linkedEvent" :key="`town-story:${linkedEvent.id}`" :event="linkedEvent" initial-open
+      @updated="onEventUpdated" @closed="closeLinkedEvent"
+/>
 
     <!-- 可滚动内容区 -->
     <div class="events-scroll" @scroll.passive="onScroll" @wheel.passive="onPageWheel" @touchmove.passive="onPageTouchMove" ref="scrollEl">
-
-    <p v-if="store.loadError && store.activeEvents.length" class="picker-title" role="alert">
+<p v-if="store.loadError && store.activeEvents.length" class="picker-title" role="alert">
       刷新失败：{{ store.loadError }}
       <linshe-button variant="link" size="sm" @click="store.loadEvents()">重试</linshe-button>
     </p>
@@ -97,8 +98,10 @@
     <div v-if="store.history.length > 0" class="history-section">
       <div class="history-header" @click="showHistory = !showHistory">
         <span>📋 往期奇遇 ({{ store.filteredHistory.length }})</span>
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
-          :class="{ rotated: showHistory }">
+        <svg
+viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
+          :class="{ rotated: showHistory }"
+>
           <polyline points="6,9 12,15 18,9" />
         </svg>
       </div>
@@ -136,8 +139,7 @@
         </div>
       </Transition>
     </div>
-
-    </div><!-- /events-scroll -->
+</div><!-- /events-scroll -->
   </div>
 </template>
 

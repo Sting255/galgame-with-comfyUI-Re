@@ -1,8 +1,7 @@
 <template>
   <linshe-modal :model-value="modelValue" title="HiresFix 细化设置" wide @update:model-value="close">
     <div class="hires-main-body">
-
-          <div class="hires-section hires-params-section">
+<div class="hires-section hires-params-section">
             <div class="hires-section-title">HiresFix 工作流</div>
             <linshe-tabs v-model="workflowMode" :options="workflowModeOptions" size="md" aria-label="HiresFix 工作流版本" />
             <p class="hires-hint">基础版保留原有官方节点流程，沿用现有生图模型，无需额外安装节点或放大模型。进阶版使用超分模型和分块细化，两套流程都支持全局 LoRA。</p>
@@ -108,7 +107,7 @@
             <TransitionGroup name="lora-card" tag="div" class="lora-list">
               <div v-for="(item, idx) in items" :key="idx" class="lora-item-card" :class="{ 'lora-disabled': !item.enabled }">
                 <linshe-button variant="icon" size="sm" class="lora-remove-btn" @click="removeLoraGroup(idx)" title="删除 LoRA">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
                 </linshe-button>
                 <div class="lora-item-row">
                   <div class="form-group lora-path-group">
@@ -168,7 +167,7 @@
             </div>
 
             <div class="lora-add-btn" role="button" tabindex="0" @click="addLoraGroup" @keydown.enter.prevent="addLoraGroup" @keydown.space.prevent="addLoraGroup">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               添加 LoRA
             </div>
             </div>

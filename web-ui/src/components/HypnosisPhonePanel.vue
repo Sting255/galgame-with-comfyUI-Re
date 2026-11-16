@@ -161,7 +161,9 @@
         :loading="busy === 'denial'"
         :title="denialView.hint"
         @click="onToggleDenial"
-      >{{ denialView.label }}</linshe-button>
+      >
+{{ denialView.label }}
+</linshe-button>
       <p v-if="!denialView.active" class="hp-note">这一场还没开始：先在私聊里点「❤ 推进」→「进入她」。</p>
     </section>
 

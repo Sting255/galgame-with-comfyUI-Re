@@ -4,16 +4,16 @@
     <div class="backpack-topbar">
       <linshe-button variant="icon" class="topbar-btn" @click="onBack">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="15 18 9 12 15 6"/>
+          <polyline points="15 18 9 12 15 6" />
         </svg>
       </linshe-button>
       <span class="topbar-title">背包</span>
       <!-- 宝箱冷却中：大卡收起，顶栏只显示剩余时间 -->
       <div v-if="!store.chest.canOpen" class="topbar-chest-timer" title="宝箱冷却中">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z"/>
-          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z"/>
-          <path d="M10 13h4"/>
+          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z" />
+          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z" />
+          <path d="M10 13h4" />
         </svg>
         <span>{{ countdownText }}</span>
       </div>
@@ -32,7 +32,7 @@
             @click="onOpenChest"
             @keydown.enter.prevent="onOpenChest"
           >
-            <ChestSvg state="idle" :ready="store.chest.canOpen"/>
+            <ChestSvg state="idle" :ready="store.chest.canOpen" />
           </div>
 
           <div class="bp-chest-status">
@@ -43,7 +43,9 @@
             variant="primary" size="lg" block
             :disabled="chestProcessActive"
             @click="onOpenChest"
-          >{{ chestButtonLabel }}</linshe-button>
+          >
+{{ chestButtonLabel }}
+</linshe-button>
           <p class="bp-chest-hint">每 {{ store.chest.cooldownHours || 16 }} 小时可开启一次</p>
         </section>
 
@@ -52,8 +54,8 @@
           <div class="bp-heading">
             <span class="bp-heading-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 3 13.8 8.2 19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/>
-                <path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z"/>
+                <path d="M12 3 13.8 8.2 19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />
+                <path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z" />
               </svg>
             </span>
             <div class="bp-title-copy">
@@ -65,9 +67,9 @@
           <TransitionGroup v-if="store.activeEffects.length" name="effect-list" tag="div" class="effect-list">
             <article v-for="ef in store.activeEffects" :key="ef.id" class="effect-card" :class="'card-' + ef.kind">
               <div class="effect-thumb" :class="'thumb-' + ef.kind">
-                <img v-if="ef.item_image_url" :src="ef.item_image_url" alt="" loading="lazy" decoding="async"/>
+                <img v-if="ef.item_image_url" :src="ef.item_image_url" alt="" loading="lazy" decoding="async" />
                 <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-                  <path :d="effectIconPath(ef.kind)"/>
+                  <path :d="effectIconPath(ef.kind)" />
                 </svg>
               </div>
               <div class="effect-info">
@@ -93,7 +95,7 @@
                 @click.stop="onRemoveEffect(ef)"
               >
                 <svg v-if="removingEffectId !== ef.id" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>
+                  <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
                 </svg>
                 <span>移除</span>
               </linshe-button>
@@ -107,8 +109,8 @@
 
           <div v-else class="bp-effects-empty">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 3 13.8 8.2 19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/>
-              <path d="m9 18 .5 1.5L11 20l-1.5.5L9 22l-.5-1.5L7 20l1.5-.5L9 18Z"/>
+              <path d="M12 3 13.8 8.2 19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />
+              <path d="m9 18 .5 1.5L11 20l-1.5.5L9 22l-.5-1.5L7 20l1.5-.5L9 18Z" />
             </svg>
             <span>目前没有正在生效的效果</span>
           </div>
@@ -119,9 +121,9 @@
           <div class="bp-heading">
             <span class="bp-heading-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                <line x1="12" y1="22.08" x2="12" y2="12"/>
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                <line x1="12" y1="22.08" x2="12" y2="12" />
               </svg>
             </span>
             <div class="bp-title-copy">
@@ -137,24 +139,25 @@
 
           <div v-else-if="store.items.length === 0" class="bp-items-empty">
           <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.6">
-              <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z"/>
-              <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z"/>
-              <path d="M10 13h4"/>
+              <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z" />
+              <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z" />
+              <path d="M10 13h4" />
             </svg>
             <p class="empty-title">背包还是空的</p>
             <p class="empty-hint">{{ store.chest.canOpen ? '去上面的宝箱看看吧' : '宝箱冷却中，就绪后再来看看吧' }}</p>
           </div>
 
           <TransitionGroup v-else name="item-list" tag="div" class="bp-items-grid">
-            <div v-for="item in store.items" :key="item.id"
+            <div
+v-for="item in store.items" :key="item.id"
               class="item-card"
               role="button" tabindex="0"
               @click="openDetail(item)"
               @keydown.enter.prevent="openDetail(item)"
             >
               <div class="item-image">
-                <img v-if="item.image_url" :src="item.image_url" alt=""/>
-                <ItemFallbackIcon v-else/>
+                <img v-if="item.image_url" :src="item.image_url" alt="" />
+                <ItemFallbackIcon v-else />
               </div>
               <div class="item-name">{{ item.name }}</div>
               <p class="item-desc" :title="item.description">{{ item.description }}</p>
@@ -175,8 +178,8 @@
           <div class="sheet-grab" aria-hidden="true"></div>
           <div class="detail-body">
             <div class="detail-image">
-              <img v-if="detailItem.image_url" :src="detailItem.image_url" alt=""/>
-              <ItemFallbackIcon v-else/>
+              <img v-if="detailItem.image_url" :src="detailItem.image_url" alt="" />
+              <ItemFallbackIcon v-else />
             </div>
             <div class="detail-name-row">
               <span class="detail-name">{{ detailItem.name }}</span>
@@ -204,7 +207,7 @@
           <div class="char-grid">
             <div v-for="char in sortedCharacters" :key="char.id" class="char-card" @click="pickCharacter(char)">
               <div class="char-card-inner">
-                <img v-if="char.avatar_path" :src="char.avatar_path" class="char-avatar" loading="lazy" decoding="async"/>
+                <img v-if="char.avatar_path" :src="char.avatar_path" class="char-avatar" loading="lazy" decoding="async" />
                 <span v-else class="char-avatar char-avatar-fallback">{{ (char.display_name || char.name || '?')[0] }}</span>
                 <span class="char-name">{{ char.display_name || char.name }}</span>
               </div>

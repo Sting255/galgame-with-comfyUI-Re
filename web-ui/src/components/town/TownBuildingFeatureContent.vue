@@ -27,28 +27,44 @@
 
       <ShopFortunePanel v-if="panel === 'fortune'" :busy="busy" />
       <ShopDrawPanel v-else-if="panel === 'draw'" :prizes="optionChoices" :stock="featureStock" :busy="busy" />
-      <ShopTradePanel v-else-if="panel === 'trade'" :mode="tradeMode" :options="optionChoices" :stock="featureStock"
+      <ShopTradePanel
+v-else-if="panel === 'trade'" :mode="tradeMode" :options="optionChoices" :stock="featureStock"
         :selected-option-key="selectedOptionKey" :selected-item-name="selectedItemName"
-        :tier-hint="tierHint" :estimate-price="quote?.price ?? null" @select="selectOption" />
-      <ShopAppearancePanel v-else-if="panel === 'appearance'" :options="optionChoices" :params="featureParams"
-        :category-label="featureCategoryLabel" :selected-option-key="selectedOptionKey" @select="selectOption" />
-      <ShopStatePanel v-else-if="panel === 'state'" :options="optionChoices" :params="featureParams"
-        :duration-hours="featureParams?.durationHours ?? null" :selected-option-key="selectedOptionKey" @select="selectOption" />
-      <ShopPortraitPanel v-else-if="panel === 'portrait'" :options="optionChoices"
-        :selected-option-key="selectedOptionKey" @select="selectOption" />
-      <ShopKeepsakePanel v-else-if="panel === 'keepsake'" :formats="keepsakeFormats"
+        :tier-hint="tierHint" :estimate-price="quote?.price ?? null" @select="selectOption"
+/>
+      <ShopAppearancePanel
+v-else-if="panel === 'appearance'" :options="optionChoices" :params="featureParams"
+        :category-label="featureCategoryLabel" :selected-option-key="selectedOptionKey" @select="selectOption"
+/>
+      <ShopStatePanel
+v-else-if="panel === 'state'" :options="optionChoices" :params="featureParams"
+        :duration-hours="featureParams?.durationHours ?? null" :selected-option-key="selectedOptionKey" @select="selectOption"
+/>
+      <ShopPortraitPanel
+v-else-if="panel === 'portrait'" :options="optionChoices"
+        :selected-option-key="selectedOptionKey" @select="selectOption"
+/>
+      <ShopKeepsakePanel
+v-else-if="panel === 'keepsake'" :formats="keepsakeFormats"
         :selected-format="selectedFormat" :options="optionChoices" :selected-option-key="selectedOptionKey"
-        @select-format="selectedFormat = $event" @select="selectOption" />
-      <ShopGalleryPanel v-else-if="panel === 'gallery'" :items="galleryItems" :loaded="galleryLoaded"
-        :empty-text="galleryEmptyText" />
+        @select-format="selectedFormat = $event" @select="selectOption"
+/>
+      <ShopGalleryPanel
+v-else-if="panel === 'gallery'" :items="galleryItems" :loaded="galleryLoaded"
+        :empty-text="galleryEmptyText"
+/>
 
       <!-- 通用回退：未知模板的选项列表 -->
       <div v-else-if="optionChoices.length" class="bf-field">
         <span class="bf-field-label">{{ optionLabel }}</span>
         <div class="bf-option-list">
-          <TownVnChoice v-for="opt in optionChoices" :key="opt.key"
+          <TownVnChoice
+v-for="opt in optionChoices" :key="opt.key"
             :active="selectedOptionKey === opt.key" :hint="opt.hint" :disabled="busy"
-            @select="selectOption(opt.key)">{{ opt.label }}</TownVnChoice>
+            @select="selectOption(opt.key)"
+>
+{{ opt.label }}
+</TownVnChoice>
         </div>
       </div>
 

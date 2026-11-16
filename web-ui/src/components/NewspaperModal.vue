@@ -48,7 +48,9 @@
             title="查看更早的一期"
             :disabled="!olderTarget || navLoading"
             @click="navEdition(1)"
-          >‹ 上一期<span v-if="olderTarget && !olderTarget.today" class="np-ed-switch-target"> · {{ editionShortLabel(olderTarget) }}</span></linshe-button>
+          >
+‹ 上一期<span v-if="olderTarget && !olderTarget.today" class="np-ed-switch-target"> · {{ editionShortLabel(olderTarget) }}</span>
+</linshe-button>
           <span class="np-edition-current">{{ currentLabel }}</span>
           <linshe-button
             variant="chip"
@@ -56,7 +58,9 @@
             title="查看更新的一期"
             :disabled="!newerTarget || navLoading"
             @click="navEdition(-1)"
-          >下一期<span v-if="newerTarget" class="np-ed-switch-target"> · {{ newerTarget.today ? '今天' : editionShortLabel(newerTarget) }}</span> ›</linshe-button>
+          >
+下一期<span v-if="newerTarget" class="np-ed-switch-target"> · {{ newerTarget.today ? '今天' : editionShortLabel(newerTarget) }}</span> ›
+</linshe-button>
         </nav>
       </header>
 
@@ -100,7 +104,9 @@
               :loading="regenLoading.world"
               @click.stop="regenPaperImage('world')"
               @keydown.enter.stop
-            >重新生成配图</linshe-button>
+            >
+重新生成配图
+</linshe-button>
           </section>
           <div class="np-col-list">
             <section
@@ -126,7 +132,9 @@
                   :loading="regenLoading[`item:${i}`]"
                   @click.stop="regenPaperImage('item', i)"
                   @keydown.enter.stop
-                >重新生成配图</linshe-button>
+                >
+重新生成配图
+</linshe-button>
               </div>
               <p class="np-text np-text-sm" data-np-clip>{{ item.content }}</p>
             </section>
@@ -162,7 +170,9 @@
                 :loading="regenLoading.lead"
                 @click.stop="regenPaperImage('lead')"
                 @keydown.enter.stop
-              >重新生成配图</linshe-button>
+              >
+重新生成配图
+</linshe-button>
             </div>
             <p class="np-text np-lead-text" data-np-clip>{{ paper.character_event.content }}</p>
           </article>
@@ -193,7 +203,9 @@
                   :loading="regenLoading[`item:${i + leftItems.length}`]"
                   @click.stop="regenPaperImage('item', i + leftItems.length)"
                   @keydown.enter.stop
-                >重新生成配图</linshe-button>
+                >
+重新生成配图
+</linshe-button>
               </div>
               <p class="np-text np-text-sm" data-np-clip>{{ item.content }}</p>
             </section>
@@ -213,7 +225,9 @@
             :loading="regenerating"
             :disabled="regenerating || deleting"
             @click="regeneratePaper"
-          >{{ regenerating ? '正在重新生成…' : '重新生成今日日报' }}</linshe-button>
+          >
+{{ regenerating ? '正在重新生成…' : '重新生成今日日报' }}
+</linshe-button>
         </div>
         <span class="np-colophon-hint">点击任意新闻，读全文、看大图</span>
         <div class="np-colophon-end">
@@ -226,7 +240,9 @@
             :loading="deleting"
             :disabled="regenerating || navLoading || dismissing || Object.values(regenLoading).some(Boolean)"
             @click="deleteTodayPaper"
-          >删除今日报纸</linshe-button>
+          >
+删除今日报纸
+</linshe-button>
         </div>
       </footer>
 
@@ -252,7 +268,9 @@
                 :disabled="dismissing"
                 :loading="dismissing"
                 @click.stop="dismissWorld"
-              >{{ worldDismissed ? '恢复今日影响' : '消除今日影响' }}</linshe-button>
+              >
+{{ worldDismissed ? '恢复今日影响' : '消除今日影响' }}
+</linshe-button>
             </div>
             <h2 class="np-detail-title">{{ detailArticle.title }}</h2>
             <div v-if="detailArticle.author" class="np-detail-byline">
@@ -272,7 +290,9 @@
                 :loading="regenLoading[detailRegenKey]"
                 @click.stop="regenPaperImage(detailArticle.kind, detailArticle.index)"
                 @keydown.enter.stop
-              >重新生成配图</linshe-button>
+              >
+重新生成配图
+</linshe-button>
             </div>
             <p class="np-detail-text">{{ detailArticle.content }}</p>
           </div>

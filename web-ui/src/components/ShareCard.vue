@@ -59,7 +59,9 @@
               :active="activeStyle === s.id"
               :disabled="rendering"
               @click="switchStyle(s.id)"
-            >{{ s.label }}</linshe-button>
+            >
+{{ s.label }}
+</linshe-button>
           </div>
 
           <footer class="share-panel-actions">

@@ -26,7 +26,9 @@
               :loading="planning"
               :disabled="saving || planning"
               @click="planLineup"
-            >{{ planning ? `规划中 ${busyElapsed}s…` : '✦ 按世界观规划' }}</linshe-button>
+            >
+{{ planning ? `规划中 ${busyElapsed}s…` : '✦ 按世界观规划' }}
+</linshe-button>
             <linshe-button
               size="sm"
               variant="secondary"
@@ -120,7 +122,9 @@
                   :loading="rewriting"
                   :disabled="saving || rewriting"
                   @click="redesignByWorld"
-                >{{ rewriting ? `正在重写 ${busyElapsed}s…` : '✦ 按世界观重写' }}</linshe-button>
+                >
+{{ rewriting ? `正在重写 ${busyElapsed}s…` : '✦ 按世界观重写' }}
+</linshe-button>
                 <linshe-switch
                   v-model="form.enabled"
                   on-text="已启用"

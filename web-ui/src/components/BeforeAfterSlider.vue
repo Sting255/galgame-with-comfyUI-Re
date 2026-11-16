@@ -22,10 +22,10 @@
     <div class="ba-divider" :style="dividerStyle">
       <span class="ba-handle">
         <svg class="ba-chevron ba-chevron-left" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-          <path d="M6.5 1.5 3 5l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M6.5 1.5 3 5l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <svg class="ba-chevron ba-chevron-right" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-          <path d="M3.5 1.5 7 5l-3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M3.5 1.5 7 5l-3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </span>
     </div>
@@ -45,7 +45,7 @@
       @keydown.space.prevent="resetZoom"
     >
       <svg class="ba-zoom-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/>
+        <path d="M3 12a9 9 0 1 0 3-6.7" /><polyline points="3 4 3 9 8 9" />
       </svg>
       {{ Math.round(scale * 100) }}%
     </div>

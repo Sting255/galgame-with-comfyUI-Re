@@ -9,110 +9,110 @@
     <defs>
       <!-- 漆木：暗酒红与乌木色构成主材质，避免高饱和卡通棕。 -->
       <linearGradient :id="ids.lacquerBody" x1="0" y1="0" x2="0.92" y2="1">
-        <stop offset="0" stop-color="#673f45"/>
-        <stop offset="0.3" stop-color="#492a32"/>
-        <stop offset="0.72" stop-color="#2f1922"/>
-        <stop offset="1" stop-color="#1b1018"/>
+        <stop offset="0" stop-color="#673f45" />
+        <stop offset="0.3" stop-color="#492a32" />
+        <stop offset="0.72" stop-color="#2f1922" />
+        <stop offset="1" stop-color="#1b1018" />
       </linearGradient>
       <linearGradient :id="ids.lacquerLid" x1="0.08" y1="0" x2="0.9" y2="1">
-        <stop offset="0" stop-color="#85575a"/>
-        <stop offset="0.26" stop-color="#5c343c"/>
-        <stop offset="0.72" stop-color="#351c27"/>
-        <stop offset="1" stop-color="#1d1119"/>
+        <stop offset="0" stop-color="#85575a" />
+        <stop offset="0.26" stop-color="#5c343c" />
+        <stop offset="0.72" stop-color="#351c27" />
+        <stop offset="1" stop-color="#1d1119" />
       </linearGradient>
       <linearGradient :id="ids.velvet" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#160e17"/>
-        <stop offset="0.55" stop-color="#2b1725"/>
-        <stop offset="1" stop-color="#512838"/>
+        <stop offset="0" stop-color="#160e17" />
+        <stop offset="0.55" stop-color="#2b1725" />
+        <stop offset="1" stop-color="#512838" />
       </linearGradient>
       <linearGradient :id="ids.velvetLight" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#c98678" stop-opacity="0"/>
-        <stop offset="1" stop-color="#c98678" stop-opacity="0.24"/>
+        <stop offset="0" stop-color="#c98678" stop-opacity="0" />
+        <stop offset="1" stop-color="#c98678" stop-opacity="0.24" />
       </linearGradient>
 
       <!-- 旧香槟金：高光带窄、暗面偏棕，保留金属重量。 -->
       <linearGradient :id="ids.brassV" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#fff0c5"/>
-        <stop offset="0.16" stop-color="#dcb879"/>
-        <stop offset="0.48" stop-color="#a77940"/>
-        <stop offset="0.78" stop-color="#74502e"/>
-        <stop offset="1" stop-color="#3c291f"/>
+        <stop offset="0" stop-color="#fff0c5" />
+        <stop offset="0.16" stop-color="#dcb879" />
+        <stop offset="0.48" stop-color="#a77940" />
+        <stop offset="0.78" stop-color="#74502e" />
+        <stop offset="1" stop-color="#3c291f" />
       </linearGradient>
       <linearGradient :id="ids.brassH" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="#4a3021"/>
-        <stop offset="0.14" stop-color="#b98b4d"/>
-        <stop offset="0.46" stop-color="#f1d497"/>
-        <stop offset="0.64" stop-color="#bd8b4d"/>
-        <stop offset="1" stop-color="#493022"/>
+        <stop offset="0" stop-color="#4a3021" />
+        <stop offset="0.14" stop-color="#b98b4d" />
+        <stop offset="0.46" stop-color="#f1d497" />
+        <stop offset="0.64" stop-color="#bd8b4d" />
+        <stop offset="1" stop-color="#493022" />
       </linearGradient>
       <linearGradient :id="ids.brassFine" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#f0d8a0"/>
-        <stop offset="0.5" stop-color="#a97840"/>
-        <stop offset="1" stop-color="#5c3b27"/>
+        <stop offset="0" stop-color="#f0d8a0" />
+        <stop offset="0.5" stop-color="#a97840" />
+        <stop offset="1" stop-color="#5c3b27" />
       </linearGradient>
       <linearGradient :id="ids.metalSheen" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="#fff7dc" stop-opacity="0"/>
-        <stop offset="0.46" stop-color="#fff7dc" stop-opacity="0"/>
-        <stop offset="0.5" stop-color="#fff7dc" stop-opacity="0.88"/>
-        <stop offset="0.54" stop-color="#fff7dc" stop-opacity="0"/>
-        <stop offset="1" stop-color="#fff7dc" stop-opacity="0"/>
+        <stop offset="0" stop-color="#fff7dc" stop-opacity="0" />
+        <stop offset="0.46" stop-color="#fff7dc" stop-opacity="0" />
+        <stop offset="0.5" stop-color="#fff7dc" stop-opacity="0.88" />
+        <stop offset="0.54" stop-color="#fff7dc" stop-opacity="0" />
+        <stop offset="1" stop-color="#fff7dc" stop-opacity="0" />
       </linearGradient>
       <radialGradient :id="ids.garnet" cx="0.34" cy="0.28" r="0.78">
-        <stop offset="0" stop-color="#ffe2c9"/>
-        <stop offset="0.16" stop-color="#d88978"/>
-        <stop offset="0.48" stop-color="#8f3548"/>
-        <stop offset="0.82" stop-color="#451927"/>
-        <stop offset="1" stop-color="#1a0c14"/>
+        <stop offset="0" stop-color="#ffe2c9" />
+        <stop offset="0.16" stop-color="#d88978" />
+        <stop offset="0.48" stop-color="#8f3548" />
+        <stop offset="0.82" stop-color="#451927" />
+        <stop offset="1" stop-color="#1a0c14" />
       </radialGradient>
       <radialGradient :id="ids.lockCore" cx="0.5" cy="0.45" r="0.58">
-        <stop offset="0" stop-color="#fff6d5"/>
-        <stop offset="0.28" stop-color="#edc17d"/>
-        <stop offset="0.72" stop-color="#a45c43"/>
-        <stop offset="1" stop-color="#562436"/>
+        <stop offset="0" stop-color="#fff6d5" />
+        <stop offset="0.28" stop-color="#edc17d" />
+        <stop offset="0.72" stop-color="#a45c43" />
+        <stop offset="1" stop-color="#562436" />
       </radialGradient>
 
       <!-- 光效全部压在低透明度，开启时才成为视觉主角。 -->
       <radialGradient :id="ids.ambient" cx="0.5" cy="0.52" r="0.5">
-        <stop offset="0" stop-color="#f1bd75" stop-opacity="0.34"/>
-        <stop offset="0.48" stop-color="#b8694d" stop-opacity="0.12"/>
-        <stop offset="1" stop-color="#5a2635" stop-opacity="0"/>
+        <stop offset="0" stop-color="#f1bd75" stop-opacity="0.34" />
+        <stop offset="0.48" stop-color="#b8694d" stop-opacity="0.12" />
+        <stop offset="1" stop-color="#5a2635" stop-opacity="0" />
       </radialGradient>
       <radialGradient :id="ids.ground" cx="0.5" cy="0.5" r="0.5">
-        <stop offset="0" stop-color="#140b11" stop-opacity="0.74"/>
-        <stop offset="0.66" stop-color="#1b0d14" stop-opacity="0.3"/>
-        <stop offset="1" stop-color="#1b0d14" stop-opacity="0"/>
+        <stop offset="0" stop-color="#140b11" stop-opacity="0.74" />
+        <stop offset="0.66" stop-color="#1b0d14" stop-opacity="0.3" />
+        <stop offset="1" stop-color="#1b0d14" stop-opacity="0" />
       </radialGradient>
       <linearGradient :id="ids.beam" x1="0" y1="1" x2="0" y2="0">
-        <stop offset="0" stop-color="#fff1bf" stop-opacity="0.5"/>
-        <stop offset="0.48" stop-color="#d99a5f" stop-opacity="0.16"/>
-        <stop offset="1" stop-color="#b16051" stop-opacity="0"/>
+        <stop offset="0" stop-color="#fff1bf" stop-opacity="0.5" />
+        <stop offset="0.48" stop-color="#d99a5f" stop-opacity="0.16" />
+        <stop offset="1" stop-color="#b16051" stop-opacity="0" />
       </linearGradient>
       <linearGradient :id="ids.spill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#f6d18d" stop-opacity="0.38"/>
-        <stop offset="1" stop-color="#c56f59" stop-opacity="0"/>
+        <stop offset="0" stop-color="#f6d18d" stop-opacity="0.38" />
+        <stop offset="1" stop-color="#c56f59" stop-opacity="0" />
       </linearGradient>
 
       <clipPath :id="ids.closedLidClip">
-        <path d="M98 233V169Q98 133 132 110Q187 74 260 74Q333 74 388 110Q422 133 422 169V233Z"/>
+        <path d="M98 233V169Q98 133 132 110Q187 74 260 74Q333 74 388 110Q422 133 422 169V233Z" />
       </clipPath>
       <clipPath :id="ids.openLidClip">
-        <path d="M110 231V143Q110 96 154 71Q202 43 260 43Q318 43 366 71Q410 96 410 143V231Z"/>
+        <path d="M110 231V143Q110 96 154 71Q202 43 260 43Q318 43 366 71Q410 96 410 143V231Z" />
       </clipPath>
       <clipPath :id="ids.bodyClip">
-        <path d="M92 239H428V322Q428 340 410 340H110Q92 340 92 322Z"/>
+        <path d="M92 239H428V322Q428 340 410 340H110Q92 340 92 322Z" />
       </clipPath>
       <clipPath :id="ids.lockClip">
-        <path d="M231 213H289V268Q289 286 260 302Q231 286 231 268Z"/>
+        <path d="M231 213H289V268Q289 286 260 302Q231 286 231 268Z" />
       </clipPath>
       <filter :id="ids.softGlow" x="-80%" y="-80%" width="260%" height="260%">
-        <feGaussianBlur stdDeviation="7"/>
+        <feGaussianBlur stdDeviation="7" />
       </filter>
     </defs>
 
     <!-- 舞台光与落地阴影 -->
-    <ellipse class="ambient-halo" cx="260" cy="202" rx="210" ry="174" :fill="paint('ambient')"/>
-    <ellipse class="ground-shadow" cx="260" cy="355" rx="177" ry="16" :fill="paint('ground')"/>
-    <ellipse class="ground-light" cx="260" cy="350" rx="135" ry="11" :fill="paint('ambient')"/>
+    <ellipse class="ambient-halo" cx="260" cy="202" rx="210" ry="174" :fill="paint('ambient')" />
+    <ellipse class="ground-shadow" cx="260" cy="355" rx="177" ry="16" :fill="paint('ground')" />
+    <ellipse class="ground-light" cx="260" cy="350" rx="135" ry="11" :fill="paint('ambient')" />
 
     <!-- 箱盖完全开启后的背板。默认沿后铰链收拢，opening 状态再展开。 -->
     <g class="open-lid">
@@ -121,27 +121,33 @@
         :fill="paint('velvet')" stroke="#140b12" stroke-width="4" stroke-linejoin="round"
       />
       <g :clip-path="paint('openLidClip')">
-        <path d="M121 226V149Q121 108 160 84Q204 57 260 57Q316 57 360 84Q399 108 399 149V226Z"
-          fill="none" :stroke="paint('brassV')" stroke-width="8"/>
-        <path d="M133 224V153Q133 116 168 96Q207 71 260 71Q313 71 352 96Q387 116 387 153V224Z"
-          fill="none" stroke="#d0a66b" stroke-opacity="0.34" stroke-width="1.4"/>
-        <path d="M143 224V158Q143 125 175 106Q212 83 260 83Q308 83 345 106Q377 125 377 158V224Z"
-          :fill="paint('velvetLight')" stroke="#5a3c31" stroke-width="1.2"/>
-        <path d="M172 207Q202 166 260 148Q318 166 348 207" fill="none" stroke="#b68b52" stroke-width="1.5" opacity="0.54"/>
-        <path d="M188 207Q213 179 260 164Q307 179 332 207" fill="none" stroke="#e6c88d" stroke-width="0.8" opacity="0.42"/>
-        <path d="M259.5 86V221" stroke="#d5ae71" stroke-width="1" opacity="0.26"/>
-        <path class="inner-lid-spill" d="M110 150H410V232H110Z" :fill="paint('spill')"/>
+        <path
+d="M121 226V149Q121 108 160 84Q204 57 260 57Q316 57 360 84Q399 108 399 149V226Z"
+          fill="none" :stroke="paint('brassV')" stroke-width="8"
+/>
+        <path
+d="M133 224V153Q133 116 168 96Q207 71 260 71Q313 71 352 96Q387 116 387 153V224Z"
+          fill="none" stroke="#d0a66b" stroke-opacity="0.34" stroke-width="1.4"
+/>
+        <path
+d="M143 224V158Q143 125 175 106Q212 83 260 83Q308 83 345 106Q377 125 377 158V224Z"
+          :fill="paint('velvetLight')" stroke="#5a3c31" stroke-width="1.2"
+/>
+        <path d="M172 207Q202 166 260 148Q318 166 348 207" fill="none" stroke="#b68b52" stroke-width="1.5" opacity="0.54" />
+        <path d="M188 207Q213 179 260 164Q307 179 332 207" fill="none" stroke="#e6c88d" stroke-width="0.8" opacity="0.42" />
+        <path d="M259.5 86V221" stroke="#d5ae71" stroke-width="1" opacity="0.26" />
+        <path class="inner-lid-spill" d="M110 150H410V232H110Z" :fill="paint('spill')" />
       </g>
-      <path d="M246 112L260 96L274 112L260 128Z" fill="#24121c" :stroke="paint('brassFine')" stroke-width="2"/>
-      <ellipse cx="260" cy="112" rx="6.4" ry="8.2" :fill="paint('garnet')" stroke="#e0bd82" stroke-width="1"/>
-      <path d="M244 226H276L270 236H250Z" :fill="paint('brassH')" stroke="#2c1b18" stroke-width="1.5"/>
+      <path d="M246 112L260 96L274 112L260 128Z" fill="#24121c" :stroke="paint('brassFine')" stroke-width="2" />
+      <ellipse cx="260" cy="112" rx="6.4" ry="8.2" :fill="paint('garnet')" stroke="#e0bd82" stroke-width="1" />
+      <path d="M244 226H276L270 236H250Z" :fill="paint('brassH')" stroke="#2c1b18" stroke-width="1.5" />
     </g>
 
     <!-- 开盖时从箱内推出的光柱与纵深。 -->
     <g class="inner-light">
-      <path class="light-beam beam-left" d="M214 241Q224 162 164 26H256Q241 158 246 241Z" :fill="paint('beam')"/>
-      <path class="light-beam beam-right" d="M274 241Q282 158 266 26H356Q296 162 306 241Z" :fill="paint('beam')"/>
-      <ellipse class="light-core" cx="260" cy="235" rx="118" ry="54" :fill="paint('ambient')"/>
+      <path class="light-beam beam-left" d="M214 241Q224 162 164 26H256Q241 158 246 241Z" :fill="paint('beam')" />
+      <path class="light-beam beam-right" d="M274 241Q282 158 266 26H356Q296 162 306 241Z" :fill="paint('beam')" />
+      <ellipse class="light-core" cx="260" cy="235" rx="118" ry="54" :fill="paint('ambient')" />
     </g>
 
     <g class="chest">
@@ -152,104 +158,128 @@
           :fill="paint('lacquerLid')" stroke="#160c13" stroke-width="4" stroke-linejoin="round"
         />
         <g :clip-path="paint('closedLidClip')">
-          <path d="M155 94V234M207 76V234M313 76V234M365 94V234" stroke="#170d14" stroke-width="2.2" opacity="0.5"/>
-          <path d="M159 94V234M211 76V234M309 76V234M361 94V234" stroke="#c38377" stroke-width="0.9" opacity="0.18"/>
-          <path d="M112 155Q132 118 181 93Q220 73 260 73Q300 73 339 93Q388 118 408 155"
-            fill="none" stroke="#f1cda0" stroke-width="2.2" opacity="0.36"/>
+          <path d="M155 94V234M207 76V234M313 76V234M365 94V234" stroke="#170d14" stroke-width="2.2" opacity="0.5" />
+          <path d="M159 94V234M211 76V234M309 76V234M361 94V234" stroke="#c38377" stroke-width="0.9" opacity="0.18" />
+          <path
+d="M112 155Q132 118 181 93Q220 73 260 73Q300 73 339 93Q388 118 408 155"
+            fill="none" stroke="#f1cda0" stroke-width="2.2" opacity="0.36"
+/>
 
           <!-- 三段式细金丝嵌线与中央花饰。 -->
-          <path d="M141 225V170Q141 142 168 125Q208 98 260 98Q312 98 352 125Q379 142 379 170V225"
-            fill="none" :stroke="paint('brassFine')" stroke-width="2.1" opacity="0.78"/>
-          <path d="M156 225V176Q156 151 179 137Q214 114 260 114Q306 114 341 137Q364 151 364 176V225"
-            fill="none" stroke="#e9c891" stroke-width="0.75" opacity="0.48"/>
-          <path d="M199 225V169Q199 144 220 132Q239 121 260 121Q281 121 300 132Q321 144 321 169V225"
-            fill="none" stroke="#a87742" stroke-width="1" opacity="0.45"/>
-          <path d="M260 121V223" stroke="#c8995f" stroke-width="0.9" opacity="0.3"/>
+          <path
+d="M141 225V170Q141 142 168 125Q208 98 260 98Q312 98 352 125Q379 142 379 170V225"
+            fill="none" :stroke="paint('brassFine')" stroke-width="2.1" opacity="0.78"
+/>
+          <path
+d="M156 225V176Q156 151 179 137Q214 114 260 114Q306 114 341 137Q364 151 364 176V225"
+            fill="none" stroke="#e9c891" stroke-width="0.75" opacity="0.48"
+/>
+          <path
+d="M199 225V169Q199 144 220 132Q239 121 260 121Q281 121 300 132Q321 144 321 169V225"
+            fill="none" stroke="#a87742" stroke-width="1" opacity="0.45"
+/>
+          <path d="M260 121V223" stroke="#c8995f" stroke-width="0.9" opacity="0.3" />
 
           <!-- 左右藤蔓纹保持细线工艺感。 -->
-          <path d="M167 184C184 168 201 172 211 188C198 179 185 184 180 199C180 184 173 179 167 184Z"
-            fill="none" stroke="#c99e64" stroke-width="1.2" opacity="0.56"/>
-          <path d="M353 184C336 168 319 172 309 188C322 179 335 184 340 199C340 184 347 179 353 184Z"
-            fill="none" stroke="#c99e64" stroke-width="1.2" opacity="0.56"/>
+          <path
+d="M167 184C184 168 201 172 211 188C198 179 185 184 180 199C180 184 173 179 167 184Z"
+            fill="none" stroke="#c99e64" stroke-width="1.2" opacity="0.56"
+/>
+          <path
+d="M353 184C336 168 319 172 309 188C322 179 335 184 340 199C340 184 347 179 353 184Z"
+            fill="none" stroke="#c99e64" stroke-width="1.2" opacity="0.56"
+/>
 
-          <path d="M119 110H134V234H119Z" :fill="paint('brassV')" stroke="#291818" stroke-width="2"/>
-          <path d="M386 110H401V234H386Z" :fill="paint('brassV')" stroke="#291818" stroke-width="2"/>
-          <circle cx="126.5" cy="146" r="2" fill="#533922"/>
-          <circle cx="126.5" cy="210" r="2" fill="#533922"/>
-          <circle cx="393.5" cy="146" r="2" fill="#533922"/>
-          <circle cx="393.5" cy="210" r="2" fill="#533922"/>
+          <path d="M119 110H134V234H119Z" :fill="paint('brassV')" stroke="#291818" stroke-width="2" />
+          <path d="M386 110H401V234H386Z" :fill="paint('brassV')" stroke="#291818" stroke-width="2" />
+          <circle cx="126.5" cy="146" r="2" fill="#533922" />
+          <circle cx="126.5" cy="210" r="2" fill="#533922" />
+          <circle cx="393.5" cy="146" r="2" fill="#533922" />
+          <circle cx="393.5" cy="210" r="2" fill="#533922" />
 
-          <rect class="lid-sheen" x="56" y="62" width="74" height="190" transform="rotate(12 56 62)" :fill="paint('metalSheen')"/>
+          <rect class="lid-sheen" x="56" y="62" width="74" height="190" transform="rotate(12 56 62)" :fill="paint('metalSheen')" />
         </g>
 
-        <path d="M247 137L260 122L273 137L260 152Z" fill="#24121c" :stroke="paint('brassFine')" stroke-width="2"/>
-        <ellipse class="lid-garnet" cx="260" cy="137" rx="6" ry="7.6" :fill="paint('garnet')" stroke="#e0bd82" stroke-width="1"/>
-        <path d="M98 224H422V239H98Z" :fill="paint('brassH')" stroke="#2d1b18" stroke-width="2"/>
-        <path d="M108 226H412" stroke="#fff0c5" stroke-width="1.4" opacity="0.45"/>
+        <path d="M247 137L260 122L273 137L260 152Z" fill="#24121c" :stroke="paint('brassFine')" stroke-width="2" />
+        <ellipse class="lid-garnet" cx="260" cy="137" rx="6" ry="7.6" :fill="paint('garnet')" stroke="#e0bd82" stroke-width="1" />
+        <path d="M98 224H422V239H98Z" :fill="paint('brassH')" stroke="#2d1b18" stroke-width="2" />
+        <path d="M108 226H412" stroke="#fff0c5" stroke-width="1.4" opacity="0.45" />
       </g>
 
       <!-- 箱体 -->
       <g class="chest-body">
-        <path d="M112 335V351H142L149 337ZM408 335V351H378L371 337Z" fill="#160d13"/>
-        <path d="M92 239H428V322Q428 340 410 340H110Q92 340 92 322Z"
-          :fill="paint('lacquerBody')" stroke="#150b12" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M112 335V351H142L149 337ZM408 335V351H378L371 337Z" fill="#160d13" />
+        <path
+d="M92 239H428V322Q428 340 410 340H110Q92 340 92 322Z"
+          :fill="paint('lacquerBody')" stroke="#150b12" stroke-width="4" stroke-linejoin="round"
+/>
         <g :clip-path="paint('bodyClip')">
-          <rect x="92" y="239" width="336" height="28" fill="#120a10" opacity="0.34"/>
-          <path d="M158 241V340M212 241V340M308 241V340M362 241V340" stroke="#160c13" stroke-width="2" opacity="0.5"/>
-          <path d="M162 241V340M216 241V340M304 241V340M358 241V340" stroke="#bd7e70" stroke-width="0.8" opacity="0.14"/>
+          <rect x="92" y="239" width="336" height="28" fill="#120a10" opacity="0.34" />
+          <path d="M158 241V340M212 241V340M308 241V340M362 241V340" stroke="#160c13" stroke-width="2" opacity="0.5" />
+          <path d="M162 241V340M216 241V340M304 241V340M358 241V340" stroke="#bd7e70" stroke-width="0.8" opacity="0.14" />
 
-          <path d="M127 270H225V316Q225 325 216 325H127Z" fill="#21131c" fill-opacity="0.38" stroke="#9f7143" stroke-width="1.5"/>
-          <path d="M295 270H393V325H304Q295 325 295 316Z" fill="#21131c" fill-opacity="0.38" stroke="#9f7143" stroke-width="1.5"/>
-          <path d="M136 279H216V314Q216 317 213 317H136Z" fill="none" stroke="#d1a766" stroke-width="0.7" opacity="0.44"/>
-          <path d="M304 279H384V317H307Q304 317 304 314Z" fill="none" stroke="#d1a766" stroke-width="0.7" opacity="0.44"/>
-          <path d="M146 301C165 282 194 282 213 301C194 291 165 291 146 301Z" fill="none" stroke="#a97a47" stroke-width="1" opacity="0.58"/>
-          <path d="M374 301C355 282 326 282 307 301C326 291 355 291 374 301Z" fill="none" stroke="#a97a47" stroke-width="1" opacity="0.58"/>
+          <path d="M127 270H225V316Q225 325 216 325H127Z" fill="#21131c" fill-opacity="0.38" stroke="#9f7143" stroke-width="1.5" />
+          <path d="M295 270H393V325H304Q295 325 295 316Z" fill="#21131c" fill-opacity="0.38" stroke="#9f7143" stroke-width="1.5" />
+          <path d="M136 279H216V314Q216 317 213 317H136Z" fill="none" stroke="#d1a766" stroke-width="0.7" opacity="0.44" />
+          <path d="M304 279H384V317H307Q304 317 304 314Z" fill="none" stroke="#d1a766" stroke-width="0.7" opacity="0.44" />
+          <path d="M146 301C165 282 194 282 213 301C194 291 165 291 146 301Z" fill="none" stroke="#a97a47" stroke-width="1" opacity="0.58" />
+          <path d="M374 301C355 282 326 282 307 301C326 291 355 291 374 301Z" fill="none" stroke="#a97a47" stroke-width="1" opacity="0.58" />
 
-          <rect x="92" y="327" width="336" height="18" fill="#120a10" opacity="0.28"/>
-          <rect class="face-spill" x="92" y="238" width="336" height="80" :fill="paint('spill')"/>
+          <rect x="92" y="327" width="336" height="18" fill="#120a10" opacity="0.28" />
+          <rect class="face-spill" x="92" y="238" width="336" height="80" :fill="paint('spill')" />
         </g>
 
-        <path d="M92 278V322Q92 340 110 340H158V327H114Q107 327 107 320V278Z"
-          :fill="paint('brassV')" stroke="#291819" stroke-width="2"/>
-        <path d="M428 278V322Q428 340 410 340H362V327H406Q413 327 413 320V278Z"
-          :fill="paint('brassV')" stroke="#291819" stroke-width="2"/>
-        <path d="M103 333H417" :stroke="paint('brassH')" stroke-width="9"/>
-        <path d="M91 234H429Q435 234 435 240V249Q435 255 429 255H91Q85 255 85 249V240Q85 234 91 234Z"
-          :fill="paint('brassH')" stroke="#2a1918" stroke-width="2.4"/>
-        <path d="M98 238H422" stroke="#fff0c8" stroke-width="1.5" opacity="0.52"/>
+        <path
+d="M92 278V322Q92 340 110 340H158V327H114Q107 327 107 320V278Z"
+          :fill="paint('brassV')" stroke="#291819" stroke-width="2"
+/>
+        <path
+d="M428 278V322Q428 340 410 340H362V327H406Q413 327 413 320V278Z"
+          :fill="paint('brassV')" stroke="#291819" stroke-width="2"
+/>
+        <path d="M103 333H417" :stroke="paint('brassH')" stroke-width="9" />
+        <path
+d="M91 234H429Q435 234 435 240V249Q435 255 429 255H91Q85 255 85 249V240Q85 234 91 234Z"
+          :fill="paint('brassH')" stroke="#2a1918" stroke-width="2.4"
+/>
+        <path d="M98 238H422" stroke="#fff0c8" stroke-width="1.5" opacity="0.52" />
 
         <g class="seam-light">
-          <rect x="91" y="231" width="338" height="10" rx="5" fill="#f9d996" :filter="paint('softGlow')"/>
-          <path d="M96 235H424" stroke="#fff4cf" stroke-width="3" stroke-linecap="round"/>
+          <rect x="91" y="231" width="338" height="10" rx="5" fill="#f9d996" :filter="paint('softGlow')" />
+          <path d="M96 235H424" stroke="#fff4cf" stroke-width="3" stroke-linecap="round" />
         </g>
 
-        <circle cx="101" cy="300" r="2" fill="#51351f"/>
-        <circle cx="123" cy="333" r="2" fill="#51351f"/>
-        <circle cx="419" cy="300" r="2" fill="#51351f"/>
-        <circle cx="397" cy="333" r="2" fill="#51351f"/>
+        <circle cx="101" cy="300" r="2" fill="#51351f" />
+        <circle cx="123" cy="333" r="2" fill="#51351f" />
+        <circle cx="419" cy="300" r="2" fill="#51351f" />
+        <circle cx="397" cy="333" r="2" fill="#51351f" />
       </g>
 
       <!-- 锁具：盾形锁牌、双插销与珐琅核心。 -->
       <g class="lock-bolts">
-        <path class="lock-bolt bolt-left" d="M205 239H242V251H205Q199 251 199 245Q199 239 205 239Z" :fill="paint('brassH')" stroke="#2a1918" stroke-width="1.8"/>
-        <path class="lock-bolt bolt-right" d="M278 239H315Q321 239 321 245Q321 251 315 251H278Z" :fill="paint('brassH')" stroke="#2a1918" stroke-width="1.8"/>
+        <path class="lock-bolt bolt-left" d="M205 239H242V251H205Q199 251 199 245Q199 239 205 239Z" :fill="paint('brassH')" stroke="#2a1918" stroke-width="1.8" />
+        <path class="lock-bolt bolt-right" d="M278 239H315Q321 239 321 245Q321 251 315 251H278Z" :fill="paint('brassH')" stroke="#2a1918" stroke-width="1.8" />
       </g>
       <g class="chest-lock">
-        <path d="M231 213H289V268Q289 286 260 302Q231 286 231 268Z"
-          :fill="paint('brassV')" stroke="#281617" stroke-width="2.4" stroke-linejoin="round"/>
-        <path d="M238 220H282V267Q282 279 260 292Q238 279 238 267Z"
-          fill="#34202a" stroke="#8e653c" stroke-width="1.4"/>
-        <path d="M242 225Q260 218 278 225" stroke="#ffe6b0" stroke-width="1.3" opacity="0.55" stroke-linecap="round"/>
+        <path
+d="M231 213H289V268Q289 286 260 302Q231 286 231 268Z"
+          :fill="paint('brassV')" stroke="#281617" stroke-width="2.4" stroke-linejoin="round"
+/>
+        <path
+d="M238 220H282V267Q282 279 260 292Q238 279 238 267Z"
+          fill="#34202a" stroke="#8e653c" stroke-width="1.4"
+/>
+        <path d="M242 225Q260 218 278 225" stroke="#ffe6b0" stroke-width="1.3" opacity="0.55" stroke-linecap="round" />
         <g class="lock-runes" fill="none" stroke="#ddac68" stroke-width="1" opacity="0.62">
-          <path d="M246 256L252 250M274 256L268 250"/>
-          <path d="M246 266H253M274 266H267"/>
+          <path d="M246 256L252 250M274 256L268 250" />
+          <path d="M246 266H253M274 266H267" />
         </g>
-        <circle class="lock-aura" cx="260" cy="245" r="22" fill="#e2a461" :filter="paint('softGlow')"/>
-        <path d="M260 230L271 241L260 252L249 241Z" :fill="paint('lockCore')" stroke="#f2d29b" stroke-width="1.2"/>
-        <circle class="lock-core" cx="260" cy="241" r="4.2" fill="#fff3cf"/>
-        <path d="M257 263A3 3 0 1 1 263 263C263 265 262 266 262 268L264 277H256L258 268C258 266 257 265 257 263Z" fill="#120b11"/>
+        <circle class="lock-aura" cx="260" cy="245" r="22" fill="#e2a461" :filter="paint('softGlow')" />
+        <path d="M260 230L271 241L260 252L249 241Z" :fill="paint('lockCore')" stroke="#f2d29b" stroke-width="1.2" />
+        <circle class="lock-core" cx="260" cy="241" r="4.2" fill="#fff3cf" />
+        <path d="M257 263A3 3 0 1 1 263 263C263 265 262 266 262 268L264 277H256L258 268C258 266 257 265 257 263Z" fill="#120b11" />
         <g :clip-path="paint('lockClip')">
-          <rect class="lock-sheen" x="194" y="191" width="22" height="132" transform="rotate(14 194 191)" :fill="paint('metalSheen')"/>
+          <rect class="lock-sheen" x="194" y="191" width="22" height="132" transform="rotate(14 194 191)" :fill="paint('metalSheen')" />
         </g>
       </g>
     </g>
@@ -270,8 +300,8 @@
         :key="`spark-${index}`"
         :transform="`translate(${spark.x} ${spark.y})`"
       >
-        <circle v-if="spark.kind === 'dot'" class="burst-particle" :r="spark.size" :style="motionStyle(spark)"/>
-        <path v-else class="burst-particle burst-diamond" :d="diamondPath(spark.size)" :style="motionStyle(spark)"/>
+        <circle v-if="spark.kind === 'dot'" class="burst-particle" :r="spark.size" :style="motionStyle(spark)" />
+        <path v-else class="burst-particle burst-diamond" :d="diamondPath(spark.size)" :style="motionStyle(spark)" />
       </g>
     </g>
   </svg>

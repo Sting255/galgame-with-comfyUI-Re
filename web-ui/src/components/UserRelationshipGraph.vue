@@ -5,8 +5,7 @@
             <h3>我的关系图</h3>
             <div class="rel-header-actions">
               <linshe-button variant="secondary" @click="$emit('auto-deduce')">推演关系</linshe-button>
-
-            </div>
+</div>
           </div>
     </template>
 
@@ -55,8 +54,7 @@
       <template #title>
         <div class="modal-heading-content">
                 <span>{{ inputDialog.isEdit ? '编辑关系' : '新建关系' }}</span>
-
-              </div>
+</div>
       </template>
 
               <div class="rel-dialog-body">
@@ -80,16 +78,14 @@
                   </div>
                 </div>
               </div>
-
-    </linshe-modal>
-
-  </linshe-modal>
+</linshe-modal>
+</linshe-modal>
 </template>
 
 <script setup>
 import LinsheModal from './ui/LinsheModal.vue'
 
-import { ref, reactive, computed, watch, nextTick, markRaw, inject, onMounted } from 'vue'
+import { ref, reactive, watch, nextTick, markRaw, inject } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/core/dist/style.css'

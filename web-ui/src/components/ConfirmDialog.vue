@@ -10,15 +10,17 @@
     <!-- 图标区：danger 用三角警告，普通用圆点信息 -->
     <div class="confirm-icon" :class="{ 'is-danger': current.danger }">
       <svg v-if="current.danger" viewBox="0 0 24 24" fill="none">
-        <path d="M12 2L2 22h20L12 2z" stroke-linejoin="round"
-              stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"/>
-        <line x1="12" y1="10" x2="12" y2="15" stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"/>
-        <circle cx="12" cy="18.5" r="1" fill="var(--danger)" stroke="none"/>
+        <path
+d="M12 2L2 22h20L12 2z" stroke-linejoin="round"
+              stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"
+/>
+        <line x1="12" y1="10" x2="12" y2="15" stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round" />
+        <circle cx="12" cy="18.5" r="1" fill="var(--danger)" stroke="none" />
       </svg>
       <svg v-else viewBox="0 0 24 24" fill="none">
-        <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="1.6"/>
-        <line x1="12" y1="7" x2="12" y2="12" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/>
-        <circle cx="12" cy="16.5" r="0.9" fill="var(--accent)" stroke="none"/>
+        <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="1.6" />
+        <line x1="12" y1="7" x2="12" y2="12" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" />
+        <circle cx="12" cy="16.5" r="0.9" fill="var(--accent)" stroke="none" />
       </svg>
     </div>
     <div class="confirm-body">

@@ -9,7 +9,9 @@
           class="char-avatar char-all"
           :class="{ active: activeCharId === null }"
           @click="onCharChange(null)"
-        >全部</div>
+        >
+全部
+</div>
         <div
           v-for="ch in chat.characters"
           :key="ch.id"
@@ -46,7 +48,9 @@
           :disabled="!selectedCount || deleting"
           :loading="deleting"
           @click="deleteSelected"
-        >删除选中（{{ selectedCount }}）</linshe-button>
+        >
+删除选中（{{ selectedCount }}）
+</linshe-button>
         <span class="selection-hint">只删图片文件，聊天里的文字不受影响</span>
       </template>
     </div>

@@ -25,10 +25,10 @@
         <div class="card-desc">{{ eventDesc }}</div>
         <div class="card-status" :class="{ urgent: countdownMinutes > 0 && countdownMinutes < 10 }">
           <svg v-if="!isExpired" class="status-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/>
+            <circle cx="12" cy="12" r="10" /><polyline points="12,6 12,12 16,14" />
           </svg>
           <svg v-else class="status-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/>
+            <circle cx="12" cy="12" r="10" /><path d="M9 9l6 6M15 9l-6 6" />
           </svg>
           <span>{{ statusText }}</span>
         </div>

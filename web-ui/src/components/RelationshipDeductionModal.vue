@@ -3,8 +3,7 @@
     <template #title>
       <div class="modal-heading-content">
             <h3>推演{{ mode === 'user' ? '用户' : '角色' }}关系 — {{ mode === 'user' ? userName : character?.display_name }}</h3>
-
-          </div>
+</div>
     </template>
 
     <div class="modal-content-section">
@@ -110,8 +109,7 @@
               </div>
             </Transition>
           </div>
-
-  </linshe-modal>
+</linshe-modal>
 </template>
 
 <script setup>

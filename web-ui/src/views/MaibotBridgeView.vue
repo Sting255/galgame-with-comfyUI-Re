@@ -35,8 +35,8 @@
             :title="showWebuiToken ? '隐藏 Token' : '显示 Token'"
             @click="showWebuiToken = !showWebuiToken"
           >
-            <svg v-if="showWebuiToken" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-            <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg v-if="showWebuiToken" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+            <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="3" /></svg>
           </linshe-button>
         </div>
         <div class="admin-links">
@@ -44,7 +44,7 @@
           <div class="admin-links-grid">
             <a class="admin-link" href="http://127.0.0.1:8001/" target="_blank" rel="noopener">
               <span class="admin-link-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM9 3h6M10 3v3M14 3v3M7 11h2M7 14h4M15 11h2M15 14h2"/></svg>
+                <svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM9 3h6M10 3v3M14 3v3M7 11h2M7 14h4M15 11h2M15 14h2" /></svg>
               </span>
               <span class="admin-link-copy">
                 <span class="admin-link-name">MaiBot 后台</span>
@@ -54,11 +54,11 @@
                   <span class="admin-link-url">127.0.0.1:8001</span>
                 </span>
               </span>
-              <span class="admin-link-open">打开<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+              <span class="admin-link-open">打开<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
             </a>
             <a class="admin-link" href="http://127.0.0.1:5099/" target="_blank" rel="noopener">
               <span class="admin-link-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM9 3h6M10 3v3M14 3v3M7 11h2M7 14h4M15 11h2M15 14h2"/></svg>
+                <svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM9 3h6M10 3v3M14 3v3M7 11h2M7 14h4M15 11h2M15 14h2" /></svg>
               </span>
               <span class="admin-link-copy">
                 <span class="admin-link-name">Snowluma 后台</span>
@@ -68,7 +68,7 @@
                   <span class="admin-link-url">127.0.0.1:5099</span>
                 </span>
               </span>
-              <span class="admin-link-open">打开<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+              <span class="admin-link-open">打开<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
             </a>
           </div>
         </div>
@@ -80,7 +80,7 @@
         <label class="memory-check">
           <input type="checkbox" v-model="memoryCuration" @change="savePluginConfig">
           <span class="memory-check-box" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></svg>
           </span>
           <span class="memory-check-copy">
             <span class="memory-check-title">启用对话记忆摘要（同步回邻舍）</span>
@@ -91,7 +91,7 @@
         <label class="memory-check">
           <input type="checkbox" v-model="permanentConfigWrite" @change="savePluginConfig">
           <span class="memory-check-box" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></svg>
           </span>
           <span class="memory-check-copy">
             <span class="memory-check-title">永久写入MaiBot配置代替临时覆盖</span>
@@ -114,8 +114,7 @@
         <details class="advanced">
           <summary>高级参数</summary>
           <div class="advanced-body">
-
-            <label class="fl" for="poll-interval">生图任务轮询间隔（秒）</label>
+<label class="fl" for="poll-interval">生图任务轮询间隔（秒）</label>
             <linshe-input id="poll-interval" v-model.number="pollInterval" type="number" class="fi" min="0.5" step="0.5" @change="savePluginConfig" />
             <label class="fl" for="poll-timeout">生图任务轮询超时（秒）</label>
             <linshe-input id="poll-timeout" v-model.number="pollTimeout" type="number" class="fi" min="10" step="10" @change="savePluginConfig" />

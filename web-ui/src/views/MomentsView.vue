@@ -27,7 +27,9 @@
           <div
             class="picker-avatar"
             :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }"
-          >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
+          >
+{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
+</div>
           <span>{{ c.display_name }}</span>
         </div>
       </div>
@@ -38,8 +40,7 @@
 
     <!-- 内容区 -->
     <div ref="scrollContainer" class="moments-feed" @scroll="onScroll">
-
-      <!-- 用户自己发朋友圈：文字 + 粘贴/上传图片 -->
+<!-- 用户自己发朋友圈：文字 + 粘贴/上传图片 -->
       <div class="moments-composer-wrap">
         <UserMomentComposer />
       </div>
@@ -55,7 +56,9 @@
             class="filter-avatar filter-all"
             :class="{ active: moments.filterCharacterId === null && !moments.filterUser }"
             @click="moments.setFilter(null)"
-          >全部</div>
+          >
+全部
+</div>
           <!-- 赞过筛选 -->
           <div
             class="filter-avatar filter-heart"

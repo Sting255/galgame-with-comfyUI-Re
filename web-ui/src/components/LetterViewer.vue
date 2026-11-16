@@ -11,7 +11,9 @@
         class="viewer-close"
         :class="{ 'viewer-close-compact': compact }"
         @click="requestClose"
-      >&times;</linshe-button>
+      >
+&times;
+</linshe-button>
 
       <!-- Compact portrait: rotation wrapper keeps paper-bg coordinate system clean -->
       <div v-if="compact" class="paper-rotate-wrap">
@@ -21,35 +23,45 @@
           :class="{ 'paper-compact': true, 'paper-no-bg': !letter.paper_path }"
           :style="paperBgStyle"
         >
-          <div v-if="letter.portrait_path" ref="portraitRef" class="paper-portrait portrait-compact"
+          <div
+v-if="letter.portrait_path" ref="portraitRef" class="paper-portrait portrait-compact"
             @pointerdown.prevent="startDrag($event, 'portrait')"
             @wheel.prevent.stop="handleWheel($event, 'portrait')"
             @pointermove="onPinchMove($event, 'portrait')"
-          ><img :src="letter.portrait_path" alt="" draggable="false" /></div>
+          >
+<img :src="letter.portrait_path" alt="" draggable="false" />
+</div>
 
           <div class="paper-text-area text-area-compact">
             <div ref="textRef" class="paper-text handwritten text-compact" :class="{ 'on-dark-paper': paperIsDark }" :style="handwritingFontStyle" @wheel.passive="onTextScroll">{{ displayText }}</div>
           </div>
 
-          <div v-if="letter.illustration_path" ref="illustrationRef" class="paper-illustration illustration-compact"
+          <div
+v-if="letter.illustration_path" ref="illustrationRef" class="paper-illustration illustration-compact"
             @pointerdown.prevent="startDrag($event, 'illustration')"
             @wheel.prevent.stop="handleWheel($event, 'illustration')"
             @pointermove="onPinchMove($event, 'illustration')"
-          ><img :src="letter.illustration_path" alt="" draggable="false" /></div>
+          >
+<img :src="letter.illustration_path" alt="" draggable="false" />
+</div>
         </div>
       </div>
 
       <!-- Normal mode: no rotation wrapper -->
-      <div v-else
+      <div
+v-else
         class="paper-bg"
         ref="paperRef"
         :class="{ 'paper-no-bg': !letter.paper_path }"
         :style="paperBgStyle"
       >
-        <div v-if="letter.portrait_path" ref="portraitRef" class="paper-portrait"
+        <div
+v-if="letter.portrait_path" ref="portraitRef" class="paper-portrait"
           @pointerdown.prevent="startDrag($event, 'portrait')"
           @wheel.prevent.stop="handleWheel($event, 'portrait')"
-        ><img :src="letter.portrait_path" alt="" draggable="false" /></div>
+        >
+<img :src="letter.portrait_path" alt="" draggable="false" />
+</div>
 
         <div class="paper-text-area">
           <div ref="textRef" class="paper-text handwritten" :class="{ 'on-dark-paper': paperIsDark }" :style="handwritingFontStyle" @wheel.passive="onTextScroll">{{ displayText }}</div>
@@ -57,14 +69,17 @@
 
         <div v-if="showScrollHint" class="scroll-hint" @click="scrollTextDown">
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <path d="M14 6v14M8 17l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M14 6v14M8 17l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </div>
 
-        <div v-if="letter.illustration_path" ref="illustrationRef" class="paper-illustration"
+        <div
+v-if="letter.illustration_path" ref="illustrationRef" class="paper-illustration"
           @pointerdown.prevent="startDrag($event, 'illustration')"
           @wheel.prevent.stop="handleWheel($event, 'illustration')"
-        ><img :src="letter.illustration_path" alt="" draggable="false" /></div>
+        >
+<img :src="letter.illustration_path" alt="" draggable="false" />
+</div>
       </div>
     </div>
   </Teleport>

@@ -3,11 +3,10 @@
     <template #title>
       <div class="modal-heading-content">
           <span class="gift-title">
-            <svg class="gift-title-icon" viewBox="0 0 24 24" width="18" height="18" fill="var(--accent)"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <svg class="gift-title-icon" viewBox="0 0 24 24" width="18" height="18" fill="var(--accent)"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" /></svg>
             送个礼物
           </span>
-
-        </div>
+</div>
     </template>
 
         <Transition name="step-slide" mode="out-in">
@@ -33,7 +32,7 @@
                 <span class="gift-card-desc">偷偷准备了一点小东西</span>
                 <div class="gift-card-footer">
                   <span class="gift-bonus">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--accent)"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--accent)"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" /></svg>
                     +8
                   </span>
                   <span v-if="cooldowns.small > 0" class="gift-cd">{{ formatCd(cooldowns.small) }}</span>
@@ -51,13 +50,13 @@
                 @keydown.space.prevent="selectGift('large')"
               >
                 <div class="gift-card-icon">
-                  <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M326.2 429.7L710 428 525.4 892.1z" fill="#83A4FF"/><path d="M370.2 271.1l292.4 2.6 51.7 113-379.5-2.6z" fill="#FF7E71"/><path d="M296.1 380.7L64.9 284.1l124.2-92.3 148.4 76.7z" fill="#A4BEFF"/><path d="M64.9 330.5L284 428l235.5 460.6zM755.6 427.1L960.9 321 528.8 886z" fill="#5B79FB"/><path d="M751.3 379.8l-57.8-119 132-73.4 113.8 95.8z" fill="#A4BEFF"/><path d="M365.8 233.4l-50-12.9-94-52.7 110.4-39.6h360.6l109.5 45.7-105.2 50.9-35.4 8.6z" fill="#C7D8FF"/></svg>
+                  <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M326.2 429.7L710 428 525.4 892.1z" fill="#83A4FF" /><path d="M370.2 271.1l292.4 2.6 51.7 113-379.5-2.6z" fill="#FF7E71" /><path d="M296.1 380.7L64.9 284.1l124.2-92.3 148.4 76.7z" fill="#A4BEFF" /><path d="M64.9 330.5L284 428l235.5 460.6zM755.6 427.1L960.9 321 528.8 886z" fill="#5B79FB" /><path d="M751.3 379.8l-57.8-119 132-73.4 113.8 95.8z" fill="#A4BEFF" /><path d="M365.8 233.4l-50-12.9-94-52.7 110.4-39.6h360.6l109.5 45.7-105.2 50.9-35.4 8.6z" fill="#C7D8FF" /></svg>
                 </div>
                 <span class="gift-card-title">特别准备</span>
                 <span class="gift-card-desc">希望它刚好合你的心意</span>
                 <div class="gift-card-footer">
                   <span class="gift-bonus">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--accent)"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--accent)"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" /></svg>
                     +15
                   </span>
                   <span v-if="cooldowns.large > 0" class="gift-cd">{{ formatCd(cooldowns.large) }}</span>
@@ -75,7 +74,7 @@
                 @keydown.space.prevent="selectGift('ring')"
               >
                 <div class="gift-card-icon">
-                  <svg t="1784541751162" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="14215" width="200" height="200"><path d="M585.1 144.5c-29.8-24.3-66.8-2.9-66.8-2.9s-12.8-40.8-51.2-43c-38.4-2.2-85.8 28.2-74.2 100.9s61.8 105.8 61.8 105.8 59.3 9.5 117-36.3c57.6-45.8 43.2-100.2 13.4-124.5z" fill="#C53938" p-id="14216"/><path d="M751.2 303.3c-30.7-9-52.1 19.3-52.1 19.3s-22.9-27.1-53-16.5-56.7 49.1-24.4 101.1c32.2 52 81.2 61.2 81.2 61.2s48.5-11.8 78-65.4c29.5-53.6 1-90.7-29.7-99.7z" fill="#CE8B8B" p-id="14217"/><path d="M365.5 836.8c-71.2 0-138.2-27.7-188.6-78.1-50.4-50.4-78.2-117.4-78.2-188.7 0-71.2 27.7-138.2 78.1-188.6 50.4-50.4 117.4-78.1 188.6-78.1 71.2 0 138.2 27.7 188.6 78.1 50.4 50.4 78.1 117.4 78.1 188.6 0 71.2-27.7 138.2-78.1 188.6-50.3 50.4-117.3 78.2-188.5 78.2z m0-503.5C235 333.3 128.8 439.5 128.8 570S235 806.7 365.5 806.7 602.2 700.5 602.2 570 496 333.3 365.5 333.3z" fill="#C53938" p-id="14218"/><path d="M704 929.3c-59.8 0-116.1-23.3-158.4-65.6-42.3-42.3-65.6-98.6-65.6-158.4 0-59.8 23.3-116.1 65.6-158.4 42.3-42.3 98.6-65.6 158.4-65.6s116.1 23.3 158.4 65.6c42.3 42.3 65.6 98.6 65.6 158.4 0 59.8-23.3 116.1-65.6 158.4-42.3 42.3-98.6 65.6-158.4 65.6z m0-418c-107 0-194 87-194 194s87 194 194 194 194-87 194-194-87-194-194-194z" fill="#D58F90" p-id="14219"/></svg>
+                  <svg t="1784541751162" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="14215" width="200" height="200"><path d="M585.1 144.5c-29.8-24.3-66.8-2.9-66.8-2.9s-12.8-40.8-51.2-43c-38.4-2.2-85.8 28.2-74.2 100.9s61.8 105.8 61.8 105.8 59.3 9.5 117-36.3c57.6-45.8 43.2-100.2 13.4-124.5z" fill="#C53938" p-id="14216" /><path d="M751.2 303.3c-30.7-9-52.1 19.3-52.1 19.3s-22.9-27.1-53-16.5-56.7 49.1-24.4 101.1c32.2 52 81.2 61.2 81.2 61.2s48.5-11.8 78-65.4c29.5-53.6 1-90.7-29.7-99.7z" fill="#CE8B8B" p-id="14217" /><path d="M365.5 836.8c-71.2 0-138.2-27.7-188.6-78.1-50.4-50.4-78.2-117.4-78.2-188.7 0-71.2 27.7-138.2 78.1-188.6 50.4-50.4 117.4-78.1 188.6-78.1 71.2 0 138.2 27.7 188.6 78.1 50.4 50.4 78.1 117.4 78.1 188.6 0 71.2-27.7 138.2-78.1 188.6-50.3 50.4-117.3 78.2-188.5 78.2z m0-503.5C235 333.3 128.8 439.5 128.8 570S235 806.7 365.5 806.7 602.2 700.5 602.2 570 496 333.3 365.5 333.3z" fill="#C53938" p-id="14218" /><path d="M704 929.3c-59.8 0-116.1-23.3-158.4-65.6-42.3-42.3-65.6-98.6-65.6-158.4 0-59.8 23.3-116.1 65.6-158.4 42.3-42.3 98.6-65.6 158.4-65.6s116.1 23.3 158.4 65.6c42.3 42.3 65.6 98.6 65.6 158.4 0 59.8-23.3 116.1-65.6 158.4-42.3 42.3-98.6 65.6-158.4 65.6z m0-418c-107 0-194 87-194 194s87 194 194 194 194-87 194-194-87-194-194-194z" fill="#D58F90" p-id="14219" /></svg>
                 </div>
                 <span class="gift-card-title">誓约之戒</span>
                 <span class="gift-card-desc">一起定下一件特别的事</span>
@@ -88,9 +87,9 @@
 
             <Transition name="btn-appear">
                 <div v-if="selectedType && step === 'select'" class="gift-next-btn" :class="nextBtnClass" role="button" tabindex="0" @click="step = 'confirm'" @keydown.enter.prevent="step = 'confirm'" @keydown.space.prevent="step = 'confirm'">
-                <svg class="gift-btn-deco deco-sparkle-1" viewBox="0 0 16 16" width="10" height="10"><path d="M8 0v16M0 8h16" stroke="currentColor" stroke-width="0.8" opacity="0.2"/><circle cx="8" cy="8" r="1" fill="currentColor" opacity="0.25"/></svg>
-                <svg class="gift-btn-deco deco-sparkle-2" viewBox="0 0 12 12" width="8" height="8"><path d="M6 0v12M0 6h12" stroke="currentColor" stroke-width="0.6" opacity="0.15"/></svg>
-                <svg class="gift-btn-deco deco-heart" viewBox="0 0 16 16" width="9" height="9"><path d="M8 14S2 9.5 2 6 4.5 2.5 8 6s6-4 6-0.5S14 14 8 14Z" fill="currentColor" opacity="0.15"/></svg>
+                <svg class="gift-btn-deco deco-sparkle-1" viewBox="0 0 16 16" width="10" height="10"><path d="M8 0v16M0 8h16" stroke="currentColor" stroke-width="0.8" opacity="0.2" /><circle cx="8" cy="8" r="1" fill="currentColor" opacity="0.25" /></svg>
+                <svg class="gift-btn-deco deco-sparkle-2" viewBox="0 0 12 12" width="8" height="8"><path d="M6 0v12M0 6h12" stroke="currentColor" stroke-width="0.6" opacity="0.15" /></svg>
+                <svg class="gift-btn-deco deco-heart" viewBox="0 0 16 16" width="9" height="9"><path d="M8 14S2 9.5 2 6 4.5 2.5 8 6s6-4 6-0.5S14 14 8 14Z" fill="currentColor" opacity="0.15" /></svg>
                 <span class="gift-next-label">{{ nextButtonText }}</span>
               </div>
             </Transition>
@@ -100,7 +99,7 @@
           <div v-else key="confirm" class="gift-step confirm-step">
             <div class="confirm-icon-wrap">
               <div class="confirm-icon-pulse">
-                <svg viewBox="0 0 64 64" width="52" height="52"><path d="M32 50Q14 36 10 26Q6 16 16 12Q24 10 32 20Q40 10 48 12Q58 16 54 26Q50 36 32 50Z" fill="var(--accent)" opacity="0.1"/><path d="M32 46Q16 34 12 25Q8 16 18 12Q26 10 32 20Q38 10 46 12Q56 16 52 25Q48 34 32 46Z" fill="none" stroke="var(--accent)" stroke-width="1.8" opacity="0.5"/><rect x="24" y="24" width="16" height="16" rx="3" fill="var(--accent-light)" opacity="0.7"/><rect x="22" y="20" width="20" height="6" rx="2" fill="var(--accent)" opacity="0.8"/><rect x="31" y="20" width="2" height="20" rx="1" fill="#e8a090"/><path d="M28 18Q32 12 36 18" fill="none" stroke="var(--accent)" stroke-width="1.5"/></svg>
+                <svg viewBox="0 0 64 64" width="52" height="52"><path d="M32 50Q14 36 10 26Q6 16 16 12Q24 10 32 20Q40 10 48 12Q58 16 54 26Q50 36 32 50Z" fill="var(--accent)" opacity="0.1" /><path d="M32 46Q16 34 12 25Q8 16 18 12Q26 10 32 20Q38 10 46 12Q56 16 52 25Q48 34 32 46Z" fill="none" stroke="var(--accent)" stroke-width="1.8" opacity="0.5" /><rect x="24" y="24" width="16" height="16" rx="3" fill="var(--accent-light)" opacity="0.7" /><rect x="22" y="20" width="20" height="6" rx="2" fill="var(--accent)" opacity="0.8" /><rect x="31" y="20" width="2" height="20" rx="1" fill="#e8a090" /><path d="M28 18Q32 12 36 18" fill="none" stroke="var(--accent)" stroke-width="1.5" /></svg>
               </div>
             </div>
             <p class="confirm-question">
@@ -136,8 +135,7 @@
             </div>
           </div>
         </Transition>
-
-  </linshe-modal>
+</linshe-modal>
 </template>
 
 <script setup>
@@ -145,7 +143,6 @@ import LinsheModal from './ui/LinsheModal.vue'
 
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { sendGift, getGiftCooldowns } from '../api/index.js'
-import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'
 
 const props = defineProps({

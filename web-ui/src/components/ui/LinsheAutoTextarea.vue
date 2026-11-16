@@ -19,7 +19,9 @@
       class="ls-auto-textarea__ellipsis"
       title="点击展开编辑"
       @mousedown.prevent="focusToEnd"
-    >{{ modelValue }}</div>
+    >
+{{ modelValue }}
+</div>
   </div>
 </template>
 

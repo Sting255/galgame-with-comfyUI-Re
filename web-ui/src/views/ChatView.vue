@@ -19,7 +19,7 @@
           <div class="chat-header-title-row">
             <span class="chat-title">{{ chat.activeChar?.display_name }}</span>
             <span v-if="realtimeAffinityEnabled && chat.realtimeAffinity" class="header-affinity">
-              <svg class="affinity-heart-icon" viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M512.042667 193.237333a255.914667 255.914667 0 0 1 351.658666 9.728 256 256 0 0 1 10.069334 351.402667l-361.813334 362.325333-361.728-362.325333a256 256 0 0 1 361.813334-361.130667z"/></svg>{{ Math.round(chat.realtimeAffinity.affinity) }}
+              <svg class="affinity-heart-icon" viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M512.042667 193.237333a255.914667 255.914667 0 0 1 351.658666 9.728 256 256 0 0 1 10.069334 351.402667l-361.813334 362.325333-361.728-362.325333a256 256 0 0 1 361.813334-361.130667z" /></svg>{{ Math.round(chat.realtimeAffinity.affinity) }}
               <span class="affinity-delta-wrap">
                 <Transition name="roll">
                   <span :key="chat.affinityKey" class="header-affinity-delta" :class="chat.realtimeAffinity.affinityDelta >= 0 ? 'delta-up' : 'delta-down'">
@@ -54,9 +54,11 @@
         正常 column 布局：最旧消息在顶部，最新消息在底部
         新消息到达时 JS 平滑滚底，与列表高度变化同步
       -->
-      <div ref="msgList" class="message-list" @scroll="onScroll(); clearSpeechBubble()"
+      <div
+ref="msgList" class="message-list" @scroll="onScroll(); clearSpeechBubble()"
         @wheel.passive="interruptImageScroll" @touchstart.passive="interruptImageScroll"
-        @pointerdown="interruptImageScroll" @keydown="onScrollKeydown">
+        @pointerdown="interruptImageScroll" @keydown="onScrollKeydown"
+>
         <!-- 加载指示器置于列表顶部 → 用户上滚到顶部时自动展开更早消息 -->
         <div v-if="chat.hasMoreOlder" class="load-older load-older-hint">↑ 向上滚动加载更多</div>
 
@@ -71,7 +73,7 @@
                 <img v-if="chat.activeChar?.avatar_path" :src="chat.activeChar.avatar_path" class="avatar-img" alt="" />
                 <span v-else class="avatar-fallback">{{ chat.activeChar?.display_name?.charAt(0) }}</span>
                 <span v-if="isCharSleeping" class="sleep-zzz" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4"/><path class="zzz-2" d="M11 6h5l-5 5h5"/><path class="zzz-3" d="M17 3h5l-5 5h5"/></svg>
+                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4" /><path class="zzz-2" d="M11 6h5l-5 5h5" /><path class="zzz-3" d="M17 3h5l-5 5h5" /></svg>
                 </span>
               </div>
               <EventShareCard
@@ -88,11 +90,12 @@
                 <img v-if="msgAvatarSrc(item.msg.role)" :src="msgAvatarSrc(item.msg.role)" class="avatar-img" loading="lazy" decoding="async" alt="" />
                 <span v-else class="avatar-fallback">{{ item.msg.role === 'user' ? '我' : chat.activeChar?.display_name?.charAt(0) }}</span>
                 <span v-if="isCharSleeping && item.msg.role === 'assistant'" class="sleep-zzz" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4"/><path class="zzz-2" d="M11 6h5l-5 5h5"/><path class="zzz-3" d="M17 3h5l-5 5h5"/></svg>
+                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4" /><path class="zzz-2" d="M11 6h5l-5 5h5" /><path class="zzz-3" d="M17 3h5l-5 5h5" /></svg>
                 </span>
               </div>
               <!-- 等待态：Agent消息内容为空时显示打字动画，不套气泡 -->
-              <svg v-if="item.piece.kind === 'text' && item.msg.role === 'assistant' && !item.msg.content && chat.streaming && chat.showTypingDots"
+              <svg
+v-if="item.piece.kind === 'text' && item.msg.role === 'assistant' && !item.msg.content && chat.streaming && chat.showTypingDots"
                 class="typing-dots" viewBox="0 0 72 10" width="72" height="10"
                 style="align-self:center"
               >
@@ -148,7 +151,7 @@
                 <img v-if="chat.activeChar?.avatar_path" :src="chat.activeChar.avatar_path" class="avatar-img" alt="" />
                 <span v-else class="avatar-fallback">{{ chat.activeChar?.display_name?.charAt(0) }}</span>
                 <span v-if="isCharSleeping" class="sleep-zzz" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4"/><path class="zzz-2" d="M11 6h5l-5 5h5"/><path class="zzz-3" d="M17 3h5l-5 5h5"/></svg>
+                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4" /><path class="zzz-2" d="M11 6h5l-5 5h5" /><path class="zzz-3" d="M17 3h5l-5 5h5" /></svg>
                 </span>
               </div>
               <ImageGenBubble
@@ -200,7 +203,9 @@
             @keydown.enter.prevent="pickGuess(text)"
             @keydown.space.prevent="pickGuess(text)"
             @click="pickGuess(text)"
-          >{{ text }}</div>
+          >
+{{ text }}
+</div>
         </div>
       </Transition>
 
@@ -266,7 +271,8 @@
           </div>
           <span v-if="forceTipVisible" class="force-img-tip" :class="{ 'is-mobile': isMobile }">{{ imageGenModeLabel }}</span>
         </div>
-        <textarea ref="inputEl" v-model="inputText" class="chat-input"
+        <textarea
+ref="inputEl" v-model="inputText" class="chat-input"
           placeholder="输入消息..." rows="1"
           @keydown.enter.exact.prevent="send"
           @keydown.enter.shift.exact="inputText += '\n'"
@@ -274,10 +280,10 @@
           @blur="inputFocused = false"
         ></textarea>
         <div v-if="isCharSleeping" role="button" tabindex="0" class="gift-btn wake-btn" :class="{ 'wake-shaking': wakeShaking }" @keydown.enter.prevent="onWakeChar" @keydown.space.prevent="onWakeChar" @click="onWakeChar" title="叫醒角色">
-          <svg class="gift-btn-icon" viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          <svg class="gift-btn-icon" viewBox="0 0 24 24" width="20" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
         </div>
         <div v-else v-show="!(isMobile && inputFocused)" role="button" tabindex="0" class="gift-btn" @keydown.enter.prevent="showGiftPanel = true" @keydown.space.prevent="showGiftPanel = true" @click="showGiftPanel = true" title="送礼物">
-          <svg class="gift-btn-icon" viewBox="0 0 1138 1024" width="20" height="18" fill="#fff"><path d="M57.242236 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM683.272405 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM0 284.393966l455.212067 0 0 284.393966-455.212067 0 0-284.393966zM1137.575865 284.393966l0 284.393966-454.303461 0 0-284.393966 454.303461 0zM512.454303 284.393966l113.575865 0 0 739.606034-113.575865 0 0-739.606034zM683.272405 228.060337l-228.060337 0 0-170.818101 228.060337 0 0 170.818101zM1024 228.060337l-284.393966 0 111.758651-228.060337 172.635315 0 0 228.060337zM398.878438 228.060337l-284.393966 0 0-228.060337 169.909494 0z"/></svg>
+          <svg class="gift-btn-icon" viewBox="0 0 1138 1024" width="20" height="18" fill="#fff"><path d="M57.242236 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM683.272405 626.030169l397.969831 0 0 397.969831-397.969831 0 0-397.969831zM0 284.393966l455.212067 0 0 284.393966-455.212067 0 0-284.393966zM1137.575865 284.393966l0 284.393966-454.303461 0 0-284.393966 454.303461 0zM512.454303 284.393966l113.575865 0 0 739.606034-113.575865 0 0-739.606034zM683.272405 228.060337l-228.060337 0 0-170.818101 228.060337 0 0 170.818101zM1024 228.060337l-284.393966 0 111.758651-228.060337 172.635315 0 0 228.060337zM398.878438 228.060337l-284.393966 0 0-228.060337 169.909494 0z" /></svg>
         </div>
       <ChatActionToolbar
         :touch-open="showTouchPanel" :toy-open="showToyPanel" :intimate-open="showIntimatePanel"
@@ -290,7 +296,8 @@
             ↩ 撤回上一轮对话
           </div>
         </Transition>
-        <div role="button" tabindex="0" class="send-btn" :class="{ 'is-disabled': sendDisabled }" :aria-disabled="sendDisabled"
+        <div
+role="button" tabindex="0" class="send-btn" :class="{ 'is-disabled': sendDisabled }" :aria-disabled="sendDisabled"
           @keydown.enter.prevent="onSendClick"
           @keydown.space.prevent="onSendClick"
           @click="onSendClick"
@@ -303,10 +310,10 @@
           @touchcancel="onSendPressEnd"
         >
           <svg v-if="!chat.streaming" class="send-icon" viewBox="0 0 1024 1024" fill="#fff">
-            <path d="M659.655431 521.588015q23.970037-6.71161 46.022472-13.423221 19.17603-5.752809 39.310861-11.505618t33.558052-10.546816l-13.423221 50.816479q-5.752809 21.093633-10.546816 31.640449-9.588015 25.88764-22.531835 47.940075t-24.449438 38.35206q-13.423221 19.17603-27.805243 35.475655l-117.932584 35.475655 96.838951 17.258427q-19.17603 16.299625-41.228464 33.558052-19.17603 14.382022-43.625468 30.202247t-51.29588 29.243446-59.925094 13.902622-62.801498-4.314607q-34.516854-4.794007-69.033708-16.299625 10.546816-16.299625 23.011236-36.434457 10.546816-17.258427 25.40824-40.749064t31.161049-52.254682q46.022472-77.662921 89.168539-152.449438t77.662921-135.191011q39.310861-69.992509 75.745318-132.314607-45.06367 51.775281-94.921348 116.014981-43.146067 54.651685-95.88015 129.917603t-107.385768 164.434457q-11.505618 18.217228-25.88764 42.187266t-30.202247 50.816479-32.599251 55.131086-33.078652 55.131086q-38.35206 62.322097-78.621723 130.397004 0.958801-20.134831 7.670412-51.775281 5.752809-26.846442 19.17603-67.116105t38.35206-94.921348q16.299625-34.516854 24.928839-53.692884t13.423221-29.722846q4.794007-11.505618 7.670412-15.340824-4.794007-5.752809-1.917603-23.011236 1.917603-15.340824 11.026217-44.58427t31.161049-81.977528q22.052434-53.692884 58.007491-115.535581t81.018727-122.726592 97.797753-117.932584 107.865169-101.153558 110.262172-72.389513 106.906367-32.11985q0.958801 33.558052-6.71161 88.689139t-19.17603 117.932584-25.88764 127.520599-27.805243 117.453184z"/>
+            <path d="M659.655431 521.588015q23.970037-6.71161 46.022472-13.423221 19.17603-5.752809 39.310861-11.505618t33.558052-10.546816l-13.423221 50.816479q-5.752809 21.093633-10.546816 31.640449-9.588015 25.88764-22.531835 47.940075t-24.449438 38.35206q-13.423221 19.17603-27.805243 35.475655l-117.932584 35.475655 96.838951 17.258427q-19.17603 16.299625-41.228464 33.558052-19.17603 14.382022-43.625468 30.202247t-51.29588 29.243446-59.925094 13.902622-62.801498-4.314607q-34.516854-4.794007-69.033708-16.299625 10.546816-16.299625 23.011236-36.434457 10.546816-17.258427 25.40824-40.749064t31.161049-52.254682q46.022472-77.662921 89.168539-152.449438t77.662921-135.191011q39.310861-69.992509 75.745318-132.314607-45.06367 51.775281-94.921348 116.014981-43.146067 54.651685-95.88015 129.917603t-107.385768 164.434457q-11.505618 18.217228-25.88764 42.187266t-30.202247 50.816479-32.599251 55.131086-33.078652 55.131086q-38.35206 62.322097-78.621723 130.397004 0.958801-20.134831 7.670412-51.775281 5.752809-26.846442 19.17603-67.116105t38.35206-94.921348q16.299625-34.516854 24.928839-53.692884t13.423221-29.722846q4.794007-11.505618 7.670412-15.340824-4.794007-5.752809-1.917603-23.011236 1.917603-15.340824 11.026217-44.58427t31.161049-81.977528q22.052434-53.692884 58.007491-115.535581t81.018727-122.726592 97.797753-117.932584 107.865169-101.153558 110.262172-72.389513 106.906367-32.11985q0.958801 33.558052-6.71161 88.689139t-19.17603 117.932584-25.88764 127.520599-27.805243 117.453184z" />
           </svg>
           <svg v-else class="send-icon sending" viewBox="0 0 20 20" fill="none">
-            <circle cx="6" cy="10" r="1.5" fill="#fff" opacity="0.4"/><circle cx="10" cy="10" r="1.5" fill="#fff" opacity="0.65"/><circle cx="14" cy="10" r="1.5" fill="#fff" opacity="0.9"/>
+            <circle cx="6" cy="10" r="1.5" fill="#fff" opacity="0.4" /><circle cx="10" cy="10" r="1.5" fill="#fff" opacity="0.65" /><circle cx="14" cy="10" r="1.5" fill="#fff" opacity="0.9" />
           </svg>
         </div>
       </div>
@@ -378,25 +385,25 @@
 
         <!-- 编辑人格 → 二级弹窗 -->
         <div role="button" tabindex="0" class="sp-btn" :class="{ 'is-disabled': editorLoading }" :aria-disabled="editorLoading" @click="openCharEditor" @keydown.enter.prevent="openCharEditor" @keydown.space.prevent="openCharEditor">
-          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M892.691692 30.72l77.981539 77.981538a73.491692 73.491692 0 0 1 0 103.975385l-584.861539 584.861539-228.036923 46.08 46.08-228.036924L788.716308 30.72a73.491692 73.491692 0 0 1 103.975384 0z m25.993846 129.969231l-77.981538-77.981539-569.186462 569.186462-19.692307 97.673846 97.673846-19.692308 569.186461-569.186461z" fill="currentColor"/><path d="M652.366769 167.699692l180.854154 182.035693 55.689846-55.689847-180.854154-182.114461zM73.491692 953.344h888.595693v-78.769231H73.570462z" fill="currentColor"/></svg>
+          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M892.691692 30.72l77.981539 77.981538a73.491692 73.491692 0 0 1 0 103.975385l-584.861539 584.861539-228.036923 46.08 46.08-228.036924L788.716308 30.72a73.491692 73.491692 0 0 1 103.975384 0z m25.993846 129.969231l-77.981538-77.981539-569.186462 569.186462-19.692307 97.673846 97.673846-19.692308 569.186461-569.186461z" fill="currentColor" /><path d="M652.366769 167.699692l180.854154 182.035693 55.689846-55.689847-180.854154-182.114461zM73.491692 953.344h888.595693v-78.769231H73.570462z" fill="currentColor" /></svg>
           {{ editorLoading ? '读取角色资料...' : '查看详细信息' }}
         </div>
 
         <!-- 亲密信息看板直达：原先要「查看详细信息」→ 详情卡里再点一次，这里一步打开同一个看板 -->
         <div role="button" tabindex="0" class="sp-btn" @click="openIntimatePanel" @keydown.enter.prevent="openIntimatePanel" @keydown.space.prevent="openIntimatePanel">
-          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></svg>
           亲密信息
         </div>
 
         <!-- 催眠手机直达：不用专程去背包，聊天页一步打开同一个状态面板 -->
         <div role="button" tabindex="0" class="sp-btn" @click="openHypnosisPanel" @keydown.enter.prevent="openHypnosisPanel" @keydown.space.prevent="openHypnosisPanel">
-          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2.5"/><path d="M9.5 2.5v2h5v-2"/><path d="M10 18.5h4"/></svg>
+          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2.5" /><path d="M9.5 2.5v2h5v-2" /><path d="M10 18.5h4" /></svg>
           催眠手机
         </div>
 
         <!-- 查看角色对用户的印象 -->
         <div role="button" tabindex="0" class="sp-btn" @click="openImpression" @keydown.enter.prevent="openImpression" @keydown.space.prevent="openImpression">
-          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M607.839811 895.957102H214.69447A86.82497 86.82497 0 0 1 127.880338 809.070721V214.784781A86.839419 86.839419 0 0 1 214.69447 127.880338h594.28594a86.33729 86.33729 0 0 1 61.436749 25.456857c16.400473 16.400473 25.362934 38.208767 25.373771 61.411462L894.439878 607.821749v0.10476a32.031496 32.031496 0 0 0 64.059379 0.101149L959.825022 214.889542v-0.104761A150.775976 150.775976 0 0 0 808.98041 63.940169H214.69447A150.638703 150.638703 0 0 0 63.940169 214.784781v594.28594a150.638703 150.638703 0 0 0 150.757914 150.82655h393.141728a31.970084 31.970084 0 0 0 0-63.940169z" fill="currentColor"/><path d="M950.544667 905.331381l-122.071536-122.071536a192.217875 192.217875 0 1 0-45.213286 45.213286l122.071536 122.071536a31.970084 31.970084 0 0 1 45.213286-45.213286z m-278.547941-105.302594a128.028448 128.028448 0 1 1 90.531332-37.497116 127.193975 127.193975 0 0 1-90.527719 37.497116zM768.004516 352.212795c17.653989 0 31.966472-14.402794 31.970084-32.056783s-14.308871-32.074845-31.966472-32.078457L256.002709 287.911382a32.020659 32.020659 0 0 0-31.970084 32.024271c0 17.657601 14.308871 32.092907 31.966472 32.092908L768.004516 352.212795zM448.000226 544.033302a31.96286 31.96286 0 1 0 0-63.940169h-192.001129a31.937573 31.937573 0 1 0 0 63.878758l192.001129 0.061411zM256.017159 671.91364a31.959247 31.959247 0 1 0 0 63.922107l127.999549 0.018062a31.941185 31.941185 0 1 0 0-63.878757z" fill="currentColor"/></svg>
+          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M607.839811 895.957102H214.69447A86.82497 86.82497 0 0 1 127.880338 809.070721V214.784781A86.839419 86.839419 0 0 1 214.69447 127.880338h594.28594a86.33729 86.33729 0 0 1 61.436749 25.456857c16.400473 16.400473 25.362934 38.208767 25.373771 61.411462L894.439878 607.821749v0.10476a32.031496 32.031496 0 0 0 64.059379 0.101149L959.825022 214.889542v-0.104761A150.775976 150.775976 0 0 0 808.98041 63.940169H214.69447A150.638703 150.638703 0 0 0 63.940169 214.784781v594.28594a150.638703 150.638703 0 0 0 150.757914 150.82655h393.141728a31.970084 31.970084 0 0 0 0-63.940169z" fill="currentColor" /><path d="M950.544667 905.331381l-122.071536-122.071536a192.217875 192.217875 0 1 0-45.213286 45.213286l122.071536 122.071536a31.970084 31.970084 0 0 1 45.213286-45.213286z m-278.547941-105.302594a128.028448 128.028448 0 1 1 90.531332-37.497116 127.193975 127.193975 0 0 1-90.527719 37.497116zM768.004516 352.212795c17.653989 0 31.966472-14.402794 31.970084-32.056783s-14.308871-32.074845-31.966472-32.078457L256.002709 287.911382a32.020659 32.020659 0 0 0-31.970084 32.024271c0 17.657601 14.308871 32.092907 31.966472 32.092908L768.004516 352.212795zM448.000226 544.033302a31.96286 31.96286 0 1 0 0-63.940169h-192.001129a31.937573 31.937573 0 1 0 0 63.878758l192.001129 0.061411zM256.017159 671.91364a31.959247 31.959247 0 1 0 0 63.922107l127.999549 0.018062a31.941185 31.941185 0 1 0 0-63.878757z" fill="currentColor" /></svg>
           对你的印象
         </div>
 
@@ -404,22 +411,24 @@
 
         <!-- 清空聊天记录 -->
         <div role="button" tabindex="0" class="sp-btn sp-btn-danger" :class="{ 'is-disabled': clearing }" :aria-disabled="clearing" @click="!clearing && clearChatHistory()" @keydown.enter.prevent="!clearing && clearChatHistory()" @keydown.space.prevent="!clearing && clearChatHistory()">
-          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M687.6 96.4H336.4v91.2h351.1V96.4zM636.7 398v405.5h-73.9V398h73.9z m-175.5 0v405.5h-73.9V398h73.9z m332.1-119.2H230.7l27.9 648.8h506.7l28-648.8zM696.8 5.1c40.4 0 73.3 35.6 73.9 79.8v102.7h147.8c20.2 0 36.6 17.8 37 39.9v41.2c0 5.5-4 10-9 10.1h-70.1L848 941.6c-1.8 42.9-33.7 76.6-72.6 77.3H249.8c-39 0-71.3-33.4-73.7-76l-0.1-1.3-28.5-662.7H77.7c-5 0-9.1-4.4-9.2-9.8v-40.9c0-22.2 16.2-40.2 36.3-40.5h148.4V86.2c0-44.3 32.5-80.4 72.7-81.1h370.9z" fill="currentColor"/></svg>
+          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M687.6 96.4H336.4v91.2h351.1V96.4zM636.7 398v405.5h-73.9V398h73.9z m-175.5 0v405.5h-73.9V398h73.9z m332.1-119.2H230.7l27.9 648.8h506.7l28-648.8zM696.8 5.1c40.4 0 73.3 35.6 73.9 79.8v102.7h147.8c20.2 0 36.6 17.8 37 39.9v41.2c0 5.5-4 10-9 10.1h-70.1L848 941.6c-1.8 42.9-33.7 76.6-72.6 77.3H249.8c-39 0-71.3-33.4-73.7-76l-0.1-1.3-28.5-662.7H77.7c-5 0-9.1-4.4-9.2-9.8v-40.9c0-22.2 16.2-40.2 36.3-40.5h148.4V86.2c0-44.3 32.5-80.4 72.7-81.1h370.9z" fill="currentColor" /></svg>
           {{ clearing ? '清空中...' : '清空记忆' }}
         </div>
 
         <!-- 撤回一轮对话 -->
         <div role="button" tabindex="0" class="sp-btn sp-btn-danger" :class="{ 'is-disabled': !chat.messages.length || chat.streaming }" :aria-disabled="!chat.messages.length || chat.streaming" @click="onUndoRound" @keydown.enter.prevent="onUndoRound" @keydown.space.prevent="onUndoRound">
-          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M320 192h512v64H320zM320 448h512v64H320zM320 704h384v64H320zM160 256a32 32 0 1 0 0-64 32 32 0 0 0 0 64zM160 512a32 32 0 1 0 0-64 32 32 0 0 0 0 64zM160 768a32 32 0 1 0 0-64 32 32 0 0 0 0 64z" fill="currentColor"/></svg>
+          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M320 192h512v64H320zM320 448h512v64H320zM320 704h384v64H320zM160 256a32 32 0 1 0 0-64 32 32 0 0 0 0 64zM160 512a32 32 0 1 0 0-64 32 32 0 0 0 0 64zM160 768a32 32 0 1 0 0-64 32 32 0 0 0 0 64z" fill="currentColor" /></svg>
           撤回一轮对话
         </div>
 
         <div class="sp-divider"></div>
 
         <!-- 删除角色（2026-11-08：默认助手也允许删除，删掉后种子数据不会再把它建回来） -->
-        <div role="button" tabindex="0" class="sp-btn sp-btn-danger" :class="{ 'is-disabled': deleting }" :aria-disabled="deleting"
-          :title="chat.activeChar?.name === 'default' ? '默认助手是个生图助手，没有用的话可以删掉' : ''" @click="deleteChar" @keydown.enter.prevent="deleteChar" @keydown.space.prevent="deleteChar">
-          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M512 179.2l390.4 627.2H128l384-627.2m0-64c-19.2 0-44.8 12.8-51.2 32l-390.4 627.2c-25.6 44.8 6.4 96 51.2 96H896c51.2 0 83.2-57.6 51.2-96l-384-627.2c-6.4-19.2-32-32-51.2-32z" fill="currentColor"/><path d="M512 640c-19.2 0-32-12.8-32-32v-192c0-19.2 12.8-32 32-32s32 12.8 32 32v192c0 19.2-12.8 32-32 32z" fill="currentColor"/><path d="M512 723.2m-32 0a32 32 0 1 0 64 0 32 32 0 1 0-64 0Z" fill="currentColor"/></svg>
+        <div
+role="button" tabindex="0" class="sp-btn sp-btn-danger" :class="{ 'is-disabled': deleting }" :aria-disabled="deleting"
+          :title="chat.activeChar?.name === 'default' ? '默认助手是个生图助手，没有用的话可以删掉' : ''" @click="deleteChar" @keydown.enter.prevent="deleteChar" @keydown.space.prevent="deleteChar"
+>
+          <svg class="sp-btn-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M512 179.2l390.4 627.2H128l384-627.2m0-64c-19.2 0-44.8 12.8-51.2 32l-390.4 627.2c-25.6 44.8 6.4 96 51.2 96H896c51.2 0 83.2-57.6 51.2-96l-384-627.2c-6.4-19.2-32-32-51.2-32z" fill="currentColor" /><path d="M512 640c-19.2 0-32-12.8-32-32v-192c0-19.2 12.8-32 32-32s32 12.8 32 32v192c0 19.2-12.8 32-32 32z" fill="currentColor" /><path d="M512 723.2m-32 0a32 32 0 1 0 64 0 32 32 0 1 0-64 0Z" fill="currentColor" /></svg>
           {{ deleting ? '删除中...' : '删除' + chat.activeChar?.display_name }}
         </div>
       </div>
@@ -561,10 +570,10 @@
                       </div>
                       <div class="impression-card-actions">
                         <div class="impression-action-btn" role="button" tabindex="0" title="编辑" @keydown.enter.prevent="startEdit(trait)" @keydown.space.prevent="startEdit(trait)" @click="startEdit(trait)">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                         </div>
                         <div class="impression-action-btn impression-action-btn-danger" role="button" tabindex="0" title="删除" @keydown.enter.prevent="removeTrait(trait)" @keydown.space.prevent="removeTrait(trait)" @click="removeTrait(trait)">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                         </div>
                       </div>
                     </template>
@@ -634,12 +643,14 @@
                         <svg viewBox="0 0 24 22" class="heart-svg">
                           <defs>
                             <clipPath :id="'heart-clip-' + i">
-                              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
                             </clipPath>
                           </defs>
                           <!-- 底色（空心） -->
-                          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
-                            class="heart-bg"/>
+                          <path
+d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                            class="heart-bg"
+/>
                           <!-- 填充（clip 到对应百分比） -->
                           <rect
                             v-if="impressionAffinity > (i - 1) * 20"
@@ -680,8 +691,7 @@
               </div>
             </div>
           </div>  <!-- impression-content -->
-
-        </div>
+</div>
       </div>
       </div>
     </Transition>

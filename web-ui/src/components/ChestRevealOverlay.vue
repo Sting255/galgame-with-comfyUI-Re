@@ -18,7 +18,7 @@
               @click="pokeChest"
               @animationend="jellyOn = false"
             >
-              <ChestSvg class="fs-chest" :state="chestAnim" :boost="chargeBoost"/>
+              <ChestSvg class="fs-chest" :state="chestAnim" :boost="chargeBoost" />
             </div>
             <Transition name="fs-reveal">
               <div v-if="revealVisible && item" class="fs-item">
@@ -26,8 +26,8 @@
                   <div class="fs-item-halo" aria-hidden="true"></div>
                   <div class="fs-item-rays" aria-hidden="true"></div>
                   <div class="fs-item-image">
-                    <img v-if="item.image_url" :src="item.image_url" alt=""/>
-                    <ItemFallbackIcon v-else/>
+                    <img v-if="item.image_url" :src="item.image_url" alt="" />
+                    <ItemFallbackIcon v-else />
                   </div>
                 </div>
                 <div class="fs-item-name-row">

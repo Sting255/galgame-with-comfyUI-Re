@@ -10,7 +10,7 @@
       <div class="group-section-header">
         <span>群聊</span>
         <div class="group-create-btn" role="button" tabindex="0" title="发起群聊" aria-label="发起群聊" @click.stop="openCreateGroup" @keydown.enter.prevent="openCreateGroup" @keydown.space.prevent="openCreateGroup">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
         </div>
       </div>
       <div
@@ -30,7 +30,9 @@
                 :key="m.id"
                 class="group-avatar-cell"
                 :style="m.avatar_path ? { backgroundImage: `url(${m.avatar_path})` } : { background: 'var(--accent)' }"
-              >{{ m.avatar_path ? '' : m.display_name.charAt(0) }}</div>
+              >
+{{ m.avatar_path ? '' : m.display_name.charAt(0) }}
+</div>
             </template>
           </div>
         </div>
@@ -83,7 +85,9 @@
               <div
                 class="char-avatar avatar-wiggle"
                 :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }"
-              >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
+              >
+{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
+</div>
             </div>
             <div class="char-info">
               <div class="char-name">
@@ -112,8 +116,8 @@
       >
         <span class="char-onboard-icon">
           <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
-            <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z"/>
-            <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
+            <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z" />
+            <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z" />
           </svg>
         </span>
         <span class="char-onboard-text">
@@ -121,7 +125,7 @@
           <span class="char-onboard-desc">完善你的设定，邀请更多伙伴前来</span>
         </span>
         <svg class="char-onboard-arrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/>
+          <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12,5 19,12 12,19" />
         </svg>
       </div>
 
@@ -153,7 +157,7 @@
       </div>
       <div class="footer-more-btn" role="button" tabindex="0" @click="showMoreMenu = !showMoreMenu" @keydown.enter.prevent="showMoreMenu = !showMoreMenu" @keydown.space.prevent="showMoreMenu = !showMoreMenu">
         <svg viewBox="0 0 1024 1024" width="22" height="22" fill="currentColor">
-          <path d="M436 128H168a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V168a40 40 0 0 0-40-40z m-32 276H200V200h204z m32 144H168a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V588a40 40 0 0 0-40-40z m-32 276H200V620h204z m452-276H588a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V588a40 40 0 0 0-40-40z m-32 276H620V620h204zM716 118c-104.9 0-190 85.1-190 190s85.1 190 190 190 190-85.1 190-190-85.1-190-190-190z m83.4 273.4A117.8 117.8 0 1 1 834 308a117 117 0 0 1-34.6 83.4z"/>
+          <path d="M436 128H168a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V168a40 40 0 0 0-40-40z m-32 276H200V200h204z m32 144H168a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V588a40 40 0 0 0-40-40z m-32 276H200V620h204z m452-276H588a40 40 0 0 0-40 40v268a40 40 0 0 0 40 40h268a40 40 0 0 0 40-40V588a40 40 0 0 0-40-40z m-32 276H620V620h204zM716 118c-104.9 0-190 85.1-190 190s85.1 190 190 190 190-85.1 190-190-85.1-190-190-190z m83.4 273.4A117.8 117.8 0 1 1 834 308a117 117 0 0 1-34.6 83.4z" />
         </svg>
       </div>
     </div>
@@ -165,8 +169,8 @@
           <router-link to="/tavern" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">
               <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
-                <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z"/>
-                <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
+                <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z" />
+                <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z" />
               </svg>
               <!-- 《邻舍日报》未读：与 NavBar 酒馆项同源红点 -->
               <span v-if="newspaper.unread" class="nav-dot nav-dot-daily" title="今天的《邻舍日报》还没读"></span>
@@ -187,29 +191,29 @@
           </router-link>
           <router-link to="/schedule" class="more-menu-item" @click="onMenuItemClick">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
             </svg>
             <span>日程</span>
           </router-link>
           <router-link to="/gallery" class="more-menu-item" @click="onMenuItemClick">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
-              <path stroke="currentColor" stroke-width="20" d="M898.8 748.4c-11.9 0-21.5-9.6-21.5-21.5V254.1c0-23.7-19.3-43-43-43H189.7c-23.7 0-43 19.3-43 43v515.7c0 23.7 19.3 43 43 43h537.2c11.9 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5H189.7c-47.4 0-86-38.5-86-86V254.1c0-47.4 38.5-86 86-86h644.7c47.4 0 86 38.6 86 86v472.8c0 11.8-9.6 21.4-21.5 21.4z"/>
-              <path stroke="currentColor" stroke-width="20" d="M742.1 849.5a21.3 21.3 0 0 1-15.2-6.3L311.5 427.8 139.5 571c-8.9 7.9-22.5 7.1-30.3-1.8-7.9-8.9-7.1-22.4 1.8-30.3l172-150.4c8.5-7.5 21.4-7.2 29.5 0.9l429.8 429.8c8.4 8.4 8.4 22 0 30.4zM914.2 741.9c-4.2 4.3-9.8 6.5-15.4 6.5-5.4 0-10.8-2-15-6.1L657.1 520.8l-121.9 121.9c-8.4 8.4-22 8.4-30.4 0s-8.4-22 0-30.4l137-137c8.3-8.3 21.8-8.4 30.2-0.2l221.8 213.5c8.5 8.3 8.7 21.9 0.4 30.3z"/>
+              <path stroke="currentColor" stroke-width="20" d="M898.8 748.4c-11.9 0-21.5-9.6-21.5-21.5V254.1c0-23.7-19.3-43-43-43H189.7c-23.7 0-43 19.3-43 43v515.7c0 23.7 19.3 43 43 43h537.2c11.9 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5H189.7c-47.4 0-86-38.5-86-86V254.1c0-47.4 38.5-86 86-86h644.7c47.4 0 86 38.6 86 86v472.8c0 11.8-9.6 21.4-21.5 21.4z" />
+              <path stroke="currentColor" stroke-width="20" d="M742.1 849.5a21.3 21.3 0 0 1-15.2-6.3L311.5 427.8 139.5 571c-8.9 7.9-22.5 7.1-30.3-1.8-7.9-8.9-7.1-22.4 1.8-30.3l172-150.4c8.5-7.5 21.4-7.2 29.5 0.9l429.8 429.8c8.4 8.4 8.4 22 0 30.4zM914.2 741.9c-4.2 4.3-9.8 6.5-15.4 6.5-5.4 0-10.8-2-15-6.1L657.1 520.8l-121.9 121.9c-8.4 8.4-22 8.4-30.4 0s-8.4-22 0-30.4l137-137c8.3-8.3 21.8-8.4 30.2-0.2l221.8 213.5c8.5 8.3 8.7 21.9 0.4 30.3z" />
             </svg>
             <span>相册</span>
           </router-link>
           <router-link to="/dorm" class="more-menu-item" @click="onMenuItemClick">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7"/>
+              <path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7" />
             </svg>
             <span>宿舍</span>
           </router-link>
           <router-link to="/backpack" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z"/>
-                <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z"/>
-                <path d="M10 13h4"/>
+                <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z" />
+                <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z" />
+                <path d="M10 13h4" />
               </svg>
               <span v-if="backpack.chestReady" class="nav-dot"></span>
             </div>
@@ -218,8 +222,8 @@
           <router-link to="/mailbox" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="2" y="4" width="20" height="16" rx="2"/>
-                <path d="M2 4L12 13L22 4"/>
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="M2 4L12 13L22 4" />
               </svg>
               <span v-if="mailbox.unreadCount > 0" class="nav-dot">{{ mailbox.unreadCount > 99 ? '99+' : mailbox.unreadCount }}</span>
             </div>
@@ -251,7 +255,9 @@
               <div
                 class="cg-member-avatar"
                 :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})` } : { background: 'var(--accent)' }"
-              >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
+              >
+{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
+</div>
               <span>{{ c.display_name }}</span>
             </div>
           </div>
@@ -266,8 +272,7 @@
       <template #title>
         <div class="modal-heading-content">
               <h3 id="create-group-title" class="cg-dialog-title">发起群聊</h3>
-
-            </div>
+</div>
       </template>
 
             <div class="cg-dialog-body">
@@ -302,7 +307,9 @@
                     <div
                       class="cg-member-avatar"
                       :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})` } : { background: 'var(--accent)' }"
-                    >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
+                    >
+{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
+</div>
                     <span>{{ c.display_name }}</span>
                   </div>
                 </div>
@@ -318,8 +325,7 @@
                 </linshe-button>
               </div>
             </div>
-
-    </linshe-modal>
+</linshe-modal>
   </aside>
 </template>
 

@@ -3,8 +3,7 @@
     <template #title>
       <div class="modal-heading-content">
         <h3>🔗 {{ centerCharacter.display_name }} 的关系图</h3>
-
-      </div>
+</div>
     </template>
 
           <!-- Header -->
@@ -49,8 +48,7 @@
       <template #title>
         <div class="modal-heading-content">
                 <span>{{ inputDialog.isEdit ? '编辑关系' : '新建关系' }}</span>
-
-              </div>
+</div>
       </template>
 
               <div class="rel-dialog-body">
@@ -58,7 +56,7 @@
                   {{ (inputDialog.isEdit
                     ? `${centerCharacter.display_name} → ${inputDialog.targetName}`
                     : `${centerCharacter.display_name} → ${inputDialog.targetName}`)
-                    + `：${inputDialog.targetName}是${centerCharacter.display_name}的什么人？`}}
+                    + `：${inputDialog.targetName}是${centerCharacter.display_name}的什么人？` }}
                 </p>
                 <linshe-input
                   ref="inputRef"
@@ -77,16 +75,14 @@
                   </div>
                 </div>
               </div>
-
-    </linshe-modal>
-
-  </linshe-modal>
+</linshe-modal>
+</linshe-modal>
 </template>
 
 <script setup>
 import LinsheModal from './ui/LinsheModal.vue'
 
-import { ref, reactive, computed, watch, nextTick, markRaw, inject } from 'vue'
+import { ref, reactive, watch, nextTick, markRaw, inject } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/core/dist/style.css'

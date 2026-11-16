@@ -325,8 +325,7 @@
           </div>
         </section>
       </div>
-
-    </template>
+</template>
   </div>
 </template>
 

@@ -15,22 +15,22 @@
           <svg class="live-toast-mark" viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <!-- success -->
             <template v-if="item.type === 'success'">
-              <path d="M4.6 10.2 8 13.6l7.4-7.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M4.6 10.2 8 13.6l7.4-7.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </template>
             <!-- warning -->
             <template v-else-if="item.type === 'warning'">
-              <path d="M10 3.6 16.85 15.7H3.15L10 3.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-              <path d="M10 8.9v3.2M10 14.1h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M10 3.6 16.85 15.7H3.15L10 3.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+              <path d="M10 8.9v3.2M10 14.1h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </template>
             <!-- error -->
             <template v-else-if="item.type === 'error'">
-              <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.6"/>
-              <path d="m7.7 7.7 4.6 4.6M12.3 7.7l-4.6 4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.6" />
+              <path d="m7.7 7.7 4.6 4.6M12.3 7.7l-4.6 4.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </template>
             <!-- info -->
             <template v-else>
-              <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M10 8.7V13M10 5.9h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.6" />
+              <path d="M10 8.7V13M10 5.9h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </template>
           </svg>
           <div class="live-toast-body">
@@ -48,7 +48,7 @@
             @keydown.space.prevent.stop="dismiss(item.id)"
           >
             <svg viewBox="0 0 10 10" fill="none" aria-hidden="true">
-              <path d="M1.6 1.6l6.8 6.8M8.4 1.6 1.6 8.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M1.6 1.6l6.8 6.8M8.4 1.6 1.6 8.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
           </div>
           <span class="live-toast-life" aria-hidden="true"></span>
@@ -101,7 +101,7 @@
           @click="emit('character-dismiss', card.id)"
         >
           <svg viewBox="0 0 10 10" fill="none" aria-hidden="true">
-            <path d="M1.6 1.6l6.8 6.8M8.4 1.6 1.6 8.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M1.6 1.6l6.8 6.8M8.4 1.6 1.6 8.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
           </svg>
         </linshe-button>
         <span class="live-toast-life character-toast-life" aria-hidden="true"></span>

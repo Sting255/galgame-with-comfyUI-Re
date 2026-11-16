@@ -30,7 +30,9 @@
         class="bf-swap-item" :class="{ 'is-picked': selectedOptionKey === opt.key }"
         @click="emit('select', opt.key)" @keydown.enter.prevent="emit('select', opt.key)"
         @keydown.space.prevent="emit('select', opt.key)"
-      >{{ opt.label }}</div>
+      >
+{{ opt.label }}
+</div>
     </div>
   </div>
 

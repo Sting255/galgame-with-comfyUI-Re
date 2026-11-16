@@ -231,7 +231,9 @@
         @click="expandAndReply"
         @keydown.enter.prevent="expandAndReply"
         @keydown.space.prevent="expandAndReply"
-      >展开剩余 {{ hiddenCount }} 条评论</div>
+      >
+展开剩余 {{ hiddenCount }} 条评论
+</div>
     </div>
 
     <!-- 回复输入：楼中楼回复时顶部显示目标；@ 按钮或手打 @ 唤起角色点名面板 -->

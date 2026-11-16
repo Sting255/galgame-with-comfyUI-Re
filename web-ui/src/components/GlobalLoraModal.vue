@@ -109,7 +109,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, inject } from 'vue'
+import { ref, computed, watch, inject } from 'vue'
 import * as api from '../api/index.js'
 import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'

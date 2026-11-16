@@ -6,7 +6,9 @@
         v-for="format in formats" :key="format" type="button"
         class="bf-format-chip" :class="{ 'is-picked': selectedFormat === format }"
         @click="emit('select-format', format)"
-      >{{ formatLabel(format) }}</button>
+      >
+{{ formatLabel(format) }}
+</button>
     </div>
     <div class="bf-preview">
       <span class="bf-preview-frame" aria-hidden="true">

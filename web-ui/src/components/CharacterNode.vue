@@ -65,7 +65,9 @@
     <div
       class="cn-avatar"
       :style="avatarStyle"
-    >{{ data.avatar_path ? '' : (data.display_name || '?').charAt(0) }}</div>
+    >
+{{ data.avatar_path ? '' : (data.display_name || '?').charAt(0) }}
+</div>
 
     <!-- 名字 -->
     <div class="cn-name">{{ data.display_name }}</div>

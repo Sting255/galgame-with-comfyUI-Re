@@ -19,7 +19,7 @@
         @input="handleSearchInput"
         @keydown="onSearchKey"
       />
-      <svg class="ls-select-chevron" :class="{ open }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <svg class="ls-select-chevron" :class="{ open }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
     </div>
     <div
       v-else
@@ -36,7 +36,7 @@
       @keydown.space.prevent="toggle"
     >
       <span class="ls-select-label" :class="{ placeholder: !selectedLabel }">{{ selectedLabel || placeholder }}</span>
-      <svg class="ls-select-chevron" :class="{ open }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <svg class="ls-select-chevron" :class="{ open }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
     </div>
     <Teleport to="body">
       <Transition name="ls-select-drop">
@@ -62,7 +62,7 @@
             @click="select(opt.value)"
           >
             <span>{{ opt.label }}</span>
-            <svg v-if="modelValue === opt.value" class="ls-select-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <svg v-if="modelValue === opt.value" class="ls-select-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
           </div>
           <div v-if="visibleOptions.length === 0" class="ls-select-empty">没有匹配的选项</div>
         </div>

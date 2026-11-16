@@ -51,7 +51,9 @@
           @click="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
           @keydown.enter.prevent="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
           @keydown.space.prevent="ctl.switchScene(sceneView === s.scene ? '' : s.scene)"
-        >{{ s.sceneLabel }}</div>
+        >
+{{ s.sceneLabel }}
+</div>
       </div>
       <div
         class="standing-stage"

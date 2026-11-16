@@ -104,14 +104,18 @@
                 size="sm"
                 :disabled="busy"
                 @click="activate(rule.id)"
-              >设为使用</linshe-button>
+              >
+设为使用
+</linshe-button>
               <linshe-button
                 v-if="!rule.builtin"
                 variant="danger"
                 size="sm"
                 :disabled="busy"
                 @click="askDelete(rule)"
-              >删除</linshe-button>
+              >
+删除
+</linshe-button>
             </div>
           </li>
         </ul>
@@ -146,13 +150,17 @@
               size="sm"
               :disabled="busy"
               @click="copyToNew"
-            >复制一份再改</linshe-button>
+            >
+复制一份再改
+</linshe-button>
             <linshe-button
               variant="ghost"
               size="sm"
               :disabled="busy || draftBuiltin"
               @click="resetDraftContent"
-            >恢复默认正文</linshe-button>
+            >
+恢复默认正文
+</linshe-button>
           </div>
 
           <div class="editor-foot">

@@ -1,7 +1,6 @@
 <template>
   <linshe-modal :model-value="show && !outfitConfirmation.open" title="表情包管理" full panel-class="emoji-manager-modal" body-class="emoji-manager-body" @close="close" @after-leave="onModalAfterLeave">
-
-          <div class="emoji-body">
+<div class="emoji-body">
             <!-- 生成 prompt 时的全局扫描遮罩 -->
             <div v-if="starting" class="emoji-gen-overlay">
               <div class="emoji-gen-line"></div>
@@ -25,7 +24,7 @@
                     <span class="emoji-char-trigger-name">{{ selectedCharacterName }}</span>
                     <span class="emoji-char-trigger-count">{{ selectedCountText }}</span>
                   </span>
-                  <svg class="emoji-char-trigger-chevron" :class="{ open: charPickerOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                  <svg class="emoji-char-trigger-chevron" :class="{ open: charPickerOpen }" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
                 </div>
                 <Transition name="emoji-picker-fade">
                 <div v-show="!isMobile || charPickerOpen" class="emoji-char-layer" :class="{ open: isMobile && charPickerOpen }">
@@ -43,7 +42,9 @@
                   <div
                     class="emoji-char-avatar"
                     :style="characterAvatarStyle(c)"
-                  >{{ c.avatar_path ? '' : (c.display_name || c.name || '?').charAt(0) }}</div>
+                  >
+{{ c.avatar_path ? '' : (c.display_name || c.name || '?').charAt(0) }}
+</div>
                    <div class="emoji-char-meta">
                      <div class="emoji-char-name">{{ c.display_name || c.name }}</div>
                      <div class="emoji-char-count" :class="{ full: isCharFull(c.id), generating: charGenerating(c.id) }">
@@ -106,7 +107,7 @@
             <div class="emoji-right">
               <div class="emoji-toolbar-row">
                 <div class="emoji-gear" role="button" tabindex="0" title="高级设置" @click="showAdvancedSettings = true" @keydown.enter.prevent="showAdvancedSettings = true" @keydown.space.prevent="showAdvancedSettings = true">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
                 </div>
                 <div
                   class="emoji-mode-badge"
@@ -118,7 +119,9 @@
                   @keydown.enter.prevent="toggleStyleMode"
                   @keydown.space.prevent="toggleStyleMode"
                   title="点击切换表情包风格"
-                >{{ STYLE_MODE_LABELS[styleMode] || '半身LINE' }}</div>
+                >
+{{ STYLE_MODE_LABELS[styleMode] || '半身LINE' }}
+</div>
                 <StandingGenerationDirection
                   v-model="style"
                   v-model:outfit-scene="outfitScene"
@@ -149,7 +152,9 @@
                   :disabled="generating || selectedCharId === null"
                   title="重新提炼表情提示词，并用新提示词生成全部表情图片"
                   @click="generateAll"
-                >完全重做</linshe-button>
+                >
+完全重做
+</linshe-button>
               </div>
 
               <!-- 名称切换编辑目标，开关独立勾选参与随机发送的套装 -->
@@ -263,7 +268,7 @@
                       @keydown.enter.prevent="removeEmoji(selectedCharId, key)"
                       @keydown.space.prevent="removeEmoji(selectedCharId, key)"
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
                     </div>
 
                     <template v-if="rowFor(selectedCharId, key)">
@@ -281,14 +286,18 @@
                           class="btn-sm"
                           :disabled="busyKey === selectedCharId + ':' + key || uploadingKey === selectedCharId + ':' + key || isGenerating(selectedCharId, key)"
                           @click="openUpload(selectedCharId, key)"
-                        >上传</linshe-button>
+                        >
+上传
+</linshe-button>
                         <linshe-button
                           variant="secondary"
                           size="sm"
                           class="btn-sm"
                           :disabled="busyKey === selectedCharId + ':' + key || uploadingKey === selectedCharId + ':' + key || isGenerating(selectedCharId, key)"
                           @click="generateOneImage(selectedCharId, key)"
-                        >重新生成</linshe-button>
+                        >
+重新生成
+</linshe-button>
                       </div>
                       <div v-if="rowError(selectedCharId, key)" class="emoji-error">{{ rowError(selectedCharId, key) }}</div>
                     </template>

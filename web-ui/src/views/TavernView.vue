@@ -13,7 +13,9 @@
           class="user-avatar clickable"
           :style="userAvatarStyle"
           @click="showUserAvatarPicker = true"
-        >{{ userAvatar ? '' : '我' }}</div>
+        >
+{{ userAvatar ? '' : '我' }}
+</div>
         <div class="user-info">
         <!-- 姓名 -->
         <div class="user-field-row">
@@ -91,17 +93,17 @@
       </div>
       <div v-if="!isMobile" class="mailbox-card card" @click="showMailbox = true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="4" width="20" height="16" rx="2"/>
-          <path d="M2 4L12 13L22 4"/>
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="M2 4L12 13L22 4" />
         </svg>
         <span class="mailbox-label">信箱</span>
         <span v-if="mailboxUnread > 0" class="mailbox-badge">{{ mailboxUnread > 99 ? '99+' : mailboxUnread }}</span>
       </div>
       <div v-if="!isMobile" class="backpack-card card" @click="showBackpack = true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z"/>
-          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z"/>
-          <path d="M10 13h4"/>
+          <path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1H4V9z" />
+          <path d="M4 10h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8z" />
+          <path d="M10 13h4" />
         </svg>
         <span class="mailbox-label">背包</span>
         <span v-if="backpackChestReady" class="mailbox-badge backpack-dot" title="宝箱已就绪"></span>
@@ -115,8 +117,8 @@
       <div class="relation-entry card" @click="openNewspaper">
         <div class="relation-entry-icon newspaper-icon">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 22h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/>
-            <path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>
+            <path d="M4 22h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2" />
+            <path d="M18 14h-8" /><path d="M15 18h-5" /><path d="M10 6h8v4h-8V6Z" />
           </svg>
         </div>
         <div class="relation-entry-text">
@@ -128,7 +130,7 @@
 
       <!-- 上游 v4.3.0：照相馆（自选姿势/服装/背景拍照） -->
       <div class="relation-entry card" role="button" tabindex="0" @click="router.push('/photo-studio')" @keydown.enter.prevent="router.push('/photo-studio')" @keydown.space.prevent="router.push('/photo-studio')">
-        <div class="relation-entry-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><circle cx="12" cy="13" r="3"/></svg></div>
+        <div class="relation-entry-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" /><path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><circle cx="12" cy="13" r="3" /></svg></div>
         <div class="relation-entry-text">
           <span class="relation-entry-title">照相馆</span>
           <span class="relation-entry-hint">自选姿势、服装与背景，给她拍张照</span>
@@ -149,8 +151,8 @@
       <div class="relation-entry card" @click="showUserRelationGraph = true">
         <div class="relation-entry-icon">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
-            <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+            <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="17" r="3" />
+            <line x1="9" y1="6" x2="11" y2="14" /><line x1="15" y1="6" x2="13" y2="14" />
           </svg>
         </div>
         <div class="relation-entry-text">
@@ -249,10 +251,10 @@
     <div class="relation-entry card" @click="openWorldSetting">
       <div class="relation-entry-icon world-icon">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"/>
-          <ellipse cx="12" cy="12" rx="4" ry="10"/>
-          <line x1="2" y1="12" x2="22" y2="12"/>
-          <line x1="12" y1="2" x2="12" y2="22"/>
+          <circle cx="12" cy="12" r="10" />
+          <ellipse cx="12" cy="12" rx="4" ry="10" />
+          <line x1="2" y1="12" x2="22" y2="12" />
+          <line x1="12" y1="2" x2="12" y2="22" />
         </svg>
       </div>
       <div class="relation-entry-text">
@@ -280,8 +282,8 @@
         <div key="emoji-manage" class="char-card emoji-manage-card" @click="showEmojiManager = true">
           <div class="emoji-manage-icon">
             <svg viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
-              <path d="M334.711467 160.290133a413.013333 413.013333 0 0 1 239.547733-48.674133 37.614933 37.614933 0 0 1-7.509333 74.683733A338.056533 338.056533 0 0 0 197.973333 567.022933a337.92 337.92 0 0 0 672.9728-42.5984v-37.546666a37.546667 37.546667 0 1 1 75.093334 0v37.751466a413.013333 413.013333 0 1 1-611.328-364.3392z"/>
-              <path d="M653.312 576.853333a37.546667 37.546667 0 0 1 59.938133 45.192534l-0.2048 0.273066-0.273066 0.341334-0.8192 1.024a141.585067 141.585067 0 0 1-11.946667 13.5168 261.12 261.12 0 0 1-34.679467 30.242133c-29.9008 21.777067-75.093333 44.714667-132.3008 44.714667-57.344 0-102.4-22.9376-132.437333-44.714667a261.256533 261.256533 0 0 1-43.895467-40.5504l-2.730666-3.208533-0.682667-1.024a19.0464 19.0464 0 0 0-0.341333-0.341334v-0.136533l-0.2048-0.136533a37.546667 37.546667 0 0 1 60.074666-45.056h0.068267l1.297067 1.6384a186.1632 186.1632 0 0 0 30.72 28.0576c21.572267 15.7696 51.541333 30.446933 88.064 30.446933 36.6592 0 66.628267-14.677333 88.2688-30.446933a186.026667 186.026667 0 0 0 30.583466-27.989334l1.297067-1.6384 0.2048-0.2048zM420.727467 374.237867a37.546667 37.546667 0 0 1 0 75.093333h-0.341334a37.546667 37.546667 0 0 1 0-75.093333h0.341334z m225.28 0a37.546667 37.546667 0 0 1 0 75.093333h-0.4096a37.546667 37.546667 0 0 1 0-75.093333h0.4096z m112.298666 0v-75.093334h-75.093333a37.546667 37.546667 0 0 1 0-75.093333h75.093333v-75.093333a37.546667 37.546667 0 0 1 75.093334 0v75.093333h75.093333a37.546667 37.546667 0 0 1 0 75.093333h-75.093333v75.093334a37.546667 37.546667 0 1 1-75.093334 0z"/>
+              <path d="M334.711467 160.290133a413.013333 413.013333 0 0 1 239.547733-48.674133 37.614933 37.614933 0 0 1-7.509333 74.683733A338.056533 338.056533 0 0 0 197.973333 567.022933a337.92 337.92 0 0 0 672.9728-42.5984v-37.546666a37.546667 37.546667 0 1 1 75.093334 0v37.751466a413.013333 413.013333 0 1 1-611.328-364.3392z" />
+              <path d="M653.312 576.853333a37.546667 37.546667 0 0 1 59.938133 45.192534l-0.2048 0.273066-0.273066 0.341334-0.8192 1.024a141.585067 141.585067 0 0 1-11.946667 13.5168 261.12 261.12 0 0 1-34.679467 30.242133c-29.9008 21.777067-75.093333 44.714667-132.3008 44.714667-57.344 0-102.4-22.9376-132.437333-44.714667a261.256533 261.256533 0 0 1-43.895467-40.5504l-2.730666-3.208533-0.682667-1.024a19.0464 19.0464 0 0 0-0.341333-0.341334v-0.136533l-0.2048-0.136533a37.546667 37.546667 0 0 1 60.074666-45.056h0.068267l1.297067 1.6384a186.1632 186.1632 0 0 0 30.72 28.0576c21.572267 15.7696 51.541333 30.446933 88.064 30.446933 36.6592 0 66.628267-14.677333 88.2688-30.446933a186.026667 186.026667 0 0 0 30.583466-27.989334l1.297067-1.6384 0.2048-0.2048zM420.727467 374.237867a37.546667 37.546667 0 0 1 0 75.093333h-0.341334a37.546667 37.546667 0 0 1 0-75.093333h0.341334z m225.28 0a37.546667 37.546667 0 0 1 0 75.093333h-0.4096a37.546667 37.546667 0 0 1 0-75.093333h0.4096z m112.298666 0v-75.093334h-75.093333a37.546667 37.546667 0 0 1 0-75.093333h75.093333v-75.093333a37.546667 37.546667 0 0 1 75.093334 0v75.093333h75.093333a37.546667 37.546667 0 0 1 0 75.093333h-75.093333v75.093334a37.546667 37.546667 0 1 1-75.093334 0z" />
             </svg>
           </div>
           <span>表情包管理</span>
@@ -315,7 +317,7 @@
       <!-- 音色管理（上游 v4.0.0 语音系统）：TTS 设置 + 角色音色，弹窗内收 -->
       <div key="voice-manage" class="char-card emoji-manage-card" role="button" tabindex="0" @click="showVoiceLibrary = true" @keydown.enter.prevent="showVoiceLibrary = true" @keydown.space.prevent="showVoiceLibrary = true">
         <div class="emoji-manage-icon">
-          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="12" y="3" width="8" height="16" rx="4"/><path d="M7 14v2a9 9 0 0 0 18 0v-2M16 25v4M11 29h10"/></svg>
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="12" y="3" width="8" height="16" rx="4" /><path d="M7 14v2a9 9 0 0 0 18 0v-2M16 25v4M11 29h10" /></svg>
         </div>
         <span>音色管理</span>
       </div>
@@ -346,7 +348,7 @@
           @keydown.space.prevent="onPinClick(c)"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" :fill="c.pinned ? 'currentColor' : 'none'" :stroke="c.pinned ? 'none' : 'currentColor'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
           </svg>
         </div>
         <div v-if="c.moments_disabled || c.proactive_disabled || c.events_disabled" class="char-card-badges">
@@ -357,7 +359,9 @@
         <div
           class="char-card-avatar"
           :style="c.avatar_path ? { backgroundImage: `url(${c.avatar_path})`, backgroundSize:'cover', backgroundPosition:'center' } : { background: 'var(--accent)' }"
-        >{{ c.avatar_path ? '' : c.display_name.charAt(0) }}</div>
+        >
+{{ c.avatar_path ? '' : c.display_name.charAt(0) }}
+</div>
         <div class="char-card-name">{{ c.display_name }}</div>
         <div class="char-card-foot">
           <span class="char-card-status" :class="c.message_count > 0 ? 'active' : 'idle'">
@@ -365,8 +369,8 @@
           </span>
           <span v-if="c.relationship_count > 0" class="char-rel-badge" title="已设置角色关系">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
-              <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+              <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="17" r="3" />
+              <line x1="9" y1="6" x2="11" y2="14" /><line x1="15" y1="6" x2="13" y2="14" />
             </svg>
             {{ c.relationship_count }}
           </span>
@@ -374,8 +378,8 @@
         <div v-if="!(c.relationship_count > 0)" class="char-card-edit-row">
           <span class="char-card-edit" title="设置角色关系网">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
-              <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+              <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="17" r="3" />
+              <line x1="9" y1="6" x2="11" y2="14" /><line x1="15" y1="6" x2="13" y2="14" />
             </svg>
             设置角色关系网
           </span>
@@ -396,8 +400,7 @@
       <template #title>
         <div class="modal-heading-content">
               <h3>招募新角色</h3>
-
-            </div>
+</div>
       </template>
 
             <!-- 步骤 0：输入描述 -->
@@ -414,7 +417,7 @@
               />
               <div class="modal-actions">
                 <label class="import-card-btn" :class="{ disabled: recruit.loading }" title="导入酒馆ai角色卡">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
                   <span>导入酒馆ai角色卡</span>
                   <input ref="cardInputRef" type="file" accept=".png,.json,image/png,application/json" :disabled="recruit.loading" @change="onCardSelected" hidden />
                 </label>
@@ -462,19 +465,25 @@
                     variant="secondary"
                     :disabled="recruit.loading"
                     @click="doGenerate"
-                  >{{ recruit.loading && recruit.task === 'search' ? '正在重新搜索...' : '重新搜索' }}</linshe-button>
+                  >
+{{ recruit.loading && recruit.task === 'search' ? '正在重新搜索...' : '重新搜索' }}
+</linshe-button>
                   <linshe-button
                     variant="secondary"
                     title="不重新联网，使用上次搜索资料重新归纳角色卡"
                     :disabled="!recruit.searchContext || recruit.loading"
                     @click="regenerateFromSearchResult"
-                  >{{ recruit.loading && recruit.task === 'regenerate' ? '正在重新归纳...' : '再次生成' }}</linshe-button>
+                  >
+{{ recruit.loading && recruit.task === 'regenerate' ? '正在重新归纳...' : '再次生成' }}
+</linshe-button>
                   <linshe-button
                     variant="secondary"
                     title="提供参考图，邻舍分析后重写角色卡里的「## 你的外观」"
                     :disabled="recruit.loading"
                     @click="showRecruitRefine = true"
-                  >修正外观</linshe-button>
+                  >
+修正外观
+</linshe-button>
                 </div>
                 <div class="modal-actions-right">
                   <linshe-button variant="secondary" @click="recruit.step = 'input'; recruit.error = ''">返回修改</linshe-button>
@@ -494,8 +503,7 @@
                 <a :href="`https://animadex.net/?mode=characters&q=${encodeURIComponent(recruit.result.name).replaceAll('_', '+')}`" target="_blank">animadex</a>直接补充tag
               </div>
             </div>
-
-    </linshe-modal>
+</linshe-modal>
 
     <!-- 招募预览的修正外观：结果回填到待确认的角色卡草稿（尚未创建角色，无最近图片入口） -->
     <AppearanceRefineModal
@@ -586,8 +594,8 @@
                       @click="openPolish"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.3z"/>
-                        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>
+                        <path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.3z" />
+                        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
                       </svg>
                       一键润色
                     </linshe-button>
