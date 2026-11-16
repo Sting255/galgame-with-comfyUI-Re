@@ -354,6 +354,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, ENGINE.cancel(body.get("job_id")))
             if self.path == "/unload":
                 return self.respond(200, ENGINE.unload(idle_only=body.get("idle_only") is True))
+            if self.path == "/shutdown":
+                # P1-15：让 agent-core 退出时能一并回收 adapter。
+                #
+                # 本服务由 restart.ps1 用 Start-Process 起，是**脱离父子关系**的独立进程；
+                # 主程序退出后它和它的 worker 会继续占着显存，直到用户手动关。
+                # 现在主程序在优雅退出时调这个端点：先尝试卸载 worker（释放 CUDA），
+                # 再让 serve_forever 退出。
+                #
+                # 安全边界不变：只监听回环、需要 Token、拒绝带 Origin 的请求，
+                # 所以网页无法通过它关掉服务。
+                unload_error = None
+                try:
+                    ENGINE.unload(idle_only=body.get("idle_only") is True)
+                    unloaded = True
+                except Exception as error:
+                    # 正在合成时 idle_only 会拒绝：如实回报，但不阻止进程退出
+                    unloaded = False
+                    unload_error = str(error)
+                result = {"ok": True, "unloaded": unloaded}
+                if unload_error:
+                    result["unload_error"] = unload_error
+                self.respond(200, result)
+                # 用单独线程触发 shutdown，避免在请求处理线程里 join 自己
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if self.path != "/synthesize":
                 return self.respond(404, {"error": "Not found"})
             if body.get("model_version") != MODEL_VERSION:

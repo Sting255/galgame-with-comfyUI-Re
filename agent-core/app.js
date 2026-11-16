@@ -688,6 +688,20 @@ const shutdown = async (exitCode = 0, { reason = '' } = {}) => {
     }
   }
 
+  // P1-15：回收 TTS adapter。
+  //
+  // 它由 restart.ps1 用 Start-Process 起，是脱离父子关系的独立进程：
+  // 主程序退出后 adapter 与它的 worker 会继续占着显存，直到用户手动关。
+  // 这里调 /shutdown（先 unload worker 再退出 serve_forever）。
+  // 有界等待 8 秒：服务没开、或正在合成而不肯卸载，都不能把退出拖到硬超时。
+  try {
+    const { shutdownSpeechService } = await import('./src/services/indexTtsClient.js');
+    await shutdownSpeechService({ timeoutMs: 8000 });
+  } catch (error) {
+    // 语音服务没启动是最常见的情况，不该当作退出失败
+    console.warn('[agent-core] stop TTS adapter skipped:', error?.message || error);
+  }
+
   let graceful = false;
   try {
     graceful = await closeHttpPromise;

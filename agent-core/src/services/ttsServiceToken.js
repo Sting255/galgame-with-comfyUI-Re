@@ -48,6 +48,21 @@ function writeTokenFile(token) {
 }
 
 /**
+ * 只读地取当前 Token：**不生成、不落盘**（P1-15）。
+ *
+ * 用途是进程退出时的清理：`shutdownSpeechService` 需要判断「这一轮到底用没用过语音服务」。
+ * 用 `ttsServiceToken()` 会顺手生成一个 Token 文件——退出流程不该创建凭证。
+ *
+ * @returns {string} 已有 Token 则返回它，否则返回 ''
+ */
+export function peekTtsServiceToken() {
+  const fromEnv = String(process.env.TTS_SERVICE_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  if (cached) return cached;
+  return readTokenFile();
+}
+
+/**
  * 取当前应使用的 TTS 服务 Token。
  * @returns {string} 非空字符串
  */
