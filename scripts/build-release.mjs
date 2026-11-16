@@ -39,7 +39,7 @@ import https from "node:https";
 import http from "node:http";
 // 使用说明.txt 的正文正源（2026-10-17 从本文件抽出，见 scripts/usage-guide.mjs 的文件头说明）
 import { buildUsageGuideText } from "./usage-guide.mjs";
-import { BACKEND_PROBE_SCRIPT, findSensitiveArchiveMembers } from "./lib/releaseSafety.mjs";
+import { BACKEND_PROBE_SCRIPT, findSensitiveArchiveMembers, findSensitiveGitObjects } from "./lib/releaseSafety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -50,17 +50,23 @@ const PYTHON_VERSION = "3.12.10";
 const GIT_TAG = "2.47.1.windows.1";        // GitHub release tag
 const GIT_VER = "2.47.1";                  // 文件名中的版本号（无 .windows.1）
 
-// 从 git tag 自动获取版本号
+// 版本号：唯一事实源是 VERSION 文件（main() 开头会强制校验 tag 与它一致）。
+// 这里先按 VERSION 读取，避免 RELEASE_DIR 在预检之前就用 tag 后缀算出另一个目录名。
 let VERSION = "dev";
 try {
-  const tag = execSync("git describe --tags --abbrev=0", {
-    cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe","pipe","pipe"]
-  }).trim();
-  // 去掉可能的 v 前缀
-  VERSION = tag.replace(/^v/, "");
-} catch {
-  // 没有 tag 则用 dev
-  console.log(`  ${C.yellow}[WARN] 未找到 git tag，使用版本号: dev${C.reset}`);
+  const { readFileSync: readVersion } = await import("node:fs");
+  const fromFile = readVersion(resolve(ROOT, "VERSION"), "utf-8").trim();
+  if (/^\d+\.\d+\.\d+$/.test(fromFile)) VERSION = fromFile;
+} catch { /* 没有 VERSION 文件时下面会 fail */ }
+if (VERSION === "dev") {
+  try {
+    const tag = execSync("git describe --tags --abbrev=0", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe","pipe","pipe"]
+    }).trim();
+    VERSION = tag.replace(/^v/, "");
+  } catch {
+    console.log(`  ${C.yellow}[WARN] 未找到 VERSION 文件与 git tag，使用版本号: dev${C.reset}`);
+  }
 }
 const PROJECT_NAME = "邻舍.EXE";
 const RELEASE_NAME = `${PROJECT_NAME}-v${VERSION}`;
@@ -250,6 +256,42 @@ async function main() {
   console.log(`  ${C.bold}邻舍.EXE — 完整 Release 打包${C.reset}`);
   console.log(`  ${C.dim}${"=".repeat(50)}${C.reset}`);
   console.log();
+
+  // ── 发布前预检（P0-07）──
+  // 1) 工作树必须干净：发布脚本会在打包过程中覆盖前端产物、注入版本号，
+  //    dirty tree 意味着「提交的源码」与「工作区实际产物」不是同一份，
+  //    包里的 commit 说明不了包里的内容。
+  // 2) 版本必须单一事实源：VERSION 文件、git tag、启动器 __version__ 三者一致。
+  //    此前 VERSION 是 4.3.1 而最近的 tag 是 v4.3.1-i，两个数字各自为政。
+  {
+    const dirty = execSync("git status --porcelain", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    if (dirty) {
+      fail("工作区不干净，拒绝打包。发布物必须能对应到一个确定的提交。");
+      for (const line of dirty.split("\n").slice(0, 15)) fail(`  ${line}`);
+      fail("请先提交或 stash，然后重试。");
+      process.exit(1);
+    }
+    ok("工作区干净");
+
+    const { readFileSync: readVersionFile } = await import("node:fs");
+    const versionFile = readVersionFile(resolve(ROOT, "VERSION"), "utf-8").trim();
+    if (!/^\d+\.\d+\.\d+$/.test(versionFile)) {
+      fail(`VERSION 文件内容不合法: ${JSON.stringify(versionFile)}（期望 x.y.z）`);
+      process.exit(1);
+    }
+    // 版本一致性：tag 允许带本地迭代后缀（本仓历史用 v4.3.1-i 这类），
+    // 但 base 版本必须与 VERSION 文件相同——否则包内 VERSION、启动器版本
+    // 与前端 hash 各自说不同的版本号，出问题无法定位到底是哪一次构建。
+    if (VERSION !== "dev" && VERSION !== versionFile && !VERSION.startsWith(`${versionFile}-`)) {
+      fail(`版本来源不一致：VERSION=${versionFile}，git tag=${VERSION}`);
+      fail("  tag 只能是 VERSION 本身或 VERSION-<本地后缀>（如 4.3.1 / 4.3.1-i）");
+      process.exit(1);
+    }
+    VERSION = versionFile;
+    ok(`版本 ${versionFile}（VERSION 文件与 tag 一致）`);
+  }
 
   // 创建目录
   ensureDir(CACHE_DIR);
@@ -743,7 +785,11 @@ async function main() {
     const { copyFileSync } = await import("node:fs");
     const releaseLauncherExe = resolve(RELEASE_DIR, "邻舍.EXE.exe");
     copyFileSync(launcherExe, releaseLauncherExe);
-    const integrityResult = await exec("python", [
+    // 用打包时那个 venv 的 Python：系统 PATH 上不一定有 python，
+    // 而 venv 是这一步之前刚确认可用的。
+    const venvPython = resolve(launcherDir, "build_cache", "pyinstaller-venv", "Scripts", "python.exe");
+    const integrityPython = existsSync(venvPython) ? venvPython : "python";
+    const integrityResult = await exec(integrityPython, [
       "build_launcher.py", "--normalize-integrity", releaseLauncherExe,
     ], { cwd: launcherDir, print: true });
     if (!integrityResult.ok) { fail("启动器完整性标记修复失败!"); process.exit(1); }
@@ -839,6 +885,25 @@ async function main() {
     process.exit(1);
   }
   ok("最终 zip 敏感路径检查通过");
+
+  // 敏感历史对象检查（P0-08）：交付包保留 .git 供客户端更新，而 zip 成员名只有
+  // `.git/objects/ab/cdef…` 这种哈希路径，上面的路径规则永远查不到旧签名私钥。
+  // 这里在**发布目录**上还原历史路径——浅克隆的深度决定了包里实际带着多少历史。
+  log("扫描发布目录的 Git 历史对象...");
+  const historyScan = findSensitiveGitObjects(RELEASE_DIR);
+  if (!historyScan.scanned) {
+    warn(`Git 历史扫描未执行：${historyScan.error || '未知原因'}`);
+    warn("  交付包若含 .git，请人工确认其中没有签名材料或玩家数据的历史对象");
+  } else if (historyScan.sensitive.length) {
+    for (const item of historyScan.sensitive.slice(0, 20)) {
+      fail(`历史对象含敏感路径: ${item.path}（${item.blobs} 个 blob）`);
+    }
+    fail(`发布目录的 Git 历史含 ${historyScan.sensitive.length} 个敏感路径，终止交付!`);
+    fail("  处理方式：换用不含敏感历史的发布仓库/净化基线，或调低 clone 深度并确认这些路径不在窗口内");
+    process.exit(1);
+  } else {
+    ok(`Git 历史扫描通过（${historyScan.commits} 个提交，无敏感路径）`);
+  }
 
   const { statSync } = await import("node:fs");
   const zipSizeMB = Math.round(statSync(zipFile).size / (1024 * 1024));

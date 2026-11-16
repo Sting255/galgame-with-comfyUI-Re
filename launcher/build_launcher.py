@@ -47,7 +47,23 @@ def accept_executable(executable, workspace, env):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path)
+    # 只修正已存在 EXE 的完整性标签，不重新打包。
+    # 发布脚本（scripts/build.mjs、scripts/build-release.mjs）在把 EXE 复制到目标位置后
+    # 需要再归一化一次：复制到项目根目录 / 发布目录后可能继承不同的完整性标签，
+    # 构建目录里自检通过不代表目标位置也能启动。此前这两个调用方传了这个参数，
+    # 但解析器根本没有声明它 ⇒ `npm run release` 与 `npm run build` 在该步确定性失败。
+    parser.add_argument('--normalize-integrity', type=Path, metavar='EXE',
+                        help='只修正指定 EXE 的完整性标签后退出')
     args = parser.parse_args()
+
+    if args.normalize_integrity is not None:
+        target = args.normalize_integrity.resolve()
+        if not target.is_file():
+            raise SystemExit(f'--normalize-integrity 指向的文件不存在: {target}')
+        normalize_executable_integrity(target)
+        print(f'Normalized integrity: {target}')
+        return
+
     root = Path(__file__).resolve().parent
     output = (args.output or root / 'dist' / '邻舍.EXE.exe').resolve()
     env = build_environment()

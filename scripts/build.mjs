@@ -135,7 +135,9 @@ async function main() {
 
   if (existsSync(exeSrc)) {
     copyFileSync(exeSrc, exeDst);
-    const integrityResult = await exec("python", [
+    // 复制到项目根目录后完整性标签可能变，需要再归一化一次。
+    // 用同一份 venv Python，而不是系统 PATH 上的 python。
+    const integrityResult = await exec(buildPython, [
       "build_launcher.py", "--normalize-integrity", exeDst,
     ], { cwd: LAUNCHER_DIR, print: true });
     if (!integrityResult.ok) {
