@@ -46,6 +46,8 @@ import { withDatabaseMaintenance, requireDatabaseRecovery } from '../db/maintena
 import { validateBackupDatabase } from './backup/databaseValidation.js';
 import { createRestoreJournal } from './backup/restoreFiles.js';
 import { inspectSnapshotSecrets, SECRET_CLASSES } from './backup/secretScrubber.js';
+// P0-09：恢复后强制向量索引失效（不依赖探针启发式）
+import { markMemoryIndexStaleAfterRestore } from './memory/memoryRepository.js';
 import {
   TYPE_DIR, TYPE_FILE,
   writeTarGz, readTarGzStream, isGzip,
@@ -1064,6 +1066,23 @@ async function runImport(gzipFile, { maxBytes = getMaxArchiveBytes(), roots = re
         refreshCharSearch();
       } catch (err) {
         console.warn('[backup] 导入后重建角色名注册表失败:', err.message);
+      }
+
+      // P0-09：恢复后强制向量索引失效。
+      //
+      // 归档不带 Chroma（那是派生数据，正确选择），但库里的 memory_fragments
+      // 仍然标着 embedding_state='indexed'。原来靠「一致性探针」事后发现不对，
+      // 而探针有两个洞：
+      //   · 少于 20 条 active 记忆时直接跳过判断 ⇒ 小库永远不重建；
+      //   · 探针用旧 profile 的语料 + 当前 provider 生成查询向量，维度不符时
+      //     「不重建只报警」⇒ 召回永久缺失而库显示已索引。
+      // 现在恢复成功后**无条件**把 active 记忆标 stale 并写 restore_generation，
+      // 由索引 worker 按当前 provider 全量重建，不再依赖任何启发式。
+      let memoryReindex = null;
+      try {
+        memoryReindex = markMemoryIndexStaleAfterRestore(getDb());
+      } catch (err) {
+        console.warn('[backup] 恢复后标记记忆索引失效失败:', err.message);
       }
 
       let counts = null;

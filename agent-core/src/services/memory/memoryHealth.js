@@ -12,6 +12,7 @@ import { getDb } from '../../db/index.js';
 import { config } from '../../config.js';
 import { getMemorySettings, getActiveSearchConfig, getConsolidationConfig } from './memoryConfig.js';
 import { getPreferredMemoryEmbeddingProfile } from './memoryProviders.js';
+import { getMemoryRestoreGeneration } from './memoryRepository.js';
 import { healthCheck } from '../vectorClient.js';
 
 const SOURCE_LABEL = Object.freeze({
@@ -146,6 +147,9 @@ export async function memoryHealth() {
       indexJobsFailed: Number(indexJobs.failed) || 0,
     },
     lastRetrievalAt,
+    // P0-09：恢复代际 —— 0 表示从未从备份恢复过。
+    // 非 0 时说明向量索引曾被强制作废并按当前 provider 重建过，排查「换机后召回变差」先看它。
+    restoreGeneration: getMemoryRestoreGeneration(db),
     consolidation: {
       hasState: consolidation.hasState,
       updatedAt: consolidation.updatedAt,

@@ -586,6 +586,64 @@ export async function reindexAllMemories() {
 /** 少于这么多条「已索引」的 active 记忆就不做一致性判断（新装/新建库本来就该是空的） */
 const MIN_ACTIVE_INDEXED_FOR_CHECK = 20;
 
+/** 恢复代际的存储键：每次恢复写一个递增计数 + 时间戳 */
+const RESTORE_GENERATION_KEY = 'memory_restore_generation';
+
+/**
+ * 备份恢复后强制让向量索引失效（P0-09）。
+ *
+ * 为什么必须有这个入口，而不是继续靠 `ensureVectorIndexConsistency` 的探针：
+ *   1. 探针有阈值——active 记忆少于 20 条直接不判，小库换机后永远不重建；
+ *   2. 探针拿旧 profile 的语料去查，维度不符时「只报警不重建」——
+ *      召回永久缺失，而库里的 `embedding_state` 一直显示 indexed。
+ * 恢复这件事本身就是「库换了、索引肯定对不上」的确定性事实，不需要探测。
+ *
+ * 动作：
+ *   · 写 restore_generation（递增），供 UI/日志与后续排障对账；
+ *   · 所有 active 记忆与有效三元组标 stale（保留数据，只作废派生索引）；
+ *   · 唤醒索引 worker 按**当前 provider** 重建。
+ *
+ * @param {object} [db]
+ * @returns {{generation:number, total:number, triples:number}}
+ */
+export function markMemoryIndexStaleAfterRestore(db = getDb()) {
+  const previous = Number(db.prepare(
+    `SELECT setting_value FROM system_settings WHERE setting_key = ?`,
+  ).pluck().get(RESTORE_GENERATION_KEY)) || 0;
+  const generation = previous + 1;
+  db.prepare(`
+    INSERT INTO system_settings(setting_key, setting_value, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP
+  `).run(RESTORE_GENERATION_KEY, String(generation));
+
+  const total = db.prepare(`SELECT COUNT(*) AS count FROM memory_fragments WHERE status = 'active'`).get().count;
+  db.prepare(`UPDATE memory_fragments SET embedding_state = 'stale', embedding_error = NULL WHERE status = 'active'`).run();
+  const triples = db.prepare(`UPDATE memory_triples SET embedding_state = 'stale' WHERE valid_to IS NULL`).run().changes;
+  try {
+    requeueTriples(db, `
+      SELECT id, embedding_profile FROM memory_triples WHERE valid_to IS NULL AND embedding_state = 'stale'
+    `);
+    enqueueFollowUpsForProcessingUpserts(db, PRIORITY_RETRY);
+    wakeMemoryIndexWorker();
+  } catch (err) {
+    console.warn('[memory] 恢复后重建入队失败（下次启动会再试）:', err?.message || err);
+  }
+  console.log(`[memory] 恢复代际 #${generation}：${total} 条记忆与 ${triples} 条三元组标记为待重建`);
+  return { generation, total, triples };
+}
+
+/** 读当前恢复代际（0 = 从未恢复过） */
+export function getMemoryRestoreGeneration(db = getDb()) {
+  try {
+    return Number(db.prepare(
+      `SELECT setting_value FROM system_settings WHERE setting_key = ?`,
+    ).pluck().get(RESTORE_GENERATION_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * 向量库 ↔ 数据库的一致性自检（2026-10-01 补，真机发现）。
  *
@@ -647,9 +705,17 @@ export async function ensureVectorIndexConsistency({
       GROUP BY embedding_profile ORDER BY n DESC LIMIT 1
     `).get();
     const activeIndexed = Number(row?.n) || 0;
-    if (!row || activeIndexed < MIN_ACTIVE_INDEXED_FOR_CHECK) {
+    // P0-09：恢复代际存在时不能短路。
+    //
+    // 原来的「少于 20 条不判」是为了新装库不误报。但恢复过的库恰恰可能只有几条记忆——
+    // 那几条同样是「库里说已索引、Chroma 里没有」，跳过判断等于永久不修。
+    // 恢复路径现在会主动标 stale 并重建（markMemoryIndexStaleAfterRestore），
+    // 这里再兜一层：有代际就照常探，阈值不参与决策。
+    const hasRestoreGeneration = getMemoryRestoreGeneration(db) > 0;
+    if (!row || (activeIndexed < MIN_ACTIVE_INDEXED_FOR_CHECK && !hasRestoreGeneration)) {
       return { checked: false, activeIndexed };
     }
+    if (!row) return { checked: false, activeIndexed };
     const corpus = `memory_v2_${row.profile}`;
     // 服务端 top_k 上限 100（server.py 的 SearchRequest: ge=1, le=100）
     const want = Math.min(activeIndexed, 100);
