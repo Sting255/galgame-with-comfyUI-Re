@@ -29,6 +29,7 @@ import { invalidateGalleryCache } from './galleryCache.js';
 import { formatGroupImageLine } from './groupScriptProtocol.js';
 // 「0.5 刀」起：groupConvId / serializeMsg 搬到 groupConversationId.js（最小共享块，两个业务模块共用）
 import { groupConvId, serializeMsg } from './groupConversationId.js';
+import { checkCharacterPublishable } from './publishGate.js';
 
 /**
  * 把一条发图请求落到群聊里（找到承载气泡 + 落 image_tasks + 触发后台生图）。
@@ -256,6 +257,17 @@ async function generateGroupImage(group, speaker, prompt, targetMsgId, emit, opt
     }
     if (!result.success || result.images.length === 0) {
       throw new Error(result.error || 'No images generated');
+    }
+    // P1-05：生图可能跑了几十秒，期间发图角色可能睡着 / 被关开关 / 被删除。
+    // 文字行已在解析阶段拦过，但图是异步回来的——写回前必须对**实际出图角色**复查，
+    // 否则「文字被拦、图照发」这条缝仍然存在。不通过就不写图，任务标 discarded。
+    const gate = checkCharacterPublishable(db, speaker.id, { flag: 'moments_disabled' });
+    if (!gate.allowed) {
+      console.log(`[group] discard image for ${speaker.display_name}: ${gate.reason}`);
+      db.prepare(`UPDATE image_tasks SET status='discarded', error_message=?, finished_at=datetime('now') WHERE id=?`)
+        .run(`publish gate: ${gate.reason}`, taskId);
+      emit('generate_error', { group_id: group.id, taskId, msg_id: targetMsgId, error: `角色当前不可发布（${gate.reason}）` });
+      return;
     }
     const urls = [];
     for (const img of result.images) {

@@ -208,6 +208,10 @@ async function tick(opts = {}) {
       if (err.message === 'ALREADY_ACTIVE_EVENT') {
         // 已有活跃事件，跳过（可能被并发触发）
         console.log(`[eventScheduler] ${candidate.display_name} already has active event, skip`);
+      } else if (err.gateReason) {
+        // P1-06：生成期间角色睡着 / 被关奇遇开关 / 被删除，落库前被闸门拦下。
+        // 这是正常终态而非错误：本轮不发，等下次 tick 重新挑候选。
+        console.log(`[eventScheduler] ${candidate.display_name} 生成期间已不可发布（${err.gateReason}），本轮跳过`);
       }
     }
   } catch (err) {

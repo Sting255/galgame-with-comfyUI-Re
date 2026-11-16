@@ -34,6 +34,8 @@ import { captureEventSchedule } from './eventSchedule.js';
 import { getTimeTag, getLightNoteWithWeather } from './timeLight.js';
 import { matchAll } from './characterSearch.js';
 import { buildCharacterPersona } from './characterPersona.js';
+// P1-06：自动奇遇首幕落库前的角色状态复查（睡眠 / 奇遇开关 / 存在性 / 系统角色）
+import { checkCharacterPublishable } from './publishGate.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 // 本文件内部统一用「原样 parse 优先、失败才有限修复」的 parseFirstJson；
 // 文件末尾仍再导出 extractFirstJson / repairJson，供既有调用方兼容。
@@ -697,6 +699,19 @@ ${directorPrompt}`
   // 生成期间可能有另一个入口先完成；写入与镇上邀请的关联在同一事务内提交。
   const eventId = db.transaction(() => {
     options.beforePersist?.();
+    // P1-06：自动入口在落库前复查角色状态。
+    //
+    // 首幕生成要跑好几次 LLM + 一次生图，期间角色可能睡着、被关掉奇遇开关、被删除。
+    // 候选是调度层挑的，那时状态合法不代表几十秒后还合法。
+    // 手动入口（用户点「生成奇遇」/ 神说直接安排）保留明确例外：用户要的就是现在生成，
+    // 不该因为角色在睡觉就静默失败。
+    if (!options.manual) {
+      const gate = checkCharacterPublishable(db, character.id, { flag: 'events_disabled' });
+      if (!gate.allowed) {
+        // 终态错误：调用方（eventScheduler）按「本轮不发」处理，不重试
+        throw Object.assign(new Error(`EVENT_GATE_BLOCKED:${gate.reason}`), { gateReason: gate.reason });
+      }
+    }
     if (db.prepare("SELECT 1 FROM character_events WHERE character_id=? AND status IN ('pending','open','engaged') LIMIT 1").get(character.id)) {
       throw new Error('ALREADY_ACTIVE_EVENT');
     }

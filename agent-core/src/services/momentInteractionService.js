@@ -29,6 +29,31 @@ const MULTI_P_MAX = 0.80;
 const MULTI_K = 1.0;
 const MULTI_R_MID = 5;
 
+/**
+ * 逐说话人公开前复查（P1-03）。
+ *
+ * 背景：原来只在 runInteractionThread 入口查了一次朋友状态。但整条线程包含
+ * 3~5 次 LLM 调用和 10~30 秒的等待，期间角色可能睡着、被关开关、被删除。
+ * 入口检查通过不代表 90 秒后那条评论还该公开。
+ *
+ * 口径：**每次 INSERT 之前**对实际说话人复查，帖子本身也复查（作者可能删帖）。
+ *   · 帖子没了 → 终态，整条线程结束
+ *   · 角色被删 / 系统角色 / 睡着 / 开关关闭 → 这一条不发
+ * 真正的「睡着延期补发」由 moment_comment_queue 负责，这里不造第二套队列。
+ */
+function canStillPublish(db, characterId, postId, label) {
+  if (!db.prepare('SELECT id FROM moment_posts WHERE id = ?').get(postId)) {
+    console.log(`[momentInteraction] 帖子 ${postId} 已删除，终止线程`);
+    return { ok: false, reason: 'post_deleted' };
+  }
+  const gate = checkCharacterPublishable(db, characterId, { flag: 'moments_disabled' });
+  if (!gate.allowed) {
+    console.log(`[momentInteraction] ${label} 此刻不可发布（${gate.reason}），跳过这一条`);
+    return { ok: false, reason: gate.reason };
+  }
+  return { ok: true };
+}
+
 // ──────────────── 工具函数 ────────────────
 
 function shuffle(arr) {
@@ -367,6 +392,10 @@ async function runInteractionThread(post, posterChar, friend) {
     return;
   }
 
+  // 首评落库前复查：LLM 调用期间朋友可能睡着/被关开关/被删除
+  const gate1 = canStillPublish(db, friend.other_id, post.id, friendName);
+  if (!gate1.ok) return;
+
   const ins1 = db.prepare(`
     INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)
     VALUES (?, 'character', ?, ?, 1, NULL)
@@ -405,6 +434,10 @@ async function runInteractionThread(post, posterChar, friend) {
     console.log('[momentInteraction] 发帖人回复为空（疑似拒答），结束本次互动');
     return;
   }
+
+  // 发帖人回复落库前复查：入口只查了朋友，发帖人自己也可能在这 10~30 秒里变了状态
+  const gate2 = canStillPublish(db, posterId, post.id, posterName);
+  if (!gate2.ok) return;
 
   const ins2 = db.prepare(`
     INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)
@@ -473,6 +506,10 @@ async function runInteractionThread(post, posterChar, friend) {
       break;
     }
 
+    // 续评落库前复查：线程已经跑了至少两轮 LLM + 一次 10~30 秒等待
+    const gateF = canStillPublish(db, friend.other_id, post.id, friendName);
+    if (!gateF.ok) break;
+
     const insF = db.prepare(`
       INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)
       VALUES (?, 'character', ?, ?, 1, ?)
@@ -515,6 +552,9 @@ async function runInteractionThread(post, posterChar, friend) {
       console.log('[momentInteraction] 发帖人二次回复为空（疑似拒答），终止本轮互动');
       break;
     }
+
+    const gateP = canStillPublish(db, posterId, post.id, posterName);
+    if (!gateP.ok) break;
 
     const insP = db.prepare(`
       INSERT INTO moment_comments (post_id, author_type, author_id, content, auto_trigger, thread_root_id)

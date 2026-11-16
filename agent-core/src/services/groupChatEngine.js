@@ -1455,6 +1455,15 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
         || group.members[0];
       if (!speaker) return;
 
+      // P1-05：独立图片行也要过同一套睡眠过滤。
+      // 此前只拦了 parsed.speaker 存在且有文字的行；而 `{...}` 图片行常常没有显式
+      // speaker（靠 recent / members[0] 继承），于是「文字被拦、图照发」——
+      // 睡着的角色仍然会以一张图出现在群里。这里对**实际落库的说话人**复查一次。
+      if (shouldSkipAsleepSpeaker(speaker)) {
+        console.log(`[group] skip image: ${speaker.display_name} is asleep in group ${groupId}`);
+        return;
+      }
+
       // 图片行：优先挂到该角色本轮最后一条消息；没有则新建空文本气泡承载图片。
       // 落库 + 触发生图统一走 emitGroupImageFor（强制高潮兜底链路用的是同一个函数，口径只有一处）。
       // 亲密看板：只收集"发言角色 + 本轮画面描述"，raw 落库拿到 id 后再记账（见 recordGroupIntimateFromRound）
