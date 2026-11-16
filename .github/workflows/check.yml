@@ -36,6 +36,16 @@ jobs:
       # 这项检查在发布脚本里是有的，于是出现「本地打包会拦、CI 一路绿」的落差。
       - name: Undefined symbol check
         run: node scripts/check-imports.mjs
+      # P0-10：依赖审计门禁。
+      #
+      # 只对**生产依赖**设门槛（--omit=dev）：开发链的告警（eslint 插件等）
+      # 不会进交付包，把它们也算失败会让门禁长期红着、失去信噪比。
+      # 用官方 registry：npmmirror 不支持 audit bulk endpoint，会返回 NOT_IMPLEMENTED，
+      # 那种"通过"是假通过。
+      - name: Backend production dependency audit
+        run: npm --prefix agent-core audit --package-lock-only --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+      - name: Frontend production dependency audit
+        run: npm --prefix web-ui audit --package-lock-only --omit=dev --audit-level=high --registry=https://registry.npmjs.org
       - name: Frontend lint
         run: npm --prefix web-ui run lint
       - name: Production build
