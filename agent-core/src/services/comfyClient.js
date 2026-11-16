@@ -544,7 +544,13 @@ export async function submitWorkflow(guiWorkflow, onProgress, options = {}) {
   const generation = options?.generation || guiWorkflow.extra?.linsheGeneration;
   // 原图重生直接提交保存的 API 图，避免 API→GUI→API 丢失自定义节点参数。
   const apiPrompt = isApiWorkflow(guiWorkflow) ? guiWorkflow : guiToApi(guiWorkflow);
-  const result = await withImageGpu(() => submitWorkflowWithGpu(guiWorkflow, onProgress, { ...options, generation, apiPrompt }));
+  // P1-14：把调用方的取消信号透传给 GPU 队列，让**还在排队**的那一份能被放弃。
+  // 已经提交到 ComfyUI 的那次推理不会因此中断（远端取消是另一件事），
+  // 但用户取消后至少不会白占一个队列位、不会在轮到它时再跑一遍。
+  const result = await withImageGpu(
+    () => submitWorkflowWithGpu(guiWorkflow, onProgress, { ...options, generation, apiPrompt }),
+    options?.signal || null,
+  );
   // 上游 v4.3.0：把本次生成所用的工作流 / LoRA 归因写进 PNG，供「原图重生」还原。
   const snapshot = {
     prompt: apiPrompt,

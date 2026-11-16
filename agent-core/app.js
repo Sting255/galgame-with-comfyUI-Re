@@ -82,6 +82,8 @@ import { pruneInterCharacterEvents } from './src/services/groupInterCharacterEve
 import { applyFromConfig } from './src/services/llmConcurrency.js';
 import { refresh as refreshCharSearch } from './src/services/characterSearch.js';
 import { ensureDefaultMemoryIndexes, ensureVectorIndexConsistency, ensureIndexedProviderFingerprint, stopMemoryIndexWorker } from './src/services/memory/memoryRepository.js';
+// P1-14：退出时先关 GPU 队列入口，避免新任务排到已经要退出的进程后面
+import { withGpu } from './src/services/gpuQueue.js';
 import { initFileLogging, getFileLogging } from './src/utils/fileLogger.js';
 import { installRuntimeHealthConsoleHook, getRuntimeFailures, getSelfCheck, setSelfCheckResult } from './src/services/runtimeHealth.js';
 import { getImageQueueStatus } from './src/services/imageSkill.js';
@@ -651,6 +653,16 @@ const shutdown = async (exitCode = 0, { reason = '' } = {}) => {
 
   // 截止计时必须最先建立；清理中的任何同步/异步异常都不能挡住有限时退出。
   const hardExit = setTimeout(() => process.exit(requestedExitCode || 1), 10000);
+  // P1-14：先关 GPU 队列的入口，再开始停服务。
+  //
+  // 顺序很关键：如果先停调度器再关队列，中间那几毫秒里仍在跑的 tick 还能塞进
+  // 新任务，而这些任务会被排到「已经要退出的进程」后面，把退出拖到硬超时。
+  // 这里只拒绝**新任务**，正在 GPU 上跑的那一次不被打断（没有安全取消点）。
+  try {
+    withGpu.close(reason || '进程退出');
+  } catch (error) {
+    console.error('[agent-core] close GPU queue failed:', error?.message || error);
+  }
   let closeHttpPromise;
   try {
     // 调用即同步关闭 listener 并让生命周期中间件停止接新请求，再返回等待 Promise。

@@ -41,7 +41,9 @@ export function createSpeechGpuCoordinator({ queue = withGpu, unload = unloadTts
   const effective = mode => guardAvailable === false ? { ...mode, shared: false, lease: false } : mode;
   // Reserve resources in FIFO order, but let admitted shared work run outside
   // the coordinator so image and speech inference can actually overlap.
-  function dispatch(work, kind) {
+  // P1-14：dispatch 接受可选 signal，交给队列做「等待中取消」——
+  // 用户取消后已在排队的那一份不会在轮到它时真的跑起来。
+  function dispatch(work, kind, signal) {
     return queue(async () => {
       await (kind === 'speech' ? activeSpeech : activeImage);
       let run;
@@ -55,9 +57,9 @@ export function createSpeechGpuCoordinator({ queue = withGpu, unload = unloadTts
       if (kind === 'speech') activeSpeech = settled;
       else activeImage = settled;
       return { done };
-    }).then(({ done }) => done);
+    }, { signal }).then(({ done }) => done);
   }
-  function withImageGpu(work) {
+  function withImageGpu(work, signal = null) {
     return dispatch(async () => {
       if (!speechUsed && !releaseError && !leaseToken) return work;
       const mode = effective(await policy({ loaded: speechUsed, image: true }));
@@ -67,7 +69,7 @@ export function createSpeechGpuCoordinator({ queue = withGpu, unload = unloadTts
         if (speechUsed || releaseError) await releaseSpeech();
       }
       return work;
-    }, 'image');
+    }, 'image', signal);
   }
   async function releaseSpeech() {
     idleGeneration++;
