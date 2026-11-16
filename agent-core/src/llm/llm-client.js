@@ -93,6 +93,11 @@ function logResponse(label, content, reasoning, thinkingMode) {
   logReasoning(label, reasoning, thinkingMode);
   console.log(`[${providerLabel()} ← ${label} 正文]`);
   const outputText = content || '';
+  if (!VERBOSE_LLM_LOG) {
+    // 脱敏模式：只留一小段，够定位是哪条链路返回了什么形态的内容
+    console.log(logPreview(outputText));
+    return;
+  }
   const outputLimit = outputLogLimit(label);
   console.log(outputLimit === Infinity ? outputText : outputText.slice(0, outputLimit));
   if (outputLimit !== Infinity && outputText.length > outputLimit) console.log(`... (${outputText.length} chars total, truncated)`);
@@ -156,7 +161,16 @@ export async function* chatAgentStream(messages, { tools = [], toolChoice = 'aut
       const params = buildRoundParams(messages);
       signal?.throwIfAborted();
       console.log(`\n══════════ [${providerLabel()} → ${logLabel}] ══════════`);
-      console.log(JSON.stringify(compressLogMessages(messages), null, 2));
+      // P1-16：默认不打印完整请求体（含角色卡、世界观、聊天正文）。
+      // 只留结构与体量，足以判断「消息条数/角色分配对不对」这类排障问题。
+      if (VERBOSE_LLM_LOG) {
+        console.log(JSON.stringify(compressLogMessages(messages), null, 2));
+      } else {
+        const compact = compressLogMessages(messages);
+        const totalChars = compact.reduce((sum, m) => sum + String(m?.content ?? '').length, 0);
+        console.log(`[${logLabel} 请求] ${compact.length} 条消息，共 ${totalChars} 字（已脱敏；设 LINSHE_LLM_VERBOSE_LOG=1 看全文）`);
+        console.log(`[${logLabel} 请求角色] ${compact.map(m => m?.role || '?').join(', ')}`);
+      }
       console.log(`[${logLabel}] model=${params.model}, tools=${tools.length}, tool_choice=${params.tool_choice ?? 'none'}, max_tokens=${params.max_completion_tokens ?? params.max_tokens}`);
       if (!forceThinking) {
         const fingerprint = createHash('sha256').update(JSON.stringify({ tools, firstMessage: messages[0] })).digest('hex').slice(0, 16);
@@ -267,6 +281,28 @@ function outputLogLimit(label) {
   return name.startsWith('schedule-gen:') ? 300 : 2000;
 }
 
+/**
+ * 日志脱敏开关（P1-16）。
+ *
+ * 默认**开启**（即脱敏）。原因：日志会被用户下载、贴到群里求排障，
+ * 而默认日志里同时含完整正文、思考链与请求体，等于把私聊内容一起交出去。
+ *
+ * 需要完整原文排查时设 `LINSHE_LLM_VERBOSE_LOG=1`，并且应当只在本地临时用。
+ * 注意这个开关只影响**日志**，不影响业务返回值。
+ */
+const VERBOSE_LLM_LOG = process.env.LINSHE_LLM_VERBOSE_LOG === '1';
+
+/** 日志用的正文截断：脱敏模式只留开头一小段，够定位"哪条链路、大概什么内容" */
+const REDACTED_LOG_PREVIEW = 120;
+
+function logPreview(text) {
+  const value = String(text ?? '');
+  if (VERBOSE_LLM_LOG) return value;
+  if (value.length <= REDACTED_LOG_PREVIEW) return value;
+  return `${value.slice(0, REDACTED_LOG_PREVIEW)}…（已脱敏，共 ${value.length} 字；设 LINSHE_LLM_VERBOSE_LOG=1 看全文）`;
+}
+
+
 // 复用单个 OpenAI 客户端实例，避免每次调用都创建新的 HTTP Agent
 // 频繁创建 client 会实例化底层 undici 连接池，在高并发场景下浪费 FD 和内存
 //
@@ -310,6 +346,12 @@ function withErrorBodyLogging(client, label) {
 function logReasoning(label, reasoning, thinkingMode = config.llm.thinkingMode) {
   // 未开启思考且没有返回思考内容时，不输出空标题和缺失提示。
   if (!reasoning && thinkingMode !== 'enabled') return;
+  // P1-16：思考链默认**不落日志**。它常包含角色的内心活动与世界观原文，
+  // 排障基本用不到，但一旦日志被贴出去就是完整的内容泄漏。
+  if (!VERBOSE_LLM_LOG) {
+    console.log(`[${providerLabel()} ← ${label} 思考链]（${String(reasoning || '').length} 字，已省略；设 LINSHE_LLM_VERBOSE_LOG=1 查看）`);
+    return;
+  }
   console.log(`[${providerLabel()} ← ${label} 思考链]`);
   console.log(reasoning || '(服务商未返回思考内容)');
 }

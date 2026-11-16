@@ -56,8 +56,8 @@ export function findSensitiveArchiveMembers(members, {
       reason = 'Android 签名材料或本机配置'
     } else if (base === 'launcher_config.json') {
       reason = '本机启动器配置'
-    } else if (base === '.access-token') {
-      reason = '设备配对凭证'
+    } else if (base === '.access-token' || base === '.tts-service-token') {
+      reason = '设备配对凭证 / 服务握手令牌'
     } else if (base === 'settings.local.json') {
       reason = '本机工具配置'
     } else if (lowerRel.endsWith('.tar.gz')) {

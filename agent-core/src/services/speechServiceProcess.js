@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ttsHealth } from './indexTtsClient.js';
 import { restartSpeechGpu } from './speechGpu.js';
 import { selectedLocalTtsModel } from './localTtsModels.js';
+import { ttsServiceEnv } from './ttsServiceToken.js';
 import { broadcast } from './unifiedStreamBus.js';
 
 // Windows descendants can retain the launcher's pipe handles after PowerShell
@@ -51,7 +52,11 @@ export function createSpeechServiceRestarter({ run = executeSpeechLauncher, heal
           await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
             '-File', path.join(serviceDir, 'restart.ps1'),
             // Five bounded deployment steps (60s each), plus process shutdown.
-            '-ModelVersion', model(), '-Port', url.port || '80', ...(onlyIfOffline ? ['-StartOnly'] : [])], { windowsHide: true, timeout: 330000, env });
+            '-ModelVersion', model(), '-Port', url.port || '80', ...(onlyIfOffline ? ['-StartOnly'] : [])],
+            // P1-15：把随机生成的 TTS 服务 Token 注入子进程。
+            // restart.ps1 自己不设这个变量；不在这里带上，服务端就是空 Token，
+            // 而客户端已经改成随机值 ⇒ 所有请求 403。
+            { windowsHide: true, timeout: 330000, env: ttsServiceEnv(env) });
         } catch (error) {
           throw new Error(`声音服务启动失败：${String(error.stderr || error.message).trim().slice(0, 1200)}`);
         }

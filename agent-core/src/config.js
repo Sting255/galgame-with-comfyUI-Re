@@ -537,9 +537,15 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
   },
 };
 
-// 启动时如果 tlsVerify=false，设置进程级环境变量让 fetch/ws 信任自签名证书
+// 启动时如果 tlsVerify=false，**不要**改 process.env.NODE_TLS_REJECT_UNAUTHORIZED。
+//
+// 2026-11-16（P1-16）：那个环境变量是进程级的，一旦设成 '0'，本进程所有 HTTPS 请求
+// 都不再校验证书——包括 LLM 网关、嵌入服务、TTS。用户为了连自签名的本地 ComfyUI
+// 关掉校验，代价是把云端 API 的中间人防护一起关了。
+// 正确做法是只在 ComfyUI 的请求上放宽（见 comfyClient 的 TLS 处理）。
+// 这里只留一行提示，不写入任何进程级环境变量。
 if (config.comfyui.tlsVerify === false) {
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+  console.warn('[config] ComfyUI TLS 校验已关闭（仅作用于 ComfyUI 请求，不影响其它 HTTPS 服务）');
 }
 
 // 同步写入 DB（内存已更新，DB 写入由 setSetting 同步完成）
@@ -668,11 +674,9 @@ export function updateComfyConfig({ artist, width, height, url, momentsArtist, m
   if (eventHeight !== undefined) { config.comfyui.eventHeight = parseInt(eventHeight, 10) || config.comfyui.eventHeight; persistSettingSync('comfy_event_height', config.comfyui.eventHeight); }
   if (tlsVerify !== undefined) {
     config.comfyui.tlsVerify = tlsVerify === true || tlsVerify === 'true';
-    if (!config.comfyui.tlsVerify) {
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-    } else {
-      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    }
+    // P1-16：不再动进程级 NODE_TLS_REJECT_UNAUTHORIZED。
+    // 这个开关只该影响 ComfyUI 请求；改环境变量会连带关掉 LLM / 嵌入 / TTS 的证书校验。
+    console.log(`[config] ComfyUI TLS 校验：${config.comfyui.tlsVerify ? '开启' : '关闭（仅 ComfyUI）'}`);
   }
   // 有 NovelAI 字段被改动时，把当前值回写进激活中的 NovelAI 配置快照，
   // 这样在配置面板里改完参数后切换走再切换回来不会丢改动。

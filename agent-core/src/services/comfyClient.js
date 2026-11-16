@@ -8,6 +8,54 @@ import { isApiWorkflow, attachPngWorkflow } from './imageWorkflowMetadata.js';
 
 const getBase = () => config.comfyui.url.replace(/\/+$/, '');
 const getWsBase = () => config.comfyui.url.replace(/^http/, 'ws');
+
+/** 单个 ComfyUI HTTP 请求的上限（P1-14）。图片执行本身另有 EXECUTION_TIMEOUT_MS。 */
+const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const COMFY_HTTP_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.COMFY_HTTP_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_HTTP_TIMEOUT_MS;
+  return Math.min(Math.max(raw, 5_000), 10 * 60 * 1000);
+})();
+
+/**
+ * ComfyUI 专用 fetch（P1-14）。
+ *
+ * 解决的核心问题：**每个请求都必须有超时**。
+ * 原来多处 fetch 没有 signal —— ComfyUI 接受连接却不回响应头时会一直挂着；
+ * WS 失败后的轮询兜底也会卡在单次 fetch 上，整条生图链路看不到终态。
+ *
+ * 关于 TLS（P1-16）：进程级不再关闭证书校验（那是全局副作用，会连带
+ * 削弱 LLM / 嵌入 / TTS 的 HTTPS 防护）。ComfyUI 的 WS 连接另有独立选项；
+ * HTTP 侧默认走严格校验，因此**自签名 HTTPS 的 ComfyUI 请改用 http 或配可信证书**。
+ *
+ * @param {string} url
+ * @param {RequestInit & {timeoutMs?: number}} [options]
+ */
+async function comfyFetch(url, options = {}) {
+  const { timeoutMs = COMFY_HTTP_TIMEOUT_MS, ...init } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 调用方可能已经带了 signal（上层取消）：两者取并集
+  const outer = init.signal;
+  const onOuterAbort = () => controller.abort();
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener('abort', onOuterAbort, { once: true });
+  }
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted && !outer?.aborted) {
+      const timeoutError = new Error(`ComfyUI 请求超时（${Math.ceil(timeoutMs / 1000)} 秒）：${url}`);
+      timeoutError.code = 'COMFY_TIMEOUT';
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (outer) outer.removeEventListener?.('abort', onOuterAbort);
+  }
+}
 /**
  * 单张图的等待上限（WebSocket 与轮询兜底共用）。
  *
@@ -36,7 +84,7 @@ let poseNodeMissingWarned = false;
  */
 async function fetchObjectInfo() {
   const url = `${getBase()}/object_info`;
-  const res = await fetch(url);
+  const res = await comfyFetch(url, { timeoutMs: 60_000 });   // 约 2.8MB，给足时间
   if (!res.ok) throw new Error(`object_info returned ${res.status} (url: ${url})`);
   return res.json();
 }
@@ -563,7 +611,7 @@ async function submitWorkflowWithGpu(guiWorkflow, onProgress, options = {}) {
     extra_data: { extra_pnginfo: { ...(Array.isArray(guiWorkflow.nodes) ? { workflow: guiWorkflow } : {}), ...(generation ? { linshe_generation: generation } : {}) } },
   };
 
-  const res = await fetch(`${getBase()}/api/prompt`, {
+  const res = await comfyFetch(`${getBase()}/api/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -738,7 +786,7 @@ async function downloadImagesFromHistory(promptId, retries = 3) {
   let lastErr;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const res = await fetch(`${getBase()}/history/${promptId}`);
+      const res = await comfyFetch(`${getBase()}/history/${promptId}`);
       const data = await res.json();
 
       if (data[promptId]) {
@@ -798,7 +846,7 @@ async function pollAndDownload(promptId, onProgress, maxRetries = EXECUTION_TIME
   console.warn('[comfyClient] Using polling fallback — progress will be rough');
 
   for (let i = 0; i < maxRetries; i++) {
-    const res = await fetch(`${getBase()}/history/${promptId}`);
+    const res = await comfyFetch(`${getBase()}/history/${promptId}`);
     const data = await res.json();
 
     if (data[promptId]) {
@@ -849,7 +897,7 @@ export async function downloadImageAsBase64(filename, subfolder = '', type = 'ou
   const params = new URLSearchParams({ filename, type });
   if (subfolder) params.set('subfolder', subfolder);
   const url = `${getBase()}/view?${params}`;
-  const res = await fetch(url);
+  const res = await comfyFetch(url, { timeoutMs: 120_000 });
   if (!res.ok) throw new Error(`Download failed: ${res.status}`);
   const buffer = Buffer.from(await res.arrayBuffer());
   const ext = path.extname(filename).slice(1) || 'png';
@@ -865,7 +913,7 @@ export async function uploadImage(buffer, filename) {
   form.append('image', new Blob([buffer]), filename);
   form.append('type', 'input');
   form.append('overwrite', 'true');
-  const res = await fetch(`${getBase()}/upload/image`, { method: 'POST', body: form });
+  const res = await comfyFetch(`${getBase()}/upload/image`, { method: 'POST', body: form, timeoutMs: 120_000 });
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     throw new Error(`Upload failed (${res.status}): ${errText.slice(0, 200)}`);

@@ -1,4 +1,5 @@
 import { selectedLocalTtsModel } from './localTtsModels.js';
+import { ttsServiceToken } from './ttsServiceToken.js';
 
 const base = () => (process.env.TTS_SERVICE_URL || 'http://127.0.0.1:7861').replace(/\/+$/, '');
 export async function ttsRequest(route, body, timeout = 10000) {
@@ -6,7 +7,7 @@ export async function ttsRequest(route, body, timeout = 10000) {
   try {
     response = await fetch(`${base()}${route}`, {
       method: body === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-TTS-Token': process.env.TTS_SERVICE_TOKEN || '' },
+      headers: { 'Content-Type': 'application/json', 'X-TTS-Token': ttsServiceToken() },
       body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeout),
     });
   } catch (cause) {
