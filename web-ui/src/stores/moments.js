@@ -53,8 +53,23 @@ export const useMomentsStore = defineStore('moments', () => {
 
   const hasMore = computed(() => filteredPosts.value.length > page.value * PAGE_SIZE)
 
+  // 作者列表：优先用服务端聚合结果（P1-19），没拿到时回退到本地计算。
+  //
+  // 为什么需要服务端聚合：首屏现在只拉一页（见 loadPosts），
+  // 而「按作者筛选」必须是**完整**的作者列表——从一页帖子里去重只能得到「这一页出现过的作者」，
+  // 筛选功能会残缺。所以作者列表改由 /moments/authors 单独提供。
+  const serverAuthors = ref([])
+
   // 有帖子的作者列表（角色 + 镇民，按最新帖子时间降序）
   const charactersWithPosts = computed(() => {
+    if (serverAuthors.value.length) {
+      return serverAuthors.value.map(item => ({
+        author: item.npc_id != null ? `npc:${item.npc_id}` : item.id,
+        display_name: item.display_name || '未知',
+        avatar_path: item.avatar_path || '',
+        author_type: item.author_type || 'character',
+      }))
+    }
     const map = new Map()
     for (const p of posts.value) {
       const id = authorOf(p)
@@ -76,46 +91,64 @@ export const useMomentsStore = defineStore('moments', () => {
       .map(({ _latestPostAt, ...rest }) => rest)
   })
 
-  // 加载全部帖子（页面首次挂载时调用）
+  // 加载帖子（页面首次挂载时调用）
   //
-  // 2026-10-15 修：后端 `GET /api/moments` 是 **keyset 分页**（默认最新 1000 条 + `?before_id=` 续拉，
-  // 返回 `hasMore`），而这里原来只调一次、把第一页当成全量 —— 动态超过 1000 条时**静默丢掉更旧的历史**
-  // （页面看不出任何异常，只是"翻不到头"）。
+  // 2026-11-16（P1-19）改成分两段：
+  //   ① **首屏只拉一页**（PAGE_SIZE 条）并立刻上屏，不再等 50 页顺序请求；
+  //   ② 剩下的历史在后台静默续拉，拉到后追加，不阻塞渲染。
   //
-  // 现在按 hasMore 续拉到没有更多为止。为什么不用「滚动到底再拉下一页」那种增量分页：
-  //   本 store 的 `charactersWithPosts`（作者筛选列表）与 `filteredPosts`（按作者/我发的/赞过筛选）
-  //   都建立在「posts 是全量」这个前提上，改增量分页会让作者列表只剩已加载部分 —— 那是更大的行为倒退。
-  //   续拉全量保住原语义，只多几次请求（每次 1000 条，实际库几十条就是一次）。
-  // 安全上限：最多 50 页（5 万条），防后端 hasMore 恒真时死循环。
-  // 放在函数**内部**（不是模块级常量）：这样 loadPosts 自包含，单测能整段摘出去跑。
+  // 为什么以前是「一次拉全量」：作者筛选列表（charactersWithPosts）与
+  // filteredPosts（按作者 / 我发的 / 赞过筛选）都建立在「posts 是全量」这个前提上。
+  // 现在作者列表改由服务端聚合（/moments/authors）提供，筛选仍然完整；
+  // 帖子本身分两段加载，首屏在 2000+ 帖时从「最多 50 次顺序请求」降到 1 次。
+  //
+  // 后台续拉保留 50 页上限（5 万条），防后端 hasMore 恒真时死循环。
   async function loadPosts() {
     const MAX_PAGES = 50
     if (loading.value) return
     loading.value = true
     loadError.value = null
     try {
-      const all = []
-      let beforeId = null
-      for (let i = 0; i < MAX_PAGES; i++) {
-        const data = await api.listMoments(beforeId ? { before_id: beforeId } : undefined)
-        const batch = data.posts || []
-        all.push(...batch)
-        if (!data.hasMore || batch.length === 0) break
-        beforeId = batch[batch.length - 1].id
-        if (!beforeId) break   // 兜底：没有 id 就没法继续 keyset
-      }
-      // 保留已有帖子的运行时状态：页面切换回来时，_comments / liked 不会因对象替换而丢失
+      // ① 首屏一页：先让用户看到内容
+      const first = await api.listMoments({ limit: PAGE_SIZE })
+      const firstBatch = first.posts || []
       const prevMap = new Map(posts.value.map(p => [p.id, p]))
-      posts.value = all.map(p => {
+      const keepState = p => {
         const prev = prevMap.get(p.id)
         if (prev) {
           if (prev._comments) p._comments = prev._comments
           if (prev.liked !== undefined) p.liked = prev.liked
         }
         return p
-      })
+      }
+      posts.value = firstBatch.map(keepState)
       page.value = 1
       await markSeen()
+
+      // ② 作者列表：与服务端聚合并行，不依赖已加载的帖子
+      void api.listMomentAuthors()
+        .then(data => { serverAuthors.value = data.authors || [] })
+        .catch(err => console.warn('[moments] 作者聚合失败，回退本地计算:', err?.message || err))
+
+      // ③ 后台续拉剩余历史
+      if (first.hasMore && firstBatch.length > 0) {
+        void (async () => {
+          const all = [...firstBatch]
+          let beforeId = firstBatch[firstBatch.length - 1].id
+          for (let i = 1; i < MAX_PAGES && beforeId; i++) {
+            const data = await api.listMoments({ before_id: beforeId })
+            const batch = data.posts || []
+            all.push(...batch)
+            if (!data.hasMore || batch.length === 0) break
+            beforeId = batch[batch.length - 1].id
+          }
+          // 续拉期间用户可能已经切页或筛选，只在本 store 仍是活跃加载者时替换
+          posts.value = all.map(keepState)
+        })().catch(err => {
+          // 续拉失败不影响首屏：已经看到的内容留着，只是翻不到更早的
+          console.warn('[moments] 历史续拉中断:', err?.message || err)
+        })
+      }
     } catch (err) {
       console.error('[moments] loadPosts error:', err)
       // 以前只在控制台留一行：请求失败时 posts 为空，界面就渲染成"这里什么都没有"，
@@ -229,8 +262,21 @@ export const useMomentsStore = defineStore('moments', () => {
         liked: false,
       })
       if (isViewingMoments.value) await markSeen()
+      // P1-19：作者列表现在来自服务端聚合，新帖可能带来一个此前没出现过的作者，
+      // 不刷新的话筛选列表里看不到她。
+      void refreshAuthors()
     }
     return result
+  }
+
+  /** 刷新服务端作者聚合（失败静默：本地回退仍在） */
+  async function refreshAuthors() {
+    try {
+      const data = await api.listMomentAuthors()
+      serverAuthors.value = data.authors || []
+    } catch (err) {
+      console.warn('[moments] 作者聚合刷新失败:', err?.message || err)
+    }
   }
 
   // 编辑帖子文字

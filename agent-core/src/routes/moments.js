@@ -221,6 +221,45 @@ router.get('/', (req, res) => {
   res.json({ posts, hasMore });
 });
 
+/**
+ * GET /api/moments/authors — 朋友圈作者聚合（P1-19）。
+ *
+ * 为什么单独开一个端点：前端原来靠「把全部帖子拉下来再在前端算作者列表」，
+ * 首屏在 2000+ 帖时最多顺序拉 50 页才渲染，作者列表也被绑在「posts 是全量」这个前提上。
+ * 有了这个端点，首屏只需一页帖子 + 一次聚合查询，作者筛选仍然完整。
+ *
+ * 必须在 `/:id` 之前注册，否则会被当成 id 解析。
+ */
+router.get('/authors', (req, res) => {
+  const db = getDb();
+  const nickname = userNickname();
+  const rows = db.prepare(`
+    SELECT
+      mp.character_id AS id,
+      mp.npc_id AS npc_id,
+      COALESCE(c.display_name, n.display_name, ?) AS display_name,
+      CASE WHEN mp.npc_id IS NOT NULL
+        THEN (SELECT image_path FROM town_assets WHERE key = 'npc_' || mp.npc_id || '_portrait' AND status = 'ready')
+        ELSE c.avatar_path END AS avatar_path,
+      COUNT(*) AS post_count,
+      MAX(mp.created_at) AS latest_at
+    FROM moment_posts mp
+    LEFT JOIN characters c ON c.id = mp.character_id
+    LEFT JOIN town_npcs n ON n.id = mp.npc_id
+    WHERE mp.status = 'done' AND (mp.character_id IS NOT NULL OR mp.npc_id IS NOT NULL)
+    GROUP BY mp.character_id, mp.npc_id
+    ORDER BY latest_at DESC
+  `).all(nickname);
+
+  res.json({
+    authors: rows.map(row => ({
+      ...row,
+      author_type: row.npc_id != null ? 'npc' : 'character',
+      latest_at: toISO(row.latest_at),
+    })),
+  });
+});
+
 // GET /api/moments/:id — 单个帖子详情（含评论）
 router.get('/:id', (req, res) => {
   const db = getDb();

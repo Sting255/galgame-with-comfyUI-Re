@@ -1522,6 +1522,15 @@ export async function listMoments(params) {
 }
 
 /**
+ * 朋友圈作者聚合（P1-19）。
+ * 首屏只需要一页帖子 + 这一次聚合查询，作者筛选列表就完整了，
+ * 不必再把全部帖子拉下来在前端去重。
+ */
+export async function listMomentAuthors() {
+  return request('/moments/authors')
+}
+
+/**
  * 连接朋友圈 SSE 推送流
  * @param {(post: object) => void} onNewPost 新帖回调
  * @returns {{ close: () => void }} 关闭函数，含 _closed 标记用于重连判断

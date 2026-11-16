@@ -24,13 +24,22 @@ async function bounded(work, timeoutMs, message) {
   } finally { clearTimeout(timer); controller.abort(); }
 }
 
-export function createLorebookVectorStore({ embedBatch, embedText, queryTimeoutMs = 1500, indexTimeoutMs = 30000, retryMs = 30000 }) {
+export function createLorebookVectorStore({ embedBatch, embedText, queryTimeoutMs = 1500, indexTimeoutMs = 30000, retryMs = 30000, providerFingerprint = () => 'local' }) {
   const indexes = new Map(), vectors = new Map(), pending = new Map(), failures = new Map();
   const describe = book => {
     const entries = Object.values(book.document.entries).filter(e => !e.disable && (e.vectorized || book.settings.vectorAll));
     // Include IDs, not revision: resaving reuses the index; changing an ID never
     // returns a stale UID. Content vectors are reusable across book edits.
-    return { entries, key: `${book.worldId}:${hash(entries.map(e => [String(e.uid), e.content]))}` };
+    //
+    // P1-17：**缓存键必须含 embedding provider 指纹**。
+    // 原来只有 `worldId + 条目内容哈希` —— 换了嵌入模型后，同一个键仍然命中旧向量，
+    // 而查询用的是新 provider 的向量，两边维度/语义空间不一致 ⇒ 召回结果毫无意义
+    // 却看不出来。providerFingerprint 是惰性函数：配置变了下一次调用就会拿到新值。
+    const provider = String(providerFingerprint?.() || 'local');
+    return {
+      entries,
+      key: `${provider}:${book.worldId}:${hash(entries.map(e => [String(e.uid), e.content]))}`,
+    };
   };
   const warm = book => {
     const { entries, key } = describe(book);

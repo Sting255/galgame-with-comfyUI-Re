@@ -1221,11 +1221,18 @@ async function reloadBoards() {
     boards.value = []
     return
   }
+  // P1-18：请求归属校验。
+  // 快速切媒体时（A 慢 2 秒 → 立刻切 B），A 的响应晚到会把 B 的板块列表覆盖掉，
+  // 用户看到的是「B 的标题 + A 的板块」。loadPage 早已用 loadSeq 防这个，reloadBoards 漏了。
+  // 这里记下发起时的 outlet，回来时核对仍是当前那个才写。
+  const requestedOutlet = activeOutlet.value
   try {
-    const d = await api.listMediaBoards(activeOutlet.value)
+    const d = await api.listMediaBoards(requestedOutlet)
+    if (activeOutlet.value !== requestedOutlet) return
     boards.value = d.boards || []
   } catch (err) {
     console.error('[media] 读取板块失败:', err)
+    if (activeOutlet.value !== requestedOutlet) return
     boards.value = []
   }
 }
