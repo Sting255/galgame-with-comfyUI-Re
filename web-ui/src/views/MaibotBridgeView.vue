@@ -23,7 +23,7 @@
             v-model.trim="webuiToken"
             :type="showWebuiToken ? 'text' : 'password'"
             class="fi token-input"
-            placeholder="填写 MaiBot WebUI 的访问 Token"
+            :placeholder="webuiTokenPlaceholder"
             @change="saveSettings"
             @keyup.enter="saveSettings"
           />
@@ -195,9 +195,14 @@ function promptInstallGuide() {
 }
 
 // ── 连接设置 ──
-const webuiToken = ref('MaiBot.admin')
+// Token 不再回显：后端只告诉我们「是否已配置」，输入框留空即保持原值。
+const webuiToken = ref('')
+const webuiTokenConfigured = ref(false)
 const showWebuiToken = ref(false)
 const savingSettings = ref(false)
+const webuiTokenPlaceholder = computed(() => (
+  webuiTokenConfigured.value ? '已保存，留空保持不变' : '填写 MaiBot WebUI 的访问 Token'
+))
 
 // ── 插件配置 ──
 const defaultBaseUrl = ref(window.location.origin)
@@ -291,7 +296,8 @@ async function loadPersona() {
 async function loadAll() {
   try {
     const settings = await maibotGetWebuiSettings()
-    webuiToken.value = settings.token || 'MaiBot.admin'
+    webuiTokenConfigured.value = settings.hasToken === true
+    webuiToken.value = ''
   } catch (err) {
     notify('读取连接设置失败: ' + err.message, 'error')
     promptInstallGuide()
@@ -324,9 +330,14 @@ async function loadAll() {
 
 // ── 连接设置操作 ──
 async function saveSettings() {
+  const token = webuiToken.value.trim()
+  // 留空 = 不修改已保存的 Token（后端不回显秘密，所以前端也拿不到原值可回填）
+  if (!token && webuiTokenConfigured.value) return
   savingSettings.value = true
   try {
-    await maibotSaveWebuiSettings(webuiToken.value.trim())
+    await maibotSaveWebuiSettings(token)
+    if (token) webuiTokenConfigured.value = true
+    webuiToken.value = ''
     notify('连接设置已保存')
   } catch (err) { notify('保存失败: ' + err.message, 'error') }
   finally { savingSettings.value = false }

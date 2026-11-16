@@ -283,13 +283,14 @@ router.get('/plugin-ui', (req, res) => {
   res.type('html').send(readFileSync(fileURLToPath(new URL('./plugin-ui.html', import.meta.url)), 'utf8'));
 });
 
-// GET /api/maibot/webui-settings — 读取 MaiBot WebUI 连接设置
+// GET /api/maibot/webui-settings — 读取 MaiBot WebUI 连接设置（只返回是否已配置，不回显 Token）
 router.get('/webui-settings', (req, res) => {
   res.json(getWebuiSettings());
 });
 
-// POST /api/maibot/webui-settings — 保存 MaiBot WebUI 连接设置
+// POST /api/maibot/webui-settings — 保存 MaiBot WebUI 连接设置（仅限本机，远程设备不得改写管理凭据）
 router.post('/webui-settings', (req, res) => {
+  if (!req.linsheLocal) return res.status(403).json({ error: 'MaiBot 连接设置只能在运行邻舍的电脑本机修改' });
   const { url, token } = req.body || {};
   try {
     setWebuiSettings({ url, token });
@@ -309,8 +310,9 @@ router.get('/plugin-config', async (req, res) => {
   }
 });
 
-// PUT /api/maibot/plugin-config — 更新插件配置（经 MaiBot WebUI 代理）
+// PUT /api/maibot/plugin-config — 更新插件配置（经 MaiBot WebUI 代理；仅限本机）
 router.put('/plugin-config', async (req, res) => {
+  if (!req.linsheLocal) return res.status(403).json({ error: 'MaiBot 插件配置只能在运行邻舍的电脑本机修改' });
   try {
     const data = await updatePluginConfig((req.body || {}).config || {});
     res.json(data);

@@ -61,6 +61,11 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
       if (key === cookieName) cookie = value.join('=');
     }
     const authorized = local || sameSecret(cookie, session) || sameSecret(req.headers.authorization, `Bearer ${token}`);
+    // 让路由能区分「本机直连」与「已配对远程设备」。
+    // 背景（P0-01）：/api/maibot 注释写「仅本机使用」，但它挂在 /api 下会被配对 Cookie 放行，
+    // 于是已配对设备能读写 MaiBot 管理凭据。写权限必须按这个标记再收一次。
+    req.linsheLocal = local;
+    res.locals.linsheLocal = local;
     // Express 默认大小写不敏感、允许尾斜杠；授权边界必须采用同一口径。
     let pathname;
     try { pathname = decodeURIComponent(req.path).toLowerCase().replace(/\/+$/, '') || '/'; }

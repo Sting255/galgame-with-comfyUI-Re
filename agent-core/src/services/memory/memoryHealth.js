@@ -16,7 +16,6 @@ import { healthCheck } from '../vectorClient.js';
 
 const SOURCE_LABEL = Object.freeze({
   user: '自定义模型',
-  builtin: '内置默认服务',
   local: '本地模型',
 });
 
@@ -126,11 +125,9 @@ export async function memoryHealth() {
       label: SOURCE_LABEL[embedding.source] || embedding.source,
       fingerprint: embedding.fingerprint,
       customConfigured: settings.embedding.enabled === true,
-      useBuiltin: settings.embedding.useBuiltin !== false,
     },
     reranker: {
       customConfigured: settings.reranker.enabled === true,
-      useBuiltin: settings.reranker.useBuiltin !== false,
     },
     vectorService: { reachable: vectorServiceReachable },
     switches: {

@@ -79,8 +79,7 @@ const subline = computed(() => issues.value[0]?.title || '')
 
 const rerankerLabel = computed(() => {
   if (!health.value) return '—'
-  if (health.value.reranker.customConfigured) return '自定义模型'
-  return health.value.reranker.useBuiltin ? '内置默认' : '本地排序'
+  return health.value.reranker.customConfigured ? '自定义模型' : '本地排序'
 })
 
 const consolidationLabel = computed(() => {

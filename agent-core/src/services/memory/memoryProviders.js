@@ -1,53 +1,26 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/index.js';
 import { embedBatch } from '../vectorClient.js';
 import { getMemorySettings } from './memoryConfig.js';
 
-const DAILY_FAILURE_LIMIT = 5;
-const SLOW_REQUEST_THRESHOLD_MS = 2500;
-const FAILURE_SETTING_KEY = 'memory_builtin_provider_failures';
+/**
+ * 记忆嵌入 / 重排 provider 选择。
+ *
+ * 2026-11-16（P0-01）之前这里内置了一个 XOR 混淆的云端 provider（URL / 模型 / Key 都写在源码里，
+ * 靠一个固定字符串异或解码）。那不是秘密存储：任何人拿到源码或交付包都能还原，
+ * 而它当时还是默认链路，等于把共享凭据随包分发。现在已整段删除。
+ *
+ * 现行口径：
+ *   1. 用户在设置页配了完整的自定义 provider → 用它；
+ *   2. 没配 → 直接回落本地向量服务（vector-service 自带模型），不再有中间那层共享云服务。
+ *
+ * 回落不是降级故障：本地模型一直是最终兜底，只是以前要先烧掉一次内置服务的失败额度才走到这里。
+ */
+
 const LOCAL_PROFILE = Object.freeze({
   fingerprint: 'local_builtin',
   corpus: 'memory_fragments',
   source: 'local',
 });
-
-const _k = 'sf_24';
-const _eU = '1b122b424749497053441a482c5b581a05305c521f09281c571d492903';
-const _eM = '31271e7b1b11013a1f5940';
-const _rU = '1b122b424749497053441a482c5b581a05305c521f09281c571d4929031b01032d535a18';
-const _rM = '31271e7b1b11013a1f4616143e5c5f16147244065e0b6c';
-const _aK = '000d72545301153c5c5812142c5d5d19102c5c431d00264b5602102d515212103b585e1e1e3b5e46151635434d09013c445518';
-const _sP = '000f335b571c08395e5b04';
-const _f0 = '16083e50581602';
-const _f1 = '031430445d17032d';
-const _f2 = '11072c5761212a';
-const _f3 = '1e093b5758';
-const _f4 = '12163679510a';
-const _f5 = '1b033e56510115';
-const _f6 = '070f32575b06121241';
-const _f7 = '07092f7c';
-
-function _d(h) {
-  const kb = Buffer.from(_k, 'utf8');
-  const buf = Buffer.from(h, 'hex');
-  for (let i = 0; i < buf.length; i++) buf[i] ^= kb[i % kb.length];
-  return buf.toString('utf8');
-}
-
-function builtinProvider(kind) {
-  const F = [_f0, _f1, _f2, _f3, _f4, _f5, _f6, _f7].map(_d);
-  return {
-    [F[0]]: true,
-    [F[1]]: _d(_sP),
-    [F[2]]: _d(kind === 'embedding' ? _eU : _rU),
-    [F[3]]: _d(kind === 'embedding' ? _eM : _rM),
-    [F[4]]: _d(_aK),
-    [F[5]]: {},
-    [F[6]]: 8000,
-    [F[7]]: 7,
-  };
-}
 
 function endpoint(baseURL, suffix) {
   const normalized = String(baseURL || '').replace(/\/$/, '');
@@ -70,61 +43,6 @@ function profileFor(provider, source) {
   const raw = JSON.stringify({ source, provider: provider.provider, baseURL: provider.baseURL, model: provider.model, dimensions: provider.dimensions || null });
   const fingerprint = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
   return { fingerprint, corpus: `memory_v2_${fingerprint}`, source };
-}
-
-function todayInShanghai() {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(new Date());
-  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  return `${value.year}-${value.month}-${value.day}`;
-}
-
-function readFailureState() {
-  const date = todayInShanghai();
-  try {
-    const row = getDb().prepare('SELECT setting_value FROM system_settings WHERE setting_key = ?').get(FAILURE_SETTING_KEY);
-    const parsed = row ? JSON.parse(row.setting_value) : null;
-    if (parsed?.date === date) return { date, embedding: Number(parsed.embedding) || 0, reranker: Number(parsed.reranker) || 0, embedding_index: Number(parsed.embedding_index) || 0 };
-  } catch (error) {
-    console.warn('[memory-provider] unable to read daily failure state:', error.message);
-  }
-  return { date, embedding: 0, reranker: 0, embedding_index: 0 };
-}
-
-function writeFailureState(state) {
-  try {
-    getDb().prepare(`
-      INSERT INTO system_settings(setting_key, setting_value, updated_at)
-      VALUES (?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP
-    `).run(FAILURE_SETTING_KEY, JSON.stringify(state));
-  } catch (error) {
-    console.warn('[memory-provider] unable to save daily failure state:', error.message);
-  }
-}
-
-function builtinAvailable(kind) {
-  return readFailureState()[kind] < DAILY_FAILURE_LIMIT;
-}
-
-function recordBuiltinFailure(kind) {
-  const state = readFailureState();
-  state[kind] = Math.min(DAILY_FAILURE_LIMIT, state[kind] + 1);
-  writeFailureState(state);
-  return state[kind];
-}
-
-function recordBuiltinSuccess(kind) {
-  const state = readFailureState();
-  if (state[kind] > 0) {
-    state[kind] = 0;
-    writeFailureState(state);
-  }
-}
-
-export function shouldUseLocalMemoryFallback(failureCount) {
-  return Number(failureCount) >= DAILY_FAILURE_LIMIT;
 }
 
 async function postJson(url, body, provider) {
@@ -155,43 +73,24 @@ async function requestEmbeddings(texts, provider, source) {
   return { profile: profileFor(provider, source), embeddings, source, elapsedMs };
 }
 
-export function getPreferredMemoryEmbeddingProfile(settings = getMemorySettings({ includeSecrets: true }), kind = 'embedding') {
+/**
+ * 当前生效的嵌入 profile。
+ * kind 参数保留是为了兼容既有调用签名（embedding / embedding_index / reranker），
+ * 但已不再参与判断——内置服务删除后，只有「用户自定义」与「本地」两种结果。
+ */
+export function getPreferredMemoryEmbeddingProfile(settings = getMemorySettings({ includeSecrets: true })) {
   if (isCompleteUserProvider(settings.embedding)) return profileFor(settings.embedding, 'user');
-  if (builtinAvailable(kind)) return profileFor(builtinProvider('embedding'), 'builtin');
   return LOCAL_PROFILE;
 }
 
-export function getBuiltinMemoryProviderStatus() {
-  const state = readFailureState();
-  return { date: state.date, failureLimit: DAILY_FAILURE_LIMIT, slowThresholdMs: SLOW_REQUEST_THRESHOLD_MS, embeddingFailures: state.embedding, rerankerFailures: state.reranker };
-}
-
 export async function embedMemoryTexts(texts, settings = getMemorySettings({ includeSecrets: true }), options = {}) {
-  const { timeoutMs, failureKind = 'embedding', slowThresholdMs = SLOW_REQUEST_THRESHOLD_MS } = options;
+  const { timeoutMs } = options;
   const userProvider = settings.embedding;
   if (isCompleteUserProvider(userProvider)) {
     try {
       return await requestEmbeddings(texts, { ...userProvider, timeoutMs: timeoutMs || userProvider.timeoutMs }, 'user');
     } catch (error) {
-      console.warn('[memory-provider] user embedding failed, using system default:', error.message);
-    }
-  }
-
-  if (builtinAvailable(failureKind)) {
-    try {
-      const result = await requestEmbeddings(texts, { ...builtinProvider('embedding'), timeoutMs: timeoutMs || 8000 }, 'builtin');
-      if (slowThresholdMs && result.elapsedMs > slowThresholdMs) {
-        recordBuiltinFailure(failureKind);
-      } else {
-        recordBuiltinSuccess(failureKind);
-      }
-      return result;
-    } catch (error) {
-      const failures = recordBuiltinFailure(failureKind);
-      if (!shouldUseLocalMemoryFallback(failures)) {
-        throw new Error(`系统内置嵌入服务失败 (${failures}/${DAILY_FAILURE_LIMIT}): ${error.message}`);
-      }
-      console.warn(`[memory-provider] built-in embedding failed (${failures}/${DAILY_FAILURE_LIMIT}), switching to local model:`, error.message);
+      console.warn('[memory-provider] user embedding failed, falling back to local model:', error.message);
     }
   }
 
@@ -256,27 +155,10 @@ export async function rerankMemories(query, candidates, settings = getMemorySett
     try {
       return await requestRerank(query, candidates, userProvider, 'user');
     } catch (error) {
-      console.warn('[memory-provider] user reranker failed, using system default:', error.message);
+      console.warn('[memory-provider] user reranker failed, falling back to local model:', error.message);
     }
   }
 
-  if (builtinAvailable('reranker')) {
-    try {
-      const result = await requestRerank(query, candidates, builtinProvider('reranker'), 'builtin');
-      if (result[0]?.rerank_elapsed_ms > SLOW_REQUEST_THRESHOLD_MS) {
-        recordBuiltinFailure('reranker');
-      } else {
-        recordBuiltinSuccess('reranker');
-      }
-      return result;
-    } catch (error) {
-      const failures = recordBuiltinFailure('reranker');
-      if (!shouldUseLocalMemoryFallback(failures)) {
-        throw new Error(`系统内置重排服务失败 (${failures}/${DAILY_FAILURE_LIMIT}): ${error.message}`);
-      }
-      console.warn(`[memory-provider] built-in reranker failed (${failures}/${DAILY_FAILURE_LIMIT}), switching to local model:`, error.message);
-    }
-  }
   return localRerank(query, candidates, settings.reranker.topN || settings.topK || 7);
 }
 

@@ -658,7 +658,9 @@ const characterSelect = mountSelect($("character-select"), { placeholder: "（�
 async function loadAll() {
   try {
     const settings = await api("/api/maibot/webui-settings");
-    $("webui-token").value = settings.token || "";
+    // Token 不回显：已配置时输入框留空表示「保持不变」，未配置时提示用户填写。
+    $("webui-token").value = "";
+    $("webui-token").placeholder = settings.hasToken ? "已保存，留空保持不变" : "填写 MaiBot WebUI 的访问 Token";
     $("back-link").href = "http://127.0.0.1:8001/";
   } catch (err) { showStatus("读取连接设置失败: " + err.message, false); }
 

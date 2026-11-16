@@ -65,12 +65,12 @@
             <linshe-button variant="secondary" :disabled="testingEmbedding" @click="testEmbedding">{{ testingEmbedding ? '测试中…' : '测试智能匹配' }}</linshe-button>
             </div>
           </CollapseTransition>
-          <p v-if="!form.embedding.enabled" class="disabled-note">当前使用系统默认模型；默认服务当天失败 5 次后，会自动切换到本地模型。</p>
+          <p v-if="!form.embedding.enabled" class="disabled-note">当前使用本地模型（随向量服务运行）；配置自定义模型后优先走你的服务。</p>
         </section>
 
         <section class="card">
           <div class="section-title">
-            <div><h3>自定义结果排序（可选）</h3><p>系统已有默认排序模型；开启并完整填写后，会优先使用你的模型。</p></div>
+            <div><h3>自定义结果排序（可选）</h3><p>未配置时用本地模型排序；开启并完整填写后，会优先使用你的模型。</p></div>
             <linshe-switch v-model="form.reranker.enabled" aria-label="使用自定义结果排序模型" />
           </div>
           <CollapseTransition :show="form.reranker.enabled">
@@ -95,7 +95,7 @@
             <linshe-button variant="secondary" :disabled="testingReranker" @click="testReranker">{{ testingReranker ? '测试中…' : '测试结果优化' }}</linshe-button>
             </div>
           </CollapseTransition>
-          <p v-if="!form.reranker.enabled" class="disabled-note">当前使用系统默认排序模型；默认服务当天失败 5 次后，会自动切换到本地模型。</p>
+          <p v-if="!form.reranker.enabled" class="disabled-note">当前使用本地模型排序（随向量服务运行）；配置自定义模型后优先走你的服务。</p>
         </section>
       </div>
 
