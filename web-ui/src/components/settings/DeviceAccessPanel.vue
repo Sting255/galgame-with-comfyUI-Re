@@ -2,7 +2,11 @@
   <section class="card device-access">
     <div class="da-head">
       <h3>设备连接</h3>
-      <span v-if="access?.local" class="da-hint">配对码 30 天有效，只给自己的设备用</span>
+      <!-- P2-07（2026-11-16）：原来写「配对码 30 天有效」，把 Cookie 的有效期
+           说成了配对码的有效期。配对码本身在设备上长期不变（它其实是通行密钥），
+           30 天的是配对成功后下发的会话 Cookie。这句误导会让人以为「过期要重新配对」。
+           另外原生后台通知用的是独立设备令牌（见 P0-02），也不随这个 Cookie 走。 -->
+      <span v-if="access?.local" class="da-hint">配对一次的设备可长期使用；只给自己的设备用</span>
     </div>
     <template v-if="access?.local">
       <div class="da-row">

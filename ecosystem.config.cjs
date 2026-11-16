@@ -24,7 +24,10 @@ module.exports = {
     {
       name: 'vector-svc',
       script: 'uvicorn',
-      args: 'server:app --host 0.0.0.0 --port 8765',
+      // P2-06（2026-11-16）：绑定地址从 0.0.0.0 改为 127.0.0.1。
+      // 向量服务没有任何鉴权：监听 0.0.0.0 等于把「库里的记忆向量」暴露给同网段任何人。
+      // agent-core 与它同机，回环就够。
+      args: 'server:app --host 127.0.0.1 --port 8765',
       interpreter: './venv/Scripts/python.exe',
       cwd: './vector-service',
       // ⚠️ 不要加回 `wait_ready: true` —— uvicorn 不会发 PM2 的 ready 信号，加了就永远起不来。
