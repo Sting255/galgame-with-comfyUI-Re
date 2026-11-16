@@ -2356,10 +2356,14 @@ router.put('/:id/outfits/scene', (req, res) => {
 
   const saved = upsertSceneOutfits(char.id, clean);
   if (body != null) setCharacterBody(char.id, body);
-  // 老数据回填：这个角色以前只填了 4 态、没有 body ⇒ 以已填分项为锚反推一份身体真源
-  const backfilled = backfillBodyFromExisting(char.id, {
-    baseAppearance: String(db.prepare('SELECT base_prompt FROM characters WHERE id = ?').get(char.id)?.base_prompt || ''),
-  });
+  // 老数据回填：这个角色以前只填了 4 态、没有 body ⇒ 以已填分项为锚反推一份身体真源。
+  // P1-02：用户这次显式改了身体时跳过 —— 回填是从旧衣服文本反推的，
+  // 拿它去覆盖用户刚填的内容正好是「从旧衣服反推身体」这个被禁止的漂移来源。
+  const backfilled = body != null
+    ? { updated: 0, source: 'skipped-manual' }
+    : backfillBodyFromExisting(char.id, {
+      baseAppearance: String(db.prepare('SELECT base_prompt FROM characters WHERE id = ?').get(char.id)?.base_prompt || ''),
+    });
   res.json({ ok: true, saved, backfilled, outfits: listSceneOutfits(char.id) });
 });
 

@@ -33,7 +33,7 @@ import { getSystemRulesWithWorld } from '../db/worldRepository.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 import { registerSceneOutfitProvider } from './sceneOutfitRegistry.js';
 import { splitAppearanceSection, buildCharacterAppearanceSection } from './characterPersona.js';
-import { getIdentityBody } from './identityAnchor.js';
+import { getIdentityBody, getStoredIdentityAnchor, saveIdentityAnchor, splitIdentityAnchor, composeAnchor, ANCHOR_SOURCE_MANUAL } from './identityAnchor.js';
 import { buildSceneOutfitMessages, normalizeDesignScenes, parseSceneOutfitDesign } from './sceneOutfitPrompt.js';
 import { pickFabricAndColors } from './clothingLibrary.js';
 import { getLocalDateKey } from '../utils/localDate.js';
@@ -220,16 +220,39 @@ export function listSceneOutfits(characterId) {
 }
 
 /**
- * 写角色的「身体描述」，**同步到该角色全部服装行**。
+ * 写角色的「身体描述」。
  *
- * 这是"单一真源"的落点：界面只让用户编辑一个身体字段，保存时写进每一行，
- * 既避免重复维护，也保证 5 套之间不会漂移。
+ * 2026-11-16（P1-02）：**唯一真源是 `characters.identity_anchor`。**
+ *
+ * 此前这里只写 `character_outfits.body`，而读取层（listSceneOutfits / getIdentityBody）
+ * 优先取 identity_anchor ⇒ 已经有锚点的角色通过界面改身体会「保存成功但界面不变」，
+ * 生图也继续用旧锚点。现在：
+ *   1. 保留锚点里的身份 tag（`Name (Series)`），只替换身体段；
+ *   2. 同时把 source 标成 manual —— 用户手改过的锚点不能被后续自动提取覆盖；
+ *   3. 旧的 `character_outfits.body` 仍然写一份，作为「锚点缺失时的回退」，
+ *      不再是被优先读取的那份。
+ *
+ * 不要从旧衣服文本反推新身体：那是 2026-11-08 用户明确禁止的漂移来源。
  */
 export function setCharacterBody(characterId, body) {
   const clean = String(body || '').trim().slice(0, 2000);
+  const id = Number(characterId);
+
+  // 1) 保留身份 tag，只换身体段
+  const stored = getStoredIdentityAnchor(id);
+  const { tag } = splitIdentityAnchor(stored.anchor);
+  const anchor = composeAnchor(tag, clean);
+  if (anchor) {
+    saveIdentityAnchor(id, anchor, ANCHOR_SOURCE_MANUAL);
+  } else if (stored.anchor) {
+    // 身体被清空但原来有锚点：整条清掉，避免留下「有 tag 无身体」的半截状态
+    saveIdentityAnchor(id, '', ANCHOR_SOURCE_MANUAL);
+  }
+
+  // 2) 旧列同步一份，作为锚点缺失时的回退
   const r = getDb().prepare('UPDATE character_outfits SET body = ? WHERE character_id = ?')
-    .run(clean, characterId);
-  return { ok: true, updated: r.changes };
+    .run(clean, id);
+  return { ok: true, updated: r.changes, anchor, source: anchor ? ANCHOR_SOURCE_MANUAL : '' };
 }
 
 /** 日程衣柜始终包含默认服饰；保留旧名称和 ID，但外观以人物卡为准，不补写服装表。 */
