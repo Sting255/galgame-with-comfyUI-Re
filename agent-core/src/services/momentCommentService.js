@@ -296,18 +296,27 @@ function scheduleDeferredReplyAt(characterId) {
   return new Date(Date.now() + 30 * 60000).toISOString().slice(0, 19).replace('T', ' ');
 }
 
-/** 入队一条「等醒再回」；同一条用户评论同一个人只排一次 */
+/**
+ * 入队一条「等醒再回」；同一条用户评论同一个人只排一次。
+ *
+ * P1-04：唯一性现在由数据库保证（部分唯一索引
+ * `idx_moment_comment_queue_active_unique`，只约束 waiting/processing），
+ * 不再依赖「先查再插」这个非原子的应用层判重。
+ * INSERT OR IGNORE + 回查 id，并发/重放都只会有一行。
+ */
 export function enqueueDeferredCommentReply({ characterId, postId, userCommentId }) {
   const db = getDb();
-  const exists = db.prepare(
+  const r = db.prepare(
+    `INSERT OR IGNORE INTO moment_comment_queue (character_id, post_id, user_comment_id, scheduled_reply_at)
+     VALUES (?, ?, ?, ?)`
+  ).run(characterId, postId, userCommentId, scheduleDeferredReplyAt(characterId));
+  if (r.changes > 0) return Number(r.lastInsertRowid);
+  // 已被占用：返回既有那一行（可能正在 processing）
+  const existing = db.prepare(
     `SELECT id FROM moment_comment_queue
      WHERE character_id = ? AND user_comment_id = ? AND status IN ('waiting','processing') LIMIT 1`
   ).get(characterId, userCommentId);
-  if (exists) return exists.id;
-  const r = db.prepare(
-    `INSERT INTO moment_comment_queue (character_id, post_id, user_comment_id, scheduled_reply_at) VALUES (?, ?, ?, ?)`
-  ).run(characterId, postId, userCommentId, scheduleDeferredReplyAt(characterId));
-  return Number(r.lastInsertRowid);
+  return existing ? Number(existing.id) : null;
 }
 
 /** 失败重试（最多 3 次，间隔 5 分钟），到上限就作废，避免卡在队列里反复烧 LLM */
@@ -349,7 +358,13 @@ export async function processDeferredCommentReplies({ limit = 3, deps = {} } = {
   }
   let handled = 0;
   for (const row of due) {
-    db.prepare(`UPDATE moment_comment_queue SET status = 'processing' WHERE id = ?`).run(row.id);
+    // P1-04：原子认领 —— 只有把 waiting 改成 processing 的那一次调用才有权处理，
+    // 且必须仍在到期时间之后。并发 tick（或手动触发 + 定时 tick 撞车）不会双跑。
+    const claim = db.prepare(
+      `UPDATE moment_comment_queue SET status = 'processing'
+       WHERE id = ? AND status = 'waiting' AND scheduled_reply_at <= datetime('now')`
+    ).run(row.id);
+    if (claim.changes === 0) continue;
     try {
       // 又睡了（临时唤醒到期 / 日程重算）→ 顺延，不算失败
       if (await isCharacterSleeping(row.character_id)) {
@@ -377,18 +392,26 @@ export async function processDeferredCommentReplies({ limit = 3, deps = {} } = {
       if (!replyText) { retryOrCancelDeferred(row); continue; }
 
       const createdAt = new Date().toISOString();
-      const ins = db.prepare(
-        `INSERT INTO moment_comments (post_id, author_type, author_id, content, thread_root_id, reply_to_comment_id)
-         VALUES (?, 'character', ?, ?, ?, ?)`
-      ).run(post.id, character.id, replyText, threadRootId, userComment.id);
-      db.prepare('UPDATE moment_comments SET created_at = ? WHERE id = ?').run(createdAt, ins.lastInsertRowid);
-
-      db.prepare(`UPDATE moment_comment_queue SET status = 'done', processed_at = datetime('now') WHERE id = ?`).run(row.id);
+      // P1-04：评论落库与「队列置 done + 记录 reply_comment_id」必须同事务。
+      // 分成两步时，若在插入之后、置 done 之前崩溃，重启会重放并再插一条重复评论。
+      // 现在要么都成功，要么都没发生；reply_comment_id 让恢复逻辑能判断「已经插过了」。
+      const commit = db.transaction(() => {
+        const ins = db.prepare(
+          `INSERT INTO moment_comments (post_id, author_type, author_id, content, thread_root_id, reply_to_comment_id)
+           VALUES (?, 'character', ?, ?, ?, ?)`
+        ).run(post.id, character.id, replyText, threadRootId, userComment.id);
+        db.prepare('UPDATE moment_comments SET created_at = ? WHERE id = ?').run(createdAt, ins.lastInsertRowid);
+        db.prepare(
+          `UPDATE moment_comment_queue SET status = 'done', processed_at = datetime('now'), reply_comment_id = ? WHERE id = ?`
+        ).run(Number(ins.lastInsertRowid), row.id);
+        return Number(ins.lastInsertRowid);
+      });
+      const commentId = commit();
       handled++;
       broadcastToUnified('new_comment', {
         post_id: post.id,
         comment: {
-          id: ins.lastInsertRowid,
+          id: commentId,
           post_id: post.id,
           author_type: 'character',
           author_id: character.id,

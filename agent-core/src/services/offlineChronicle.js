@@ -24,6 +24,10 @@ const HEARTBEAT_KEY = 'runtime.last_seen_at';
 const CURSOR_KEY = 'runtime.offline_cursor';   // 补算进行到哪一刻（断点续跑）
 const PENDING_TAIL_KEY = 'runtime.offline_pending_tail';
 const PENDING_CHUNK_KEY = 'runtime.offline_pending_chunk';
+// P1-08：延期的下一次重试时刻。以前「延期」只是 return，没有任何驱动会在之后重跑，
+// 于是角色醒来 / 网络恢复后仍然什么都不发生，必须重启进程才会再试一次。
+const RETRY_AT_KEY = 'runtime.offline_retry_at';
+const DEFERRED_RETRY_DELAY_MS = 10 * 60 * 1000;   // 延期后 10 分钟再试
 const MIN_GAP_MS = 3 * 3600_000;      // 3 小时以内当作连续，不补
 const CHUNK_MS = 6 * 3600_000;        // 每片 6 小时
 const MAX_CHUNKS = 4;                 // 最多精细补 24 小时
@@ -64,6 +68,28 @@ function writeCursor(date) {
 
 function clearCursor() {
   try { setSetting(CURSOR_KEY, ''); } catch { /* 忽略 */ }
+}
+
+/** 记下延期的下一次重试时刻（ISO 串）；跑完/清游标时一并清掉 */
+function writeRetryAt(date) {
+  try { setSetting(RETRY_AT_KEY, new Date(date).toISOString()); } catch { /* 忽略 */ }
+}
+
+function clearRetryAt() {
+  try { setSetting(RETRY_AT_KEY, ''); } catch { /* 忽略 */ }
+}
+
+/** 现在是否到了该重试的时刻（没有记录 ⇒ 可以跑） */
+export function isOfflineRetryDue(now = new Date()) {
+  try {
+    const raw = getSetting(RETRY_AT_KEY);
+    if (!raw) return true;
+    const at = new Date(raw);
+    if (!Number.isFinite(at.getTime())) return true;
+    return at.getTime() <= now.getTime();
+  } catch {
+    return true;
+  }
 }
 
 function readPendingTail() {
@@ -488,7 +514,15 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
           break;
         }
         const data = await generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
-        if (!data) { console.warn(`[offline] 第 ${chunk.index} 片没有可用输出，跳过`); continue; }
+        if (!data) {
+          // P1-08：单片没有可用输出不能「跳过继续」。
+          // 原来这里 continue，而循环末尾照样推进游标 —— 一个失败的分片会被越过，
+          // 那段离线时间永久丢失，整轮还报告「完成」。现在按延期处理：
+          // 游标停在这一片之前，由低频 tick 在 retry_at 之后重跑。
+          deferred = `chunk_${chunk.index}_no_output`;
+          console.warn(`[offline] 第 ${chunk.index} 片没有可用输出，停在游标前等重试`);
+          break;
+        }
 
         const { blocked } = filterPublishable(getDb(), characters.map(c => c.id), { flag: 'moments_disabled' });
         if (blocked.length) {
@@ -515,13 +549,20 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
         recentRows.unshift({ title: data.events[0]?.title || '', summary: data.events.map(e => e.summary).join('；') });
         if (recentRows.length > 5) recentRows.length = 5;
       } catch (err) {
-        console.warn(`[offline] 第 ${chunk.index} 片生成失败:`, err?.message || err);
+        // P1-08：异常同样不能「继续下一片」——那会让游标越过这一片。
+        // 保留游标停在这里，交给低频 tick 在 retry_at 之后重跑。
+        deferred = `chunk_${chunk.index}_error:${String(err?.message || err).slice(0, 80)}`;
+        console.warn(`[offline] 第 ${chunk.index} 片生成失败，停在游标前等重试:`, err?.message || err);
+        break;
       }
       await new Promise(resolve => setTimeout(resolve, 1200));   // 片间留间隔，别打满
     }
 
     if (deferred) {
-      console.log(`[offline] 补算延期，保留游标：${deferred}`);
+      // P1-08：延期必须有驱动。写 retry_at，由低频 tick 到点后重跑；
+      // 只 return 而不留时间戳，等于「延期」永远不会被兑现。
+      writeRetryAt(new Date(Date.now() + DEFERRED_RETRY_DELAY_MS));
+      console.log(`[offline] 补算延期，保留游标：${deferred}（${Math.round(DEFERRED_RETRY_DELAY_MS / 60000)} 分钟后重试）`);
       return { ran: written > 0, chunks: written, reason: 'deferred' };
     }
 
@@ -556,6 +597,7 @@ export async function runOfflineBackfill({ now = new Date(), lastSeen = undefine
 
     touchLastSeen(true);
     clearCursor();   // 跑完了：清断点，下次从心跳开始算
+    clearRetryAt();  // 成功完成：清掉延期标记，下次不再额外重试
     setSetting(PENDING_TAIL_KEY, '');
     setSetting('runtime.offline_backfilled_at', now.toISOString());
     console.log(`[offline] 补算完成：写入 ${written} 条`);

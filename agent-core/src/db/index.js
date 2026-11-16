@@ -256,6 +256,29 @@ function cleanupOrphanedInFlight(database) {
   } catch (err) {
     console.warn(`[db] 启动清理 backpack_items 失败:`, err.message);
   }
+
+  // 延迟评论队列（P1-04）：processing 行重启后没人接管，必须回收成 waiting。
+  // 评论落库与队列置 done 已在同一事务里，所以这里不需要判断「是否已经插过」——
+  // 事务保证了 processing 状态下的行一定还没有落评论。reply_comment_id 非空的
+  // processing 行（理论上不存在，留给旧库）直接补成 done，避免重复回。
+  try {
+    const alreadyDone = database.prepare(
+      `UPDATE moment_comment_queue SET status = 'done', processed_at = datetime('now')
+       WHERE status = 'processing' AND reply_comment_id IS NOT NULL`
+    ).run();
+    const recovered = database.prepare(
+      `UPDATE moment_comment_queue SET status = 'waiting' WHERE status = 'processing'`
+    ).run();
+    const total = alreadyDone.changes + recovered.changes;
+    if (total > 0) {
+      console.log(`[db] 启动清理: moment_comment_queue ${recovered.changes} 条恢复为等待、${alreadyDone.changes} 条补记为完成`);
+    }
+  } catch (err) {
+    // 老库可能还没有 reply_comment_id 列（迁移顺序不同）；不是致命错误
+    if (!/no such column/.test(String(err?.message || ''))) {
+      console.warn(`[db] 启动清理 moment_comment_queue 失败:`, err.message);
+    }
+  }
 }
 
 function initSchema(db) {
@@ -1188,6 +1211,8 @@ function initSchema(db) {
 
   // 迁移: moment_comments 新增 auto_trigger + thread_root_id（朋友圈关系网互动）
   migrateMomentAutoTrigger(db);
+  // 迁移: 延迟评论队列的持久唯一键（P1-04）—— 必须在建表之后、调度器启动之前
+  migrateMomentCommentQueueUnique(db);
 
   // 系统设置迁移: 清理历史遗留键（idempotent，需在种子注入前执行）
   migrateSystemSettings(db);
@@ -2159,6 +2184,58 @@ function migrateMomentAutoTrigger(db) {
     }
   } catch (err) {
     console.log('[db] migrateMomentAutoTrigger error:', err.message);
+  }
+}
+
+/**
+ * 迁移: 延迟评论队列的持久唯一键（P1-04）。
+ *
+ * 背景：`enqueueDeferredCommentReply` 原来靠「先查再插」做去重，那不是原子幂等——
+ * 两个并发请求（或进程重启后重放）都能通过查询再各插一行，同一条用户评论会被回两次。
+ *
+ * 现在：
+ *   1. 给 `moment_comment_queue` 加 `reply_comment_id`（回填落库后的评论 id，供安全重放判断）；
+ *   2. 建**部分唯一索引** `(character_id, user_comment_id) WHERE status IN ('waiting','processing')`
+ *      —— 只约束「还在排队的」，done/cancelled 的历史行可以重复（同一个人以后还能再被评论）；
+ *   3. 建索引前先清理历史重复：保留每组最早的一行，其余标 cancelled。
+ *
+ * 幂等：重复启动不报错（IF NOT EXISTS / 先查后建）。
+ */
+function migrateMomentCommentQueueUnique(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(moment_comment_queue)`).all();
+    if (!cols.length) return;   // 表还没建（旧库首次初始化顺序不同）
+    if (!cols.find(c => c.name === 'reply_comment_id')) {
+      db.exec(`ALTER TABLE moment_comment_queue ADD COLUMN reply_comment_id INTEGER DEFAULT NULL`);
+      console.log('[db] Added moment_comment_queue.reply_comment_id column');
+    }
+
+    // 历史重复清理：同 (character_id, user_comment_id) 的活跃行只留最早那条
+    const dupes = db.prepare(`
+      SELECT character_id, user_comment_id, MIN(id) AS keep_id, COUNT(*) AS n
+      FROM moment_comment_queue
+      WHERE status IN ('waiting','processing')
+      GROUP BY character_id, user_comment_id
+      HAVING n > 1
+    `).all();
+    let cancelled = 0;
+    const cancel = db.prepare(`
+      UPDATE moment_comment_queue SET status = 'cancelled'
+      WHERE character_id = ? AND user_comment_id = ? AND status IN ('waiting','processing') AND id != ?
+    `);
+    for (const row of dupes) {
+      const r = cancel.run(row.character_id, row.user_comment_id, row.keep_id);
+      cancelled += r.changes;
+    }
+    if (cancelled > 0) console.log(`[db] moment_comment_queue: 清理 ${cancelled} 条重复排队行`);
+
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_moment_comment_queue_active_unique
+      ON moment_comment_queue(character_id, user_comment_id)
+      WHERE status IN ('waiting','processing')
+    `);
+  } catch (err) {
+    console.log('[db] migrateMomentCommentQueueUnique error:', err.message);
   }
 }
 

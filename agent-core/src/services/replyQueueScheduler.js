@@ -16,6 +16,8 @@ import { buildConversationLorebookContext } from './lorebook/conversationContext
 import { config } from '../config.js';
 import { parseSqlUtc } from './programTime.js';
 import { getCurrentActivity, syncSleepingState } from './scheduleManager.js';
+// P1-12：生成完成后、落库前的统一公开闸门（睡眠 / 主动聊天开关 / 存在性 / 系统角色）
+import { checkCharacterPublishable } from './publishGate.js';
 import { getTimeLight } from './timeLight.js';
 import { maybeStartScheduledBatch, maybeInitializeSchedule } from './scheduleBatch.js';
 import { splitText } from '../utils/sentenceSplitter.js';
@@ -136,10 +138,15 @@ export async function processReplyQueue() {
 
   if (!entry) return;
 
-  // 拉取该角色所有 waiting 消息
+  // P1-12：认领也要带到期条件。
+  //
+  // 原来第一句查询有 `scheduled_reply_at <= now`，但真正认领的这句只按
+  // `character_id + status='waiting'` 全量拉 —— 于是一条已到期的消息会把该角色
+  // 所有**尚未到期**的消息一起带走，提前回复。现在两句用同一个时间条件。
   const allPending = db.prepare(`
     UPDATE reply_queue SET status = 'processing'
     WHERE character_id = ? AND status = 'waiting'
+      AND scheduled_reply_at <= datetime('now')
     RETURNING *
   `).all(entry.character_id).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
 
@@ -177,6 +184,22 @@ export async function processReplyQueue() {
       throw new Error('Empty reply from LLM');
     }
 
+    // P1-12：生成完成后、落库前复查她此刻是否还能说话。
+    // LLM 调用可能几十秒，期间她可能又睡了（临时唤醒到期 / 日程重算）、
+    // 被关掉主动聊天开关、或被删除。此前只在入口判过一次，生成中再次入睡的回复照样公开。
+    // 不能发时退回 waiting 顺延，不扣当日额度。
+    if (!isSleepWakeup) {
+      const gate = checkCharacterPublishable(db, entry.character_id, { flag: 'proactive_disabled' });
+      if (!gate.allowed) {
+        db.prepare(
+          `UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+5 minutes') WHERE id IN (${placeholders})`
+        ).run(...ids);
+        console.log(`[replyQueue] ${entry.display_name} 生成后已不可发布（${gate.reason}），顺延 5 分钟`);
+        // lorebookTurn 还没 commit，直接放弃这一轮（commit 只在真正落库的事务里调用）
+        return;
+      }
+    }
+
     // 分句
     const segments = splitText(fullReply);
 
@@ -201,11 +224,17 @@ export async function processReplyQueue() {
 
     db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders}) AND status = 'processing'`).run(...ids);
 
-    // 睡觉醒来：更新角色状态，重置叫醒列
+    // 睡觉醒来（P1-12）：不再手工清 is_sleeping 那一组列。
+    // 睡眠状态的真源判定只在 scheduleManager 里，手工改会让库与日程重新算出来的值不一致
+    // （下次 refreshAllSleepStates 又把它改回去，界面看到「醒了又睡」的抖动）。
+    // 这里只负责「到点该醒了」这个事件，实际状态由统一入口重算并广播。
     if (isSleepWakeup) {
-      db.prepare(`UPDATE characters SET is_sleeping = 0, sleep_until = NULL, wake_attempts = 0, was_door_woken = 0, temporary_wake_until = NULL, wake_mode = NULL WHERE id = ?`)
-        .run(characterId);
-      console.log(`[replyQueue] ${entry.display_name} woke up, sleep state cleared`);
+      try {
+        syncSleepingState(characterId);
+        console.log(`[replyQueue] ${entry.display_name} wake-up requested, sleep state resynced`);
+      } catch (err) {
+        console.warn(`[replyQueue] syncSleepingState failed for ${entry.display_name}:`, err?.message || err);
+      }
     }
     })();
 

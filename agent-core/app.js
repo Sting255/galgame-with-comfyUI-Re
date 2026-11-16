@@ -74,7 +74,9 @@ import { autoRestoreMissing } from './src/services/workflowTemplates.js';
 import { runProgramDayRollover } from './src/services/programDayRollover.js';
 import { ensurePoseControlAssetsOnBoot } from './src/services/poseControlInstall.js';
 // 离线世界编年（2026-11-06）：关机期间的世界由回来时一次性补算
-import { readLastSeen, runOfflineBackfill, touchLastSeen } from './src/services/offlineChronicle.js';
+import { readLastSeen, runOfflineBackfill, touchLastSeen, isOfflineRetryDue } from './src/services/offlineChronicle.js';
+// P1-11：延期日记的自动续跑（角色睡着 / 日程关闭时被 gate 挡下的那些）
+import { processDeferredDiaries } from './src/services/diaryGenerator.js';
 import { pruneWorldTimeline } from './src/services/worldTimeline.js';
 import { pruneInterCharacterEvents } from './src/services/groupInterCharacterEvents.js';
 import { applyFromConfig } from './src/services/llmConcurrency.js';
@@ -431,6 +433,44 @@ if (bootLastSeen) {
   const timer = setTimeout(() => {
     void runOfflineBackfill({ lastSeen: bootLastSeen }).catch(err => console.warn('[offline] backfill error:', err?.message || err));
   }, delayMs);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
+// P1-08：延期的离线补算需要一个驱动。
+//
+// 以前「延期」只是 return，之后没有任何东西会再跑一次——角色醒来、网络恢复、
+// 用户重新打开某个角色的功能开关，都不会让那段离线时间被补上，必须重启进程。
+// 这里加一个低频 tick（默认 5 分钟），只在 retry_at 到期时才动手；
+// 没有游标（上一轮已跑完）时 isOfflineRetryDue 之外还有 runOfflineBackfill 自己的判定兜底。
+{
+  const TICK_MS = Math.max(60_000, Number(process.env.OFFLINE_RETRY_TICK_MS || 5 * 60 * 1000) || 0);
+  const timer = setInterval(() => {
+    try {
+      if (!isOfflineRetryDue()) return;
+      void runOfflineBackfill({ lastSeen: readLastSeen() })
+        .then(result => {
+          if (result?.reason === 'deferred') return;   // 仍然延期，retry_at 已被重新写入
+          if (result?.ran) console.log('[offline] 延期补算已续跑完成');
+        })
+        .catch(err => console.warn('[offline] retry tick error:', err?.message || err));
+    } catch (err) {
+      console.warn('[offline] retry tick skipped:', err?.message || err);
+    }
+  }, TICK_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
+// P1-11：延期日记的自动续跑。
+//
+// 日记 gate 判定「角色在睡 / 日程关闭」时会把行标成 pending + retry_at，
+// 但以前没有任何驱动会在之后重跑——那篇日记就永远缺席。
+// 这里每 10 分钟扫一次到期行，走与手动重试完全相同的 startDiaryGeneration。
+{
+  const TICK_MS = Math.max(60_000, Number(process.env.DIARY_RETRY_TICK_MS || 10 * 60 * 1000) || 0);
+  const timer = setInterval(() => {
+    void processDeferredDiaries({ limit: 2 })
+      .catch(err => console.warn('[diary] deferred retry tick error:', err?.message || err));
+  }, TICK_MS);
   if (typeof timer.unref === 'function') timer.unref();
 }
 

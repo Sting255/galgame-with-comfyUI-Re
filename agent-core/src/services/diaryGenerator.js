@@ -66,6 +66,32 @@ function checkDiaryGate(db, characterId) {
   return checkCharacterPublishable(db, characterId, { flag: 'schedule_enabled' });
 }
 
+/**
+ * 把一篇日记标记成「延期，等待自动续跑」（P1-11）。
+ *
+ * 延期 = status='pending' + retry_at 非空：它不是失败，也不该占用 generating。
+ * 用 pending 而不是新增 deferred 状态，是为了复用首次生成那条完全一样的路径
+ * （status CHECK 里也没有 deferred，改它要重建表）。
+ *
+ * @param {object} db
+ * @param {number} characterId
+ * @param {string} dateKey
+ * @param {string} message 写进 error_message 的可见原因
+ * @param {Date|string|null} retryAt 闸门给出的醒来时刻；没有就给 30 分钟后
+ */
+export function markDiaryDeferred(db, characterId, dateKey, message, retryAt = null) {
+  const at = retryAt ? new Date(retryAt) : new Date(Date.now() + 30 * 60 * 1000);
+  const iso = Number.isFinite(at.getTime())
+    ? at.toISOString().slice(0, 19).replace('T', ' ')
+    : new Date(Date.now() + 30 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare(`
+    UPDATE character_diaries
+    SET status = 'pending', error_message = ?, retry_at = ?, updated_at = datetime('now')
+    WHERE character_id = ? AND diary_date = ?
+  `).run(String(message || '延期').slice(0, 200), iso, characterId, dateKey);
+  return iso;
+}
+
 // ══════════════════════════════════════════════════════════════
 //  静态 prompt 层（逐字节稳定，禁止内插日期 / 用户名等每次变化的内容）
 // ══════════════════════════════════════════════════════════════
@@ -433,10 +459,16 @@ export function startDiaryGeneration(characterId, opts = {}) {
   const gate = checkDiaryGate(db, characterId);
   if (!gate.allowed) {
     const error = diaryGateError(gate);
-    db.prepare("UPDATE character_diaries SET status = 'failed', error_message = ?, updated_at = datetime('now') WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
-      .run(error.message, characterId, dateKey);
     const deferred = error.code === 'DIARY_DEFERRED';
     const cancelled = error.code === 'DIARY_CANCELLED';
+    // P1-11：延期落成 pending + retry_at，让续跑调度能接上；
+    // 取消则维持 failed（目标已经不在了，重试没有意义）。
+    if (deferred) {
+      markDiaryDeferred(db, characterId, dateKey, error.message, gate.retryAt);
+    } else {
+      db.prepare("UPDATE character_diaries SET status = 'failed', error_message = ?, updated_at = datetime('now') WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
+        .run(error.message, characterId, dateKey);
+    }
     broadcast('diary_error', {
       character_id: characterId,
       character_name: character.display_name || character.name || '',
@@ -615,6 +647,16 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, snapshot
         db.prepare("DELETE FROM character_diaries WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
           .run(characterId, dateKey);
       }
+      // P1-11：延期要能自己续跑。
+      //
+      // 以前这里只回滚 + 广播 retry_at，之后没有任何东西会再触发一次——
+      // 角色醒来、日程开关重新打开，那篇日记就一直缺席，必须手动点重试。
+      // 现在把「延期」持久化成 status='pending' + retry_at，由 diaryRetryScheduler 到点续跑。
+      // 取消（角色被删 / 系统角色）不写 retry_at，避免对已经不存在的目标反复调度。
+      if (deferred) {
+        const iso = markDiaryDeferred(db, characterId, dateKey, message, err.gate?.retryAt);
+        console.log(`[diaryGenerator] char #${characterId} ${dateKey} 延期到 ${iso} 自动续跑`);
+      }
     } else if (err.code!=='DIARY_CONFLICT' || JSON.stringify(readContent())===expectedContent) {
       // 普通失败保留本轮正文，用户可原地重试；只有 gate 拒绝回滚未公开内容。
       db.prepare(`
@@ -636,4 +678,48 @@ async function runDiaryGeneration({ db, character, dateKey, name, task, snapshot
     });
     task.fail(err);
   }
+}
+
+/**
+ * 延期日记的自动续跑（P1-11）。
+ *
+ * 由 app.js 的低频 tick 调用。只捡 `status='pending' AND retry_at <= now` 的行——
+ * 这些正是 gate 判定「角色在睡 / 日程关闭」时留下的。
+ *
+ * 与手动重试共用 startDiaryGeneration：任务所有权、inflight 锁、快照回滚都在那里，
+ * 这里不另造一套。已确认的稿子（status='completed'）永远不会被本函数碰到。
+ *
+ * @param {{limit?: number}} [opts]
+ * @returns {Promise<number>} 本轮实际发起生成的条数
+ */
+export async function processDeferredDiaries({ limit = 2 } = {}) {
+  const db = getDb();
+  let due = [];
+  try {
+    due = db.prepare(`
+      SELECT character_id, diary_date FROM character_diaries
+      WHERE status = 'pending' AND retry_at IS NOT NULL AND retry_at <= datetime('now')
+      ORDER BY retry_at ASC LIMIT ?
+    `).all(limit);
+  } catch (err) {
+    console.warn('[diaryGenerator] deferred scan failed:', err?.message || err);
+    return 0;
+  }
+  let started = 0;
+  for (const row of due) {
+    try {
+      // 先把 retry_at 清掉再发起：即使这一轮又延期，markDiaryDeferred 会写入新的时刻，
+      // 不会因为残留旧时间戳被下一 tick 立刻重复捡起。
+      db.prepare(`UPDATE character_diaries SET retry_at = NULL WHERE character_id = ? AND diary_date = ?`)
+        .run(row.character_id, row.diary_date);
+      const result = startDiaryGeneration(row.character_id, { date: row.diary_date });
+      if (result?.started) {
+        started += 1;
+        console.log(`[diaryGenerator] 延期续跑：char #${row.character_id} ${row.diary_date}`);
+      }
+    } catch (err) {
+      console.warn(`[diaryGenerator] deferred retry failed for char #${row.character_id} ${row.diary_date}:`, err?.message || err);
+    }
+  }
+  return started;
 }
