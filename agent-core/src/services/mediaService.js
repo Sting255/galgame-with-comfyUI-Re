@@ -37,7 +37,7 @@ import { saveBase64Image, deleteImageFileByUrl } from './imagePaths.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { recordCompletedImageTask } from './imageTaskRecorder.js';
 import { broadcast } from './unifiedStreamBus.js';
-import { MEDIA_PUBLICATION_ORDER, publishMediaPostIfReady, isMediaPostPublished } from './mediaPublication.js';
+import { MEDIA_PUBLICATION_ORDER, publishMediaPostIfReady, isMediaPostPublished, publishReadyDeferredPosts } from './mediaPublication.js';
 import { filterPublishable } from './publishGate.js';
 import { config } from '../config.js';
 import { extractFirstJson } from './jsonExtract.js';
@@ -483,6 +483,7 @@ export function listPostsNeedingImage(limit = 8, postIds = null) {
     SELECT p.id, p.image_prompt, p.character_id FROM media_posts p
     LEFT JOIN media_outlets o ON o.id = p.outlet_id
     WHERE (p.image_status = 'pending' OR (p.published_seq IS NULL AND p.image_status = 'failed'))
+      AND p.image_status != 'discarded'
       AND p.image_prompt IS NOT NULL AND p.image_prompt != ''
       AND COALESCE(json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.portal'), 0) != 1
       ${scope.sql}
@@ -512,14 +513,22 @@ export function updatePostImage(postId, { url, status, error = null } = {}) {
 
 /**
  * 原子抢占一条待配图的帖子（CAS）。
- * 只有当前仍是 `pending` 的才抢得到 —— 防止同一帖子被两条补图路径同时捞走、各生成一张，
- * 后者覆盖前者、前者的文件变成永远没人引用的孤儿。
- * @returns {boolean} 是否抢到（false = 别人已在处理或已完成，应跳过）
+ * 只有当前仍是 `pending`（或未发布且 `failed`）的才抢得到 —— 防止同一帖子被两条补图路径
+ * 同时捞走、各生成一张，后者覆盖前者、前者的文件变成永远没人引用的孤儿。
+ *
+ * P1-09：显式排除 `discarded`。discard 是终态（作者删除 / 变系统角色 / 用户丢弃），
+ * 任何查询、认领、写回都不得把它复活。原来这里只判 pending/failed，
+ * discarded 恰好不在这两个值里所以侥幸不中——但那属于「靠枚举恰好没写到」，
+ * 将来再加状态就会漏。这里写成显式白名单 + 显式排除。
+ * @returns {boolean} 是否抢到（false = 别人已在处理、已完成或已丢弃，应跳过）
  */
 function claimPostForImage(postId) {
   const r = getDb().prepare(`
     UPDATE media_posts SET image_status = 'generating', image_error = NULL
-    WHERE id = ? AND (image_status = 'pending' OR (published_seq IS NULL AND image_status = 'failed')) AND (image IS NULL OR image = '')
+    WHERE id = ?
+      AND (image_status = 'pending' OR (published_seq IS NULL AND image_status = 'failed'))
+      AND image_status != 'discarded'
+      AND (image IS NULL OR image = '')
   `).run(postId);
   return r.changes === 1;
 }
@@ -1520,12 +1529,14 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
       }
       // ★ 条件写回：生成期间若有别的路径已经写入了图，就不覆盖它，
       //   并把自己刚存的这张删掉（否则又留一个孤儿）。
+      //   P1-09：同时排除 discarded —— 生成期间作者可能删除帖子 / 变成系统角色，
+      //   那条已被标成终态，本次结果必须丢弃而不是把它复活成 done。
       const wrote = db.prepare(`
         UPDATE media_posts SET image = ?, image_status = 'done', image_error = NULL
-        WHERE id = ? AND (image IS NULL OR image = '')
+        WHERE id = ? AND (image IS NULL OR image = '') AND image_status != 'discarded'
       `).run(result.url, p.id).changes;
       if (wrote !== 1) {
-        console.warn(`[media] 帖子 #${p.id} 在生成期间已被填图，丢弃本次结果`);
+        console.warn(`[media] 帖子 #${p.id} 在生成期间已被填图或已丢弃，丢弃本次结果`);
         try { deleteImageFileByUrl(result.url); } catch { /* 文件可能已被清 */ }
         continue;
       }
@@ -1817,6 +1828,18 @@ export function maybeAutoGenerate(now = Date.now()) {
   // 会让 ComfyUI 持续满负载（实测 30 分钟被派单 46 次）。
   // 现在改为**纯按需**：只在①生成新批次后立即补那一批 ②前端打开传媒页时兜底补一次。
   // 没有任何"后台定时扫描出图"的路径。
+
+  // P1-10：但「延期发布」需要一条不烧 GPU 的唤醒路径。
+  //
+  // 场景：帖子素材早已齐全，只是作者当时在睡 / 被关朋友圈 ⇒ publishMediaPostIfReady
+  // 拒绝发布并延期。醒来后如果只靠用户打开传媒页才触发，那条内容会一直挂着未发布。
+  // 这里每轮做一次**纯发布扫描**：只处理「素材齐全 + 未发布 + 不是 discarded」的帖子，
+  // 完全不调用生图 —— 上面那条"不后台出图"的决策因此仍然成立。
+  try {
+    publishReadyDeferredPosts();
+  } catch (err) {
+    console.warn('[media] deferred publish scan failed:', err?.message || err);
+  }
 
   // 自动抓帖：间隔由用户设置的档位决定；0 = 关闭（只手动刷新）
   const interval = autoIntervalMs();

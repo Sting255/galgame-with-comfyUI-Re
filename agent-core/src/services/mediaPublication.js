@@ -50,3 +50,48 @@ export function publishMediaPostIfReady(postId) {
   if (published) broadcast('media_new_posts', published);
   return !!published;
 }
+
+/**
+ * 「只发布、不生图」的到期扫描（P1-10）。
+ *
+ * 为什么需要：`publishMediaPostIfReady` 在角色睡着 / 朋友圈关闭时会拒绝发布并延期，
+ * 但延期之后没有任何东西会再调它一次——素材早就齐全，却要等用户手动打开传媒页
+ * 或者下一次生成批次才可能被发出去。
+ *
+ * 为什么不能直接复用 `fillPendingImages`：那会为缺图的帖子派发生图任务，
+ * 与「不后台定时出图」的既定决策冲突（实测 30 分钟被派单 46 次那次的教训）。
+ *
+ * 所以这里只挑**素材已经齐全**的帖子：调用 publishMediaPostIfReady 之前先判
+ * `mediaImagesReady`，保证这条路径永远不会触发任何生图。
+ *
+ * @param {{limit?: number}} [opts]
+ * @returns {number} 本次成功发布的条数
+ */
+export function publishReadyDeferredPosts({ limit = 20 } = {}) {
+  const db = getDb();
+  let rows = [];
+  try {
+    rows = db.prepare(`
+      SELECT * FROM media_posts
+      WHERE published_seq IS NULL
+        AND image_status != 'discarded'
+        AND COALESCE(image_status, '') != 'generating'
+      ORDER BY id ASC LIMIT ?
+    `).all(limit);
+  } catch (err) {
+    console.warn('[media] deferred publish scan read failed:', err?.message || err);
+    return 0;
+  }
+  let published = 0;
+  for (const post of rows) {
+    // 素材不齐的直接跳过——本函数绝不触发补图
+    if (!mediaImagesReady(post)) continue;
+    try {
+      if (publishMediaPostIfReady(post.id)) published += 1;
+    } catch (err) {
+      console.warn(`[media] deferred publish failed for #${post.id}:`, err?.message || err);
+    }
+  }
+  if (published > 0) console.log(`[media] 延期发布补上 ${published} 条（未触发任何生图）`);
+  return published;
+}
