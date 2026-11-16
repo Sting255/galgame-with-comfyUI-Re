@@ -696,12 +696,18 @@ export function isCompleteJsonText(text) {
 }
 
 /**
- * JSON 续写：把「半截 + 增量」拼成合法 JSON（用户 2026-11-08 明确要求由我方拼接，而不是丢着重来）。
+ * JSON 续写：把「半截 + 增量」拼成**严格合法**的 JSON（用户 2026-11-08 明确要求由我方拼接，而不是丢着重来）。
  *
  * 判序很重要（都有真实反例）：
  *   1. 增量本身就是完整合法 JSON ⇒ 模型重写了整份，直接用，**不要拼**（否则会被塞进原字段里）
  *   2. 原内容末尾停在字符串中间、而增量以 `{`/`[` 开头 ⇒ 也是重写，不拼接
- *   3. 其余情况才依次尝试：直接连 → 去掉重叠后连，每个候选都过一遍 repairJsonText
+ *   3. 其余情况才依次尝试：直接连 → 去掉重叠后连
+ *
+ * ⚠️ 2026-11-16（P1-01）：**这里只接受自然闭合、严格可 parse 的结果。**
+ * 此前每个候选都过一遍 `repairJsonText`，补引号补括号后得到的「语法合法但字段不全」
+ * 对象会被当成续写成功，`finishReason` 直接置 `stop` 并跳出循环——于是半截内容以
+ * 「已完成」的身份流进公开链路。修复器现在只作为最后一次降级，见 repairJsonFallback。
+ *
  * 都拼不出来返回 ''，外层会继续续写（最多 5 次）。
  */
 export function concatJsonContinuation(base, increment) {
@@ -709,14 +715,12 @@ export function concatJsonContinuation(base, increment) {
   // 不脱的话「增量是整份重写」这条判不出来，会拼成 ```json{…}``````json{…} 的垃圾。
   const a = stripJsonFence(stripTailRefusal(base));
   const b = stripJsonFence(stripTailRefusal(increment));
-  const parseFull = (text) => {
-    if (!text) return '';
-    try { JSON.parse(text); return text; } catch { return ''; }
-  };
-  if (!a) return repairJsonText(b);
-  if (!b) return repairJsonText(a);
+  /** 只认严格完整：围栏可容忍，截断不容忍 */
+  const acceptComplete = (text) => (text && isCompleteJsonText(text) ? stripJsonFence(text) : '');
+  if (!a) return acceptComplete(b);
+  if (!b) return '';
 
-  const standalone = parseFull(b);
+  const standalone = acceptComplete(b);
   if (standalone) return standalone;
 
   /** 这段文本的末尾是不是停在未闭合的字符串里 */
@@ -740,10 +744,30 @@ export function concatJsonContinuation(base, increment) {
   if (!(endsInsideString(a) && /^[[{]/.test(b))) candidates.push(a + b);
   candidates.push(mergeContinuationText(a, b));
   for (const candidate of candidates) {
-    const repaired = repairJsonText(candidate);
-    if (repaired) return repaired;
+    const complete = acceptComplete(candidate);
+    if (complete) return complete;
   }
   return '';
+}
+
+/**
+ * 修复降级（P1-01）：只有在续写彻底失败时才用，且**不得**被当成「已写完」。
+ *
+ * 语义区别是本函数存在的全部理由：
+ *   concatJsonContinuation 的返回值 = 内容确实写完了；
+ *   repairJsonFallback 的返回值   = 语法能 parse，但字段/元素可能不全。
+ * 调用方拿到降级结果后必须自己做领域必填校验（如 normalizeMediaOutletDraft），
+ * 不能因为「JSON.parse 过了」就认为内容可用。
+ *
+ * 返回 { text, complete }：complete=false 时调用方应保留未完成的 finishReason，
+ * 让上层按「没写完」处理，而不是静默当成成功。
+ */
+export function repairJsonFallback(text) {
+  const raw = String(text || '');
+  if (!raw.trim()) return { text: '', complete: false };
+  if (isCompleteJsonText(raw)) return { text: stripJsonFence(raw), complete: true };
+  const repaired = repairJsonText(raw);
+  return repaired ? { text: repaired, complete: false } : { text: '', complete: false };
 }
 
 /** 剥掉文本末尾由上游回填的拒绝语，只留真正写到的位置（拼接与续写都以它为准） */
@@ -974,7 +998,9 @@ export async function chatSync(messages, opts = {}) {
         const retriedMeta = readCompletion(retried);
         if (jsonMode) {
           // JSON：把「半截 + 增量」拼成合法结构（用户 2026-11-08 要求由我方拼接）。
-          // 拼得出来就直接收工。
+          // P1-01：只有**自然闭合、严格可 parse** 的拼接结果才算「写完了」。
+          // 补括号补出来的「语法合法但字段不全」不能冒充完成，否则半截内容会以
+          // finishReason='stop' 流进公开链路。
           const mergedJson = concatJsonContinuation(baseText, retriedMeta.content);
           if (mergedJson) {
             meta = { content: mergedJson, finishReason: 'stop' };
@@ -1034,9 +1060,28 @@ export async function chatSync(messages, opts = {}) {
       meta = {
         ...meta,
         content: finalContent,
-        // JSON 已经能解析就报 stop，别让上层以为还欠内容
+        // JSON 已经严格完整就报 stop，别让上层以为还欠内容（P1-01）
         finishReason: jsonMode && isCompleteJsonText(finalContent) ? 'stop' : meta.finishReason,
       };
+    }
+    // ── 最终降级（P1-01）──
+    // 到这里说明续写次数用尽，内容仍是半截。**不要**让它以「正常完成」的身份离开：
+    //   · 能补成合法 JSON 的，交给调用方作为降级候选，但 finishReason 保持「不完整」；
+    //   · 补不出来的，原样返回，同样保留不完整的 finishReason。
+    // 调用方（如媒体门户正文、奇遇分支）必须自己做领域必填校验，不能因为
+    // JSON.parse 过了就认为内容可用。
+    if (jsonMode && !isCompleteJsonText(meta.content)) {
+      const fallback = repairJsonFallback(meta.content);
+      if (fallback.text) {
+        console.warn(`[incomplete] ▸ JSON 仍不完整，返回修复降级结果（字段可能缺失，调用方须校验）(${opts.label || 'chatSync'})`);
+        meta = {
+          ...meta,
+          content: fallback.text,
+          // 明确标记：这份内容是修复出来的，不是模型自然写完的
+          finishReason: meta.finishReason || 'length',
+          repaired: true,
+        };
+      }
     }
     return wantMeta ? meta : meta.content;
   } catch (err) {

@@ -130,6 +130,20 @@ async function requestMediaDraft({ messages, label, temperature = 0.8, maxTokens
   const attempt = (meta) => {
     const content = String(meta?.content || '');
     const finish = String(meta?.finishReason || '');
+    // P1-01：`repaired` 表示这份 JSON 是 llm-client 在续写失败后补括号补出来的，
+    // 语法能 parse 但字段/元素可能不全。这种结果不能当成「生成成功」——
+    // 否则 normalizeMediaOutletDraft 拿到缺字段的对象会一路补默认值，
+    // 用户看到的是一份内容空泛但「成功」的栏目。按格式不完整处理，走重试。
+    if (meta?.repaired === true) {
+      return {
+        ok: false,
+        content,
+        finish,
+        refused: false,
+        truncated: true,
+        repaired: true,
+      };
+    }
     try { return { ok: true, data: JSON.parse(content) }; }
     catch {
       return {
@@ -138,6 +152,7 @@ async function requestMediaDraft({ messages, label, temperature = 0.8, maxTokens
         finish,
         refused: finish === 'content_filter' || REFUSAL_TAIL_RE.test(content),
         truncated: finish === 'length',
+        repaired: false,
       };
     }
   };
