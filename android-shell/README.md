@@ -3,12 +3,29 @@
 单 Activity + WebView 套壳应用：
 
 - 首次启动输入后端地址（如 `http://192.168.1.100:3099`），保存到 SharedPreferences
+- **只允许导航到该地址的 origin**：外链一律交给系统浏览器，壳内不承载第三方页面
+  （原生桥只对已批准来源开放；混合内容按 Compatibility 模式处理，不再全局放行）
 - 网页内按返回键先打开角色列表，再按一次把 App 退到桌面；地址设置页保留退出确认
 - 支持 `<input type="file">` 文件上传（头像上传）
-- 允许明文 HTTP（局域网地址）
+- 明文 HTTP 仅用于受信局域网；跨不可信网络请自行配 HTTPS
+- 后台通知使用设备令牌（`Authorization: Bearer`），令牌由网页配对后经原生桥下发，
+  用 Android Keystore 的 AES-GCM 加密保存；401/403 时停止重连并提示重新配对
 - release 使用本机私钥签名，仓库不再携带固定 keystore 或密码；缺配置会明确失败，不会回退 debug 签名。
   `assembleDebug` 仍使用 Android 默认 debug 签名，不受 release 配置影响。
 - 旧固定签名已轮换：旧签名 APK 升级前必须先备份并卸载，再安装新签名 APK，步骤见下文。
+
+## 依赖可复现性（P2-08 现状，如实记录）
+
+- **直接依赖已固定精确版本**：`app/build.gradle.kts` 里
+  `androidx.appcompat:appcompat:1.7.0` 与根 `build.gradle.kts` 的 AGP 8.5.2、Kotlin 1.9.24
+  都是不带 `+` 的具体版本。
+- **传递依赖尚未锁定**：仓库里没有 `gradle/verification-metadata.xml`，也没有
+  `dependencyLocking` 配置。也就是说 AGP 解析出的二级依赖（以及它们的校验和）
+  仍可能随仓库元数据变化。补齐它需要在能联网的环境里跑一次
+  `./gradlew --write-verification-metadata sha256 assembleRelease`，
+  本仓当前没有可用的 Gradle 工具链，所以**这一项未做**。
+- 发布时应记录本次实际使用的 `gradlew` 版本与构建产物哈希；APK 的版本号来自
+  `app/build.gradle.kts` 的 `versionName`，与桌面端 VERSION 相互独立。
 
 ## release 签名配置（只保存在本机）
 

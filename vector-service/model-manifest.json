@@ -1,0 +1,34 @@
+{
+  "model": "jinaai/jina-embeddings-v2-base-zh",
+  "source": "https://huggingface.co/jinaai/jina-embeddings-v2-base-zh",
+  "files": {
+    "onnx/model_int8.onnx": {
+      "bytes": 160893544,
+      "sha256": "6a88e28e8713a442a8fbe4ca35256d3eab738027165dda23760bfb543ee8d54b"
+    },
+    "tokenizer.json": {
+      "bytes": 2030772,
+      "sha256": "0046da43cc8c424b317f56b092b0512aaaa65c4f925d2f16af9d9eeb4d0ef902"
+    },
+    "vocab.json": {
+      "bytes": 854399,
+      "sha256": "62a861857691f39b92935580e929a31e7869056e5de5119ef81f5c62ffa1a4b5"
+    },
+    "merges.txt": {
+      "bytes": 336141,
+      "sha256": "34c90c55c32ada402c943c79555515b9eea2cbaf5bbcd970b012a2bc8e0ad331"
+    },
+    "config.json": {
+      "bytes": 730,
+      "sha256": "5476ef0b68704be54191e156070edd6b9b1c1b260ab8fa2b77166b4803824295"
+    },
+    "tokenizer_config.json": {
+      "bytes": 1215,
+      "sha256": "d291c6652d96d56ffdbcf1ea19d9bae5ed79003f7648c627e725a619227ce8fa"
+    },
+    "special_tokens_map.json": {
+      "bytes": 280,
+      "sha256": "06e405a36dfe4b9604f484f6a1e619af1a7f7d09e34a8555eb0b77b66318067f"
+    }
+  }
+}

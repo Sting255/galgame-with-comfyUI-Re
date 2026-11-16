@@ -1,3 +1,24 @@
+# 向量服务依赖（直接依赖，最低版本）
+#
+# ⚠️ 2026-11-16（P2-08）：**实际安装请优先用 requirements.lock**。
+#
+# 这个文件只写「最低版本」，用它装出来的环境会随上游发版漂移：
+# 同一天在两台机器上 `pip install -r requirements.txt` 可能得到不同的 chromadb /
+# transformers 小版本，而这两个库的默认行为变过（分块策略、tokenizer 默认值），
+# 出问题时无法判断是代码还是依赖版本。
+#
+# requirements.lock 是从当前交付用的 runtime/python 环境 `pip freeze` 出来的
+# 精确版本集合（88 个包，含全部传递依赖），发布包与开发者应使用它：
+#
+#     runtime/python/python.exe -m pip install -r vector-service/requirements.lock
+#
+# 需要升级某个依赖时：改这里的最低版本 → 在干净环境里装 lock → 跑
+# `python -I -m unittest discover -s tts-service/test` 与向量服务冒烟 →
+# 用 `pip freeze` 重新生成 requirements.lock → 一起提交。
+#
+# 注意：requirements.lock 不含 hashes。`pip install --require-hashes`
+# 需要为每个包预先下载 wheel 计算 SHA256，那是另一个量级的工作量（且要处理
+# 各平台 wheel 不同）；当前至少保证了「版本集合可复现」。
 onnxruntime>=1.19.0
 huggingface-hub>=0.27.0
 fastapi>=0.115.0

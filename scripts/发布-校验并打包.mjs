@@ -221,6 +221,39 @@ async function readVectorModelManifest() {
       sha256: await sha256File(file),
     })
   }
+  // P2-08：与仓库里**签入的期望值**对账。
+  //
+  // 上面循环只是「把当前磁盘上的文件哈希记下来」，它能保证归档内外的文件一致，
+  // 但保证不了「这份模型还是当初验证过的那一份」—— 模型被换过、下载到半截、
+  // 或者有人手工替换了 onnx，都会静默通过。
+  // vector-service/model-manifest.json 记录的是发布基准的文件哈希与字节数。
+  const pinnedPath = path.join(REPO, 'vector-service', 'model-manifest.json')
+  if (fs.existsSync(pinnedPath)) {
+    let pinned = null
+    try { pinned = JSON.parse(fs.readFileSync(pinnedPath, 'utf8')) } catch (err) {
+      die(`vector-service/model-manifest.json 不是合法 JSON：${err.message}`)
+    }
+    const expected = pinned?.files || {}
+    const mismatches = []
+    for (const item of manifest) {
+      const want = expected[item.rel]
+      if (!want) {
+        mismatches.push(`${item.rel}（清单未登记）`)
+        continue
+      }
+      if (want.bytes !== item.bytes) mismatches.push(`${item.rel}（字节 ${item.bytes} ≠ 期望 ${want.bytes}）`)
+      else if (String(want.sha256).toLowerCase() !== item.sha256.toLowerCase()) {
+        mismatches.push(`${item.rel}（sha256 不符）`)
+      }
+    }
+    if (mismatches.length) {
+      die(`本地向量模型与 model-manifest.json 不一致，拒绝打包：\n     - ${mismatches.join('\n     - ')}\n`
+        + '     —— 若确实要换模型，请更新 model-manifest.json 并一并提交。')
+    }
+    log(`   向量模型与 model-manifest.json 逐文件校验通过（${manifest.length} 个文件）`)
+  } else {
+    log('   ⚠️ 未找到 vector-service/model-manifest.json，跳过模型固定版本校验（建议补上）')
+  }
   return manifest
 }
 
