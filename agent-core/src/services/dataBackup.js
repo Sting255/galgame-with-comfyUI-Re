@@ -40,7 +40,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { resolveEnvPath } from '../utils/envFile.js';
-import { getDb, closeDb } from '../db/index.js';
+import { getDb, closeDb, getSchemaVersion } from '../db/index.js';
 import { refresh as refreshCharSearch } from './characterSearch.js';
 import { withDatabaseMaintenance, requireDatabaseRecovery } from '../db/maintenance.js';
 import { validateBackupDatabase } from './backup/databaseValidation.js';
@@ -558,6 +558,9 @@ async function buildBackupInto(workDir, { includeConfig, includeSecrets, roots, 
     version: BACKUP_VERSION,
     app: BACKUP_APP,
     exportedAt: started.toISOString(),
+    // P1-13：结构版本写进 manifest，导入端与排障都能确认「这份归档是哪一版结构」。
+    // 旧归档没有这个字段 ⇒ 读出来是 undefined，按 0 处理。
+    schemaVersion: getSchemaVersion(),
     includeConfig: Boolean(envInfo),
     // 秘密分类：只写类别名，绝不写值或键名。
     // secretsIncluded=false 表示快照库里的凭据已被清空（结构保留），导入端据此提示重新填写。

@@ -140,11 +140,27 @@ export function getDb() {
     applyAutoVacuumPolicy(db);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
+    // P1-13：并发与耐久性基线。
+    //
+    // busy_timeout：WAL 下读写可以并发，但写-写仍互斥。没有 busy_timeout 时第二个写者
+    // 会立刻拿到 SQLITE_BUSY 而不是排队等待——调度器 tick、路由请求、索引 worker
+    // 同时落库时会出现「偶发的 database is locked」。
+    // synchronous=NORMAL：WAL 下的推荐档位，提交不必 fsync 到盘（断电最多丢最后一个事务，
+    // 不会损坏库），比默认 FULL 快一个数量级；本应用的数据都能从业务上重建或重试。
+    try {
+      db.pragma('busy_timeout = 5000');
+      db.pragma('synchronous = NORMAL');
+    } catch (err) {
+      console.warn('[db] pragma 设置失败（不影响启动）:', err.message);
+    }
     // 建表之后的轻量维护（详见 runStartupDbMaintenance）
     try {
       initSchema(db);
       cleanupOrphanedInFlight(db);
       runStartupDbMaintenance(db);
+      // P1-13：结构迁移在业务维护之后跑，且失败直接抛出去关库。
+      // 既有 migrateXxx 都是幂等的列检查，可以安全重跑；新增结构变更走 SCHEMA_MIGRATIONS。
+      runSchemaMigrations(db);
     } catch (error) {
       db.close();
       db = undefined;
@@ -219,6 +235,69 @@ function runStartupDbMaintenance(database) {
     // 空库 / 不支持：静默跳过
   }
 }
+
+// ── Schema 版本（P1-13）──
+//
+// 背景：全库迁移靠一堆 `migrateXxx(db)` 各自 try/catch、各自判「列是否存在」，
+// 没有统一版本号，也没有事务边界。结果是：
+//   · 迁移失败被 catch 吞掉，进程带着半新半旧的结构继续跑调度器；
+//   · 无法回答「这个库是哪一版」；
+//   · 中途崩溃会留下部分已执行的 DDL。
+//
+// 这里只做**最小骨架**，不重写 40 多个既有迁移：
+//   1. 用 PRAGMA user_version 记录当前 schema 版本；
+//   2. 每个版本一个函数，整体包在 BEGIN IMMEDIATE 事务里（DDL 失败即回滚）；
+//   3. 结构类错误**向上抛**，由 getDb 的 catch 关库并拒绝启动 —— 带病启动比不启动更糟。
+//
+// 既有迁移继续按原顺序执行（它们都是幂等的「列存在就跳过」），
+// 新迁移一律往 SCHEMA_MIGRATIONS 里加一条，不再往 initSchema 里堆 ALTER。
+const SCHEMA_VERSION = 1;
+
+/**
+ * 版本化迁移表：key 是目标版本号，函数接收 db。
+ * 目前只有第 1 版（占位，把既有结构记为基线）。
+ * 新增结构变更时：写一个 migrateTo2(db)，在表里加 `2: migrateTo2`，并把 SCHEMA_VERSION 改成 2。
+ */
+const SCHEMA_MIGRATIONS = Object.freeze({
+  1: () => { /* 基线：既有 initSchema + 全部 migrateXxx 已覆盖，这里只登记版本 */ },
+});
+
+/**
+ * 执行未应用的版本化迁移。
+ *
+ * @param {object} database
+ * @returns {{from:number, to:number, applied:number[]}}
+ * @throws 迁移失败时抛出，调用方应关闭数据库并拒绝启动
+ */
+function runSchemaMigrations(database) {
+  const from = Number(database.pragma('user_version', { simple: true })) || 0;
+  const applied = [];
+  for (let version = from + 1; version <= SCHEMA_VERSION; version++) {
+    const migrate = SCHEMA_MIGRATIONS[version];
+    if (!migrate) continue;
+    // 单版迁移整体事务化：任一步失败就回到本版之前，不会留下半截结构
+    const run = database.transaction(() => {
+      migrate(database);
+      database.pragma(`user_version = ${version}`);
+    });
+    run.immediate();
+    applied.push(version);
+  }
+  const to = Number(database.pragma('user_version', { simple: true })) || 0;
+  if (applied.length) console.log(`[db] schema 版本 ${from} → ${to}（应用 ${applied.join(', ')}）`);
+  return { from, to, applied };
+}
+
+/** 当前库的 schema 版本（排障与备份 manifest 用） */
+export function getSchemaVersion(database = getDb()) {
+  try {
+    return Number(database.pragma('user_version', { simple: true })) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export { SCHEMA_VERSION };
 
 // ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
 // moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
