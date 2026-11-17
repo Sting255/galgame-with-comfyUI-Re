@@ -349,10 +349,13 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     touchBystanderChance: process.env.FEATURE_TOUCH_BYSTANDER_CHANCE !== undefined
       ? Number(process.env.FEATURE_TOUCH_BYSTANDER_CHANCE)
       : 0.8,
-    // 反应风格（task-30）：'conversation'（**默认**：对话式 —— 全量喂料 + 放开输出的 1~4 句）
-    //   | 'quick'（快速：旧口径 —— 短喂料 + 1~2 句 + max_tokens 300，一键回退）。
-    // 校验/回落见 updateFeatureFlag 的二态分支（非这两个值一律回落 conversation）。
-    touchReactionMode: process.env.FEATURE_TOUCH_REACTION_MODE || 'conversation',
+    // 反应风格（task-30）：'quick'（**默认**：快速 —— 短喂料 + 1~2 句 + max_tokens 300）
+    //   | 'conversation'（对话式：全量喂料 + 放开输出的 1~4 句）。
+    // 2026-11-16 改默认：真机实测 conversation 单次 9.3s / 23.1s / 4.9s（波动大，
+    // 因为全量喂料更容易写出露骨内容→撞审核→续写一次→耗时翻倍），quick 稳定 4.2~4.9s。
+    // 用户反馈「点得贼慢」，故默认回落到 quick；想更自然可在设置里手动切回对话式。
+    // 校验/回落见 updateFeatureFlag 的二态分支（非这两个值一律回落 quick）。
+    touchReactionMode: process.env.FEATURE_TOUCH_REACTION_MODE || 'quick',
     // HiresFix 细化精度三档（2026-09-30 · D1 实测裁决）：'high'=12 步 / 'medium'=10 步 / 'low'=8 步（**默认 low**）。
     // 只影响 HiresFix 那一次细化的步数（CFG 恒 1.0）；非法值/未设一律回落 low（normalizeHiresQuality）。
     hiresQuality: normalizeHiresQuality(process.env.FEATURE_HIRES_QUALITY),
@@ -918,9 +921,10 @@ export function updateFeatureFlag(key, value) {
     console.log(`[config] touchBystanderChance = ${chance}`);
     return;
   }
-  // 二态字符串开关：反应风格 'conversation' | 'quick'（task-30），不走布尔强转
+  // 二态字符串开关：反应风格 'conversation' | 'quick'（task-30），不走布尔强转。
+  // 2026-11-16：默认已改为 quick，这里的非法值回落必须与默认一致，否则写个脏值反而比不写更慢。
   if (key === 'touchReactionMode') {
-    const style = value === 'quick' ? 'quick' : 'conversation';
+    const style = value === 'conversation' ? 'conversation' : 'quick';
     commitFeature('touchReactionMode', style, 'feature_touchReactionMode', style);
     console.log(`[config] touchReactionMode = ${style}`);
     return;

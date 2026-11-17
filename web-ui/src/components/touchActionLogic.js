@@ -115,19 +115,21 @@ export function touchImageModeLabel(value) {
 }
 
 // ── 即时反应风格（task-30）──────────────────────────────────────────────
-// 契约：键 `features.touchReactionMode`，取值 'conversation' | 'quick'，**默认 'conversation'**。
-//   · conversation（对话式，默认）= 全量喂料（人格/情绪/关系/日程/催眠/亲密档案/最近 8 条对话）
-//     + 放开输出（2~4 句、允许接话与结尾抛话），响应更自然但每次多花一点 token。
-//   · quick（快速）= 一键回退旧口径：只喂最近 2 条、上限 4 条、max_tokens 300，快但更像复读机。
-// 走既有通用 PUT /api/config/features（body { key, value }）；非法值后端回落 'conversation'。
+// 契约：键 `features.touchReactionMode`，取值 'conversation' | 'quick'，**默认 'quick'**。
+//   · quick（快速，默认）= 短喂料（最近 2 条）+ 上限 4 条 + max_tokens 300，单次稳定 4~5 秒。
+//   · conversation（对话式）= 全量喂料（人格/情绪/关系/日程/催眠/亲密档案/最近 8 条对话）
+//     + 放开输出（2~4 句、允许接话与结尾抛话），更自然但实测 9~23 秒且波动大。
+// 2026-11-16 改默认：用户反馈「点得贼慢」，真机实测 conversation 单次 9.3s/23.1s/4.9s，
+// quick 稳定 4.2~4.9s。想更自然可在设置里手动切回对话式。
+// 走既有通用 PUT /api/config/features（body { key, value }）；非法值后端回落 'quick'。
 export const TOUCH_REACTION_MODE_KEY = 'touchReactionMode'
-export const DEFAULT_TOUCH_REACTION_MODE = 'conversation'
+export const DEFAULT_TOUCH_REACTION_MODE = 'quick'
 export const TOUCH_REACTION_MODES = [
-  { value: 'conversation', label: '对话式' },
   { value: 'quick', label: '快速' },
+  { value: 'conversation', label: '对话式' },
 ]
 
-/** 任意输入 → 合法档位；不认识的一律回落默认 'conversation'（与后端同口径） */
+/** 任意输入 → 合法档位；不认识的一律回落默认 'quick'（与后端同口径） */
 export function normalizeTouchReactionMode(value) {
   return TOUCH_REACTION_MODES.some(mode => mode.value === value) ? value : DEFAULT_TOUCH_REACTION_MODE
 }
