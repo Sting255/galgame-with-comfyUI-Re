@@ -78,6 +78,37 @@ export function backendDependenciesPresent(coreDir) {
 }
 
 /**
+ * 历史扫描里允许放行的路径（必须逐条写明理由与日期）。
+ *
+ * 目前只有一条：`android-shell/release.keystore`。它是 2026-11-16 之前随仓库公开过的
+ * **旧**安卓签名私钥，已在提交 15b17335 轮换并移出工作树；本仓从 2026-11-16 起
+ * **不再维护安卓 APK**（只发桌面包），所以这条历史不再有交付风险。
+ *
+ * 注意：它仍在 `--depth 50` 的浅克隆窗口内（实测距 HEAD 45 个提交），
+ * 因此不能靠“降低 clone 深度”消除；要么净化发布源，要么显式放行。
+ * 桌面交付选择后者，但**只放行这一条**——其它任何签名材料/密钥/玩家数据仍然阻断。
+ */
+export const KNOWN_HISTORY_EXCEPTIONS = Object.freeze([
+  Object.freeze({
+    path: 'android-shell/release.keystore',
+    reason: '已轮换并停止维护安卓包（2026-11-16），不再随桌面交付',
+  }),
+])
+
+/** 把历史命中拆成「可解释放行」与「必须阻断」两类。 */
+export function splitHistoryFindings(sensitive) {
+  const exceptions = new Map(KNOWN_HISTORY_EXCEPTIONS.map(item => [item.path.toLowerCase(), item]))
+  const blocking = []
+  const allowed = []
+  for (const item of sensitive || []) {
+    const hit = exceptions.get(String(item.path || '').toLowerCase())
+    if (hit) allowed.push({ ...item, reason: hit.reason })
+    else blocking.push(item)
+  }
+  return { blocking, allowed }
+}
+
+/**
  * 扫描仓库历史里的敏感文件路径（P0-08）。
  *
  * 为什么必须有这一步：`findSensitiveArchiveMembers` 只能看 zip 里的**文件路径名**，

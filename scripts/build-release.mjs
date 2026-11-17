@@ -8,7 +8,7 @@
  *   2. 预装 npm 依赖 + vite build
  *   3. 预装 pip 依赖 + 下载嵌入模型
  *   4. PyInstaller 打包启动器
- *   5. 构建安卓 APK 壳（android-shell/，工具链自动下载到 build_cache，失败不阻塞）
+ *   5. （已移除）安卓 APK：自 2026-11-16 起不再维护，发布链只产桌面包
  *   6. shallow clone 保留 .git → 覆盖预构建产物 → 压缩 zip
  *
  * ── 打包排除（审查缺口 4：交付包里的非产品内容，本机实测合计 ≈127 MB）──
@@ -39,7 +39,7 @@ import https from "node:https";
 import http from "node:http";
 // 使用说明.txt 的正文正源（2026-10-17 从本文件抽出，见 scripts/usage-guide.mjs 的文件头说明）
 import { buildUsageGuideText } from "./usage-guide.mjs";
-import { BACKEND_PROBE_SCRIPT, findSensitiveArchiveMembers, findSensitiveGitObjects } from "./lib/releaseSafety.mjs";
+import { BACKEND_PROBE_SCRIPT, findSensitiveArchiveMembers, findSensitiveGitObjects, splitHistoryFindings } from "./lib/releaseSafety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -291,6 +291,24 @@ async function main() {
     }
     VERSION = versionFile;
     ok(`版本 ${versionFile}（VERSION 文件与 tag 一致）`);
+
+    // 3) tag 必须**精确指向 HEAD**：只校验「版本号字符串相同」不够——
+    //    同一个 4.3.1 可以在很多个提交上重复打 tag，包里的 commit 依然说明不了包里的内容。
+    //    这条是「源码、产物、版本来自同一提交」的最后一环。
+    const tagAtHead = execSync("git tag --points-at HEAD", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    }).trim().split("\n").filter(Boolean);
+    const headCommit = execSync("git rev-parse HEAD", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    const matchingTag = tagAtHead.find(tag => tag.replace(/^v/, "").startsWith(versionFile));
+    if (!matchingTag) {
+      fail(`当前提交没有对应版本 ${versionFile} 的 tag（HEAD ${headCommit.slice(0, 8)}）。`);
+      fail("  发布物必须能由一个精确 tag 复现：先提交，再 `npm run tag`，然后在 tag 上打包。");
+      fail(`  HEAD 上的 tag：${tagAtHead.length ? tagAtHead.join(", ") : "无"}`);
+      process.exit(1);
+    }
+    ok(`tag ${matchingTag} 精确指向 HEAD（${headCommit.slice(0, 8)}）`);
   }
 
   // 创建目录
@@ -304,7 +322,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [1/8] 便携 Node.js
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[1/9]${C.reset} 准备便携 Node.js v${NODE_VERSION}...`);
+  console.log(`  ${C.bold}[1/8]${C.reset} 准备便携 Node.js v${NODE_VERSION}...`);
 
   const nodeZip = resolve(CACHE_DIR, `node-v${NODE_VERSION}-win-x64.zip`);
 
@@ -337,7 +355,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [2/8] 便携 Python
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[2/9]${C.reset} 准备便携 Python ${PYTHON_VERSION}...`);
+  console.log(`  ${C.bold}[2/8]${C.reset} 准备便携 Python ${PYTHON_VERSION}...`);
 
   const pyZip = resolve(CACHE_DIR, `python-${PYTHON_VERSION}-embed-amd64.zip`);
   const getPip = resolve(CACHE_DIR, "get-pip.py");
@@ -386,7 +404,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [3/8] 便携 Git
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[3/9]${C.reset} 准备便携 Git v${GIT_TAG}...`);
+  console.log(`  ${C.bold}[3/8]${C.reset} 准备便携 Git v${GIT_TAG}...`);
 
   const gitExe = resolve(CACHE_DIR, `PortableGit-${GIT_VER}-64-bit.7z.exe`);
   const gitCmd = resolve(GIT_DIR, "cmd", "git.exe");
@@ -422,7 +440,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [4/8] 预装 Node.js 依赖
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[4/9]${C.reset} 预装 Node.js 依赖...`);
+  console.log(`  ${C.bold}[4/8]${C.reset} 预装 Node.js 依赖...`);
 
   const npmCmd = resolve(NODE_DIR, "npm.cmd");
 
@@ -488,7 +506,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [5/8] 预装 Python 依赖
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[5/9]${C.reset} 预装 Python 依赖...`);
+  console.log(`  ${C.bold}[5/8]${C.reset} 预装 Python 依赖...`);
 
   const pyExe = resolve(PY_DIR, "python.exe");
   // pip 通用环境变量：跳过版本检查 + 信任镜像源（embeddable Python 可能缺 SSL 证书）
@@ -567,7 +585,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [6/8] 预下载嵌入模型
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[6/9]${C.reset} 预下载嵌入模型...`);
+  console.log(`  ${C.bold}[6/8]${C.reset} 预下载嵌入模型...`);
 
   const modelFile = resolve(VECTOR_SVC, "models", "jina-embeddings-v2-base-zh", "onnx", "model_int8.onnx");
 
@@ -586,7 +604,7 @@ async function main() {
   // ═══════════════════════════════════════════
   // [7/8] PyInstaller 打包启动器
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[7/9]${C.reset} PyInstaller 打包启动器...`);
+  console.log(`  ${C.bold}[7/8]${C.reset} PyInstaller 打包启动器...`);
 
   const launcherDir = resolve(ROOT, "launcher");
 
@@ -654,26 +672,11 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════
-  // [8/9] 构建安卓 APK 壳
+  // [8/8] 组装 Release 包（桌面）
   // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[8/9]${C.reset} 构建安卓 APK 壳...`);
-
-  // 构建逻辑在 build-apk.mjs 中，可通过 npm run apk 单独执行
-  let apkBuilt = null;   // 构建成功后的 APK 绝对路径
-  let apkVersionName = null; // 独立于桌面端 VERSION，来源于 Android versionName
-  try {
-    const { buildApk, getAndroidVersionName } = await import("./build-apk.mjs");
-    apkVersionName = getAndroidVersionName();
-    apkBuilt = await buildApk();
-  } catch (e) {
-    warn(`APK 构建异常: ${e.message}`);
-  }
-  if (!apkBuilt) warn("release 将不包含 APK");
-
-  // ═══════════════════════════════════════════
-  // [9/9] 组装 Release 包
-  // ═══════════════════════════════════════════
-  console.log(`  ${C.bold}[9/9]${C.reset} 组装 Release 包...`);
+  // 安卓 APK 自 2026-11-16 起不再维护：本链只产出桌面包，APK 需单独
+  // `npm run apk`（脚本仍在，供自用/回溯），但不再进入发布门禁与交付承诺。
+  console.log(`  ${C.bold}[8/8]${C.reset} 组装 Release 包（桌面）...`);
 
   // shallow clone 保留 .git/
   log("创建 shallow clone (保留 .git 用于版本更新)...");
@@ -798,21 +801,9 @@ async function main() {
     warn("未找到 邻舍.EXE.exe，PyInstaller 可能未成功");
   }
 
-  // 安卓 APK 壳
-  const APK_NAME = apkVersionName
-    ? `【非刚需，但体验明显提高】邻舍-v${apkVersionName}.apk`
-    : "【非刚需，但体验明显提高】邻舍.apk";
-  if (apkBuilt) {
-    const { copyFileSync } = await import("node:fs");
-    copyFileSync(apkBuilt, resolve(RELEASE_DIR, APK_NAME));
-    ok(APK_NAME);
-  } else {
-    warn("无 APK 产物，release 包中不含安卓壳");
-  }
-
-  // 使用说明
+  // 使用说明（桌面交付：不再附带 APK，正文里也不列安卓段）
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(resolve(RELEASE_DIR, "使用说明.txt"), buildUsageGuideText({ apkName: APK_NAME }), "utf-8");
+  writeFileSync(resolve(RELEASE_DIR, "使用说明.txt"), buildUsageGuideText({ includeAndroid: false }), "utf-8");
   ok("使用说明.txt");
 
   // VERSION 文件（供启动器运行时读取版本号）
@@ -889,21 +880,30 @@ async function main() {
   // 敏感历史对象检查（P0-08）：交付包保留 .git 供客户端更新，而 zip 成员名只有
   // `.git/objects/ab/cdef…` 这种哈希路径，上面的路径规则永远查不到旧签名私钥。
   // 这里在**发布目录**上还原历史路径——浅克隆的深度决定了包里实际带着多少历史。
+  //
+  // 口径（2026-11-16 收紧）：扫描本身失败 = 无法证明干净 ⇒ 阻断，不再「warn 后继续」。
+  // 已轮换且不再维护的旧安卓签名走 KNOWN_HISTORY_EXCEPTIONS 显式放行并打印理由；
+  // 其余任何命中仍然终止交付。
   log("扫描发布目录的 Git 历史对象...");
   const historyScan = findSensitiveGitObjects(RELEASE_DIR);
   if (!historyScan.scanned) {
-    warn(`Git 历史扫描未执行：${historyScan.error || '未知原因'}`);
-    warn("  交付包若含 .git，请人工确认其中没有签名材料或玩家数据的历史对象");
-  } else if (historyScan.sensitive.length) {
-    for (const item of historyScan.sensitive.slice(0, 20)) {
+    fail(`Git 历史扫描失败，无法证明交付包干净：${historyScan.error || '未知原因'}`);
+    fail("  桌面交付包保留 .git，必须能完成历史扫描才能签发。");
+    process.exit(1);
+  }
+  const historyFindings = splitHistoryFindings(historyScan.sensitive);
+  for (const item of historyFindings.allowed) {
+    warn(`历史例外放行: ${item.path}（${item.blobs} 个 blob）—— ${item.reason}`);
+  }
+  if (historyFindings.blocking.length) {
+    for (const item of historyFindings.blocking.slice(0, 20)) {
       fail(`历史对象含敏感路径: ${item.path}（${item.blobs} 个 blob）`);
     }
-    fail(`发布目录的 Git 历史含 ${historyScan.sensitive.length} 个敏感路径，终止交付!`);
-    fail("  处理方式：换用不含敏感历史的发布仓库/净化基线，或调低 clone 深度并确认这些路径不在窗口内");
+    fail(`发布目录的 Git 历史含 ${historyFindings.blocking.length} 个敏感路径，终止交付!`);
+    fail("  处理方式：换用不含敏感历史的发布仓库/净化基线，或确认它确实已失效后在 releaseSafety 里显式登记");
     process.exit(1);
-  } else {
-    ok(`Git 历史扫描通过（${historyScan.commits} 个提交，无敏感路径）`);
   }
+  ok(`Git 历史扫描通过（${historyScan.commits} 个提交，${historyFindings.allowed.length} 条已登记例外）`);
 
   const { statSync } = await import("node:fs");
   const zipSizeMB = Math.round(statSync(zipFile).size / (1024 * 1024));
@@ -925,7 +925,6 @@ async function main() {
   console.log(`  - agent-core (预装依赖)`);
   console.log(`  - vector-service (含嵌入模型)`);
   console.log(`  - 邻舍.EXE 启动器`);
-  if (apkBuilt) console.log(`  - 邻舍-安卓 APK 壳`);
   console.log();
   console.log(`  用户解压后:`);
   console.log(`  - 零构建，解压即用`);

@@ -1,5 +1,9 @@
 # android-shell — 邻舍安卓网页壳
 
+> **本目录自 2026-11-16 起不再维护。** 产品范围收敛为 Windows 桌面端：
+> 发布链不再构建或打包 APK，`npm run apk` 仅作自用/回溯保留，不计入交付与验收。
+> 手机端改用浏览器访问电脑端显示的局域网地址。
+
 单 Activity + WebView 套壳应用：
 
 - 首次启动输入后端地址（如 `http://192.168.1.100:3099`），保存到 SharedPreferences
@@ -76,8 +80,8 @@ App 退到后台/锁屏后仍能收事件并弹系统通知，点击通知跳转
 JDK 17 / Android SDK / Gradle 到 `launcher/build_cache/android-toolchain/`（仅构建缓存，
 不进发布包），产物在 `app/build/outputs/apk/release/app-release.apk`。
 
-**方式二**：`npm run release` 会自动调用同一构建逻辑，并把 APK 打入发布压缩包
-（构建失败只警告，不阻塞 release）。
+**方式二**：`npm run release` 会调用同一构建逻辑，并把成功产出的 APK 打入发布压缩包。
+**当前限制**：APK 构建失败只警告、不阻断 release；因此不能把构建成功的桌面包当作已包含 Android 的完整交付包，须先检查 APK 产物与版本。
 
 **方式三**：用 Android Studio 打开本目录，直接构建。
 

@@ -613,10 +613,11 @@ const USAGE_KEYWORDS = [
   ['动作系统', '动作系统'],
 ]
 {
-  // 版本号：交付包的 VERSION 文件是 `3.6.2`（APK 名走 build-apk 的 versionName，这里用不到 apkName 覆盖）
+  // 版本号：交付包的 VERSION 文件是 `3.6.2`。
+  // 自 2026-11-16 起不再维护安卓 APK，说明正文也不再列「压缩包内附带 APK」。
   let version = 'dev'
   try { version = fs.readFileSync(path.join(REPO, 'VERSION'), 'utf8').trim() || 'dev' } catch { /* 保持 dev */ }
-  const text = buildUsageGuideText({ version })
+  const text = buildUsageGuideText({ version, includeAndroid: false })
   // 隔离构建可把说明直接放到最终交付镜像，此时清空 DELIVER 后再写，
   // 避免用户必须先创建 DELIVER 才能解析一个尚不存在的目标路径。
   fs.mkdirSync(path.dirname(USAGE_GUIDE), { recursive: true })

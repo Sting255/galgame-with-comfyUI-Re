@@ -12,9 +12,11 @@
  * ⚠️ 纪律（沿用 `编程模式-DeepSeek.md` §7）：**只增不删**，有意替换旧描述要写清理由与日期。
  *    web-ui/test/touchManualCoverage.test.js 会拿已提交的 `使用说明.txt` 做「只增不删」回归。
  *
- * @param {{ apkName?: string, version?: string }} [opts]
+ * @param {{ apkName?: string, version?: string, includeAndroid?: boolean }} [opts]
  *   apkName —— 手机端安装包名（正式发布走 build-apk.mjs 的 versionName；缺省用 version 拼）
  *   version —— 版本号（build-release 传 git tag；打包脚本传 VERSION 文件）
+ *   includeAndroid —— 是否包含「手机端（安卓）」一段。桌面发布传 false：
+ *     自 2026-11-16 起不再维护 APK，说明里不能承诺包里附带安装包。默认 true 以兼容旧调用。
  */
 
 export function buildUsageGuideText(opts = {}) {
@@ -23,6 +25,17 @@ export function buildUsageGuideText(opts = {}) {
   //    （实测 `ReferenceError: Cannot access 'version' before initialization`）。
   const version = opts.version || 'dev';
   const apkName = opts.apkName || `【非刚需，但体验明显提高】邻舍-v${version}.apk`;
+  const includeAndroid = opts.includeAndroid !== false;
+  const androidLines = includeAndroid ? [
+    "【手机端（安卓）】",
+    `压缩包内附带 ${apkName}，安装后输入电脑端显示的局域网地址即可使用`,
+    "（相比手机浏览器：按返回键会返回上一页，而不是退出到桌面）",
+    "",
+  ] : [
+    "【手机端】",
+    "本包不含安卓 APK（自 2026-11-16 起不再维护）。手机可直接用浏览器访问电脑端显示的局域网地址。",
+    "",
+  ];
   return [
     "邻舍.EXE",
     "",
@@ -42,10 +55,7 @@ export function buildUsageGuideText(opts = {}) {
     "   保存尚未全部完成时会保留草稿并提示重试；部分设置可能已保存，请处理报错后再次保存，看到成功状态再离开页面。",
     "   关闭后台并发限制会放行已排队任务；叫醒回复失败会恢复积压消息，稍后重试。图片确认与细化保留各自出图工作流。",
     "",
-    "【手机端（安卓）】",
-    `压缩包内附带 ${apkName}，安装后输入电脑端显示的局域网地址即可使用`,
-    "（相比手机浏览器：按返回键会返回上一页，而不是退出到桌面）",
-    "",
+    ...androidLines,
     "【版本更新】",
     "切换到「版本」页签 → 点击「检查更新」",
     "如有新版本，选择后点击「切换到此版本」，会自动构建",
