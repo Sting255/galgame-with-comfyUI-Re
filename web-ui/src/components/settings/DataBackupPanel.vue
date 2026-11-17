@@ -59,7 +59,7 @@
           >
             一键导入
           </linshe-button>
-          <span class="data-backup-tip">导入会覆盖当前数据库与资产文件；导入前会自动备份到 data\backups\</span>
+          <span class="data-backup-tip">导入会替换数据库；归档内的图片、音频等资产按同名覆盖，归档里没有的旧文件会保留。导入前会自动备份到 data\backups\</span>
         </div>
 
         <Transition name="backup-notice-fade">
@@ -84,8 +84,11 @@
     <!-- 导入二次确认：覆盖式破坏操作，必须让用户看清后果再上传 -->
     <linshe-modal v-model="importDialog.show" title="确认导入备份？" panel-class="data-backup-modal">
       <p class="data-backup-modal-line">
-        导入会<strong>覆盖当前数据库与资产文件</strong>；导入前会自动备份到
-        <code>data\backups\</code>，万一不满意可以用那份备份回滚。
+        导入会<strong>替换当前数据库</strong>，并把归档里的图片、音频等资产按同名覆盖；
+        归档中没有、但本机已存在的旧资产<strong>不会删除</strong>。
+      </p>
+      <p class="data-backup-modal-line">
+        导入前会自动备份到 <code>data\backups\</code>，万一不满意可以用那份备份回滚。
       </p>
       <p class="data-backup-modal-line">
         选中的文件：<strong>{{ importDialog.fileName }}</strong>

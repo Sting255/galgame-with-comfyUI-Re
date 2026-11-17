@@ -81,6 +81,11 @@ function scrubValue(value, changed) {
 /**
  * 扫描快照库里的秘密并（可选）清空。
  *
+ * **失败必须阻断导出（fail-closed）**：脱敏是「不带秘密」这个承诺的唯一执行点，
+ * 扫描出错时若按「没检出」继续打包，就会把 Key 原样装进一个自称脱敏的归档。
+ * 因此这里只在**结构上确实没有 system_settings**（例如极旧的库）时返回空结果，
+ * 其余异常一律抛出，由 createBackup 中止导出。
+ *
  * @param {string} dbFile 快照数据库绝对路径（VACUUM INTO 产物，可以随便改）
  * @param {{scrub?:boolean}} options scrub=true 时清空秘密值
  * @returns {{classes:string[], keys:string[]}} 命中的秘密类别与键名（键名只给日志与 UI，不含值）
@@ -91,13 +96,14 @@ export function inspectSnapshotSecrets(dbFile, { scrub = false } = {}) {
   let db;
   try {
     db = new Database(dbFile);
-  } catch {
-    return { classes: [], keys: [] };
+  } catch (error) {
+    throw new Error(`无法打开备份快照以检查凭据：${error.message}`);
   }
   try {
     const hasTable = db.prepare(
       `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'system_settings'`,
     ).get();
+    // 没有 system_settings 的库不可能在表里存秘密（.env 走另一条路径），可以安全放行
     if (!hasTable) return { classes: [], keys: [] };
 
     const read = db.prepare('SELECT setting_value FROM system_settings WHERE setting_key = ?');
@@ -115,7 +121,10 @@ export function inspectSnapshotSecrets(dbFile, { scrub = false } = {}) {
         const row = read.get(key);
         if (!row || !String(row.setting_value || '').trim()) continue;
         let parsed;
-        try { parsed = JSON.parse(row.setting_value); } catch { continue; }
+        // 解析失败不能跳过：这段 JSON 里可能正躺着 Key，跳过等于让它原样进入归档
+        try { parsed = JSON.parse(row.setting_value); } catch (error) {
+          throw new Error(`${key} 不是合法 JSON，无法确认其中凭据已清空：${error.message}`);
+        }
         const changed = { hit: false };
         scrubValue(parsed, changed);
         if (!changed.hit) continue;
@@ -126,8 +135,8 @@ export function inspectSnapshotSecrets(dbFile, { scrub = false } = {}) {
     });
     tx();
   } catch (error) {
-    // 快照库结构不认识（旧版本）不是错误：宁可报告"没检出"也不要阻断导出
-    console.warn('[backup] 秘密扫描失败:', error.message);
+    // fail-closed：无法确认已清空，就不能声称「未包含凭据」而继续导出
+    throw new Error(`检查或清空备份凭据失败，已中止导出：${error.message}`);
   } finally {
     try { db.close(); } catch { /* 已关闭 */ }
   }
