@@ -22,10 +22,21 @@
  *     · 「她去了」「我要来了」——与「她去了学校」「火车要来了」完全同形；
  *     · 「乳房」——健康咨询语境会误报；「中出」——「集中出现」；「叫床」——「叫床上的孩子起床」；
  *       「肉穴」——「肌肉穴位」；「后穴」——「最后穴位」。
- *   改这张表要连带回归两处：生图侧（imagePromptTagKnowledgeData）与看板正文兜底
- *   （agent-core/test/intimateColloquialVocab.test.js 钉了正例 / 反例）。
+ * 英文口语补充（2026-11-16，用户口径「全局露骨」）：
+ *   原来英文半边全是**名词化 tag**（cock / pussy / cum …），这是给生图 prompt 写的。
+ *   但判据要同时看**对话原文**，而真实对话里的英文露骨表达是口语化的：
+ *   "push it in"、"I'm so wet"、"inside me" —— 实测这三句全部判 false，
+ *   于是「英文露骨对话 + 擦边画面」这种最该重写的情况反而不会被拦（中文能拦、英文不能）。
+ *   补词同样只加"几乎不可能出现在日常语境"的短语：
+ *     · so wet / dripping wet / soaking wet —— 裸的 "wet" 会命中「wet floor」「wet clothes」；
+ *     · inside me / put it in / push it in / take it out 之外不放裸 "put it in"（"put it in the box" 太常见）；
+ *     · come inside me / finish inside —— 不加大面积裸 "finish"。
+ *
+ * 改这张表要连带回归两处：生图侧（imagePromptTagKnowledgeData）与看板正文兜底。
+ * ⚠️ 2026-11-16 核实：文档提到的 `agent-core/test/intimateColloquialVocab.test.js` 已不在仓库里，
+ *    当前**没有**自动回归守着这张表，改词后必须手工验正例/反例。
  */
-export const EXPLICIT_ADULT_PATTERN = /(?:\b(?:nsfw|nude|naked|sex|sexual|after sex|fucked silly|orgasm|ahegao|in heat|penis|testicle|erection|flaccid|foreskin|precum|futanari|cock|dick|pussy|vagina|vaginal|clitoris|labia|anus|anal|fellatio|blowjob|deepthroat|irrumatio|masturbat\w*|fingering|vibrator|dildo|handjob|footjob|paizuri|titjob|cum|bukkake|ejaculat\w*|semen|bondage|bdsm|rape|crotchless|no panties|bottomless|topless|nipple|areola|pubic hair|cameltoe|groping|grope|moan(?:ing)?|ass grab|butt grab|grabbing breasts?|doggystyle|cowgirl|missionary|mating press|spitroast|gangbang|orgy|threesome|creampie|facesitting|pegging|cunnilingus|anilingus|fisting)\b|色情|性爱|性交|裸体|全裸|事后|发情|高潮|阿黑颜|阴部|阴唇|阴蒂|阴茎|睾丸|龟头|阴道|肛门|肛交|口交|深喉|自慰|手淫|跳蛋|射精|精液|颜射|内射|束缚|调教|强奸|扶她|无内裤|露乳|乳头|乳晕|软牛子|抓着屁股|抓着乳房|后入|骑乘|狗爬式|乳交|足交|手交|屁眼|鸡巴|潮吹|爱液|M字|妹汁|精液|小穴|奶子|做爱(?!心)|肉棒|肉茎|肉刃|蜜穴|花穴|菊穴|淫穴|淫水|蜜液|撸管|抽插|肏|口爆|吞精|乳夹|肛塞|舔(?:阴|穴|小穴|阴部)|插(?:进|入)来|插(?:进|入|到)(?:我|人家)|顶(?:到|进)(?:最深处|子宫|宫口|花心)|射(?:在|进)(?:我|人家|体内|身体|身上)|(?:我|人家)下面(?:都|已经|早|就|好|很|快|全|也|有点|一直|还|的)*?(?:湿|流水)|(?:内裤|底裤|裤裆)(?:都|已经|早|就|好|很|快|全|也|有点|一直|还|一片|一片都|全都)*?湿|脱光(?:了)?(?:自己|衣服|全身|身子)|(?:自己|衣服|全身|身子)脱光(?:了)?)/i;
+export const EXPLICIT_ADULT_PATTERN = /(?:\b(?:nsfw|nude|naked|sex|sexual|after sex|fucked silly|orgasm|ahegao|in heat|penis|testicle|erection|flaccid|foreskin|precum|futanari|cock|dick|pussy|vagina|vaginal|clitoris|labia|anus|anal|fellatio|blowjob|deepthroat|irrumatio|masturbat\w*|fingering|vibrator|dildo|handjob|footjob|paizuri|titjob|cum|bukkake|ejaculat\w*|semen|bondage|bdsm|rape|crotchless|no panties|bottomless|topless|nipple|areola|pubic hair|cameltoe|groping|grope|moan(?:ing)?|ass grab|butt grab|grabbing breasts?|doggystyle|cowgirl|missionary|mating press|spitroast|gangbang|orgy|threesome|creampie|facesitting|pegging|cunnilingus|anilingus|fisting|(?:so|dripping|soaking) wet|inside me|push it in|fuck me|touch me there|my panties are)\b|色情|性爱|性交|裸体|全裸|事后|发情|高潮|阿黑颜|阴部|阴唇|阴蒂|阴茎|睾丸|龟头|阴道|肛门|肛交|口交|深喉|自慰|手淫|跳蛋|射精|精液|颜射|内射|束缚|调教|强奸|扶她|无内裤|露乳|乳头|乳晕|软牛子|抓着屁股|抓着乳房|后入|骑乘|狗爬式|乳交|足交|手交|屁眼|鸡巴|潮吹|爱液|M字|妹汁|精液|小穴|奶子|做爱(?!心)|肉棒|肉茎|肉刃|蜜穴|花穴|菊穴|淫穴|淫水|蜜液|撸管|抽插|肏|口爆|吞精|乳夹|肛塞|舔(?:阴|穴|小穴|阴部)|插(?:进|入)来|插(?:进|入|到)(?:我|人家)|顶(?:到|进)(?:最深处|子宫|宫口|花心)|射(?:在|进)(?:我|人家|体内|身体|身上)|(?:我|人家)下面(?:都|已经|早|就|好|很|快|全|也|有点|一直|还|的)*?(?:湿|流水)|(?:内裤|底裤|裤裆)(?:都|已经|早|就|好|很|快|全|也|有点|一直|还|一片|一片都|全都)*?湿|脱光(?:了)?(?:自己|衣服|全身|身子)|(?:自己|衣服|全身|身子)脱光(?:了)?)/i;
 
 export function containsExplicitAdultContent(value) {
   return EXPLICIT_ADULT_PATTERN.test(String(value || '').replace(/[_-]+/g, ' '));

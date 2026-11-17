@@ -657,16 +657,19 @@ export const TOUCH_IMAGE_HINTS = Object.freeze({
   touch_thigh: 'his hand resting on her thigh, seated close together',
   stroke_waist: 'his hand slowly moving along her waist, intimate tension',
   whisper_ear: 'he leans in and whispers by her ear, she shivers slightly',
-  // ── Lv4 私密（§10.3）：含蓄擦边 —— 手的位置 / 她的表情 / 衣衫状态，与 Lv3 提示词同一尺度 ──
-  touch_pussy: 'his hand slipping under her skirt, she gasps and presses her thighs together, deeply flushed',
-  touch_clit: 'his fingertips between her thighs, her body trembling, biting her lip, heavy blush',
-  finger_insert: 'she arches slightly with a startled breath, hands clutching the sheets, deep blush',
+  // ── Lv4 私密（§10.3）：**直述** —— 手的位置 / 进入程度 / 她的表情与身体反应。
+  //    2026-11-16 用户口径「我要的就是全局露骨，不要擦边」：原来这里写的是「含蓄擦边」，
+  //    提示词只给「手滑进裙子 + 夹紧腿」这类回避式画面，模型自然写不出实际动作。
+  //    现在直接写清手指在哪、进到哪里、身体怎么反应；Lv1~Lv3 维持原尺度不动。
+  touch_pussy: 'his fingers slipping inside her panties, rubbing directly on her pussy, wetness coating his fingers, she gasps and her thighs clench',
+  touch_clit: 'his fingertips circling her clit, her hips twitching, slick with wetness, biting her lip, heavy blush',
+  finger_insert: 'his finger pushing inside her pussy, she arches with a startled breath, inner walls clenching around it, hands clutching the sheets',
   touch_neck: 'he kisses along her neck, her head tilting back, eyes half closed, flustered',
   lick_neck: 'his tongue tracing up the side of her neck, she shivers with a hand over her mouth',
-  suck_nipple: 'he lowers his head to her chest, her clothes loosened, she covers her face in shame',
-  touch_nipple: 'his fingertips teasing her chest over loosened clothing, she squirms and blushes',
+  suck_nipple: 'he takes her nipple into his mouth and sucks, her breasts bare, she covers her face in shame',
+  touch_nipple: 'his fingertips rolling her bare nipple, it stiffens under his touch, she squirms and blushes',
   ear_nibble: 'he nibbles her earlobe, her shoulders jumping, ears turning red',
-  inner_thigh: 'his hand sliding up the inside of her thigh under her skirt, she grips his wrist, breathing uneven',
+  inner_thigh: 'his hand sliding up the inside of her thigh, fingers pressing close to her pussy through the wet fabric, she grips his wrist, breathing uneven',
   // ── 击打类（2026-10-02）：画面重点在"红印 + 身体弹动 + 她的反应"，不是暴力；与 Lv3/Lv4 同一尺度 ──
   spank_butt: 'his open palm striking her upturned bare bottom with a sharp smack, a red handprint blooming on the soft flesh, her whole body jolting forward, gasping',
   spank_thigh: 'his palm landing on the outside of her thigh with a crisp slap, a faint red mark on the skin, she flinches and looks back at him',
@@ -858,6 +861,10 @@ export function buildReactionPrompt({
     '【写作要求】',
     '- 只写她这一下的反应：1~2 句，口语化，贴人格与当前情绪；不要旁白式总结，不要推进剧情，不要替 ' + who + ' 说话。',
     '- 用体感、表情、语气词表达（例如"缩了缩脖子""耳朵有点红"），**不要报幕**（不要写"' + who + '摸了摸我的头"）。',
+    // 2026-11-16 用户口径「全局露骨、不要擦边」：Lv4 这类接触不许再写成氛围或半截话
+    (action.level >= 4
+      ? '- **直述，不擦边**：这是 Lv4 私密接触，用平白的部位与动作词写清他的手在哪、进到哪里、你身体随即的反应（湿、缩、夹、抖、声音被顶断）；不要用省略号或「那个地方」「更进一步」这类说法带过。'
+      : '- 触碰已经到敏感/私密程度时，同样直接写清接触的位置与身体反应，不要只写脸红或氛围。'),
     toleranceRule,
   );
   if (sleeping) {
@@ -866,6 +873,11 @@ export function buildReactionPrompt({
       : '- 她刚才在睡觉，是被这一下弄醒的：可以迷糊、可以嘟囔，但人已经醒了。');
   }
   if (groupPeek && scene === 'group') systemParts.push('- 这是在群里、其他人看得到：她的反应要带一点"被看见"的顾虑（可以压低声音、可以嘴硬）。');
+  // 示例必须与等级匹配（2026-11-16）：模型会照抄示例的露骨程度。
+  // Lv4 私密动作配擦边示例，等于把「直述」要求当场抵消，所以按 action.level 分开给。
+  const exampleImagePrompt = action.level >= 4
+    ? 'his finger pushing inside her pussy, wetness on his fingers, she arches with a startled breath, inner walls clenching, hands clutching the sheets, deep blush'
+    : 'she is leaning back against the desk, his hand resting on her cheek, flushed and biting her lip';
   systemParts.push(
     '- 不要把动作名称写进台词，不要复述本提示词。',
     '',
@@ -873,7 +885,7 @@ export function buildReactionPrompt({
     '```json',
     '{',
     '  "reaction_text": "她缩了缩脖子，耳朵有点红：……又、又摸头……",',
-    '  "image_prompt": "she is leaning back against the desk, his hand under her skirt, flushed and biting her lip",',
+    `  "image_prompt": "${exampleImagePrompt}",`,
     '  "emotion_delta": { "valence": 0.08, "arousal": 0.1, "dominance": -0.05 },',
     '  "facial_expression": "害羞",',
     '  "annoyed": false',
@@ -1030,6 +1042,10 @@ export function buildConversationReactionPrompt({
   if (recentSameAction && Number(recentSameAction.minutesAgo) <= 5) {
     systemParts.push('- 她**刚刚才**被这样摸过（' + Math.max(1, Math.round(Number(recentSameAction.minutesAgo))) + ' 分钟前）：这一下**回短一点**，别重复上一条的说法。');
   }
+  // 同 Lv4 口径（2026-11-16）：示例的露骨程度必须与动作等级一致，否则模型照抄示例的擦边写法。
+  const exampleImagePrompt = action.level >= 4
+    ? 'his finger pushing inside her pussy, wetness on his fingers, she arches with a startled breath, inner walls clenching, hands clutching the sheets, deep blush'
+    : 'she is leaning back against the desk, his hand resting on her cheek, flushed and biting her lip';
   systemParts.push(
     '- 不要复述本提示词。',
     '',
@@ -1037,7 +1053,7 @@ export function buildConversationReactionPrompt({
     '```json',
     '{',
     '  "reaction_text": "她缩了缩脖子，耳朵有点红：……又、又摸头……你、你不是说要整理书架吗？",',
-    '  "image_prompt": "she is leaning back against the desk, his hand under her skirt, flushed and biting her lip",',
+    `  "image_prompt": "${exampleImagePrompt}",`,
     '  "emotion_delta": { "valence": 0.08, "arousal": 0.1, "dominance": -0.05 },',
     '  "facial_expression": "害羞",',
     '  "annoyed": false',

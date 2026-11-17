@@ -56,6 +56,42 @@ export function needsExplicitImageRewrite(dialogue, prompt) {
 }
 
 /**
+ * 正文「被写含蓄」的判定（2026-11-16 用户口径：「我要的就是全局露骨」「纯直述，不绕圈子擦边」）。
+ *
+ * 与 `needsExplicitImageRewrite` 同一套零 LLM 判据，只是对象换成正文：
+ *   ① 本轮上下文（含用户这句）本身就露骨（命中 `containsExplicitAdultContent`）；
+ *   ② 模型交回来的正文一个露骨词都没有；
+ * 两条同时成立 ⇒ 判定被写成了擦边，调用方追加一次重写。
+ *
+ * 刻意不做的事：日常轮次不判定（本来就不该有露骨词），避免把生活流对话改写成性描写；
+ * 正文为空时不判定（空返回另有兜底）。
+ */
+export function needsExplicitTextRewrite(dialogue, text) {
+  const body = String(text || '').trim();
+  if (!body) return false;
+  if (!containsExplicitAdultContent(dialogue)) return false;
+  return !containsExplicitAdultContent(body);
+}
+
+/**
+ * 正文重写要求：作为追加的 user 消息发在原始消息列表之后。
+ *
+ * 与 `EXPLICIT_REWRITE_INSTRUCTION` 的差别：那条是给**英文画面描述**用的，
+ * 这条是给**角色正文**用的 —— 中文、第一人称、保持人格口吻，只要求把动作写实。
+ */
+export const EXPLICIT_TEXT_RETRY_INSTRUCTION = {
+  role: 'user',
+  content: `【重写要求·上一次输出不合格】
+你上一次的回复把正在发生的性行为写成了回避式表达：用氛围、表情、呼吸或「那个地方」「更进一步」「尽兴」这类委婉说法代替了动作本身，或者写到一半就收住、只暗示没有直述。这是不合格的。
+现在重写这条回复，规则如下：
+- 直写动作本身：谁对谁做了什么、进到哪里、进入到什么程度；身体部位直接写，不要用代称。
+- 直写她的身体反应：湿、缩、夹、抖、绷紧、声音被顶断、腰自己迎上去这类具体反应，不要只写脸红了。
+- 保持她本人的人格、口吻和说话习惯，用第一人称；不要变成旁白或说明文。
+- 不许用省略号、「不可描述」、隐喻或氛围替代正在发生的事；原本该写的内容一样不能少。
+输出要求：只输出重写后的回复正文，不要解释、不要标题、不要复述这些要求。`,
+};
+
+/**
  * 重写要求：作为**追加的 user 消息**发在原始消息列表之后（不改原始 msgs 的那几条 system）。
  *
  * 写法口径：

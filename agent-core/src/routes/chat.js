@@ -55,7 +55,8 @@ import { judgeRoundInBackground } from '../services/intimateAiJudge.js';
 // 全部是确定性读取（零 LLM）；关闭总开关 features.hypnosis 时走原路径。
 import { getHypnosisState, consumePendingDirective, listForgottenWindows, isBodyControlled, directiveToyPayload } from '../services/hypnosisService.js';
 import { buildHypnosisStateBlock, buildDirectiveBlock, buildAmnesiaBlock, isAwakenedFromSleepRow } from '../services/hypnosisPrompt.js';
-import { extractImagePromptResponse, requestNonEmptyImagePrompt, needsExplicitImageRewrite, EXPLICIT_REWRITE_INSTRUCTION } from '../services/imagePromptResponse.js';
+import { extractImagePromptResponse, requestNonEmptyImagePrompt, needsExplicitImageRewrite, EXPLICIT_REWRITE_INSTRUCTION, needsExplicitTextRewrite, EXPLICIT_TEXT_RETRY_INSTRUCTION } from '../services/imagePromptResponse.js';
+import { containsExplicitAdultContent } from '../db/imagePromptKnowledgePolicy.js';
 import { maybeSummarize, getRecentSummaries } from '../services/summarizer.js';
 import { maybeExtractPortrait } from '../services/portraitExtractor.js';
 import {
@@ -2101,6 +2102,47 @@ ${coreRules}
     // 三条约束：① 只重写一次；② 重写失败/仍拒答 → 用兜底省略号，绝不保留拒答原文；
     //          ③ 客户端已断开时不重试（没人看，白烧一次调用）。
     let refusalReplaced = false;
+    // ── 露骨直述守卫（2026-11-16 用户口径：「全局露骨」「纯直述，不绕圈子擦边」）──
+    // 与生图那条 needsExplicitImageRewrite 同判据：用户/角色本轮本来就在写性内容（命中露骨词表），
+    // 但模型交回来的正文一个露骨词都没有 ⇒ 判定被写成了擦边，补一次重写。
+    // 位置与拒答守卫相同：流已推给前端，但**尚未落库**，这是最低成本的自救点。
+    // 三条约束沿用拒答守卫：① 只重写一次；② 失败就保留原文，绝不让用户看到空白；
+    //                     ③ 客户端已断开时不重试（没人看，白烧一次调用）。
+    let explicitReplaced = false;
+    if (!clientGone && !refusalReplaced && streamState.collectedSegments.length > 0) {
+      const beforeRewrite = streamState.collectedSegments.join('\n');
+      // 判据的"对话上下文"取本轮实际发出去的消息尾部（含用户这句），
+      // 不用 extractRealContent —— 那个函数是另一个作用域里的局部实现。
+      const dialogueContext = [...(originalBaseMsgs || [])].slice(-4)
+        .map(m => String(m?.content || ''))
+        .filter(Boolean).join('\n');
+      if (needsExplicitTextRewrite(dialogueContext, beforeRewrite)) {
+        console.warn('[explicit-text] ▸ 正文命中"该露骨却写成擦边"，追加纠正指令重写一次');
+        try {
+          const explicitMsgs = [...msgs, EXPLICIT_TEXT_RETRY_INSTRUCTION];
+          streamState.fullContent = '';
+          streamState.splitter = new SentenceSplitter();
+          streamState.collectedSegments.length = 0;
+          streamState.wasStopped = false;
+          beginContextCapture({ conversationId, model: config.llm.model, expectLabel: '主聊天流' });
+          await consumeStream(explicitMsgs, upstreamAbort.signal);
+          const retried = streamState.collectedSegments.join('\n');
+          // 重写后仍无露骨内容（或干脆没写）⇒ 认为这次救不回来，保留原文，别把用户的话变短
+          if (!retried.trim() || !containsExplicitAdultContent(retried)) {
+            throw new Error('explicit retry produced no explicit content');
+          }
+          explicitReplaced = true;
+          console.log('[explicit-text] 重写成功 chars=' + streamState.fullContent.length);
+        } catch (err) {
+          if (clientGone) throw err;
+          // 失败：原样恢复刚被清掉的这一版
+          streamState.fullContent = beforeRewrite;
+          streamState.collectedSegments.length = 0;
+          streamState.collectedSegments.push(...beforeRewrite.split('\n'));
+          console.warn('[explicit-text] 重写失败，保留原输出:', err.message);
+        }
+      }
+    }
     if (!clientGone && streamState.collectedSegments.length > 0
         && isRefusal(streamState.collectedSegments.join('\n'))) {
       console.warn('[refusal] ▸ 主聊天流命中拒答，追加纠正指令重写一次');
@@ -2199,7 +2241,7 @@ ${coreRules}
     // 事件 replace_last_assistant（字段与语义见 docs/chat/anti-repetition.md §十二；前端由 hires-ui 接）：
     // 必须**在重写成功后**才发 —— 失败时保留原输出，用户不该看到空白（见上面的 catch 分支）。
     // 用 segments 而不是纯 content：替换后表情包/图片气泡不能丢。
-    if (rerollSucceeded || refusalReplaced) {
+    if (rerollSucceeded || refusalReplaced || explicitReplaced) {
       try {
         // stickerUrls 必须显式给：`parsedSegments` 里的 images 是 parseEmojiText 的产物，
         // 而前端没有 key→url 映射（它只认 url）。这里按同一份 emojiMap 重新解析原始段，
@@ -2212,7 +2254,7 @@ ${coreRules}
         }));
         const replacement = buildReplaceLastAssistantEvent({
           parsedSegments: replaceSegments,
-          reason: rerollSucceeded ? 'reroll' : 'refusal',
+          reason: rerollSucceeded ? 'reroll' : (refusalReplaced ? 'refusal' : 'explicit'),
         });
         send(replacement.event, replacement.data);
         console.log('[replace_last_assistant] sent reason=' + replacement.data.reason
