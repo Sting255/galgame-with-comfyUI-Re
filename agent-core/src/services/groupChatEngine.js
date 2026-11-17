@@ -82,6 +82,7 @@ import {
   extractEmbeddedGroupImagePrompt,
   formatGroupImageLine,
   buildProtocolBlock,
+  buildImageRulesBlock,
   detectMentions,
   detectMentionAll,
   formatGroupUserMessage,
@@ -92,6 +93,7 @@ export {
   extractEmbeddedGroupImagePrompt,
   formatGroupImageLine,
   buildProtocolBlock,
+  buildImageRulesBlock,
   detectMentions,
   detectMentionAll,
   formatGroupUserMessage,
@@ -570,6 +572,10 @@ export function buildGroupContext(group, directiveBlocks = [], { excludeTimeRang
   const messages = [];
   if (stage) messages.push({ role: 'system', content: stage });
   messages.push({ role: 'system', content: protocolBlock });
+  // 生图规范单独成条（2026-11-16）：从 protocolBlock 里拆出来，理由见 buildImageRulesBlock 注释。
+  // 放在协议之后：协议先定"什么时候发 / 发图行长什么样"，这条紧跟其后解释"花括号里怎么写"。
+  const imageRulesBlock = buildImageRulesBlock();
+  if (imageRulesBlock) messages.push({ role: 'system', content: imageRulesBlock });
   // 上游 v4.2.0：神说世界上下文（天使改过的世界规则）要参与群聊
   const godWorldContext = getGodWorldContext(group.members.map(m => m.id));
   if (godWorldContext) messages.push({ role: 'system', content: godWorldContext });
