@@ -25,7 +25,9 @@
                   @click="openSettings"
                   @keydown.enter.prevent="openSettings"
                   @keydown.space.prevent="openSettings"
-                ><gear-icon :size="18" /></div>
+                >
+<gear-icon :size="18" />
+</div>
                 <div
                   class="btn-reset"
                   :class="{ 'is-resetting': store.resetTask?.processing, 'is-disabled': store.resetTask?.processing && !store.resetTask?.backgrounded }"
@@ -36,8 +38,8 @@
                   @keydown.enter.prevent="handleResetClick"
                   @keydown.space.prevent="handleResetClick"
                 >
-                  <svg v-if="!store.resetTask?.processing" class="btn-reset-icon" fill="currentColor" viewBox="0 0 1024 1024" width="16" height="16"><path d="M1017.6 595.2c19.2-134.4-6.4-256-89.6-364.8C832 89.6 588.8-19.2 480 25.6c6.4 25.6 6.4 44.8 12.8 70.4 262.4 0 428.8 185.6 448 371.2 19.2 179.2-89.6 371.2-249.6 428.8v-179.2c0-25.6-12.8-38.4-32-38.4-38.4 0-51.2 12.8-38.4 57.6 12.8 70.4 6.4 140.8 0 211.2 0 38.4 19.2 32 64 32h160c83.2 0 96 12.8 96-32 0-25.6-6.4-38.4-38.4-38.4H832c96-76.8 166.4-179.2 185.6-313.6zM76.8 512c0-153.6 115.2-345.6 224-364.8v153.6c0 32 6.4 38.4 38.4 38.4s38.4-6.4 38.4-38.4V64c0-32-6.4-38.4-38.4-38.4H102.4C70.4 25.6 64 32 64 64s0 38.4 38.4 38.4h102.4c-230.4 185.6-243.2 467.2-128 659.2 108.8 185.6 326.4 256 460.8 236.8-6.4-25.6-6.4-44.8-12.8-70.4-275.2 6.4-448-217.6-448-416z"/></svg>
-                  <svg v-else class="btn-reset-icon spinning" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                  <svg v-if="!store.resetTask?.processing" class="btn-reset-icon" fill="currentColor" viewBox="0 0 1024 1024" width="16" height="16"><path d="M1017.6 595.2c19.2-134.4-6.4-256-89.6-364.8C832 89.6 588.8-19.2 480 25.6c6.4 25.6 6.4 44.8 12.8 70.4 262.4 0 428.8 185.6 448 371.2 19.2 179.2-89.6 371.2-249.6 428.8v-179.2c0-25.6-12.8-38.4-32-38.4-38.4 0-51.2 12.8-38.4 57.6 12.8 70.4 6.4 140.8 0 211.2 0 38.4 19.2 32 64 32h160c83.2 0 96 12.8 96-32 0-25.6-6.4-38.4-38.4-38.4H832c96-76.8 166.4-179.2 185.6-313.6zM76.8 512c0-153.6 115.2-345.6 224-364.8v153.6c0 32 6.4 38.4 38.4 38.4s38.4-6.4 38.4-38.4V64c0-32-6.4-38.4-38.4-38.4H102.4C70.4 25.6 64 32 64 64s0 38.4 38.4 38.4h102.4c-230.4 185.6-243.2 467.2-128 659.2 108.8 185.6 326.4 256 460.8 236.8-6.4-25.6-6.4-44.8-12.8-70.4-275.2 6.4-448-217.6-448-416z" /></svg>
+                  <svg v-else class="btn-reset-icon spinning" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23,4 23,10 17,10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
                   <span>{{ store.resetTask?.processing ? (store.resetTask?.backgrounded ? `重置中 ${store.resetTask.current}/${store.resetTask.total}` : '重置中...') : '全部重置' }}</span>
                 </div>
               </div>
@@ -55,13 +57,12 @@
               @wake="onCardWake(c.id)"
               @pin="toggleCharPin(c)"
             />
-
-          </div>
+</div>
         </template>
 
         <!-- 空态（加载中不渲染，避免误报「还没有日程」） -->
         <div v-else-if="!store.loading" class="sched-placeholder">
-          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
           <p>今天还没有角色日程</p>
           <span class="ph-hint">生成日程后，这里会显示每位角色的今日动向。</span>
           <linshe-button class="btn-glass" variant="secondary" @click="regenerateAll">为所有角色生成日程</linshe-button>
@@ -76,8 +77,9 @@
           <div class="sidebar-scan-content">
             <div class="sidebar-scan-icon">
               <svg viewBox="0 0 80 80" class="sidebar-scan-ring">
-                <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(var(--accent-rgb),0.12)" stroke-width="2.5"/>
-                <circle cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
+                <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(var(--accent-rgb),0.12)" stroke-width="2.5" />
+                <circle
+cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
                   stroke-width="2.5" stroke-linecap="round"
                   stroke-dasharray="214"
                   :stroke-dashoffset="214 * (1 - sidebarScanProgress / 100)"
@@ -119,8 +121,8 @@
       @peek-at="onPeekAt"
       @regenerate="onRegenerate"
       @chat="onChat"
-      @wakePhone="onWakePhone"
-      @wakeDoor="onWakeDoor"
+      @wake-phone="onWakePhone"
+      @wake-door="onWakeDoor"
       @updated="detailActs = $event"
       @diary="onOpenDiary(detailChar)"
     />
@@ -185,7 +187,8 @@
                   <div class="pk-ring-container">
                     <svg viewBox="0 0 80 80" class="pk-ring">
                       <circle cx="40" cy="40" r="34" fill="none" stroke="var(--pk-ring-track)" stroke-width="3" />
-                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
+                      <circle
+cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
                         stroke-width="3" stroke-linecap="round"
                         :stroke-dasharray="2 * Math.PI * 34"
                         :stroke-dashoffset="2 * Math.PI * 34 * (1 - peekProgress / 100)"
@@ -279,7 +282,7 @@
               </svg>
               <span>为 {{ detailChar?.display_name || '...' }} 编排日程</span>
               <linshe-button class="reset-header-clear" variant="icon" size="sm" tone="danger" title="清空日程" @click="onClearFromModal">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
               </linshe-button>
             </div>
             <div class="reset-dialog-desc">
@@ -511,12 +514,6 @@ function onScroll() {
     lastScrollTop = el.scrollTop
   }
 }
-
-const filterPills = [
-  { key: 'all',     label: '全部' },
-  { key: 'awake',   label: '醒着' },
-  { key: 'sleeping',label: '梦乡中' },
-]
 
 // ── 数据增强：解析 current_activity → _location + _behavior ──
 const enrichedChars = computed(() => {
@@ -861,7 +858,6 @@ onUnmounted(() => {
 })
 
 // ── 方法 ──
-function onFilter(key: string) { activeFilter.value = key }
 
 let detailRequestSequence = 0
 async function onSelectChar(id: number) {

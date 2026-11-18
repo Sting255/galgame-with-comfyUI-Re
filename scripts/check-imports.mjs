@@ -39,6 +39,9 @@ const GLOBAL_WHITELIST = new Set([
   'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI', 'escape', 'unescape', 'eval',
   'Uint8Array', 'Uint16Array', 'Uint32Array', 'Int8Array', 'Int16Array', 'Int32Array',
   'Float32Array', 'Float64Array', 'ArrayBuffer', 'DataView', 'SharedArrayBuffer', 'BigInt64Array',
+  // 浏览器 / Canvas 宿主全局：shared/photoStudio*.js 同时跑在浏览器与 worker 里，
+  // Path2D 由浏览器提供，worker 通过 createPath 参数注入，不是忘记 import。
+  'Uint8ClampedArray', 'Path2D', 'ImageData', 'OffscreenCanvas',
 ]);
 
 // 测试框架 / node 内建（在这些文件里出现不算缺 import 的常见形态）

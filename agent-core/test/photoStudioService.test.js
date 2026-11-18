@@ -248,7 +248,8 @@ test('omitted tags are appended locally before rendering and the repaired prompt
     assert.equal(rewrites, 1);
     assert.equal(done.prompt, repaired);
     assert.equal(f.db.prepare('SELECT prompt_refined FROM image_tasks').get().prompt_refined, repaired);
-    assert.deepEqual(events.map(({ job }) => job.stage), ['preparing', 'polishing', 'queued', 'queued', 'generating', 'saving', 'done']);
+    // 上游 v4.4.0：默认装裱开启，保存原片后多一次 finishing 阶段。
+    assert.deepEqual(events.map(({ job }) => job.stage), ['preparing', 'polishing', 'queued', 'queued', 'generating', 'saving', 'finishing', 'done']);
     assert.equal(events.filter(({ event }) => event === 'photo_studio_ready').length, 1);
     await f.service.submit({ ...input, id: 'repaired-cache-hit' });
     const cached = await waitForJob(f.service, 'repaired-cache-hit');

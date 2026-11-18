@@ -26,9 +26,11 @@ test('new everyday categories and solid-color shadow instructions are available'
   for (const entry of entries.filter(item => item.category === '纯色')) {
     assert.match(entry.label, /强烈阴影/);
     assert.match(entry.description, /强烈阴影/);
-    assert.match(entry.prompt, /hard directional lighting.*strong, sharply defined cast shadows/);
-    assert.match(entry.prompt, /cast shadows of the subject directly onto the flat color field/);
-    assert.doesNotMatch(entry.prompt, /\bstudio\b|\bwall\b|\bfloor\b|\bseamless\b/i);
+    // 2026-11-18 上游 v4.4.0：纯色背景从「地面投影」改为「主体背后的竖直背景投影」，不再有地面。
+    assert.match(entry.prompt, /hard directional lighting/);
+    assert.match(entry.prompt, /strong, sharply defined silhouette shadow onto the vertical backdrop/);
+    assert.match(entry.prompt, /no visible floor/);
+    assert.doesNotMatch(entry.prompt, /\bstudio\b|\bwall\b|\bseamless\b/i);
   }
 });
 
