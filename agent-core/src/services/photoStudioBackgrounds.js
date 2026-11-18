@@ -6,7 +6,10 @@ import { chatSync } from './lorebook/runtime.js';
 
 const catalog = JSON.parse(readFileSync(new URL('../../resources/photo-studio-backgrounds.json', import.meta.url), 'utf8'));
 const byId = new Map(catalog.entries.map(entry => [entry.id, entry]));
-export const DEFAULT_STUDIO_BACKGROUND = 'A plain white background with strong, sharply defined cast shadows from hard directional lighting.';
+// 2026-11-18 对齐上游 v4.4.0：默认白底改用上游的简洁描述。
+// 本地原先强调「硬光 + 强烈投影」，但新背景库已改为「主体背后的竖直投影、无地面」，
+// 默认值继续留在旧口径会让未选背景的照片仍出地面阴影。海滩漂移由下面的场景负面词兜底。
+export const DEFAULT_STUDIO_BACKGROUND = 'white background, simple background';
 /**
  * 纯白棚拍背景的场景级负面词（2026-11-13）。
  * 白底＋泳装/跪姿时模型会把场景漂到海边沙滩（真机实测：提示词首尾都写了 plain white background
