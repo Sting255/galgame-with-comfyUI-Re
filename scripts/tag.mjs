@@ -1,16 +1,27 @@
 /**
  * tag.mjs — 自动打 tag 并推送
  *
- *   $ npm run tag                        # 自动 patch+1，用 commit 注释
+ *   $ npm run tag                        # 自动接续版本号，用 commit 注释
  *   $ npm run tag -- v2.0.0              # 手动指定版本
  *   $ npm run tag -- v2.0.0 "重大更新"   # 手动指定版本+注释
+ *   $ npm run tag -- v4.3.1-k --dry-run  # 只打印会做什么，不写文件、不提交、不打 tag、不推送
+ *
+ * 自动版本号：本仓 tag 有两段结构 —— 上游带来的 `vX.Y.Z`，和本地迭代的
+ * `vX.Y.Z-<字母>`（v4.3.1-a … v4.3.1-j）。最新 tag 带字母后缀时自动 +1 个字母
+ * （i → j），否则 patch+1。以前这里只做 patch+1，从 v4.3.1-i 会跳到 v4.3.2，
+ * 与上游 base 版本脱节。
+ *
+ * 推送目标：自己的 fork（remote `mine`），可用 PUSH_REMOTE 覆盖。上游 `origin`
+ * 是只读镜像，本机没有写权限：旧版脚本写死 origin，每次都在最后一步失败，
+ * v4.3.1-a ~ -j 实际全靠手工 `git push mine`。分支映射见 lib/pushRemote.mjs
+ * （`local` → fork 的 `main`，其余同名）。
  *
  * 流程:
  *   0. 检查更新说明是否变化 → 变化则刷新标志位
  *   1. vite build 打包前端
- *   2. 解析版本号（自动 patch+1 或手动指定）
+ *   2. 解析版本号（自动接续或手动指定）
  *   3. 工作区脏 → 自动提交；工作区干净 → 直接打 tag
- *   4. git fetch → git tag → 分步 push 分支 + tags（含失败重试）
+ *   4. git fetch → git tag → 推分支 + 只推本次 tag（含失败重试）
  *
  * 关于更新说明标志位:
  *   web-ui/src/data/changelog.js 里有一行 `export const CHANGELOG_FLAG = '...'`。
@@ -24,6 +35,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePushRemote, resolvePushRefspec } from "./lib/pushRemote.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -73,14 +85,19 @@ function die(msg)  { console.error(`  [ERROR] ${msg}`); process.exit(1); }
 const args = process.argv.slice(2);
 let manualVersion = null;
 let manualMessage = null;
+let dryRun = false;
 
 for (const arg of args) {
-  if (arg.startsWith("v") || /^\d/.test(arg)) {
+  if (arg === "--dry-run" || arg === "-n") {
+    dryRun = true;
+  } else if (arg.startsWith("v") || /^\d/.test(arg)) {
     manualVersion = arg.startsWith("v") ? arg : `v${arg}`;
   } else {
     manualMessage = arg;
   }
 }
+
+if (dryRun) log(`${C.yellow}--dry-run：只打印计划，不写文件 / 不提交 / 不打 tag / 不推送${C.reset}`);
 
 // ── 0. 更新说明标志位 ──
 // 必须早于 vite build（标志位会被打进前端包），也必须早于下面的自动提交（改动要进版本库）。
@@ -115,6 +132,8 @@ if (changelogSource !== CHANGELOG_SKIP) {
   if (nextFlag === currentFlag) {
     ok(`更新说明未变化，标志位保持 ${currentFlag}`);
     log(`${C.dim}（本次如果有面向用户的改动，记得往 changelog.js 里补一条）${C.reset}`);
+  } else if (dryRun) {
+    log(`(dry-run) 更新说明有变化，标志位 ${currentFlag || "(空)"} → ${nextFlag}（未写入）`);
   } else {
     writeFileSync(
       CHANGELOG_FILE,
@@ -129,9 +148,13 @@ if (changelogSource !== CHANGELOG_SKIP) {
 // ── 1. vite build ──
 
 console.log();
-log("vite build...");
-execShell("cd web-ui && npm run build");
-ok("vite build 完成");
+if (dryRun) {
+  log("(dry-run) 跳过 vite build");
+} else {
+  log("vite build...");
+  execShell("cd web-ui && npm run build");
+  ok("vite build 完成");
+}
 
 // ── 2. 获取最新 tag ──
 
@@ -145,15 +168,23 @@ try {
   latestTag = "v0.0.0";
 }
 
-const match = latestTag.match(/^v?(\d+)\.(\d+)\.(\d+)/);
+const match = latestTag.match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([a-z]))?$/i);
 let major = 1, minor = 0, patch = 0;
+let suffix = "";
 if (match) {
   major = parseInt(match[1]);
   minor = parseInt(match[2]);
   patch = parseInt(match[3]);
+  suffix = (match[4] || "").toLowerCase();
 }
 
-const newVersion = manualVersion || `v${major}.${minor}.${patch + 1}`;
+// 最新 tag 带字母后缀 → 接下一个字母（i → j）；否则 patch+1。
+// 后缀到 z 时退回 patch+1（不会生成 `v4.3.1-{` 这种非法 tag）。
+const autoVersion = (suffix && suffix < "z")
+  ? `v${major}.${minor}.${patch}-${String.fromCharCode(suffix.charCodeAt(0) + 1)}`
+  : `v${major}.${minor}.${patch + 1}`;
+
+const newVersion = manualVersion || autoVersion;
 log(`版本: ${latestTag} → ${C.cyan}${newVersion}${C.reset}`);
 
 // ── 3. 获取注释 ──
@@ -162,9 +193,16 @@ const tagMessage = manualMessage || sh("git log -1 --format=%s");
 log(`注释: ${tagMessage}`);
 
 // ── 写入 VERSION 文件 ──
-const versionWithoutV = newVersion.replace(/^v/, "");
-writeFileSync(resolve(ROOT, "VERSION"), versionWithoutV + "\n", "utf-8");
-log(`VERSION 文件已更新: ${versionWithoutV}`);
+// VERSION 只写 base x.y.z：发布门禁（build-release 预检）要求它和启动器 __version__
+// 都是纯 x.y.z，本地迭代后缀只存在于 tag 名。旧版这里写整串 "4.3.1-j"，
+// 打完 tag 再打包会被预检直接拒掉。精确版本号由发布包里的 BUILD_TAG 承担。
+const baseVersion = newVersion.match(/^v?(\d+\.\d+\.\d+)/)?.[1] || newVersion.replace(/^v/, "");
+if (dryRun) {
+  log(`(dry-run) VERSION 将写为 ${baseVersion}（tag 为 ${newVersion}）`);
+} else {
+  writeFileSync(resolve(ROOT, "VERSION"), baseVersion + "\n", "utf-8");
+  log(`VERSION 文件已更新: ${baseVersion}（tag: ${newVersion}）`);
+}
 
 // ── 4. 检查工作区状态 ──
 
@@ -173,25 +211,37 @@ const isDirty = status.length > 0;
 
 if (isDirty) {
   const commitMsg = `【${newVersion}】${tagMessage}`;
-  log(`工作区有变更，自动提交: ${commitMsg}`);
-  exec("git", ["add", "."]);
-  exec("git", ["commit", "-m", commitMsg]);
-  ok("提交完成");
+  if (dryRun) {
+    log(`(dry-run) 工作区有 ${status.split("\n").length} 项变更，将自动提交: ${commitMsg}`);
+  } else {
+    log(`工作区有变更，自动提交: ${commitMsg}`);
+    exec("git", ["add", "."]);
+    exec("git", ["commit", "-m", commitMsg]);
+    ok("提交完成");
+  }
 } else {
   ok("工作区干净，跳过提交");
 }
 
 // ── 5. 拉取远端 tags，避免冲突 ──
 
-log("拉取远端 tags...");
-exec("git", ["fetch", "--tags", "--quiet"]);
-ok("远端 tags 同步完成");
+if (dryRun) {
+  log("(dry-run) 跳过 git fetch --tags");
+} else {
+  log("拉取远端 tags...");
+  exec("git", ["fetch", "--tags", "--quiet"]);
+  ok("远端 tags 同步完成");
+}
 
 // ── 6. 打 tag ──
 
-log(`创建 tag: ${newVersion}`);
-exec("git", ["tag", "-a", newVersion, "-m", tagMessage]);
-ok(`tag ${newVersion} 创建完成`);
+if (dryRun) {
+  log(`(dry-run) 将创建 tag: ${newVersion}`);
+} else {
+  log(`创建 tag: ${newVersion}`);
+  exec("git", ["tag", "-a", newVersion, "-m", tagMessage]);
+  ok(`tag ${newVersion} 创建完成`);
+}
 
 // ── 7. 推送（含重试机制） ──
 
@@ -222,17 +272,36 @@ function pushWithRetry(pushArgs, label) {
   }
 }
 
-log(`推送分支 ${branch}...`);
-pushWithRetry(["origin", branch], "分支");
+let pushTarget;
+try {
+  pushTarget = resolvePushRemote(ROOT);
+} catch (e) {
+  die(e.message);
+}
+const pushRefspec = resolvePushRefspec(branch);
 
-log("推送 tags...");
-pushWithRetry(["origin", "--tags"], "Tags");
+if (dryRun) {
+  log(`(dry-run) 将推送 ${pushRefspec} → ${pushTarget.name} (${pushTarget.url})`);
+  log(`(dry-run) 将推送 tag ${newVersion} → ${pushTarget.name}`);
+  console.log();
+  log(`${C.yellow}--dry-run 结束，未做任何改动${C.reset}`);
+  console.log();
+  process.exit(0);
+}
+
+log(`推送 ${pushRefspec} → ${pushTarget.name}...`);
+pushWithRetry([pushTarget.name, pushRefspec], "分支");
+
+// 只推本次 tag：`--tags` 会把本地所有未推送的 tag 一起带上去，
+// 其中可能有实验性或打废的 tag，不该借这一条命令发布出去。
+log(`推送 tag ${newVersion} → ${pushTarget.name}...`);
+pushWithRetry([pushTarget.name, newVersion], "Tag");
 
 ok("推送完成");
 
 console.log();
 console.log(`  ${C.green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}`);
-console.log(`  ${C.green}  ${newVersion}  已推送到 origin${C.reset}`);
+console.log(`  ${C.green}  ${newVersion}  已推送到 ${pushTarget.name}${C.reset}`);
 console.log(`  ${C.green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}`);
 console.log();
 console.log(`  下一步: ${C.yellow}npm run release${C.reset}`);
