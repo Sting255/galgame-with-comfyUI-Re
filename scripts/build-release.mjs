@@ -452,7 +452,11 @@ async function main() {
   // 不要预先删除或无条件重建原生模块：开发服务运行时 Windows 会锁住 .node 文件。
   log("agent-core npm install (~3-8min)...");
   {
-    const r = await exec(npmCmd, ["install", "--no-audit", "--no-fund"], { cwd: AGENT_CORE, print: true });
+    // --no-save：不要改写 package-lock.json。打包起点要求工作树干净，
+    // 而本机 npm 版本与写锁文件时的版本不同，install 会把 libc 这类字段
+    // 批量删掉（本次实测 -48 行），于是「打包成功」却留下一个不该提交的锁文件改动，
+    // 下一次 release 预检直接因为工作树不干净被拒。
+    const r = await exec(npmCmd, ["install", "--no-save", "--no-audit", "--no-fund"], { cwd: AGENT_CORE, print: true });
     if (!r.ok) { fail("agent-core npm install 失败!"); process.exit(1); }
 
     // 先验证现有绑定。大多数情况下 npm install 已经准备好依赖，且正在运行的
@@ -493,7 +497,8 @@ async function main() {
     try { rmSync(resolve(WEB_UI, "node_modules", ".cache"), { recursive: true, force: true }); } catch {}
   }
   {
-    const r = await exec(npmCmd, ["install", "--no-audit", "--no-fund"], { cwd: WEB_UI, print: true });
+    // 同上：--no-save 保住 package-lock.json，避免打包把工作树弄脏
+    const r = await exec(npmCmd, ["install", "--no-save", "--no-audit", "--no-fund"], { cwd: WEB_UI, print: true });
     if (!r.ok) { fail("web-ui npm install 失败!"); process.exit(1); }
     ok("web-ui 完成");
   }

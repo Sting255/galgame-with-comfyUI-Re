@@ -1,5 +1,6 @@
 """Build and accept the launcher before replacing any usable executable."""
 import argparse
+import getpass
 import json
 import os
 from pathlib import Path
@@ -28,9 +29,19 @@ def normalize_executable_integrity(executable):
     if os.name != 'nt':
         return
     windows = Path(os.environ.get('SystemRoot', r'C:\Windows'))
-    subprocess.run([str(windows / 'System32' / 'icacls.exe'),
-                    str(Path(executable).resolve()), '/setintegritylevel', 'M'],
-                   check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    icacls = str(windows / 'System32' / 'icacls.exe')
+    target = str(Path(executable).resolve())
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    # EXE 复制到发布目录后会继承该目录的 DACL（只有 Modify，不含 WRITE_OWNER），
+    # 而 /setintegritylevel 需要 WRITE_OWNER —— 非管理员直接报「拒绝访问」(exit 5)。
+    # 第 8 步因此确定性失败：构建目录里的 EXE 本来就有显式 Full Control，
+    # 复制到 release/ 后丢失。先给自己补一条 WRITE_OWNER（只多这一项权限），
+    # 再设置完整性标签；不改目录权限，也不扩大其他账户的访问范围。
+    user = os.environ.get('USERNAME') or getpass.getuser()
+    subprocess.run([icacls, target, '/grant:r', f'{user}:(WO)'],
+                   check=True, creationflags=flags)
+    subprocess.run([icacls, target, '/setintegritylevel', 'M'],
+                   check=True, creationflags=flags)
 
 
 def accept_executable(executable, workspace, env):
