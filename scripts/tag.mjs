@@ -227,12 +227,24 @@ if (isDirty) {
 }
 
 // ── 5. 拉取远端 tags，避免冲突 ──
+// 从**推送目标**拉，不是默认远端：本仓默认远端是 origin（上游只读镜像），
+// 它的网络抖一下就会让打 tag 在最后一步失败（2026-11-18 实测 schannel 握手失败）。
+// 本地迭代 tag 只在 fork 上，从 mine 拉才有意义。
+
+const branch = sh("git rev-parse --abbrev-ref HEAD");
+let pushTarget;
+try {
+  pushTarget = resolvePushRemote(ROOT);
+} catch (e) {
+  die(e.message);
+}
+const pushRefspec = resolvePushRefspec(branch);
 
 if (dryRun) {
-  log("(dry-run) 跳过 git fetch --tags");
+  log(`(dry-run) 跳过 git fetch --tags（目标 ${pushTarget.name}）`);
 } else {
-  log("拉取远端 tags...");
-  exec("git", ["fetch", "--tags", "--quiet"]);
+  log(`拉取 ${pushTarget.name} 的 tags...`);
+  exec("git", ["fetch", pushTarget.name, "--tags", "--quiet"]);
   ok("远端 tags 同步完成");
 }
 
@@ -247,8 +259,6 @@ if (dryRun) {
 }
 
 // ── 7. 推送（含重试机制） ──
-
-const branch = sh("git rev-parse --abbrev-ref HEAD");
 
 function pushWithRetry(pushArgs, label) {
   const maxRetries = 2;
@@ -274,14 +284,6 @@ function pushWithRetry(pushArgs, label) {
     }
   }
 }
-
-let pushTarget;
-try {
-  pushTarget = resolvePushRemote(ROOT);
-} catch (e) {
-  die(e.message);
-}
-const pushRefspec = resolvePushRefspec(branch);
 
 if (dryRun) {
   log(`(dry-run) 将推送 ${pushRefspec} → ${pushTarget.name} (${pushTarget.url})`);
