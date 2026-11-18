@@ -53,6 +53,9 @@ const GIT_VER = "2.47.1";                  // 文件名中的版本号（无 .wi
 // 版本号：唯一事实源是 VERSION 文件（main() 开头会强制校验 tag 与它一致）。
 // 这里先按 VERSION 读取，避免 RELEASE_DIR 在预检之前就用 tag 后缀算出另一个目录名。
 let VERSION = "dev";
+// 精确 tag（含本地迭代后缀，如 4.3.1-j）：VERSION 只能是 x.y.z，
+// 但「装的是哪一次迭代」要靠后缀才分得清，所以包内另写一份 BUILD_TAG。
+let EXACT_TAG = "";
 try {
   const { readFileSync: readVersion } = await import("node:fs");
   const fromFile = readVersion(resolve(ROOT, "VERSION"), "utf-8").trim();
@@ -309,6 +312,7 @@ async function main() {
       process.exit(1);
     }
     ok(`tag ${matchingTag} 精确指向 HEAD（${headCommit.slice(0, 8)}）`);
+    EXACT_TAG = matchingTag.replace(/^v/, "");
   }
 
   // 创建目录
@@ -809,6 +813,15 @@ async function main() {
   // VERSION 文件（供启动器运行时读取版本号）
   writeFileSync(resolve(RELEASE_DIR, "VERSION"), VERSION + "\n", "utf-8");
   ok("VERSION");
+
+  // BUILD_TAG：本次打包的精确 tag（含 -j 这类本地迭代后缀）。
+  // 前端「有更新噢」拿 /api/version 比 GitHub tag，只读 VERSION 的话
+  // 4.3.1-j 的包会被判成 4.3.1，永远提示「已是最新」；反过来又会给
+  // 自己已经装上的版本弹更新。后端优先读这个文件（见 agent-core/app.js）。
+  if (EXACT_TAG) {
+    writeFileSync(resolve(RELEASE_DIR, "BUILD_TAG"), EXACT_TAG + "\n", "utf-8");
+    ok(`BUILD_TAG (${EXACT_TAG})`);
+  }
 
   // 默认头像：从 assets 源复制到 avatars 目录
   const defaultAvatar = resolve(AGENT_CORE, "assets", "default_assistant_header.png");

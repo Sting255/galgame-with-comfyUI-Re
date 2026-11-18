@@ -40,28 +40,61 @@ export function normalizeVersion(raw) {
   return String(raw ?? '').trim().replace(/^[vV]/, '')
 }
 
-/** '3.4.2-beta.1' → [3, 4, 2]：只比较数字段，非数字段按 0 处理 */
+/**
+ * 版本号拆成「数字段 + 本地迭代后缀」：
+ *   '4.3.1'   → { nums: [4, 3, 1], suffix: '' }   上游正式版
+ *   '4.3.1-j' → { nums: [4, 3, 1], suffix: 'j' }  本仓第 j 次本地修复
+ *
+ * 为什么后缀必须参与比较：本仓 tag 有两段结构（上游 vX.Y.Z + 本地 vX.Y.Z-<字母>），
+ * 旧实现 split('-')[0] 把后缀直接丢掉，4.3.1 与 4.3.1-j 判成同一版本，
+ * 于是 v4.3.1-a ~ -j 全部不算「更新」，「有更新噢」对这些版本永远静默。
+ */
 function parseVersion(raw) {
-  return normalizeVersion(raw)
-    .split('-')[0]
-    .split('.')
-    .map(seg => {
-      const n = Number.parseInt(seg, 10)
-      return Number.isFinite(n) ? n : 0
-    })
+  const text = normalizeVersion(raw)
+  const dash = text.indexOf('-')
+  const base = dash === -1 ? text : text.slice(0, dash)
+  const suffix = dash === -1 ? '' : text.slice(dash + 1).toLowerCase()
+  const nums = base.split('.').map(seg => {
+    const n = Number.parseInt(seg, 10)
+    return Number.isFinite(n) ? n : 0
+  })
+  return { nums, suffix }
+}
+
+/**
+ * 后缀比较：同一 base 版本下，'i' < 'j'；无后缀（正式版）小于任何本地迭代。
+ * 逐段比较，纯数字段按数值（'2' < '10'），字母段按字典序；段数多的更新。
+ */
+function compareSuffix(a, b) {
+  if (a === b) return 0
+  if (!a) return -1
+  if (!b) return 1
+  const pa = a.split('.')
+  const pb = b.split('.')
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? ''
+    const y = pb[i] ?? ''
+    if (x === y) continue
+    const nx = Number.parseInt(x, 10)
+    const ny = Number.parseInt(y, 10)
+    if (Number.isFinite(nx) && Number.isFinite(ny)) return nx > ny ? 1 : -1
+    return x > y ? 1 : -1
+  }
+  return 0
 }
 
 /** 版本号比较：a > b 返回 1，a < b 返回 -1，相等返回 0 */
 export function compareVersions(a, b) {
   const pa = parseVersion(a)
   const pb = parseVersion(b)
-  const len = Math.max(pa.length, pb.length)
+  const len = Math.max(pa.nums.length, pb.nums.length)
   for (let i = 0; i < len; i++) {
-    const x = pa[i] ?? 0
-    const y = pb[i] ?? 0
+    const x = pa.nums[i] ?? 0
+    const y = pb.nums[i] ?? 0
     if (x !== y) return x > y ? 1 : -1
   }
-  return 0
+  return compareSuffix(pa.suffix, pb.suffix)
 }
 
 /** 从 tag 列表里挑出最新 tag（版本号最大的那个） */

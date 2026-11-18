@@ -300,6 +300,15 @@ app.get('/api/version', (req, res) => {
   } catch {
     // VERSION 缺失（非标准部署）时返回空串，前端据此跳过更新提示
   }
+  // 发布包另有 BUILD_TAG（精确 tag，如 4.3.1-j）：VERSION 只能是 x.y.z
+  // （发布预检与启动器 __version__ 都要求），但本地到底装的是哪一次迭代
+  // 只有后缀能说清。只读 VERSION 会让 4.3.1-j 的包永远提示「已是最新」。
+  try {
+    const exactTag = readFileSync(path.join(ROOT_DIR, 'BUILD_TAG'), 'utf-8').trim();
+    if (exactTag) version = exactTag;
+  } catch {
+    // 源码运行时没有这个文件，退回 VERSION
+  }
   res.json({ version });
 });
 
