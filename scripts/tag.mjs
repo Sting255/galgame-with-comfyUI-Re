@@ -90,7 +90,10 @@ let dryRun = false;
 for (const arg of args) {
   if (arg === "--dry-run" || arg === "-n") {
     dryRun = true;
-  } else if (arg.startsWith("v") || /^\d/.test(arg)) {
+  } else if (/^v?\d+\.\d+\.\d+(?:-[0-9a-z.]+)?$/i.test(arg)) {
+    // 只有「长得像版本号」的参数才当版本：旧判定是 startsWith('v') || 数字开头，
+    // 于是任何以 v 开头的注释（如 "v4.3.1-k：发布链改推 fork"）都被当成版本号，
+    // git tag 直接报 not a valid tag name。
     manualVersion = arg.startsWith("v") ? arg : `v${arg}`;
   } else {
     manualMessage = arg;
