@@ -32,6 +32,25 @@ export function isSensitiveSourceFile(fileName) {
 }
 
 /**
+ * 第三方依赖树：里面的 .tar.gz 是包自带的运行时数据，不是本地备份归档。
+ *
+ * 实测（2026-11-18，v4.3.1-l）：`runtime/python/Lib/site-packages/dateutil/zoneinfo/
+ * dateutil-zoneinfo.tar.gz` 被 `*.tar.gz` 规则判成本地备份，打包在最后一道门禁被拒。
+ * python-dateutil 的时区数据本来就是 tar.gz；node_modules 里也可能有测试夹具。
+ * 只对「本地备份归档」这条启发式放行，密钥 / env / 设备令牌 / 玩家数据仍然全量检查。
+ */
+const VENDORED_PREFIXES = [
+  'runtime/python/lib/site-packages/',
+  'runtime/nodejs/',
+  'agent-core/node_modules/',
+  'web-ui/node_modules/',
+]
+
+function isVendoredRelPath(lowerRel) {
+  return VENDORED_PREFIXES.some(prefix => lowerRel.startsWith(prefix))
+}
+
+/**
  * 返回归档中禁止交付的文件。目录条目不代表数据内容，直接跳过。
  * keepEnv 只允许显式自用包携带 agent-core/.env 或 .env.local，不放行其它变体。
  */
@@ -60,7 +79,7 @@ export function findSensitiveArchiveMembers(members, {
       reason = '设备配对凭证 / 服务握手令牌'
     } else if (base === 'settings.local.json') {
       reason = '本机工具配置'
-    } else if (lowerRel.endsWith('.tar.gz')) {
+    } else if (lowerRel.endsWith('.tar.gz') && !isVendoredRelPath(lowerRel)) {
       reason = '本地备份归档'
     } else if (lowerRel.startsWith('agent-core/data/') && !allowData && !allowedData.has(lowerRel)) {
       reason = '玩家数据库或媒体数据'
