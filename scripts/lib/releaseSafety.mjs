@@ -112,6 +112,10 @@ export const KNOWN_HISTORY_EXCEPTIONS = Object.freeze([
     path: 'android-shell/release.keystore',
     reason: '已轮换并停止维护安卓包（2026-11-16），不再随桌面交付',
   }),
+  Object.freeze({
+    path: '.claude/settings.local.json',
+    reason: '开发期 Claude 本地工具权限清单，2026-11-18 逐 blob 核实仅含 localhost 命令与 allow 项、无密钥；且早已随公开仓库发布',
+  }),
 ])
 
 /** 把历史命中拆成「可解释放行」与「必须阻断」两类。 */
