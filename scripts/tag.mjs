@@ -244,8 +244,14 @@ if (dryRun) {
   log(`(dry-run) 跳过 git fetch --tags（目标 ${pushTarget.name}）`);
 } else {
   log(`拉取 ${pushTarget.name} 的 tags...`);
-  exec("git", ["fetch", pushTarget.name, "--tags", "--quiet"]);
-  ok("远端 tags 同步完成");
+  // 只是冲突预防：网络/代理抖动不该让打 tag 停在这一步（2026-11-18 实测
+  // 本机 Clash 代理偶发 TLS EOF，fetch 失败但本地仓库完全可用）。
+  // 真出现 tag 重名，后面的 push 会以 already exists 明确报错。
+  const fetched = spawnSync("git", ["fetch", pushTarget.name, "--tags", "--quiet"], {
+    cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: "pipe",
+  });
+  if (fetched.status === 0) ok("远端 tags 同步完成");
+  else log(`${C.yellow}[WARN] 拉取远端 tags 失败（${String(fetched.stderr || "").trim().split("\n").pop() || "网络/代理"}），继续打本地 tag${C.reset}`);
 }
 
 // ── 6. 打 tag ──
@@ -261,7 +267,8 @@ if (dryRun) {
 // ── 7. 推送（含重试机制） ──
 
 function pushWithRetry(pushArgs, label) {
-  const maxRetries = 2;
+  // 3 次：本机走 Clash 代理，偶发 TLS 握手失败，2 次（5s/10s）窗口太窄
+  const maxRetries = 3;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const result = spawnSync("git", [
