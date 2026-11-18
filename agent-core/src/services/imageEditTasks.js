@@ -14,6 +14,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import { getPendingDir } from './imagePaths.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { invalidateGalleryCache } from './galleryCache.js';
+import { assignGalleryImageTimes, rememberGalleryImageTime } from './galleryImageTimes.js';
 
 const tasks = new Map();
 
@@ -207,8 +208,14 @@ export async function applyEditTask(id, token) {
       // URL 由 applyEditTask 调用方按 appliedUrl 更新。
       finalPath = task.targetPath.replace(new RegExp(`${targetExt.replace('.', '\\.')}$`, 'i'), stagedExt);
     }
+    const previousPath = fs.existsSync(task.targetPath) ? task.targetPath : fs.existsSync(finalPath) ? finalPath : null;
+    if (previousPath) {
+      const previous = fs.statSync(previousPath);
+      assignGalleryImageTimes([{ url: task.url, name: path.basename(previousPath), mtime: previous.mtimeMs, birthtime: previous.birthtimeMs }]);
+    }
     fs.mkdirSync(path.dirname(finalPath), { recursive: true });
     fs.renameSync(task.pendingPath, finalPath);
+    rememberGalleryImageTime(task.url);
     task.appliedPath = finalPath;
     if (finalPath !== task.targetPath) {
       // 清掉旧扩展名实体及其 .avif 孪生，别让回退中间件再返回一张旧图

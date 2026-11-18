@@ -15,9 +15,23 @@ export const generatePhotoStudioBackground = ({ description, signal }) => reques
 export const getPhotoStudioCapability = () => request('/photo-studio/capability')
 export const getPhotoStudioCharacters = () => request('/photo-studio/characters')
 export const getPhotoStudioJobs = () => request('/photo-studio/jobs')
+export const getPhotoStudioFinishes = () => request('/photo-studio/finishes')
+export const setPhotoStudioFinishDefaults = body => request('/photo-studio/finish-defaults', { method: 'PUT', body })
+export const retryPhotoStudioFinish = id => request(`/photo-studio/jobs/${encodeURIComponent(id)}/finish/retry`, { method: 'POST' })
+export async function savePhotoStudioFinish(id, recipe, png, reuseForNewPhotos = true) {
+  const response = await fetch(`${BASE}/photo-studio/jobs/${encodeURIComponent(id)}/finish`, {
+    method: 'PUT', headers: { 'Content-Type': 'image/png', 'X-Studio-Recipe': encodeURIComponent(JSON.stringify(recipe)), 'X-Studio-Reuse': String(reuseForNewPhotos) }, body: png,
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.error || `保存成品失败（${response.status}）`)
+  return result
+}
 export const getPhotoStudioJob = id => request(`/photo-studio/jobs/${encodeURIComponent(id)}`)
 export const getPhotoStudioDiagnostics = id => request(`/photo-studio/jobs/${encodeURIComponent(id)}/diagnostics`)
 export const createPhotoStudioJob = body => request('/photo-studio/jobs', { method: 'POST', body })
+export const createPhotoStudioBatch = body => request('/photo-studio/batches', { method: 'POST', body })
+export const getPhotoStudioBatch = id => request(`/photo-studio/batches/${encodeURIComponent(id)}`)
+export const stopPhotoStudioBatch = id => request(`/photo-studio/batches/${encodeURIComponent(id)}/stop`, { method: 'POST' })
 export const getPhotoStudioPrompt = body => request('/photo-studio/prompt-preview', { method: 'POST', body })
 export const generateStudioClothingDraft = ({ signal, ...body }) => request('/photo-studio/clothing-draft', { method: 'POST', body, signal })
 export const getSystemRulesOverride = () => request('/config/system-rules')
@@ -481,6 +495,8 @@ export async function getWorkflows() {
 }
 
 // ── Character Relationships ──
+export const getRelationshipGraph = () => request('/relationships/graph')
+
 export async function getRelationships(characterId) {
   return request(`/relationships?character_id=${characterId}`)
 }

@@ -28,6 +28,8 @@ Avoid unnecessary secondary labels and descriptions. Let the layout do the expla
 
 以下各小节只写**接入口径**（引入方式、prop 行为、特例白名单、改哪个文件），不重复描述皮肤语言（软糖立体 / 软糖凹陷）、变体语义与色值归属。
 
+**例外：关系图**（`RelationshipWorkspace.vue` / `RelationshipCanvas.vue` / `RelationshipWindow.vue` + `styles/relationship.css`）是上游 v4.4.0 的自绘控件域，按钮/输入/弹窗沿用其 `rel-*` 样式与自建窗口，不套 Linshe 组件；改动只在这组文件内进行，不要再把 Linshe 皮肤混进去。
+
 ## 按钮（LinsheButton）
 
 web-ui 中所有常规按钮必须使用统一组件 `web-ui/src/components/ui/LinsheButton.vue`，禁止写裸 `<button>` 标签或全局 button 样式。
@@ -121,12 +123,12 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 4. 异步交互要排队而不是丢弃：她睡着时被私聊/被评论，进延迟队列，醒后 5~15 分钟补上（`reply_queue` 与 `moment_comment_queue` 各一套）。
 5. 新增入口照抄现有实现，不要重新发明：`momentScheduler`（候选筛选 SQL）、`proactiveChatScheduler`（`is_sleeping = 0`）、`momentInteractionService`（逐个好友判定）、`mediaService.pickActiveCharacters`（排除睡眠与关朋友圈）。
 
-## 临时测试脚本
+## 最少必要测试与脚本清理
 
-调试过程中产生的临时验证脚本（`test.js`、`debug-*.js`、根目录散落的 scratch 脚本等）默认用完即删，不要留在仓库里污染 `git status` 和搜索结果。
+**核心原则：编码过程中尽量少做测试，只验证本次改动的必要风险；测试流程结束后，不保留本次生成的测试脚本。**
 
 1. 临时脚本只用于当场验证，跑完、结论确认后就删除；随手生成的调试日志（如 `*.log`）一并清理
-2. 临时脚本用完即删。项目以真机验收为主（解压交付包真启动 + 真机点一遍）。2026-11-12 合并上游 v4.3.0 时按「能独立跑通才留」筛选，只保留两类回归测试：`agent-core/test/photoStudio*.test.js`（照相馆）与 `memoryThinking.test.js`，入口 `npm --prefix agent-core test`；其余 `*.test.js` 不再新增，跑不通的直接删
+2. 临时脚本用完即删。项目以真机验收为主（解压交付包真启动 + 真机点一遍）。2026-11-12 合并上游 v4.3.0 时按「能独立跑通才留」筛选，只保留两类回归测试：`agent-core/test/photoStudio*.test.js`（照相馆）与 `memoryThinking.test.js`，入口 `npm --prefix agent-core test`；其余 `*.test.js` 不再新增，跑不通的直接删。上游 v4.4.0 删掉了其中 5 个，本地在合并时恢复并继续维护
 3. 判断口径：没有「正式测试」这一层。要留的验证逻辑写成文档里的复现步骤，或留成可按需手动跑的独立脚本放 `scripts/`，不要伪装成测试收集链
 
 ## 交付前的验收（2026-11-06 用户定，必做）
@@ -175,7 +177,7 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 
 **角色外观系统：**
 
-1. 数据源两张表：`character_outfits`（角色专属形态/装甲/衣服，每角色同时只启用一套，启用互斥由 `outfitService` 保证；详情卡 UI 入口暂注释隐藏在 `CharacterDetailModal.vue`，搜「暂时隐藏」）、`global_outfits`（通用限时服饰如女仆装 tag 组合，可多套叠加；管理方式未定，`condition_json` 预留注入条件，当前 `enabled` 即生效）
+1. 数据源两张表：`character_outfits`（角色专属形态/装甲/衣服，每角色同时只启用一套，启用互斥由 `outfitService` 保证；详情卡入口已开放，位于「外观服装」页签的「外观 / 形态」工具栏）、`global_outfits`（通用限时服饰如女仆装 tag 组合，可多套叠加；管理方式未定，`condition_json` 预留注入条件，当前 `enabled` 即生效）
 2. 查询生效外观只走 `outfitService.getActiveOutfits(characterId)`；注入文本格式与着装优先级说明（两者都有 / 只有限时 / 只有专属三种）只改 `buildOutfitInjectionBlocks`，不要在调用点拼
 3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`；改完在真机上换一次衣服确认五套身体没漂
 

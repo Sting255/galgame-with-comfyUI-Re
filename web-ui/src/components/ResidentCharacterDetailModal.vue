@@ -286,7 +286,7 @@
 </linshe-button>
                             </div>
                             <linshe-input
-                              v-model="activeSceneOutfit.description" type="textarea" rows="10" :disabled="outfitBatchRunning"
+                              v-model="activeSceneOutfit.description" type="textarea" rows="10" :disabled="outfitBatchRunning || outfitGenerating"
                               :aria-label="`${activeSceneOutfit.scene === 'work' ? '默认' : activeSceneOutfit.sceneLabel}外观描述`"
                               :placeholder="activeSceneOutfit.scene === 'work' ? '常态外观描述（中英混合），生图时作为基础外观' : '这套服装的外观描述（中英混合）'"
                               @input="detail.dirty = true"
@@ -361,7 +361,7 @@
               <slot name="footer-leading" />
               <linshe-button v-if="!profileAdapter" variant="danger" @click="deleteChar">&#x1F5D1; 删除角色</linshe-button>
               <linshe-button v-if="!profileAdapter" variant="secondary" :title="`声音 · ${voiceLabel}`" @click="showVoiceModal = true">声音设置</linshe-button>
-              <linshe-button variant="secondary" :disabled="profileSaving || outfitBatchRunning" @click="openRefineModal">
+              <linshe-button variant="secondary" :disabled="profileSaving || outfitBatchRunning || outfitGenerating" @click="openRefineModal">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 16 11-11a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /><path d="m13 7 3 3M19 13v6m-3-3h6M6 2v6M3 5h6" /></svg>
                 修正外观
               </linshe-button>
@@ -369,7 +369,7 @@
                 外观 tag 参考
                 <a :href="`https://animadex.net/?mode=characters&q=${encodeURIComponent(character?.name).replaceAll('_', '+')}`" target="_blank" :title="character?.name">animadex · {{ character?.display_name || character?.name }}</a>
               </div>
-              <linshe-button variant="primary" :class="{ 'detail-save-right': profileAdapter }" :loading="profileSaving" :disabled="!detail.dirty || outfitBatchRunning" @click="saveCharDetail">保存</linshe-button>
+              <linshe-button variant="primary" :class="{ 'detail-save-right': profileAdapter }" :loading="profileSaving" :disabled="!detail.dirty || outfitBatchRunning || outfitGenerating" @click="saveCharDetail">保存</linshe-button>
             </div>
           </div>
         </div>
@@ -971,6 +971,8 @@ async function loadSceneOutfits(characterId, fallbackWorkDesc = '') {
   detail.sceneOutfitsError = ''
   try {
     const d = await api.listSceneOutfits(characterId)
+    // 上游 v4.4.0 守卫：角色已切走 / 弹窗已关时丢弃这次响应，别把别人的服装写进当前编辑态。
+    if (props.character?.id !== characterId || !props.visible) return
     const scenes = d.scenes || []
     const exist = d.outfits || []
     detail.sceneOutfits = scenes.map(s => {
@@ -992,6 +994,7 @@ async function loadSceneOutfits(characterId, fallbackWorkDesc = '') {
     })
   } catch (err) {
     console.error('loadSceneOutfits failed:', err)
+    if (props.character?.id !== characterId || !props.visible) return
     detail.sceneOutfits = []
     // 关键：只清空数组会让模板固定渲染「加载中…」，用户永远等不到结果。
     // 把原因写进错误态，模板给「重试」，接口 404/500/超时都能自救。
@@ -1104,16 +1107,18 @@ const outfitBatchRunning = computed(() => props.profileAdapter ? !!props.profile
 const refreshedOutfitTasks = new Set()
 watch(() => imageEditTasks.tasks.filter(task => task.action === 'scene_outfits'
   && Number(task.meta?.characterId) === Number(props.character?.id)
-  && ['ready', 'failed'].includes(task.status)).map(task => task.id).join(','), async () => {
+  && ['ready', 'failed'].includes(task.status)).map(task => task.id).join(','), async (_, __, onCleanup) => {
+  let cancelled = false
+  onCleanup(() => { cancelled = true })
   const c = props.character
-  if (!c) return
+  if (!c || !props.visible) return
   const finished = imageEditTasks.tasks.filter(task => task.action === 'scene_outfits'
     && Number(task.meta?.characterId) === Number(c.id) && ['ready', 'failed'].includes(task.status)
     && !refreshedOutfitTasks.has(task.id))
   if (!finished.length) return
   try {
     const [outfits, standings] = await Promise.all([api.listSceneOutfits(c.id), api.listSceneStandings(c.id)])
-    if (props.character?.id !== c.id) return
+    if (cancelled || props.character?.id !== c.id || !props.visible) return
     detail.sceneOutfits = detail.sceneOutfits.map(outfit => {
       const saved = outfits.outfits?.find(row => row.scene === outfit.scene)
       return outfit.scene !== 'work' && saved ? { ...outfit, name: saved.name, description: saved.description } : outfit
@@ -1142,6 +1147,7 @@ async function generateThisSceneOutfit() {
   try {
     const scene = slot.scene
     const result = await api.generateSceneOutfits(c.id, true, { baseAppearance: base, scenes: [scene] })
+    if (props.character?.id !== c.id || !props.visible) return
     const item = (Array.isArray(result?.outfits) ? result.outfits : []).find(o => o.scene === scene)
     if (item && (item.description || '').trim()) {
       slot.description = item.description
@@ -1207,7 +1213,7 @@ async function generateOtherSceneOutfits(options = {}) {
   const c = props.character
   // 2026-11-07（用户选 C）：默认「描述 + 立绘」一路走到底；传 withStanding:false 只出描述。
   const withStanding = options.withStanding !== false
-  if (!c || outfitGenerating.value || outfitBatchRunning.value || standingBusy.value) return
+  if (!c || profileSaving.value || outfitGenerating.value || outfitBatchRunning.value || standingBusy.value) return
   const base = workOutfitText.value
   if (!base) { toastFn('先填写默认（常态外观），才能以它为基准生成', 'warning'); return }
   // 场景列表没加载出来（接口失败）时用后端 OUTFIT_SCENES 里除默认外的三套 key 兜底，
@@ -1233,6 +1239,7 @@ async function generateOtherSceneOutfits(options = {}) {
     // 「后台任务」期待 result.task_id，于是每次点完都抛「未收到后台任务，请重启后端」——
     // 而文字其实已经落库了。用户看到报错、界面又没刷新，再点「生成本套立绘」时自然像是没生效。
     const result = await api.generateSceneOutfits(c.id, true, { baseAppearance: base, scenes: targets })
+    if (props.character?.id !== c.id || !props.visible) return
     const generated = Array.isArray(result?.outfits) ? result.outfits : []
     if (generated.length) {
       // 直接把新描述合并进当前编辑态，避免再拉一次接口打断用户正在改的内容
@@ -1398,6 +1405,8 @@ watch(() => [props.visible, props.character], ([v, c], previous) => {
   // 详情卡收起时一并收起亲密信息子窗，避免留下孤儿弹窗（也复位 flag，否则卡片再也打不开）
   if (!v) showIntimateModal.value = false
   if (!v || !c) return
+  // 上游 v4.4.0 守卫：同一个角色、还有未保存改动时，父组件换了个对象引用不能把编辑态 init 掉。
+  if (!props.profileAdapter && previous?.[0] && previous[1]?.id === c.id && detail.dirty) return
   // 后台头像 / 形象完成不能覆盖正在编辑的系统角色草稿。
   if (props.profileAdapter && previous?.[0] && previous[1]?.id === c.id && detail.dirty) {
     // 后台新生成的衣服回填未编辑的槽位，保留用户在其他槽位里的草稿。
@@ -1542,7 +1551,7 @@ async function saveCharDetail() {
   const c = props.character
   // ⚠ 2026-10-08 合并 v3.7.0：上游新增 dirty 守卫与 previousName（用于改名后通知外部刷新）；
   //    本地是整卡重组。两者互不冲突，**合并保留**。
-  if (!c || !detail.dirty || outfitBatchRunning.value) return
+  if (!c || !detail.dirty || outfitBatchRunning.value || outfitGenerating.value) return
   if (props.profileAdapter) {
     if (profileSaving.value) return
     profileSaving.value = true
@@ -1935,7 +1944,7 @@ const refineBasePrompt = computed(() => {
 })
 
 function openRefineModal() {
-  if (!props.character || profileSaving.value || outfitBatchRunning.value) return
+  if (!props.character || profileSaving.value || outfitBatchRunning.value || outfitGenerating.value) return
   refineSceneKey.value = detail.sceneTab
   showRefineModal.value = true
 }

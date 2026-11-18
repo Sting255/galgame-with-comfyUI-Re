@@ -4,8 +4,14 @@ import { chatSync } from '../services/lorebook/runtime.js';
 import { config } from '../config.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 import { USER_SCOPE } from '../services/characterScope.js';
+import { readRelationshipGraph } from '../db/relationshipGraphRepository.js';
 
 const router = Router();
+
+// 聚合读取有向关系和居室归属，避免逐角色请求；沿用本路由的访问控制。
+router.get('/graph', (_req, res) => {
+  res.json(readRelationshipGraph(getDb()));
+});
 
 function extractShortPersonality(basePrompt) {
   if (!basePrompt) return '未知';

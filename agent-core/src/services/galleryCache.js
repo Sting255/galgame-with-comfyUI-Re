@@ -17,6 +17,7 @@
 import { readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { getAllImageDirs } from './imagePaths.js';
+import { assignGalleryImageTimes, compareGalleryImages } from './galleryImageTimes.js';
 
 export const galleryCache = {
   data: null,       // { images: [...], total: number }
@@ -55,7 +56,7 @@ async function scanDirectory(dirPath, category, urlPrefix) {
       batch.map(async (name) => {
         try {
           const s = await stat(join(dirPath, name));
-          return { name, size: s.size, mtime: s.mtimeMs, folder: category, url: `${urlPrefix}/${name}` };
+          return { name, size: s.size, mtime: s.mtimeMs, birthtime: s.birthtimeMs, folder: category, url: `${urlPrefix}/${name}` };
         } catch {
           // 扫描过程中这个文件被删了 / 被改名了：跳过它，不影响其它文件
           return null;
@@ -95,7 +96,8 @@ async function doRefresh() {
     allResults.push(...results);
   }
 
-  allResults.sort((a, b) => b.mtime - a.mtime);
+  assignGalleryImageTimes(allResults);
+  allResults.sort(compareGalleryImages);
 
   // 扫描期间有图写入/删除 → 这批结果已经过期，不写缓存（下次请求重扫）。
   // 不写缓存也不会让调用方拿不到数据：本次结果照样返回给它用，

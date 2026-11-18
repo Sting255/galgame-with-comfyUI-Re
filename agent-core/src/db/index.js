@@ -54,7 +54,8 @@ import { migrateCohabitationSchema } from './cohabitationRepository.js';
 import { migrateInterCharacterEventSchema } from './interCharacterEventSchema.js';
 import { migrateWorldTimelineSchema } from './worldTimelineSchema.js';
 import { migrateCharacterBondSchema } from './characterBondSchema.js';
-import { migratePhotoStudioSchema } from './photoStudioSchema.js';
+import { migratePhotoStudioSchema, recoverPhotoStudioFinishes } from './photoStudioSchema.js';
+import { migrateGallerySchema } from './gallerySchema.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -302,6 +303,7 @@ export { SCHEMA_VERSION };
 // ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
 // moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
 function cleanupOrphanedInFlight(database) {
+  recoverPhotoStudioFinishes(database);
   database.prepare("UPDATE photo_studio_jobs SET status = 'failed', stage = 'failed', error = '服务重启导致拍摄中断，请重新拍摄', finished_at = datetime('now') WHERE status = 'running'").run();
   recoverInterruptedDiaries(database);
   recoverSpeechJobs(database);
@@ -361,6 +363,7 @@ function cleanupOrphanedInFlight(database) {
 }
 
 function initSchema(db) {
+  migrateGallerySchema(db);
   db.exec(`
     -- 原始完整消息表（LLM 上下文用，不拆分）
     CREATE TABLE IF NOT EXISTS raw_messages (

@@ -20,7 +20,7 @@ import chatRoutes from './src/routes/chat.js';
 import ttsRoutes from './src/routes/tts.js';
 import memoryRoutes from './src/routes/memory.js';
 import imagesRoutes from './src/routes/images.js';
-import photoStudioRoutes from './src/routes/photoStudio.js';
+import photoStudioRoutes, { photoStudioQueue } from './src/routes/photoStudio.js';
 import charactersRoutes from './src/routes/characters.js';
 import emojiRoutes from './src/routes/emoji.js';
 import intimateRoutes from './src/routes/intimate.js';
@@ -346,6 +346,7 @@ console.log('============================================');
 
 // 初始化数据库
 getDb();
+photoStudioQueue.start();
 console.log('[db] SQLite initialized');
 
 // 启动自动压缩：清理任务删除大量行后，SQLite 只把页还回内部空闲列表，文件对操作系统的
@@ -658,6 +659,7 @@ const shutdown = async (exitCode = 0, { reason = '' } = {}) => {
   }
   if (shuttingDown) return;
   shuttingDown = true;
+  photoStudioQueue.dispose();
   console.log(`\n[agent-core] shutting down...${reason ? ` (${reason})` : ''}`);
 
   // 截止计时必须最先建立；清理中的任何同步/异步异常都不能挡住有限时退出。

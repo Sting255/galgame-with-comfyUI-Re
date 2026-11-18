@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { getDb, getSystemRulesWithWorld, getWorldSetting } from '../db/index.js';
 import { generateImage, generateImageRaw, getLastWorkflowMode, getComfyLorasRoot } from '../services/imageSkill.js';
 import { refineImage } from '../services/imageRefine.js';
-import { readImageWorkflow, preserveImageWorkflow } from '../services/imageWorkflowMetadata.js';
+import { readImageWorkflow, encodeImageWithWorkflow } from '../services/imageWorkflowMetadata.js';
 import sharp from 'sharp';
 import { startEditTask, listEditTasks, applyEditTask, discardEditTask, rerunEditTask } from '../services/imageEditTasks.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
@@ -56,6 +56,7 @@ let lastStyleTest = null;
 
 // ── 相册缓存已下沉到 services/galleryCache.js（服务层/路由层统一从这里导入）──
 import { getGallerySnapshot, invalidateGalleryCache } from '../services/galleryCache.js';
+import { forgetGalleryImageTime } from '../services/galleryImageTimes.js';
 import {
   readImageProvenance, buildRegenerateOptions, describeProvenanceGaps,
   deleteImageProvenance, saveImageProvenance,
@@ -63,7 +64,6 @@ import {
 // 兼容再导出：characters.js 等历史调用方仍从本模块导入
 export { invalidateGalleryCache };
 
-// GET /api/images/gallery — 获取相册图片列表（按修改时间倒序，支持分页 + 文件夹/角色筛选）
 // ── 姿势控制（Anima Control Pose）────────────────────────────────
 // 生图链路在 comfyClient 里读这三项决定要不要注入；这里只负责读写与参考图落盘。
 
@@ -86,6 +86,7 @@ router.put('/pose-control', (req, res) => {
   res.json(updatePoseControl({ enabled, strength, image, inputDir, poseFromPosition, poseFromPositionPortrait }));
 });
 
+// GET /api/images/gallery — 按固定的首次生成/加入时间倒序，支持分页 + 文件夹/角色筛选
 router.get('/gallery', async (req, res) => {
   try {
     // 缓存读取收口到 getGallerySnapshot（共享刷新 Promise + 失效 generation，方案 B09）：
@@ -122,7 +123,7 @@ router.get('/gallery', async (req, res) => {
 
     const pageImages = images.slice(offset, offset + limit);
     res.json({
-      images: pageImages.map(img => ({ name: img.name, url: img.url, size: img.size, mtime: img.mtime, folder: img.folder })),
+      images: pageImages.map(img => ({ name: img.name, url: img.url, size: img.size, createdAt: img.createdAt, mtime: img.mtime, folder: img.folder })),
       total,
       hasMore: offset + limit < total,
       folders,
@@ -539,7 +540,7 @@ async function pickLatestTestImage() {
     const snapshot = await getGallerySnapshot();
     const latest = snapshot.images?.[0];
     if (latest) {
-      saved = { type: 'saved', url: latest.url, at: latest.mtime, promptFallback: '' };
+      saved = { type: 'saved', url: latest.url, at: latest.createdAt, promptFallback: '' };
     }
   }
 
@@ -919,8 +920,7 @@ async function startImageEditTask(action, url) {
       let buffer = Buffer.from(base64, 'base64');
       // 已压缩图片原位覆盖时保持实际格式，不能把 PNG 字节写进 .avif 文件。
       if (/\.avif$/i.test(filePath) && ext !== '.avif') {
-        const pipeline = await preserveImageWorkflow(sharp(buffer), buffer);
-        buffer = await pipeline.avif({ quality: 50, effort: 4 }).toBuffer();
+        buffer = await encodeImageWithWorkflow(sharp(buffer).avif({ quality: 50, effort: 4 }), buffer, 'avif');
         ext = '.avif';
       }
       const stagedName = path.basename(stageBase) + ext;
@@ -945,8 +945,7 @@ async function startImageEditTask(action, url) {
     });
     if (category === 'photo_studio' && /\.avif$/i.test(outPath)) {
       const buffer = fs.readFileSync(outPath);
-      const pipeline = await preserveImageWorkflow(sharp(buffer), buffer);
-      fs.writeFileSync(outPath, await pipeline.avif({ quality: 50, effort: 4 }).toBuffer());
+      fs.writeFileSync(outPath, await encodeImageWithWorkflow(sharp(buffer).avif({ quality: 50, effort: 4 }), buffer, 'avif'));
     }
     return { filename: path.basename(outPath) };
   };
@@ -1147,7 +1146,10 @@ function deleteOneImage(imageUrl) {
       }
     }
 
-    // 聊天图片：清理 messages.images 和 raw_messages.prompt（文件已不在也照常清）
+    if (!fs.existsSync(filePath) && (!avifTwin || !fs.existsSync(avifTwin))) forgetGalleryImageTime(cleanUrl);
+
+    // 聊天图片：清理 messages.images 和 raw_messages.prompt
+    // ★ 即使文件已不在（幽灵引用）也照常清理 —— 否则这些引用永远删不掉。
     if (category === 'chat') {
       try {
         const db = getDb();

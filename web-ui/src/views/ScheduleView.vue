@@ -13,6 +13,7 @@
                   v-model="searchQuery"
                   class="search-input"
                   placeholder="搜索..."
+                  aria-label="搜索角色日程"
                   @keydown.esc="searchQuery = ''"
                 />
                 <div
@@ -24,9 +25,7 @@
                   @click="openSettings"
                   @keydown.enter.prevent="openSettings"
                   @keydown.space.prevent="openSettings"
-                >
-<gear-icon :size="18" />
-</div>
+                ><gear-icon :size="18" /></div>
                 <div
                   class="btn-reset"
                   :class="{ 'is-resetting': store.resetTask?.processing, 'is-disabled': store.resetTask?.processing && !store.resetTask?.backgrounded }"
@@ -37,8 +36,8 @@
                   @keydown.enter.prevent="handleResetClick"
                   @keydown.space.prevent="handleResetClick"
                 >
-                  <svg v-if="!store.resetTask?.processing" class="btn-reset-icon" viewBox="0 0 1024 1024" width="16" height="16"><path d="M1017.6 595.2c19.2-134.4-6.4-256-89.6-364.8C832 89.6 588.8-19.2 480 25.6c6.4 25.6 6.4 44.8 12.8 70.4 262.4 0 428.8 185.6 448 371.2 19.2 179.2-89.6 371.2-249.6 428.8v-179.2c0-25.6-12.8-38.4-32-38.4-38.4 0-51.2 12.8-38.4 57.6 12.8 70.4 6.4 140.8 0 211.2 0 38.4 19.2 32 64 32h160c83.2 0 96 12.8 96-32 0-25.6-6.4-38.4-38.4-38.4H832c96-76.8 166.4-179.2 185.6-313.6zM76.8 512c0-153.6 115.2-345.6 224-364.8v153.6c0 32 6.4 38.4 38.4 38.4s38.4-6.4 38.4-38.4V64c0-32-6.4-38.4-38.4-38.4H102.4C70.4 25.6 64 32 64 64s0 38.4 38.4 38.4h102.4c-230.4 185.6-243.2 467.2-128 659.2 108.8 185.6 326.4 256 460.8 236.8-6.4-25.6-6.4-44.8-12.8-70.4-275.2 6.4-448-217.6-448-416z" /></svg>
-                  <svg v-else class="btn-reset-icon spinning" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23,4 23,10 17,10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
+                  <svg v-if="!store.resetTask?.processing" class="btn-reset-icon" fill="currentColor" viewBox="0 0 1024 1024" width="16" height="16"><path d="M1017.6 595.2c19.2-134.4-6.4-256-89.6-364.8C832 89.6 588.8-19.2 480 25.6c6.4 25.6 6.4 44.8 12.8 70.4 262.4 0 428.8 185.6 448 371.2 19.2 179.2-89.6 371.2-249.6 428.8v-179.2c0-25.6-12.8-38.4-32-38.4-38.4 0-51.2 12.8-38.4 57.6 12.8 70.4 6.4 140.8 0 211.2 0 38.4 19.2 32 64 32h160c83.2 0 96 12.8 96-32 0-25.6-6.4-38.4-38.4-38.4H832c96-76.8 166.4-179.2 185.6-313.6zM76.8 512c0-153.6 115.2-345.6 224-364.8v153.6c0 32 6.4 38.4 38.4 38.4s38.4-6.4 38.4-38.4V64c0-32-6.4-38.4-38.4-38.4H102.4C70.4 25.6 64 32 64 64s0 38.4 38.4 38.4h102.4c-230.4 185.6-243.2 467.2-128 659.2 108.8 185.6 326.4 256 460.8 236.8-6.4-25.6-6.4-44.8-12.8-70.4-275.2 6.4-448-217.6-448-416z"/></svg>
+                  <svg v-else class="btn-reset-icon spinning" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                   <span>{{ store.resetTask?.processing ? (store.resetTask?.backgrounded ? `重置中 ${store.resetTask.current}/${store.resetTask.total}` : '重置中...') : '全部重置' }}</span>
                 </div>
               </div>
@@ -56,12 +55,13 @@
               @wake="onCardWake(c.id)"
               @pin="toggleCharPin(c)"
             />
+
           </div>
         </template>
 
         <!-- 空态（加载中不渲染，避免误报「还没有日程」） -->
         <div v-else-if="!store.loading" class="sched-placeholder">
-          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           <p>今天还没有角色日程</p>
           <span class="ph-hint">生成日程后，这里会显示每位角色的今日动向。</span>
           <linshe-button class="btn-glass" variant="secondary" @click="regenerateAll">为所有角色生成日程</linshe-button>
@@ -76,9 +76,8 @@
           <div class="sidebar-scan-content">
             <div class="sidebar-scan-icon">
               <svg viewBox="0 0 80 80" class="sidebar-scan-ring">
-                <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(var(--accent-rgb),0.12)" stroke-width="2.5" />
-                <circle
-cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
+                <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(var(--accent-rgb),0.12)" stroke-width="2.5"/>
+                <circle cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
                   stroke-width="2.5" stroke-linecap="round"
                   stroke-dasharray="214"
                   :stroke-dashoffset="214 * (1 - sidebarScanProgress / 100)"
@@ -112,7 +111,6 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
       :open="drawerOpen"
       :char="detailChar"
       :activities="detailActs"
-      :private-moment="detailPrivateMoment"
       :loading="detailLoading"
       :peek-busy="peekBusy"
       :regenerating="detailRegenerating"
@@ -121,8 +119,8 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
       @peek-at="onPeekAt"
       @regenerate="onRegenerate"
       @chat="onChat"
-      @wake-phone="onWakePhone"
-      @wake-door="onWakeDoor"
+      @wakePhone="onWakePhone"
+      @wakeDoor="onWakeDoor"
       @updated="detailActs = $event"
       @diary="onOpenDiary(detailChar)"
     />
@@ -187,8 +185,7 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
                   <div class="pk-ring-container">
                     <svg viewBox="0 0 80 80" class="pk-ring">
                       <circle cx="40" cy="40" r="34" fill="none" stroke="var(--pk-ring-track)" stroke-width="3" />
-                      <circle
-cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
                         stroke-width="3" stroke-linecap="round"
                         :stroke-dasharray="2 * Math.PI * 34"
                         :stroke-dashoffset="2 * Math.PI * 34 * (1 - peekProgress / 100)"
@@ -282,7 +279,7 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
               </svg>
               <span>为 {{ detailChar?.display_name || '...' }} 编排日程</span>
               <linshe-button class="reset-header-clear" variant="icon" size="sm" tone="danger" title="清空日程" @click="onClearFromModal">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </linshe-button>
             </div>
             <div class="reset-dialog-desc">
@@ -291,7 +288,7 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
                 type="textarea"
                 v-model="regenerateDirection"
                 class="regenerate-textarea"
-                placeholder="例如：今天去游乐园、安排出差的一天、宅在家里打游戏..."
+                placeholder="例如：今天做一场深夜直播、去鸽川区摆摊接客、宅在宿舍打一天游戏、去幻月游戏押注..."
                 rows="3"
                 ref="regenerateTextareaRef"
                 @keydown.enter.exact="confirmRegenerateWithDirection"
@@ -406,6 +403,8 @@ cx="40" cy="40" r="34" fill="none" stroke="var(--accent)"
 import { ref, computed, onMounted, onUnmounted, inject, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useScheduleStore } from '../stores/schedule.js'
+import { useDiaryStore } from '../stores/diary.js'
+import { useChatStore } from '../stores/chat.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { onEvent } from '../stores/unifiedStream.js'
 import * as api from '../api/index.js'
@@ -414,15 +413,15 @@ import CharacterDetailDrawer from '../components/CharacterDetailDrawer.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import GearIcon from '../components/GearIcon.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
+import { emitCharacterPinEnabled } from '../utils/characterReactionProducers.js'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import LinsheModal from '../components/ui/LinsheModal.vue'
 import LinsheSlider from '../components/ui/LinsheSlider.vue'
-// 角色日记本（上游 v3.9.0 合并）：宿主在 App.vue，这里只负责打开
-import { useDiaryStore } from '../stores/diary.js'
+import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
 
 const store = useScheduleStore()
-const settingsStore = useSettingsStore()
 const diaryStore = useDiaryStore()
+const settingsStore = useSettingsStore()
 const router = useRouter()
 
 const isMobile = inject('isMobile')
@@ -446,27 +445,28 @@ const refreshDays = ref(1)
 const scheduleDisableThinking = ref(false)
 const savingRefreshDays = ref(false)
 
-// 「停止所有角色生成日程」总闸（模板一直在用这三个名字，但实现漏了 —— 2026-11-07 lint 抓到
-// allSchedulesDisabled / scheduleAllToggling / toggleAllSchedules 全部未定义，点开关没反应）。
-const allSchedulesDisabled = ref(false)
+// ── 批量停止日程生成（全量省 token） ──
+const chatStore = useChatStore()
 const scheduleAllToggling = ref(false)
-watch(
-  () => store.characters,
-  list => { allSchedulesDisabled.value = (list?.length || 0) > 0 && list.every(c => c.schedule_enabled === 0) },
-  { immediate: true }
+// 所有角色都关着才算「已停止」；部分关时开关显示为关（点一下 = 全部停掉）
+const allSchedulesDisabled = computed(() =>
+  chatStore.characters.length > 0 && chatStore.characters.every(c => c.schedule_enabled === 0)
 )
 
-/** 开关语义：打开 = 停止生成（schedule_enabled = 0） */
 async function toggleAllSchedules(next) {
-  const stop = next === true
+  if (scheduleAllToggling.value) return
   scheduleAllToggling.value = true
   try {
-    await api.setAllScheduleEnabled(!stop)
-    for (const c of store.characters || []) c.schedule_enabled = stop ? 0 : 1
-    allSchedulesDisabled.value = stop
-    toastFn?.(stop ? '已停止所有角色的日程生成' : '已恢复所有角色的日程生成', 'success')
+    const r = await api.setAllCharactersScheduleEnabled(next)
+    await chatStore.loadCharacters()
+    toastFn(
+      next
+        ? `已停止 ${r?.changed ?? 0} 个角色的日程生成，之后不再消耗日程额度`
+        : `已恢复 ${r?.changed ?? 0} 个角色的日程生成`,
+      'success'
+    )
   } catch (err) {
-    toastFn?.('保存失败：' + (err?.message || '未知错误'), 'error')
+    toastFn('设置失败: ' + (err?.message || '未知错误'), 'error')
   } finally {
     scheduleAllToggling.value = false
   }
@@ -561,8 +561,6 @@ const detailChar = computed(() => {
   return enrichedChars.value.find(x => x.id === selectedCharId.value) || null
 })
 const detailActs = ref<any[]>([])
-/** 她今天的私密时刻（2026-10-02 自慰玩法）：随日程响应一起回来，抽屉里给一条提示 */
-const detailPrivateMoment = ref<any>(null)
 const detailLoading = ref(false)
 const detailRegenerating = ref(false)
 
@@ -572,34 +570,6 @@ const peekBusy = ref(false)
 const peekLoading = ref(false)
 const peekImage = ref<string | null>(null)
 const peekError = ref<string | null>(null)
-
-// ── 瞄一眼请求收尾（2026-10-22）──
-// 之前这里四个入口都是 fire-and-forget：HTTP 失败时 store 只把错误写进它自己的 peekError，
-// 而视图的 peekLoading 只认 SSE 的 schedule_peek_ready 事件 —— 于是进度条爬到 95% 后
-// **永久卡住**、不显示任何错因，用户只能关弹窗（真机日志里的 ScheduleView 就是这条路）。
-// 现在两条失败路径都收尾：① 请求抛错 → 立刻显示；② 请求成功但图迟迟不来 → 超时兜底。
-const PEEK_TIMEOUT_MS = 90_000
-let _peekTimeout: ReturnType<typeof setTimeout> | null = null
-
-function clearPeekTimeout() {
-  if (_peekTimeout) { clearTimeout(_peekTimeout); _peekTimeout = null }
-}
-
-function failPeek(message: string) {
-  peekError.value = message
-  peekLoading.value = false
-  peekBusy.value = false
-  clearPeekTimeout()
-  stopFakeProgress()
-}
-
-function startPeekRequest(request: () => Promise<unknown>) {
-  clearPeekTimeout()
-  _peekTimeout = setTimeout(() => {
-    if (peekLoading.value && !peekImage.value) failPeek('生成超时：图像迟迟没有回来，请重试')
-  }, PEEK_TIMEOUT_MS)
-  request().catch((err: any) => failPeek(err?.message || '生成失败'))
-}
 const peekPrompt = ref<string | null>(null)
 const peekParticipantIds = ref<number[]>([])
 const peekChar = ref<any>(null)
@@ -741,7 +711,6 @@ watch(peekLoading, (loading) => {
 // ── 相机快门动画：图片到达时触发 ──
 watch(peekImage, (newVal) => {
   if (newVal) {
-    clearPeekTimeout() // 图到了就撤掉超时兜底，避免它在下一次拍之前误报
     // 先复位再触发，确保每次图片到达都播放动画
     shutterFire.value = false
     nextTick(() => {
@@ -889,10 +858,6 @@ onUnmounted(() => {
   if (_phraseTimer) { clearInterval(_phraseTimer); _phraseTimer = null }
   stopSidebarTips()
   if (_pulseTimer) { clearInterval(_pulseTimer); _pulseTimer = null }
-  // 假进度是自递归的 setTimeout 链，以前只靠"拿到图/有错误"停，卸载后还会一直跑
-  // （组件实例被定时器持有）。超时兜底同样要撤。
-  clearPeekTimeout()
-  stopFakeProgress()
 })
 
 // ── 方法 ──
@@ -908,11 +873,7 @@ async function onSelectChar(id: number) {
   detailActs.value = []
   try {
     const d = await store.fetchCharacterSchedule(id)
-    if (current()) {
-      detailActs.value = d.activities || []
-      // 私密时刻（2026-10-02）：同一份日程响应里就带着，不用多发一次请求
-      detailPrivateMoment.value = d.private_moment || null
-    }
+    if (current()) detailActs.value = d.activities || []
   } catch { if (current()) detailActs.value = [] }
   finally { if (current()) detailLoading.value = false }
 }
@@ -925,7 +886,7 @@ function onPeek() {
   peekImage.value = null; peekError.value = null; peekPrompt.value = null
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
-  startPeekRequest(() => store.peekSnapshot(detailChar.value.id))
+  store.peekSnapshot(detailChar.value.id)
 }
 
 function onPeekAt(act: any) {
@@ -935,7 +896,7 @@ function onPeekAt(act: any) {
   peekImage.value = null; peekError.value = null; peekPrompt.value = null
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
-  startPeekRequest(() => store.peekSnapshot(detailChar.value.id, {
+  store.peekSnapshot(detailChar.value.id, {
     activity: act.activity,
     location: act.location,
     replyDelay: act.replyDelay,
@@ -946,7 +907,7 @@ function onPeekAt(act: any) {
     tags: act.tags,
     participantIds: act.participantIds,
     sharedEventId: act.sharedEventId,
-  }))
+  })
 }
 
 async function onRegenerate() {
@@ -992,13 +953,12 @@ async function onCardPeek(id: number) {
     detailActs.value = d.activities || []
   } catch { /* */ }
   const act = detailActs.value.find((a: any) => a.isCurrent) || detailActs.value[0]
-  // 这里原来写的是 detailChar.value（可能还是上一个角色），卡片的角色才是要拍的对象
-  peekChar.value = c
+  peekChar.value = detailChar.value
   peekAct.value = act || null
   peekImage.value = null; peekError.value = null; peekPrompt.value = null
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
-  startPeekRequest(() => store.peekSnapshot(id))
+  store.peekSnapshot(id)
 }
 
 function onChat() {
@@ -1007,7 +967,7 @@ function onChat() {
   router.push(`/chat/${detailChar.value.id}`)
 }
 
-// ── 日记（上游 v3.9.0 合并）：翻开 ta 的日记本（封面 / 正文 / 三张配图 / 历史翻阅都在日记本里） ──
+// ── 日记：翻开 ta 的日记本（封面 / 正文 / 三张配图 / 历史翻阅都在日记本里） ──
 function onOpenDiary(char: any) {
   if (!char?.id) return
   diaryStore.openBook({
@@ -1081,12 +1041,26 @@ async function onCardWake(id: number) {
 
 // ── 卡片置顶 ──
 async function toggleCharPin(c: any) {
+  const wasPinned = !!c.pinned
   const pinned = c.pinned ? 0 : 1
   c.pinned = pinned
   // enrichedChars 是 .map() 出来的副本，必须回写 store 源对象，否则切页签后状态回退
   const src = store.characters.find((ch: any) => ch.id === c.id)
   if (src) src.pinned = pinned
-  try { await api.togglePin(c.id, pinned) } catch {}
+  try {
+    const res = await api.togglePin(c.id, pinned)
+    // 只有接口确认成功、且确实从未置顶变成置顶才产生角色通知（§2.2）
+    emitCharacterPinEnabled({
+      characterId: c.id,
+      characterName: c.display_name || c.name || '',
+      wasPinned,
+      pinned: !!pinned,
+      ok: res?.ok === true && res?.pinned === pinned,
+    })
+  } catch {
+    c.pinned = wasPinned ? 1 : 0
+    if (src) src.pinned = wasPinned ? 1 : 0
+  }
 }
 
 // ── 叫醒系统（抽屉内） ──
@@ -1162,7 +1136,7 @@ function retryPeek() {
   if (!peekChar.value) return
   peekError.value = null; peekPrompt.value = null; peekLoading.value = true; peekBusy.value = true
   startFakeProgress()
-  startPeekRequest(() => store.peekSnapshot(peekChar.value.id))
+  store.peekSnapshot(peekChar.value.id)
 }
 
 async function retakePeek() {
@@ -1326,7 +1300,7 @@ function finishReset() {
 .topbar-row {
   display: flex; align-items: center; justify-content: space-between;
 }
-.topbar-row h2 { margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--text-bright); }
+.topbar-row h2 { margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--text-bright); flex-shrink: 0; white-space: nowrap; }
 .topbar-row h2.is-clickable { cursor: pointer; }
 
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
@@ -1339,7 +1313,7 @@ function finishReset() {
   width: 34px; height: 34px; border-radius: 50%;
   border: 2px solid transparent;
   background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent-text);
+  color: var(--accent);
   font-size: 18px; line-height: 1;
   cursor: pointer;
   transition: all 0.3s ease;
@@ -1360,7 +1334,7 @@ function finishReset() {
   border: 2px solid transparent;
   background: var(--grad-soft);
   background-size: 200% 200%;
-  color: var(--accent-text);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -1368,7 +1342,7 @@ function finishReset() {
   white-space: nowrap;
   user-select: none;
 }
-.btn-reset-icon { flex-shrink: 0; fill: currentColor; }
+.btn-reset-icon { flex-shrink: 0; }
 .btn-reset:hover:not(.is-disabled) {
   border: 2px solid rgba(var(--accent-rgb), 0.55);
   box-shadow: 0 3px 20px rgba(var(--accent-rgb), 0.10);
@@ -1382,7 +1356,7 @@ function finishReset() {
 .btn-reset.is-disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-reset.is-resetting {
   border-color: rgba(var(--accent-rgb), 0.35);
-  color: var(--accent-text);
+  color: var(--accent);
 }
 .btn-reset .spinning { animation: spin 1.2s linear infinite; }
 
@@ -1395,8 +1369,24 @@ function finishReset() {
   display: flex; align-items: baseline; justify-content: space-between;
 }
 .sched-settings-slider-heading label { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
-.sched-settings-value { font-size: 0.85rem; font-weight: 600; color: var(--accent-text); }
+.sched-settings-value { font-size: 0.85rem; font-weight: 600; color: var(--accent); }
 .sched-settings-hint { margin: 6px 0 0; font-size: 0.8rem; line-height: 1.5; color: var(--text-secondary); }
+/* 批量开关（停止所有角色生成日程） */
+.sched-settings-toggle-row {
+  display: flex; align-items: flex-start; gap: 12px;
+}
+.sched-settings-toggle-text {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+}
+.sched-settings-toggle-label {
+  font-size: 0.9rem; font-weight: 600; color: var(--text-primary);
+}
+.sched-settings-toggle-text .sched-settings-hint { margin-top: 4px; }
+.sched-settings-divider {
+  height: 1px; margin: 14px 0;
+  background: var(--glass-border);
+}
 
 
 /* ── Card Grid ── */
@@ -1404,9 +1394,11 @@ function finishReset() {
   flex: 1; overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 12px; padding: 16px 20px;
+  /* 底部多留 24px：卡片下沿伸出的日记入口是绝对定位、不计入行高，不留白最后一行会被裁 */
+  gap: 12px; padding: 16px 20px 40px;
   align-content: start;
 }
+
 
 /* ── Placeholder ── */
 .sched-placeholder {
@@ -1417,7 +1409,7 @@ function finishReset() {
 .sched-placeholder p { margin: 0; font-size: 0.95rem; }
 .ph-hint { font-size: 0.8rem; color: var(--text-secondary); }
 
-.loader { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent-text); border-radius: 50%; animation: spin 0.7s linear infinite; }
+.loader { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .btn-glass {
@@ -1528,13 +1520,13 @@ function finishReset() {
   position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);
   font-size: 17px; font-weight: 700;
-  color: var(--accent-text);
+  color: var(--accent);
 }
 
 /* ── 状态标签 ── */
 .sidebar-scan-label {
   font-size: 13px; font-weight: 700;
-  color: var(--accent-text);
+  color: var(--accent);
   letter-spacing: 0.08em;
   animation: sidebar-label-pulse 1.4s ease-in-out infinite;
 }
@@ -1704,14 +1696,14 @@ function finishReset() {
   opacity: 0;
 }
 .pk-wait span { font-size: 0.73rem; color: var(--pk-hint); }
-.loader-ring { width: 36px; height: 36px; margin: 0 auto; border: 3px solid var(--border); border-top-color: var(--accent-text); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.loader-ring { width: 36px; height: 36px; margin: 0 auto; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 /* 环形进度条（参照 ImageGenBubble） */
 .pk-ring-container { position: relative; width: 80px; height: 80px; margin: 0 auto 8px; }
 .pk-ring { width: 80px; height: 80px; transform: rotate(-90deg); }
 .pk-ring-progress { transition: stroke-dashoffset 0.4s ease; }
 .pk-ring-pct {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 16px; font-weight: 600; color: var(--accent-text);
+  font-size: 16px; font-weight: 600; color: var(--accent);
 }
 .pk-err { text-align: center; padding: 36px; }
 .pk-err p { color: var(--danger); margin: 0 0 4px; font-size: 0.9rem; }
@@ -1813,7 +1805,7 @@ function finishReset() {
 .reset-current-task.cancelled { color: var(--warning); }
 .loader-ring-sm {
   width: 18px; height: 18px;
-  border: 2px solid var(--border); border-top-color: var(--accent-text);
+  border: 2px solid var(--border); border-top-color: var(--accent);
   border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0;
 }
 
@@ -1838,6 +1830,17 @@ function finishReset() {
     position: absolute; top: 0; left: 0; right: 0; z-index: 20;
   }
   .topbar-row h2 { font-size: 1rem; }
+  .topbar-row { gap: 8px; }
+  .topbar-actions { flex: 1; min-width: 0; justify-content: flex-end; gap: 6px; }
+  .search-input {
+    width: 64px;
+    min-width: 0;
+    flex: 0 1 64px;
+    transition: width 0.3s var(--ease-standard), flex-basis 0.3s var(--ease-standard);
+  }
+  .search-input:focus { width: 180px; flex-basis: 180px; }
+  .topbar-actions .lib-gear { flex-shrink: 0; }
+  .topbar-actions .btn-reset { flex-shrink: 0; padding: 8px 10px; }
   .card-grid {
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: 8px; padding: 80px 10px 8px;
