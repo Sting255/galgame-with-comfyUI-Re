@@ -239,80 +239,29 @@ export function resolveClothingTags(tags, scene = 'work') {
   });
 }
 
-const CLOTHING_PROMPT = `你是角色服装提示词设计师。将后续角色资料与用户选取的服装 tag 编写成完整英文静态外观描述。
-【服装规则】
-- 角色身份、脸部、瞳色、发型、发色、肤色、体型和标志性身体特征沿用默认外观，不遗漏已有身体特征，不臆造缺失特征。服装按选取的 tag 与其中文含义重新设计。
-- 所有选取的 tag 都是硬性要求，逐项体现。识别服装、材质、颜色、长度、装饰和穿法，遵循词条含义，尤其 dress 是连衣裙，skirt 是半身裙。
-- 同一单品的大类和细分类合并成一件（shirt + white_shirt 是一件白衬衫）；兼容的衣服可合理叠穿；不要把默认服装中与新要求冲突的旧单品、旧颜色混进来。
-- 如果标签彼此无法同时满足（同一件衣服相反颜色、互斥长度或款式），返回 conflict 说明冲突，不擅自丢弃任何标签。可以合理叠穿的单品不视为冲突。
-- 用户补充只补全标签没规定的细节，不能覆盖已选标签。不要写动作、表情、姿势、场景、光线、画质、镜头或示例图人物身份。
-- 睡衣必须适合睡眠，赤脚，明确写 barefoot，不写鞋袜或旁边摆放的鞋袜；其他场景按场合搭配。
-【材质与部位（必须落到看得见）】
-- 材质要**贴在单品前面**写：a satin dress、sheer lace bodice、a leather belt。不要写成「dress, satin」这种并列 —— 实测并列时模型会把材质画成另一件单品。
-- 一套衣服用 2~3 种料子，各管一块部位，写成「部位 + 材质 + 可见表现」：lace cups showing the shadow of her skin、a satin skirt panel with a hard mirror sheen、sheer mesh sleeves with a faint grid。
-- 同一部位只准一种材质：sheer satin cups 这种叠写，生图时只会剩缎面。
-- 部位只用这些：cups、bodice、waist、hem、skirt panel、sleeves、straps、side panels、back、trim、cuffs、neckline、train、thigh band。只给本来就有的部位分配材质，别为了用某材质凭空造部件。
-- 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽 / 薄透 / 装饰类就别用。
-- 配色用一个主色 + 至多一个辅色；metal 色（gold、silver）放配饰与滚边最稳。
-- 英文一律小写、词间用空格（Anima 官方要求），不要写成下划线 tag。
-【输出 JSON 示例与字段约束】
-{"appearance":"Yoimiya (Genshin Impact) has blonde hair in a high ponytail and amber eyes, wearing a white collared shirt and a pleated skirt.（此处填至少 30 字符的一整段英文；以本次角色英文名及作品名开头，原创角色只写英文名；完整保留默认身体特征并准确描述每个所选 tag，不能照搬示例人物；不附加标签列表、解释或 Markdown。存在冲突时此字段为空字符串。）","conflict":"（无冲突时为空字符串；有无法兼容的标签时用简短中文说明具体冲突，并请用户调整选择，appearance 留空。）"}
-严格按示例的两个字段输出合法 JSON，不输出任何 JSON 以外的文字。`;
+const CLOTHING_PROMPT = `你是服装提示词设计师：按角色默认外观与本次标签，写一段可直接生图的静态英文衣着描述。
+规则：保留身份、脸、眼睛、发肤、体型和已有标志特征，不补造；丢弃默认外观中旧衣服及姿势、动作、镜头、场景、光线、画质词。所有所选 tag 都是硬约束，逐项体现其含义（dress 是连衣裙，skirt 是半身裙）；同一单品的大类与细类合并，兼容单品可叠穿。用户补充逐项保留，包括明确的穿着、半穿或脱衣状态；只填标签未规定的细节。标签与用户明确补充不能共存时，填 conflict 并说明，不擅自丢弃要求；可叠穿的不算冲突。睡衣适合睡眠并明确写 barefoot，不出现鞋袜。
+材质写在实际单品前（a satin dress, a leather belt），用 2~3 种分别表现于衣服已有的不同部位；每处一种并说明可见质感，不得为用材质虚构部件。避免不稳定的 velvet/knit，除非标签或用户明确指定；主色 1 种、辅色最多 1 种，金银色仅点缀，除非用户明确指定。英文小写，用空格不用下划线 tag。
 
-const OUTFIT_FROM_BRIEF_PROMPT = `你是角色服装设计助手。用户会用一句中文说他想要这套衣服是什么样，你要先挑出对应的服装 tag，再写成完整的英文外观描述。
+【输出 JSON 格式及约束】
+{"appearance":"（无冲突时：至少 30 字符的单段英文；以本角色英文名及作品名开头，原创角色只用其英文名；保留默认身体特征并体现全部所选标签和用户要求；不写示例人物、tag 清单或其他画面内容。有冲突时必须为空字符串。）","conflict":"（无冲突时为空字符串；有冲突时用简短中文指出互斥要求并请用户调整。）"}
+严格输出且只输出包含这两个字符串字段的合法 JSON，不加解释或 Markdown。`;
 
-【世界观优先（最高）】
-- 这套衣服必须属于<world_setting>描述的着装体系。先看那个世界的人穿什么（制服、校服、礼服、随身装备、束缚具…），再决定挑什么 tag。
-- 后面的「候选 tag」**只是一份词汇表**，不是必选项：符合世界观的照抄，不符合的**不要用**。宁可少挑几个、全靠描述写，也不要塞一个现代便装 tag 进去。
-- 用户要求与世界观冲突时，把用户的意图落到世界观允许的形制上（比如用户说「泳装」，而那个世界只有「浸礼用薄纱罩袍」，就做后者）；实在落不下，以世界观为准。
-- 候选全是现代便装（西装、卫衣、牛仔裤之类）而世界观里根本不存在这些东西时，直接放弃候选，自己按世界观造词。
+const OUTFIT_FROM_BRIEF_PROMPT = `你是服装设计师：根据角色资料、世界设定和用户要求，为指定服装类型设计具体的一套衣服，并选择对应 tag。
 
-【挑 tag 的规则】
-- 优先从后面给出的「候选 tag」里挑，它们都是本库真实存在的词条，直接照抄 tag 字段的英文名。
-- 候选里确实没有的再自己补，但必须是 Danbooru 风格、真实存在的服装 tag（小写、下划线分词，如 black_thighhighs）。
-- 只挑用户提到或明显必需的：衣服本体优先，其次鞋袜、配饰；不要为了凑数堆砌。
-- 用户说的是颜色/材质/长度时，用颜色类 tag 或直接写进描述，不要硬塞一个不相关的 tag。
+【设计优先级】
+- 世界设定的硬约束优先；尽量逐项保留用户明确的款式、穿着状态（包括半穿、移位、脱下及裸露部位）、颜色、材质和细节，只补全未指定之处。与世界设定冲突时，选择最接近且说得通的世界内实现，让用户意图仍然可辨，不要改成无关服装。
+- 服装类型（包括自定义类型名）决定衣服类别，不能因职业或候选池换成别的类型。主体选具体形制；人设决定剪裁、配色、材质与细节，不要不同角色都套通用 teddy 或黑蕾丝款。给出可辨认的结构，如鱼骨走线、荷叶边下摆或交叉绑带。
+- 优先照抄候选池中适用的真实 tag；不适用的候选可舍弃，缺少时只补真实、简短的 Danbooru 风格 tag。tag 只覆盖用户要求或必要单品，不堆清单。主体之外优先从搭配池选至少两类合适单品（整套 2~5 件），把位置、结构写进描述；与用户要求、世界设定或场合冲突时不要硬塞。
+- 默认外观只供身份参考：保留身体特征，不复制旧衣服、姿势、动作、镜头、画质 tag。描述只含服装及穿戴物，不写动作、表情或画面场景。睡衣适合睡眠且必须 barefoot，不含鞋袜。
 
-【形制优先：类目词只是方向，不是成品】
-- 用户给的常常是**类目词**（情趣内衣、泳装、礼服、睡衣、制服…）。类目词只规定方向，不规定形制：主体必须落到一个**具体形制**上，而不是把类目泛称当成品。
-- 同一个类目下面的形制差异很大，例如内衣可以是：连体式（teddy / bodysuit / bunny_suit）、短摆裙式（babydoll / see-through_babydoll）、睡袍裹身式（negligee / chemise）、束身式（corset / underbust_corset / waist_cincher）、两件式（bralette + thong / panties）、吊带长裙式（slip）。「同族形制」里给出的都可以当主体用。
-- 泛称类目 tag（lingerie、dress、skirt、swimsuit 这类）只在用户明确只要它、且库里没有更具体的形制可用时才作为主体。
-- **形制由角色决定，不由 brief 决定**：按她的身材、气质和世界观着装规范挑。丰满的用束身/连体显曲线，纤细娇小的用短摆或两件式，高挑的用吊带长裙或裹身袍；清冷气质配素色薄纱，活泼配浅色褶边，明艳配深色缎面与绑带。同一句要求给不同角色，应当落到**不同形制**上，单品组合和颜色也不要照抄最通用的那套。
-- 连体式 teddy 是最省事的默认答案，也是最容易让所有角色长成一套的答案：只有当她的身材气质和世界观都更适合连体式时才用它，否则换族。落笔前按顺序过一遍：①世界观着装规范允许什么（细肩带、前扣、绑带、束缚具这些硬规则先满足）；②她的身材适合哪一族；③她的气质配什么材质与配色。
-- 描述里要给出**只有这套才有的具体结构**（束身衣的鱼骨走线、短摆的荷叶边下摆、背部交叉绑带、胯侧系带结），不要用 deep plunging neckline、thin adjustable shoulder straps、high-cut leg opening 这种套在任何一套上都成立的通用句。
-- 反例（不要这样写）：wearing a black lace lingerie set with thin straps —— 这就是「任何角色都一样的黑蕾丝连体衣」，没有形制判断。
+【材质与描述】
+- 如提供了材质池，从中选 2~3 种分配给衣服本来具有的不同部位；材质写在单品前，每个部位只用一种，并描述可见质感。不得为材料虚构衣服部件。一般让 knit 配针织物、denim 配裤/裙、fur 作滚边、tulle 作蓬裙层；除非用户明确要求，否则避免不稳定的 velvet/knit。颜色用 1 个主色、至多 1 个辅色，金银只作小面积装饰，除非用户明确要求。
+- 服装描述为一段英文、至少 30 字符，准确体现用户要求与所选形制，英文小写、空格分词；不复制角色卡原服装或 tag 清单。
 
-【自由组合：别只给一件主体】
-- 一套衣服可以自由叠穿：主体形制 + 外罩（披肩、开襟罩衫、系带小外套）+ 下装 + 袜 + 鞋 + 配饰（颈饰、臂环、手套、腰链、腿环）+ 头饰。这些单品的候选在「可自由搭配的单品」里，按她的编号取的，别的角色拿到的不一样，直接用。
-- 除主体外至少再组合 **2 类**其它单品，让整套只属于她；不要绕开给她的搭配池，回落到最常见的「黑蕾丝 + 细肩带」。
-- 2~5 件为宜，不是越多越好；每件都要落到可见的结构与位置，不要把 tag 写成清单。
-- 世界观与场合优先：世界观规定的丝袜颜色、绑带方式、内衣款式属于硬规则；睡衣必须赤脚、不加鞋袜；性爱化的内衣配外套时要能自洽（半褪的罩衫、只挂在肩上的披帛都算）。
-
-【材质与配色：写到能看见的程度】
-- 材质从下面「本次可用材质」里挑 2 个（最多 3 个）。**写法必须把材质贴在单品前面**：a satin babydoll、a black velvet slip、a sheer lace teddy。不要写成「babydoll, satin」这种并列 —— 真机实测：材质词单独并列时，模型会把它画成另一件衣服（写 knit 会额外长出一件针织开衫，主体原样不动）。
-- 有强单品先验的材质只能配到对应单品上：knit 配毛衣或针织袜、denim 配裤子或裙子、fur 只做领口滚边、tulle 只做蓬裙层。不要把它们当作贴身内衣的面料 —— 实测写成 knit babydoll 时，模型会在主体外面又长出一件针织开衫。光泽类（satin、silk、latex、vinyl、glossy material）和装饰类（lace、mesh、sequins、embroidery）贴在主体上最稳。
-- 绑好之后还要补一句它在这件衣服上的可见表现：薄透到能看见肤色与阴影、缎面高光沿身体滑过、乳胶的硬反光、亮片的点状碎光、蕾丝的花卉镂空透出皮肤。只写材质名不算数。
-- 配色用 1 个主色 + 至多 1 个辅色，别全身同色。金属色（gold、silver）放在配饰与滚边上最稳，大面积金属容易糊。
-- 英文一律小写、词间用空格（Anima 官方要求：spaces instead of underscores），不要写成下划线 tag。
-
-【部位-材质绑定：一件衣服上分开放】
-- 不要整件铺一种料。挑中的 2~3 种材质各管一块部位，写成「部位 + 材质 + 可见表现」：lace cups showing the shadow of her skin、a satin skirt panel with a hard mirror sheen、sheer mesh sleeves with a faint grid pattern。实测这样写三块料子都画得出来。
-- 同一块地方只准一种材质：sheer satin cups 这种叠写，实测只画得出缎面，薄透直接丢掉了。
-- 部位只从后面「可分配的部位」里选，不要自己造部位名。
-- 只给这件衣服本来就有的部位分配材质：写了 sleeves 就会真的多出长袖，别为了用某个材质凭空造部件。
-- 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽类、薄透类、装饰类就别用它们。
-
-【写描述的规则】
-- 一整段英文，逗号分隔的短语或流畅句子都可以，最终会直接喂给生图模型。
-- 角色身份、脸部、瞳色、发型、发色、肤色、体型和标志性身体特征沿用默认外观，不遗漏已有身体特征，不臆造缺失特征。
-- 默认外观里那串原始 tag 只用来认人：**原服装、姿势、动作、镜头、画质词全部丢掉**。出现 standing / holding … / looking at viewer / pose / official art / masterpiece / best quality / highres / transparent background 这类词就是照抄，必须重写。
-- 用户的要求是硬性要求，逐项体现；没提到的细节由你按角色人设与世界观合理补全。
-- 不要写动作、表情、姿势、场景、光线、画质、镜头，也不要用中文。
-- 睡衣必须适合睡眠且赤脚（barefoot），不写任何鞋袜。
-
-【输出格式（严格照此 JSON，不要任何解释或代码块）】
-{"design_note":"一句话中文，写清她的身材气质与本类目最典型形象差在哪、据此选了这个形制；不能写成套话","tags":["teddy","black_lace","thighhighs","choker"],"appearance":"一整段英文外观描述，至少 30 个字符，tags 3~6 个、覆盖主体形制与搭配单品，第一个必须是本次采用的具体形制（如 teddy / babydoll / corset），不要只给 lingerie 这类泛称"}
-先写 design_note 再写 appearance，形制与配色以 design_note 的判断为准，不要让 appearance 回落到最通用的那套。`;
+【输出 JSON 格式及字段约束】
+{"design_note":"（一句简体中文：说明角色特点如何影响本次形制选择，不写套话。）","tags":["corset","lace","ribbon"],"appearance":"（至少 30 字符的单段英文衣着描述；首个 tag 是具体主体形制，tags 为 3~6 个小写英文词条、含主体及搭配单品；准确体现用户要求与角色差异，不写身体或画面内容。）"}
+严格按示例字段与顺序输出合法 JSON，仅输出 JSON，不附解释或代码块。`;
 
 /**
  * 组「按一句要求生成服装」的消息（2026-11-07）。
@@ -396,9 +345,9 @@ export function buildOutfitFromBriefMessages({ systemRules, worldRule = '', pers
     : '';
   // 材质只给 2 个、配色 3 个：给多了模型会把几种质感糊成一片、颜色调脏
   const fabricText = fabrics && (fabrics.materials?.length || fabrics.colors?.length)
-    ? `\n【本次可用材质（挑 2~3 个，各管一块部位，写出它在那块地方的可见效果）】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
-      + `\n【本次可用配色（1 主 + 至多 1 辅）】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
-      + (fabrics.parts?.length ? `\n【可分配的部位】${fabrics.parts.map(p => `${p.tag}（${p.label}）`).join('、')}` : '')
+    ? `\n【可用材质】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
+      + `\n【可用颜色】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
+      + (fabrics.parts?.length ? `\n【可用部位】${fabrics.parts.map(p => `${p.tag}（${p.label}）`).join('、')}` : '')
     : '';
   return [
     { role: 'system', content: systemRules },
@@ -430,9 +379,9 @@ export function buildClothingAppearanceMessages({ systemRules, worldRule = '', p
   // 自定义类型的 key 是 custom_<时间戳>，模型看不懂；有类型名（如「婚纱」）就用名字喂它
   const sceneText = String(sceneLabel || '').trim() || scene;
   const fabricText = fabrics && (fabrics.materials?.length || fabrics.colors?.length)
-    ? `\n\n【本次可用材质（挑 2~3 个，各管一块部位，写出它在那块地方的可见效果）】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
-      + `\n【本次可用配色（1 主 + 至多 1 辅）】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
-      + (fabrics.parts?.length ? `\n【可分配的部位】${fabrics.parts.map(p => `${p.tag}（${p.label}）`).join('、')}` : '')
+    ? `\n\n【可用材质】${(fabrics.materials || []).map(m => `${m.tag}（${m.label}：${m.hint}）`).join('；')}`
+      + `\n【可用颜色】${(fabrics.colors || []).map(c => `${c.tag}（${c.label}）`).join('、')}`
+      + (fabrics.parts?.length ? `\n【可用部位】${fabrics.parts.map(p => `${p.tag}（${p.label}）`).join('、')}` : '')
     : '';
   return [
     { role: 'system', content: systemRules },
@@ -442,6 +391,20 @@ export function buildClothingAppearanceMessages({ systemRules, worldRule = '', p
     { role: 'system', content: `【本次服装场景】${sceneText}\n【所选服装词条】\n${entries.map(entry => `${entry.tag} — ${entry.label}：${entry.description}`).join('\n')}${fabricText}` },
     { role: 'user', content: `请生成这套外观，严格按示例 JSON 输出。${brief ? `\n补充要求：${brief}` : ''}` },
   ];
+}
+
+/** 衣服库的实际人设层只作语义锚点；默认外观及本次候选不认证为稳定前缀。 */
+export function buildClothingLorebook(messages) {
+  const personaIndex = messages.findIndex(message => message.role === 'system'
+    && message.content.startsWith('【角色人设与默认外观】\n'));
+  if (personaIndex < 1) throw new Error('衣服库请求缺少可定位的角色资料层');
+  const stableIndex = personaIndex - 1;
+  return {
+    personaTexts: [messages[personaIndex].content],
+    staticTexts: messages.slice(0, personaIndex).map(message => message.content),
+    cacheBoundary: { index: stableIndex, offset: messages[stableIndex].content.length },
+    history: messages.slice(personaIndex + 1),
+  };
 }
 
 export function parseClothingAppearance(raw, entries, scene = 'work') {

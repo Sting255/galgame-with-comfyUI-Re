@@ -46,7 +46,7 @@ import { createCharacterBackgroundRouter } from './characterBackgrounds.js';
 import { generateDialogueBackground } from '../services/dialogueBackground.js';
 // 角色操作反馈（右下角轻通知）：表情类别名 → 语义标记，供 reaction-assets 素材选择
 import { pickReactionMarker } from '../services/emojiService.js';
-import { getClothingLibrary, getFabricLibrary, resolveClothingTags, buildClothingAppearanceMessages, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms, pickCombinationTags, pickFabricAndColors } from '../services/clothingLibrary.js';
+import { getClothingLibrary, getFabricLibrary, resolveClothingTags, buildClothingAppearanceMessages, buildClothingLorebook, parseClothingAppearance, searchClothingTags, buildOutfitFromBriefMessages, parseOutfitFromBrief, expandOutfitFamilyCandidates, collectUsedOutfitForms, pickCombinationTags, pickFabricAndColors } from '../services/clothingLibrary.js';
 
 const router = Router();
 
@@ -105,7 +105,7 @@ router.post('/clothing-appearance-draft', async (req, res) => {
       sceneLabel: customRow?.name || '',
       entries, brief: brief.trim(), fabrics,
     });
-    const raw = await chatSync(messages, { model: config.llm.model || 'deepseek-chat', temperature: 0.6, max_tokens: 1800, label: '衣服库外观生成' });
+    const raw = await chatSync(messages, { model: config.llm.model || 'deepseek-chat', temperature: 0.6, max_tokens: 1800, label: '衣服库外观生成', lorebook: buildClothingLorebook(messages) });
     res.json({ appearance: parseClothingAppearance(raw, entries, scene), tags: entries.map(entry => entry.tag) });
   } catch (error) {
     res.status(502).json({ error: `生成服装提示词失败：${error.message}` });
@@ -169,6 +169,7 @@ router.post('/:id/outfit-from-brief', async (req, res) => {
       temperature: 0.6,
       max_tokens: 1600,
       label: '按需求生成服装',
+      lorebook: buildClothingLorebook(messages),
     });
     const parsed = parseOutfitFromBrief(raw);
     // 模型允许在库里没有对应词条时自己补 danbooru tag（如「机械外骨骼裙」）。

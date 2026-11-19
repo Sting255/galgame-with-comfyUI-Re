@@ -31,24 +31,18 @@ const NUDE_DECLARATION = 'completely nude, wearing no clothing at all, bare skin
 
 const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自包含的外观描述**：一套 = 身体 + 服装。
 
-【身体与服装分开输出】
-每个 scene 都要输出两个字段：
-- \`body\`：这个角色的**身体特征**（全身）：发色、发型、瞳色、肤色、体型/身高等。
-  **同一角色的所有 scene，body 必须完全一致**（是同一个人）。
-- \`description\`：**只写这一套的服装**（衣服、鞋袜、配饰），不要重复身体特征。
+【字段与身份】
+每项包含 scene、name、body、description。body 写英文身体特征，同角色各套必须完全一致；description 只写该套衣物、鞋袜和配饰，不重复身体特征。发饰、帽饰与首饰属于穿戴物，可写入 description。
 
 【输出语言】
-一律用**英文生图提示词风格**（逗号分隔的短语），因为这两个字段最终会直接喂给生图模型。
-不要中文、不要完整句子、不要「她穿着一件」这类叙述。
+body 与 description 均使用英文生图提示词短语，不写中文或叙述句。
 
 【场景定义（scene 字段照抄英文 key；本次具体要哪几套以用户消息为准，别多给）】
 - nude（裸体）：**不穿任何衣物**的私密状态（洗浴、在自己家里/酒店客房这类私密空间里的性场景）。
   这一套的 \`description\` 固定写 \`${NUDE_DECLARATION}\`；
   \`body\` 要写得比平时**更完整**（既然是裸体，身体就是画面主体）：
   除发型瞳色外，补上肤色、体型、胸/腰/腿的形态、以及显著身体特征（痣、伤痕、纹身、兽耳兽尾等）。
-- work（默认外观）：**不参与本流程，不要输出这一套**。它是角色的**身份真源** ——
-  发色、发型、瞳色、肤色、体型、Name (Series) 这类角色识别 tag 都写在里面，
-  由角色卡原文逐字提供。重写它等于把角色换成另一个人。
+- work（默认外观）：不属于本流程，严禁输出或覆盖；其中保存角色身份与识别 tag。
 - sleep（睡衣）：**睡觉时穿的睡衣或内衣**（睡裙 / 睡衣睡裤 / 吊带内衣 + 短裤 / 内裤等），
   不要设计成能穿出门的服装。
   **★ 必须赤脚**：description 里必须明确写出 barefoot。
@@ -56,35 +50,22 @@ const DESIGN_RULES = `你是角色外观设计助手。你为角色设计**自�
   pantyhose / tights 一律不写，**连「床边摆着一双没穿的拖鞋」这种也不要写**
   （生图模型看到 slippers 就会把它画出来）。只交代脚本身是裸的。
 
-【材质与部位（每套都要落到看得见）】
-- 材质必须**贴在单品前面**写：a satin slip、sheer lace bodice、a leather belt。不要写成「slip, satin」这种并列 —— 实测并列时生图模型会把材质画成另一件单品。
-- 一套衣服用 2~3 种料子，各管一块部位，写成「部位 + 材质 + 可见表现」：lace cups showing the shadow of her skin、a satin skirt panel with a hard mirror sheen、sheer mesh sleeves with a faint grid pattern。
-- 同一部位只准一种材质：sheer satin cups 这种叠写，生图时只会剩下缎面。
-- 部位只用这些：cups、bodice、waist、hem、skirt panel、sleeves、straps、side panels、back、trim、cuffs、neckline、train、thigh band。只给这套本来就有的部位分配材质，别为了用某个材质凭空造部件。
-- 天鹅绒（velvet）、针织（knit）在 Anima 上画不稳（实测天鹅绒被画成亮面漆皮），能用光泽 / 薄透 / 装饰类替代就别用。
-- 睡衣那一套不要给鞋袜部位分配材质（本来就赤脚）。
+【材质】
+- 材质写在实际单品前（a satin slip），每套 2~3 种分配到不同且真实存在的部位，并写出可见质感；同一部位只用一种，不能为材料虚构衣物结构。部位限 cups、bodice、waist、hem、skirt panel、sleeves、straps、side panels、back、trim、cuffs、neckline、train、thigh band。
+- 避免 Anima 表现不稳的 velvet/knit；睡衣赤脚，不加鞋袜材质。
 
-【description 里绝对不许写身体（2026-11-08）】
-\`description\` 只写**衣服、鞋袜、配饰**。下面这些属于 \`body\`，一个字都不要出现在 \`description\` 里：
-- 发型、发色、发长、刘海、辫子、瞳色、眼神、眉毛、睫毛
-- 肤色、肤质、体型、身高、胸腰臀腿与任何裸露部位的形态
-- 痣、疤、纹身、兽耳、兽尾、角、翅膀、以及表情
-
-理由：生图时 \`description\` 的优先级高于角色原本的外观描述。你在里面重写一次发色或瞳色，
-角色原本的特征就会被整体替换掉 —— 冷门角色没有模型先验，一换就变成另一个人。
-身体的每个细节都由 \`body\` 单独提供，不需要在衣服里重复。
-
-例外（这些是**穿戴物**，算 description）：画在头发上的发饰/发带/发夹/发圈、帽子、耳环、项链、
-项圈、手套、臂环、腰带、绑带、鞋袜、腿环。
+【禁止身体特征进入 description】
+头发、眼睛、肤色、体型、身体特征、纹身和表情只属于 body；重复它们会覆盖角色原有身份。发饰、帽子、首饰、手套、腰带、鞋袜等穿戴物仍写入 description。
 
 【要求】
-1. 各套服装必须**彼此区分明显** —— 一眼能看出是上班、睡觉，还是这个角色自己的某种场合。
-2. 必须**贴合这个角色的人设与世界观**：颜色、风格要呼应 ta 的气质与所处世界。
-   ⚠ 但「服装类型名」决定这套穿什么，不能被职业带跑：名字写「泳装」就画泳装，别画成潜水服、救生衣或运动训练服；名字写「婚纱」就画婚纱，不管她是潜水教练还是上班族。职业只用来决定配色、材质偏好与细节气质。
-3. 只输出 JSON，不要解释、不要 Markdown 代码块。
+各套应明显不同，并符合角色与世界设定。用户明确指定的服装类型和穿着要求必须保留，只补全未指定细节；服装类型名决定类别（泳装不能变成潜水服，婚纱不能变成职业装），人设只影响款式与细节。
+\`custom_*\` 表示用户自定义类型：按消息给出的类型名设计，准确保留 scene key；只生成本次指定场景。
+只输出 JSON，不要解释或 Markdown 代码块。
 
-## 输出格式
-{"outfits":[{"scene":"nude","name":"裸体","body":"...","description":"${NUDE_DECLARATION}"},{"scene":"work","name":"...","body":"...","description":"..."}]}`;
+输出完整 JSON 对象，唯一顶层字段为 outfits 数组；每项只有 scene、name、body、description 四个字段。scene 必须是本次收到的 key，name 为对应服装类型名，body 为同一角色各套一致的英文身体描述，description 仅为该场景的英文服装描述。nude 的 description 固定；sleep 必须 barefoot 且无鞋袜。不得输出 work 或未请求场景。
+完整结构示例（仅示范字段；实际场景与套数以本次清单为准）：
+{"outfits":[{"scene":"sleep","name":"睡衣","body":"short black hair, amber eyes, fair skin, petite build","description":"a soft cotton nightdress with satin trim, barefoot"}]}
+严格按示例结构输出合法 JSON，不输出解释、代码围栏或 JSON 以外文字。`;
 
 /**
  * 反推层：把「已填好的分项」交给模型，让它**据此反推未填的分项**。
@@ -201,16 +182,30 @@ export function buildSceneOutfitMessages({ systemRules, worldRule = '', persona,
   if (seedList.length || bodySource) {
     msgs.push({ role: 'system', content: buildDeriveLayer(seedList, bodySource, targets, { crossCharacter }) });
   }
+  const sampleBody = bodySource || 'same English body description for this character, copied verbatim in every requested scene';
+  const outputExample = JSON.stringify({ outfits: targets.map(scene => ({
+    scene,
+    name: labelOf(scene),
+    body: sampleBody,
+    description: scene === 'nude'
+      ? NUDE_DECLARATION
+      : scene === 'sleep'
+        ? 'cotton nightdress, barefoot'
+        : 'English garment-only description matching the requested clothing type',
+  })) }, null, 2);
   msgs.push({
-    role: 'user',
-    content: `请设计 ${targets.map(labelOf).join('、')}，严格按规定 JSON 输出，仅包含这些场景。`
+    role: 'system',
+    content: '【本次设计清单】'
       + (customLines ? `\n\n【角色自定义的服装类型（scene 字段照抄左边的 key）】\n${customLines}` : '')
       + (fabricLayer ? `\n\n${fabricLayer}` : '')
       // 2026-11-09：同一类型批量发给多个角色时，逐个角色独立生成、互相不知道对方做了什么，
       // 于是每个都会挑「最典型的那一款」。把已经定下来的样子摆出来，明确要求错开。
       + (avoidNote ? `\n\n${avoidNote}` : '')
+      + `\n\n【本次 JSON 示例：只输出这些字段与场景，保持 key 不变】\n${outputExample}`
+      + '\nbody 与 description 按上方约束填写；严格输出合法 JSON，不加解释或 Markdown。'
       + (bodySource ? '\n\n⚠ 每套的 body 字段都必须逐字照抄「身体描述的唯一真源」，不得改写。' : ''),
   });
+  msgs.push({ role: 'user', content: `请设计 ${targets.map(labelOf).join('、')}，严格按规定 JSON 输出，仅包含本次清单中的场景。` });
   return msgs;
 }
 

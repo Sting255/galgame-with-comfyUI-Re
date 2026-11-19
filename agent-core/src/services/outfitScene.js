@@ -472,8 +472,19 @@ export async function generateSceneOutfits(character, opts = {}) {
     }
   }
 
+  const personaIndex = msgs.findIndex(message => message.role === 'system'
+    && message.content.startsWith('【本次角色人设】\n'));
+  const stableIndex = personaIndex - 1;
+  // 人设与默认外观仅作实际语义锚点，缓存承诺保守截止其前的固定设计规范。
+  const lorebook = {
+    personaTexts: [msgs[personaIndex].content],
+    staticTexts: msgs.slice(0, personaIndex).map(message => message.content),
+    cacheBoundary: { index: stableIndex, offset: msgs[stableIndex].content.length },
+    history: msgs.slice(personaIndex + 1),
+  };
   const raw = await chatSync(msgs, {
     model: config.llm.model || 'deepseek-chat', temperature: 0.8, response_format: { type: 'json_object' }, label: '场景服装生成',
+    lorebook,
   });
   return parseSceneOutfitDesign(raw, targetScenes, { bodySource, sceneLabels: Object.fromEntries(listSceneOutfits(character.id).map(o => [o.scene, o.sceneLabel])) });
 }
