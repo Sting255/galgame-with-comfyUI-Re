@@ -554,7 +554,7 @@ async function main() {
   {
     const check = await exec(pyExe, [
       "-c", "import fastapi, uvicorn, chromadb, onnxruntime, numpy"
-    ]);
+    ], { shell: false });
     if (check.ok) {
       ok("Python 依赖已预装，跳过");
     } else {
