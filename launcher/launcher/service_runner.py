@@ -18,7 +18,7 @@ RESTART_EXIT_CODE = 75
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from .process_env import ensure_system_env
-from .service_config import service_port, belongs_to_project
+from .service_config import service_port, vector_service_port, belongs_to_project
 
 
 # ── 捆绑运行时发现 ──
@@ -113,14 +113,14 @@ SERVICES = {
         "health_path": "/health",
         "cwd": "vector-service",
         "get_cmd": lambda project_path: _resolve_python(project_path),
-        "get_args": lambda: [
+        "get_args": lambda port=8765: [
             "-m",
             "uvicorn",
             "server:app",
             "--host",
             "127.0.0.1",
             "--port",
-            "8765",
+            str(port),
             "--no-access-log",
         ],
     },
@@ -143,9 +143,10 @@ class PortCleaner(QObject):
     output = Signal(str, str)  # (service_name, text)
     finished = Signal(bool)  # 是否确认清理成功
 
-    def __init__(self, project_path, parent=None):
+    def __init__(self, project_path, parent=None, *, ports=None):
         super().__init__(parent)
         self._project_path = project_path
+        self._ports = tuple(ports) if ports is not None else None
 
     def run(self):
         """在后台线程中执行（由 QThread.started 触发）。"""
@@ -153,7 +154,9 @@ class PortCleaner(QObject):
         try:
             import psutil
 
-            ports = [SERVICES["vector"]["port"], service_port(self._project_path)]
+            ports = self._ports if self._ports is not None else (
+                vector_service_port(self._project_path), service_port(self._project_path)
+            )
             keywords = [
                 "agent-core", "vector-service", "web-ui",
                 "app.js", "server:app", "uvicorn", "nodemon",
@@ -217,6 +220,9 @@ class ServiceWorker(QObject):
         self._def = dict(svc_def)
         if self._def["name"] == "agent_core":
             self._def["port"] = service_port(project_path)
+            self._vector_port_override = vector_service_port(project_path, default=None)
+        elif self._def["name"] == "vector":
+            self._def["port"] = vector_service_port(project_path)
         self._project_path = project_path
         self._proc: QProcess | None = None
         self._status = self.STATUS_STOPPED
@@ -274,6 +280,10 @@ class ServiceWorker(QObject):
         env.insert("NODE_ENV", "production")
         if self.name == "agent_core":
             env.insert("PORT", str(self.port))
+            if self._vector_port_override is not None:
+                env.insert("VECTOR_SERVICE_URL", f"http://127.0.0.1:{self._vector_port_override}")
+            elif "VECTOR_SERVICE_URL" in os.environ:
+                env.insert("VECTOR_SERVICE_URL", os.environ["VECTOR_SERVICE_URL"])
             # 2026-11-06：告诉后端「你现在被启动器托管」。
             # 托管时后端不自己 spawn 新进程，而是用 RESTART_EXIT_CODE 退出、由这里拉起 ——
             # 否则新进程的 stdout 是 ignore 的，启动器看不到它，界面只会停在"意外退出"。
@@ -297,7 +307,7 @@ class ServiceWorker(QObject):
         self._proc.finished.connect(self._on_finished)
 
         cmd = self._def["get_cmd"](self._project_path)
-        args = self._def["get_args"]()
+        args = self._def["get_args"](self.port) if self.name == "vector" else self._def["get_args"]()
 
         self.output.emit(self.name, f"[{self.display}] 启动: {cmd} {' '.join(args)}")
         self._proc.start(cmd, args)
@@ -503,7 +513,9 @@ class ServiceRunner(QObject):
 
         # 在后台线程中执行 psutil 端口清理，避免阻塞 GUI
         self._cleaner_thread = QThread(self)
-        self._cleaner_worker = PortCleaner(self._project_path)
+        self._cleaner_worker = PortCleaner(
+            self._project_path, ports=[worker.port for worker in self._workers.values()]
+        )
         self._cleaner_worker.moveToThread(self._cleaner_thread)
         self._cleaner_worker.output.connect(self.output)
         self._cleaner_thread.started.connect(self._cleaner_worker.run)
@@ -645,7 +657,7 @@ class ServiceRunner(QObject):
             self.status_summary.emit(v, a, "partial")
 
     def _kill_port_processes(self):
-        """杀死 3099 和 8765 端口上残留的项目进程，并等端口真正空出来。"""
+        """仅清理当前服务端口上残留的本项目进程，并等端口真正空出来。"""
         killed = False
         try:
             import psutil

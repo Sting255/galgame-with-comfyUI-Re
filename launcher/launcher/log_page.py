@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from .log_widget import LogWidget
 from .network import get_local_ip
-from .service_config import service_port
+from .service_config import service_port, vector_service_port
 
 
 class ServiceIndicator(QWidget):
@@ -69,6 +69,7 @@ class LogPage(QWidget):
     def __init__(self, project_path, parent=None):
         super().__init__(parent)
         self._port = service_port(project_path)
+        self._vector_port = vector_service_port(project_path)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -81,7 +82,7 @@ class LogPage(QWidget):
         # --- 服务状态栏 ---
         status_layout = QHBoxLayout()
 
-        self.vector_indicator = ServiceIndicator("向量服务", 8765)
+        self.vector_indicator = ServiceIndicator("向量服务", self._vector_port)
         self.agent_indicator = ServiceIndicator("主控后端", self._port)
 
         status_layout.addWidget(self.vector_indicator)
