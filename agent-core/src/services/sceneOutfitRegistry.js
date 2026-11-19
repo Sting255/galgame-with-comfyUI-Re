@@ -24,8 +24,8 @@ export function registerSceneOutfitProvider(fn) {
  * characterPersona 调用：返回 {limited:[{name,description}], exclusive:null} 或 null
  *
  * @param {number} characterId
- * @param {{scene?: 'current'|'base'}} [opts] - `base` = 基准形象固装（头像/立绘/表情包用常服，
- *   不随时间和日程变），缺省 = 此刻该穿哪套
+ * @param {{scene?: 'current'|'base'|'none'|string, date?: Date}} [opts] - `base` = 基准形象固装（头像/立绘/表情包用常服，
+ *   不随时间和日程变），缺省 = 此刻该穿哪套；传 `date` 可解析指定程序时刻
  */
 export function getSceneOutfitProvider(characterId, opts = {}) {
   if (!provider) return null;

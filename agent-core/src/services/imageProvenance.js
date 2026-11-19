@@ -112,6 +112,14 @@ export function captureProvenance(spec = {}) {
       }
       : null,
     loras: { character: characterLoras, global: globalLoras },
+    outfits: (Array.isArray(spec.outfitSnapshots) ? spec.outfitSnapshots : []).slice(0, 8).map(snapshot => ({
+      characterId: Number(snapshot?.characterId) || null,
+      scene: clip(String(snapshot?.scene || ''), 120),
+      source: clip(String(snapshot?.source || ''), 40),
+      outfitId: Number(snapshot?.outfitId) || null,
+      descriptionHash: clip(String(snapshot?.descriptionHash || ''), 80),
+      description: clip(String(snapshot?.description || ''), 2000),
+    })).filter(snapshot => snapshot.characterId || snapshot.description),
     // 记录「这次全局 LoRA 是本次采集时生效的那批」，不是"现在的全局配置"
     capturedAt: new Date().toISOString(),
   };

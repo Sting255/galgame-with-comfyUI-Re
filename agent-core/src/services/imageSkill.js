@@ -819,6 +819,7 @@ async function _execute(rawPrompt, opts) {
       negativePrompt: opts.negativePrompt ?? config.comfyui.negativePrompt,
       qualityPrompt: opts.qualityPrompt ?? config.comfyui.qualityPrompt,
       identity: identityForProvenance,
+      outfitSnapshots: opts.outfitSnapshots,
       characterLoras: opts.loras || [],
       globalLoras: filterGlobalLoras(config.comfyui.globalLora || [], opts.scene),
       provider: config.comfyui.imageProvider,

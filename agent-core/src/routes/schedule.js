@@ -25,9 +25,10 @@ import {
   syncSleepingState, isTempWoken, isSleeping,
   scheduleTempWakeExpiry, resetGroggyShown,
 } from '../services/scheduleManager.js';
-import { getProgramDateKey, getProgramState, formatHhmm } from '../services/programTime.js';
+import { getProgramDateKey, getProgramNow, getProgramState, formatHhmm } from '../services/programTime.js';
 import timeRoutes from './time.js';
 import { generateSchedule, assignNextRefreshTime, snapshotTodaySchedule, parseAndValidateSchedule } from '../services/scheduleGenerator.js';
+import { scheduleOutfits } from '../services/outfitScene.js';
 import { updateScheduleActivity } from '../services/scheduleEditor.js';
 import { generateImage, getLastWorkflowMode } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
@@ -36,7 +37,8 @@ import { persistIndividualSchedule } from '../services/cohabitationPersistence.j
 import { assertCompleteDay } from '../services/cohabitationSchedule.js';
 import { assertGodCommit } from '../services/godSays/commitGuard.js';
 import { assertScheduleIdle } from '../services/scheduleGenerationLock.js';
-import { scheduleImageContext } from '../services/scheduleParticipants.js';
+import { scheduleImageContext, scheduleActivityTargetDate } from '../services/scheduleParticipants.js';
+import { saveImageProvenance } from '../services/imageProvenance.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
 import { chatSync } from '../services/lorebook/runtime.js';
@@ -266,7 +268,7 @@ router.post('/:characterId/peek/retake', async (req, res) => {
       return res.status(400).json({ error: 'invalid characterId' });
     }
 
-    const { prompt, participantIds } = req.body;
+    const { prompt, participantIds, outfitSnapshots } = req.body;
     if (!prompt) {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -277,7 +279,9 @@ router.post('/:characterId/peek/retake', async (req, res) => {
       return res.status(404).json({ error: 'character not found' });
     }
 
-    const sceneContext = scheduleImageContext(character, { participantIds: Array.isArray(participantIds) ? participantIds : undefined, description: prompt });
+    // The submitted prompt already contains the original outfit decision. A retake
+    // must not add whatever the character happens to wear now.
+    const sceneContext = scheduleImageContext(character, { participantIds: Array.isArray(participantIds) ? participantIds : undefined, description: prompt }, { includeOutfitSnapshots: false });
 
     console.log(`[schedule] Peek retake for ${character.display_name}: "${prompt.slice(0, 100)}..."`);
 
@@ -299,6 +303,8 @@ router.post('/:characterId/peek/retake', async (req, res) => {
         ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
         // 日程快照里出现的就是这个角色：身份锚点由 imageSkill 统一前置
         identity: character,
+        // Reuse the original peek's frozen clothing metadata; never resolve current outfits here.
+        outfitSnapshots: Array.isArray(outfitSnapshots) ? outfitSnapshots : [],
         ...sceneContext.imageOptions,
         onProgress: (p) => {
           if (p.progress != null) {
@@ -314,6 +320,7 @@ router.post('/:characterId/peek/retake', async (req, res) => {
         const img = result.images[0];
         const imageUrl = savePeekImage(img.base64, img.filename || 'comfy');
         if (imageUrl) {
+          saveImageProvenance(imageUrl, result.provenance);
           db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
             VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
             .run(`char_${character.id}_schedule_peek_retake`, prompt, result.promptRefined || prompt, JSON.stringify([imageUrl]), result.wfMode ?? null);
@@ -365,8 +372,12 @@ router.post('/:characterId/peek', async (req, res) => {
     }
 
     const reqActivity = req.body?.activity;
+    const hasExplicitActivity = Boolean(reqActivity && reqActivity.activity && reqActivity.location);
+    const requestedProgramDateKey = req.body?.programDateKey || reqActivity?.programDateKey || null;
+    const programNow = getProgramNow();
+    const currentActivity = getCurrentActivity(characterId, programNow);
     let activity;
-    if (reqActivity && reqActivity.activity && reqActivity.location) {
+    if (hasExplicitActivity) {
       activity = {
         activity: reqActivity.activity,
         location: reqActivity.location,
@@ -380,7 +391,7 @@ router.post('/:characterId/peek', async (req, res) => {
         sharedEventId: reqActivity.sharedEventId,
       };
     } else {
-      activity = getCurrentActivity(characterId);
+      activity = currentActivity;
     }
     if (!activity) {
       return res.status(404).json({ error: 'no schedule found for this character' });
@@ -401,7 +412,25 @@ router.post('/:characterId/peek', async (req, res) => {
 
     // ── 构建 LLM 消息生成专用人像 prompt ──
     const charName = character.display_name;
-    const sceneContext = scheduleImageContext(character, activity);
+    const isProgramToday = !requestedProgramDateKey || requestedProgramDateKey === getProgramDateKey(programNow);
+    const selectedIsCurrent = hasExplicitActivity
+      ? Boolean(currentActivity && isProgramToday
+        && reqActivity.activity === currentActivity.activity
+        && reqActivity.location === currentActivity.location
+        && reqActivity.startTime === currentActivity.startTime
+        && reqActivity.endTime === currentActivity.endTime)
+      : isProgramToday;
+    const targetDate = scheduleActivityTargetDate(activity, {
+      explicitActivity: hasExplicitActivity && !selectedIsCurrent,
+      programDateKey: requestedProgramDateKey,
+      now: programNow,
+    });
+    if (!targetDate) return res.status(400).json({ error: 'programDateKey must be a valid YYYY-MM-DD date' });
+    const sceneContext = scheduleImageContext(character, activity, {
+      date: targetDate,
+      outfitScene: 'current',
+      ignoreOverride: !selectedIsCurrent,
+    });
 
     // system0: 系统规则(角色扮演=no) + 世界观
     const systemRules = getSystemRules({ roleplay: false });
@@ -414,14 +443,13 @@ router.post('/:characterId/peek', async (req, res) => {
       system1 = `${getWorldIntegrationRule('photo')}\n\n`;
     }
     // 睡眠中：强制强调闭眼（优先检查临时叫醒，因为日程 replyDelay 即使叫醒后仍为 -1）
-    const tempWoken = isTempWoken(characterId);
+    const tempWoken = selectedIsCurrent && isTempWoken(characterId);
     const isSleeping = !tempWoken && activity.replyDelay === -1;
-    // 当前时间 + 时段 + 光线描述（使用日程活动的 startTime 确定光线，反映活动实际发生时间而非墙钟）
-    let lightTime = new Date();
-    if (activity.startTime) {
+    // 选中指定日程段时使用该段的程序墙钟时间；当前活动则保留当前程序时间。
+    let lightTime = new Date(targetDate);
+    if (!selectedIsCurrent && activity.startTime) {
       const [h, m] = activity.startTime.split(':').map(Number);
       if (!isNaN(h)) {
-        lightTime = new Date();
         lightTime.setHours(h, m || 0, 0, 0);
       }
     }
@@ -452,7 +480,8 @@ router.post('/:characterId/peek', async (req, res) => {
     system1 += `你是一个专业的人像摄影师，你现在需要给角色拍一张人像照，任意角度（俯拍，仰拍，正脸，侧脸，背面，低角度全都不限制），角色也不看着镜头，表现角色当前正在做的事情。角色表情、动作神态根据角色人格和正在做的事来生成，要贴合角色气质。画面输出用英文prompt`;
 
     // system2: 角色完整人格（统一入口，含生效外观注入），"你"替换为角色姓名
-    let personaText = buildCharacterPersona(character, { variant: 'full', person: charName });
+    let personaText = buildCharacterPersona(character, { variant: 'full', person: charName,
+      outfitSnapshot: sceneContext.outfitSnapshot });
     if (!personaText) personaText = `角色名：${charName}`;
 
     // 誓约角色：银白细戒指外观细节
@@ -549,6 +578,7 @@ router.post('/:characterId/peek', async (req, res) => {
         scene: 'schedule',
         priority: 'high',
         identity: character,
+        outfitSnapshots: [sceneContext.outfitSnapshot, ...Object.values(sceneContext.outfitSnapshots || {})].filter(Boolean),
         ...sceneContext.imageOptions,
         onProgress: (p) => {
           if (p.progress != null) {
@@ -565,6 +595,7 @@ router.post('/:characterId/peek', async (req, res) => {
         const img = result.images[0];
         const imageUrl = savePeekImage(img.base64, img.filename || 'comfy');
         if (imageUrl) {
+          saveImageProvenance(imageUrl, result.provenance);
           db.prepare(`INSERT INTO image_tasks (conversation_id, prompt_original, prompt_refined, status, output_paths, workflow_template, finished_at)
             VALUES (?, ?, ?, 'done', ?, ?, datetime('now'))`)
             .run(`char_${character.id}_schedule_peek`, generatedPrompt, result.promptRefined || generatedPrompt, JSON.stringify([imageUrl]), result.wfMode ?? null);
@@ -576,6 +607,8 @@ router.post('/:characterId/peek', async (req, res) => {
           location: activity.location,
           prompt: generatedPrompt,
           participant_ids: sceneContext.participantIds,
+          outfit_snapshot: sceneContext.outfitSnapshot,
+          participant_outfit_snapshots: sceneContext.outfitSnapshots,
           images: imageUrl ? [imageUrl] : [img.base64], // 落盘失败则仍然传 base64 兜底
         });
         console.log(`[schedule] Peek snapshot ready for ${charName}`);
@@ -627,7 +660,7 @@ router.post('/:characterId/regenerate', async (req, res) => {
     }
     let result;
     if (req.body?.activities!==undefined) {
-      const activities=parseAndValidateSchedule(JSON.stringify({activities:req.body.activities}),character.display_name);
+      const activities=parseAndValidateSchedule(JSON.stringify({activities:req.body.activities}),character.display_name,null,scheduleOutfits(characterId));
       if (!activities) return res.status(400).json({error:'日程草稿无效'});
       assertCompleteDay(activities);
       assertGodCommit(req);

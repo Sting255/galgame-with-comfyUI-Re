@@ -2054,8 +2054,8 @@ export function peekSnapshot(characterId, genImage = true, activityContext = nul
 }
 
 /** 瞄一眼再拍一张：使用已生成的 prompt 重新提交 ComfyUI 生图 */
-export function retakePeekSnapshot(characterId, prompt, participantIds) {
-  return request(`/schedule/${characterId}/peek/retake`, { method: 'POST', body: { prompt, participantIds }, timeoutMs: REQUEST_TIMEOUTS.llm })
+export function retakePeekSnapshot(characterId, prompt, participantIds, outfitSnapshots = []) {
+  return request(`/schedule/${characterId}/peek/retake`, { method: 'POST', body: { prompt, participantIds, outfitSnapshots }, timeoutMs: REQUEST_TIMEOUTS.llm })
 }
 
 export function regenerateSchedule(characterId, direction) {

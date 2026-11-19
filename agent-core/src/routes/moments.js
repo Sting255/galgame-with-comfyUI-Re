@@ -10,7 +10,7 @@ import { config } from '../config.js';
 import { getMomentDelay } from '../services/momentTiming.js';
 import { generateImageRaw } from '../services/imageSkill.js';
 import { charArtistOverrideWithFallback } from '../services/characterImageOpts.js';
-import { buildCharacterPersona } from '../services/characterPersona.js';
+import { buildCharacterPersona, captureCharacterOutfitSnapshot } from '../services/characterPersona.js';
 import { getGodWorldContext } from '../services/godSays/worldContext.js';
 import { createCharacterTownLifeContext } from '../services/characterTownLifeContext.js';
 import { createTownActorRegistry } from '../services/town/townActorRegistry.js';
@@ -527,6 +527,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
     width = config.comfyui.momentsWidth,
     height = config.comfyui.momentsHeight,
     postId = null,
+    outfitSnapshots = [],
   } = opts;
 
   const imageUrls = [];
@@ -567,6 +568,7 @@ async function generateMomentImages(character, imagePrompts, opts = {}) {
           priority: manual ? 'high' : 'low',
           // 发帖角色本人一定在画面里；多人同框时其余角色走交叉参考，不注入别人的锚点
           identity: character,
+          ...(outfitSnapshots.length ? { outfitSnapshots } : {}),
           ...loraOpts,
           // 角色级负面词只在「画面里只有发帖者本人」时注入：多人同框没有唯一主角，
           // 拿谁的负面词都可能在排斥别人身上的正常元素
@@ -901,15 +903,15 @@ async function generateMomentPostImpl(character, opts = {}) {
       const shuffled = [...allRels].sort(() => Math.random() - 0.5);
       for (const rel of shuffled) {
         if (multiPersons.length >= 3) break;
-        const otherPersona = buildCharacterPersona(
-          { id: rel.other_id, short_prompt: rel.other_short, base_prompt: rel.other_prompt },
-          { variant: 'short', person: rel.other_name }
-        );
+        const otherCharacter = { id: rel.other_id, short_prompt: rel.other_short, base_prompt: rel.other_prompt, display_name: rel.other_name };
+        const outfitSnapshot = captureCharacterOutfitSnapshot(otherCharacter, { outfitScene: 'current' });
+        const otherPersona = buildCharacterPersona(otherCharacter, { variant: 'short', person: rel.other_name, outfitSnapshot });
 
         multiPersons.push({
           otherId: rel.other_id,
           otherName: rel.other_name,
           otherPersona,
+          outfitSnapshot,
           relDesc: `${rel.other_name}是你的${rel.relationship_text}`,
         });
 
@@ -1069,7 +1071,8 @@ ${dynamicRules}`;
     msgs.push({ role: 'system', content: postingTask.slice(postingStablePrefix.length) });
   }
   // 整卡人格（统一入口，含生效外观注入；输出含 imagePrompt，配图需体现当前外观）
-  const lorePersona = buildCharacterPersona(character, { variant: 'full' });
+  const outfitSnapshot = captureCharacterOutfitSnapshot(character, { outfitScene: 'current' });
+  const lorePersona = buildCharacterPersona(character, { variant: 'full', outfitSnapshot });
   msgs.push({ role: 'system', content: lorePersona });
   // 日程里提到了用户（如聊天约定改写的日程）→ 用户同框：注入用户信息与关系
   if (scheduleWithUser) {
@@ -1157,6 +1160,7 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
     text,
     manual: opts.manual,
     otherChars,
+    outfitSnapshots: [outfitSnapshot, ...multiPersons.map(person => person.outfitSnapshot)].filter(Boolean),
     postId,
   });
   // 生图失败不阻塞发帖——无图但有文案
@@ -1341,7 +1345,8 @@ ${weatherHint}`;
   const msgs = [{ role: 'system', content: permissionPrompt }];
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });
   msgs.push({ role: 'system', content: postingTask });
-  msgs.push({ role: 'system', content: buildCharacterPersona(character, { variant: 'full' }) });
+  const outfitSnapshot = captureCharacterOutfitSnapshot(character, { outfitScene: 'current' });
+  msgs.push({ role: 'system', content: buildCharacterPersona(character, { variant: 'full', outfitSnapshot }) });
   // 约定对象「我」的外观设定：画面必须带上这个人
   msgs.push({
     role: 'system',
@@ -1377,6 +1382,7 @@ imagePrompt 中${userName}的外观以上述描述为准。`,
     const { imageUrls, usedPrompts } = await generateMomentImages(character, imagePrompts, {
       text,
       manual: true,
+      outfitSnapshots: [outfitSnapshot],
       postId,
     });
     const imagePrompt = usedPrompts.length > 0 ? usedPrompts.join('\n---\n') : imagePrompts[0];

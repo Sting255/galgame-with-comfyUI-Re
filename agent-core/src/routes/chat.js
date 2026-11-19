@@ -66,7 +66,7 @@ import {
 } from '../services/emotionEngine.js';
 import { generateImage, getLastWorkflowMode, captureImageGenerationConfig } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
-import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock, IMAGE_CROSS_REF_OWNERSHIP_RULE } from '../services/characterPersona.js';
+import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo, buildUserInfoBlock, IMAGE_CROSS_REF_OWNERSHIP_RULE, captureCharacterOutfitSnapshot } from '../services/characterPersona.js';
 import { getActiveBuffBlock } from '../services/itemService.js';
 import { getWorldStateBlock, getCharacterEventBlockFor } from '../services/newspaperService.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
@@ -1866,7 +1866,8 @@ ${coreRules}
           if (!prompt) throw new Error('模型未返回图像描述');
           db.prepare('UPDATE raw_messages SET prompt=? WHERE id=?').run(prompt, rawId);
           db.prepare("UPDATE image_tasks SET prompt_original=?,prompt_refined=?,status='running' WHERE id=?").run(prompt,prompt,taskId);
-          await triggerImageGeneration(conversationId,prompt,messageId,taskId,notifyImage,frozen.crossRefCharIdsForImage,frozen.ragQuery,frozen.character,frozen.crossCharacters,frozen.imageConfig,{ includeCharacter: frozen.includeCharacter });
+          await triggerImageGeneration(conversationId,prompt,messageId,taskId,notifyImage,frozen.crossRefCharIdsForImage,frozen.ragQuery,frozen.character,frozen.crossCharacters,frozen.imageConfig,{ includeCharacter: frozen.includeCharacter,
+            outfitSnapshots: [frozen.outfitSnapshot, ...(frozen.crossOutfitSnapshots || [])].filter(Boolean) });
         },
       });
     }
@@ -2683,7 +2684,7 @@ async function judgeImageNeed(conversationId) {
   }
 }
 
-async function triggerImageGeneration(conversationId, prompt, assistantMsgId, taskId, send, crossRefCharIds = [], ragQuery = '', frozenCharacter = null, frozenCrossCharacters = null, frozenImageConfig = {}, { includeCharacter = true } = {}) {
+async function triggerImageGeneration(conversationId, prompt, assistantMsgId, taskId, send, crossRefCharIds = [], ragQuery = '', frozenCharacter = null, frozenCrossCharacters = null, frozenImageConfig = {}, { includeCharacter = true, outfitSnapshots = [] } = {}) {
   const db = getDb();
 
   // 查找角色 lora 设置
@@ -2788,6 +2789,7 @@ async function triggerImageGeneration(conversationId, prompt, assistantMsgId, ta
       ...(poseJson ? { poseJson } : {}),
       // 身份锚点：主角色仅本人入镜时加入；crossRef 按实际引用加入，imageSkill 统一逐个前置。
       ...(identity.length > 0 ? { identity } : {}),
+      ...(outfitSnapshots.length ? { outfitSnapshots } : {}),
     });
     if (result.success && result.images.length > 0) {
       const urls = [];
@@ -2836,13 +2838,18 @@ function buildImagePromptMessages(conversationId, character, source = { kind: 'd
   const scene = source.kind === 'tool' ? source.scene : '';
   const isSharedImage = source.kind === 'tool';
   const isLivePhoto = isSharedImage && ['selfie', 'camera'].includes(source.image_source);
+  const outfitSnapshotOptions = {
+    outfitScene: isSharedImage && !isLivePhoto ? 'none' : 'current',
+    ...((isSharedImage && !isLivePhoto) ? { outfits: null } : {}),
+  };
+  const primaryOutfitSnapshot = captureCharacterOutfitSnapshot(character || {}, outfitSnapshotOptions);
 
   // 1. 构建二次请求的消息列表（破限词+生图指令置顶，人格在后）
   const globalRules = getSystemRulesWithWorld({ roleplay: false });
   const world = getWorldSetting();
   // 整卡人格（统一入口，含生效外观注入）
   let personalityPrompt = buildCharacterPersona(character || {}, {
-    variant: 'full', ...(isSharedImage && !isLivePhoto ? { outfits: null } : {}),
+    variant: 'full', outfitSnapshot: primaryOutfitSnapshot,
   }) || getDefaultPrompt();
   const imagePromptRule = getGlobalRule('image_prompt');
 
@@ -2863,13 +2870,15 @@ function buildImagePromptMessages(conversationId, character, source = { kind: 'd
   const crossMatches = matchAll(scanText, character.id);
   let crossRefCharIdsForImage = [];
   let crossRefImageMsgs = [];
+  let crossOutfitSnapshots = [];
   const crossBlocks = [];
   if (crossMatches.length > 0) {
     const crossChars = crossMatches.map(m =>
       db.prepare('SELECT id, display_name, base_prompt, loras FROM characters WHERE id = ?').get(m.id)
     ).filter(Boolean);
 
-    crossBlocks.push(...crossChars.map(c => `[${c.display_name}]\n${buildImageCrossRefInfo(c)}`));
+    crossOutfitSnapshots = crossChars.map(c => captureCharacterOutfitSnapshot(c, outfitSnapshotOptions));
+    crossBlocks.push(...crossChars.map((c, index) => `[${c.display_name}]\n${buildImageCrossRefInfo(c, { outfitSnapshot: crossOutfitSnapshots[index] })}`));
 
     crossRefCharIdsForImage = crossChars.map(c => c.id);
   }
@@ -3041,7 +3050,7 @@ ${contextBlock.content}`;
   ];
 
   const stableIndex = (world ? 1 : 0) + (formatGuide ? 1 : 0);
-  return { msgs, crossRefCharIdsForImage, personalityPrompt, lastTurnDialogue,
+  return { msgs, crossRefCharIdsForImage, crossOutfitSnapshots, outfitSnapshot: primaryOutfitSnapshot, personalityPrompt, lastTurnDialogue,
     imageSource: isSharedImage ? { image_source: source.image_source, include_self: source.include_self } : undefined,
     includeCharacter: isSharedImage ? source.include_self : true,
     ragQuery: isSharedImage ? scene : lastTurnDialogue,
@@ -3081,8 +3090,14 @@ async function requestImagePromptText(msgs, { character, lastTurnDialogue, empty
 
 /** 请求生图描述 LLM，返回原始输出（planner 并行预生成也走这里） */
 async function requestImagePromptContent(conversationId, character, planSceneHint = '') {
-  const { msgs, lastTurnDialogue } = buildImagePromptMessages(conversationId, character, planSceneHint);
-  return requestImagePromptText(msgs, { character, lastTurnDialogue, emptyLabel: 'image prompt' });
+  const imageContext = buildImagePromptMessages(conversationId, character, planSceneHint);
+  const content = await requestImagePromptText(imageContext.msgs, {
+    character, lastTurnDialogue: imageContext.lastTurnDialogue, emptyLabel: 'image prompt',
+  });
+  return {
+    content,
+    outfitSnapshots: [imageContext.outfitSnapshot, ...(imageContext.crossOutfitSnapshots || [])].filter(Boolean),
+  };
 }
 
 async function handleNeedImageFlow(conversationId, character, send, preExistingTaskId = null, planSceneHint = '', presetContentPromise = null) {
@@ -3090,14 +3105,18 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
   console.log('[chat] needImage detected, requesting prompt from model (compact)...');
   const emojiMap = getCharacterEmojiMap(character.id, db);
 
-  const { msgs, crossRefCharIdsForImage, lastTurnDialogue } = buildImagePromptMessages(conversationId, character, planSceneHint);
+  const imageContext = buildImagePromptMessages(conversationId, character, planSceneHint);
+  const { msgs, crossRefCharIdsForImage, crossOutfitSnapshots, outfitSnapshot, lastTurnDialogue } = imageContext;
+  let outfitSnapshots = [outfitSnapshot, ...(crossOutfitSnapshots || [])].filter(Boolean);
 
   // 3. 静默请求模型生成 prompt（不流式，避免前端气泡混乱）
   //    presetContentPromise：planner 阶段已与回复流并行预生成的结果，直接取用，省去回复完成后的串行等待
   let fullContent = '';
   try {
     if (presetContentPromise) {
-      fullContent = (await presetContentPromise) || '';
+      const planned = await presetContentPromise;
+      fullContent = typeof planned === 'string' ? planned : planned?.content || '';
+      if (Array.isArray(planned?.outfitSnapshots)) outfitSnapshots = planned.outfitSnapshots;
       console.log(`[chat] planned image prompt (pre-generated): ${fullContent.slice(0, 80)}...`);
     } else {
       fullContent = await requestImagePromptText(msgs, {
@@ -3239,7 +3258,8 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
     }
     // 上游 v3.10.0：把「请求生图助手时捕获的最后一轮对话」透传给图片 RAG，
     // 而不是让下游去读已经拼入英文 prompt 的历史。
-    await triggerImageGeneration(conversationId, tags.prompt, assistantMsgId, genTaskId, send, crossRefCharIdsForImage, lastTurnDialogue);
+    await triggerImageGeneration(conversationId, tags.prompt, assistantMsgId, genTaskId, send, crossRefCharIdsForImage, lastTurnDialogue,
+      null, null, {}, { outfitSnapshots });
   } else {
     console.log('[chat] needImage follow-up: no prompt tags found, falling back');
     send('generate_error', { taskId: preExistingTaskId, error: '模型未返回图像描述' });

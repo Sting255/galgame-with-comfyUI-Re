@@ -33,7 +33,8 @@ import { getCurrentActivity, syncEventSchedule } from './scheduleManager.js';
 import { captureEventSchedule } from './eventSchedule.js';
 import { getTimeTag, getLightNoteWithWeather } from './timeLight.js';
 import { matchAll } from './characterSearch.js';
-import { buildCharacterPersona } from './characterPersona.js';
+import { buildCharacterPersona, captureCharacterOutfitSnapshot } from './characterPersona.js';
+import { getProgramNow } from './programTime.js';
 // P1-06：自动奇遇首幕落库前的角色状态复查（睡眠 / 奇遇开关 / 存在性 / 系统角色）
 import { checkCharacterPublishable } from './publishGate.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
@@ -242,6 +243,8 @@ export function getUrgencyLevel(eventTypeKey) {
 export async function generateEvent(character, options = {}) {
   const db = getDb();
   const now = new Date();
+  const outfitAt = getProgramNow();
+  const outfitSnapshot = captureCharacterOutfitSnapshot(character, { outfitScene: 'current', date: outfitAt });
 
   // 1. 选事件类型
   const available = getAvailableEventTypes(character, db);
@@ -312,10 +315,9 @@ export async function generateEvent(character, options = {}) {
       `).all(character.id);
 
       const picked = allRels[Math.floor(Math.random() * allRels.length)];
-      const otherPersona = buildCharacterPersona(
-        { id: picked.other_id, short_prompt: picked.other_short, base_prompt: picked.other_prompt },
-        { variant: 'short', person: picked.other_name }
-      );
+      const otherCharacter = { id: picked.other_id, short_prompt: picked.other_short, base_prompt: picked.other_prompt, display_name: picked.other_name };
+      const otherOutfitSnapshot = captureCharacterOutfitSnapshot(otherCharacter, { outfitScene: 'current', date: outfitAt });
+      const otherPersona = buildCharacterPersona(otherCharacter, { variant: 'short', person: picked.other_name, outfitSnapshot: otherOutfitSnapshot });
 
       // 查反向关系，双向注入
       const reverseRel = db.prepare(`
@@ -332,6 +334,7 @@ export async function generateEvent(character, options = {}) {
         otherId: picked.other_id,
         otherName: picked.other_name,
         otherPersona,
+        outfitSnapshot: otherOutfitSnapshot,
         relDesc,
       };
       console.log(`[eventGen] Multi-person event: ${character.display_name} + ${picked.other_name} (${relDesc})`);
@@ -363,7 +366,7 @@ export async function generateEvent(character, options = {}) {
 
   // 将角色人格中的"你"替换为角色名（保留引号内对话不变，简单正则处理）；统一入口含生效外观注入
   const displayName = character.display_name;
-  let personaText = buildCharacterPersona(character, { variant: 'full', person: displayName });
+  let personaText = buildCharacterPersona(character, { variant: 'full', person: displayName, outfitSnapshot });
 
   // 誓约角色：银白细戒指外观细节
   const ringUserName1 = config.user?.nickname || 'user';
@@ -610,6 +613,7 @@ ${directorPrompt}`
       loras: allLoras,
       // 身份锚点：本角色必传；多人奇遇连对方一起传，imageSkill 逐个前置（各自用自己的锚点）
       identity: multiPerson ? [character, ...otherChars] : character,
+      outfitSnapshots: [outfitSnapshot, multiPerson?.outfitSnapshot].filter(Boolean),
       ...(!multiPerson && character.custom_workflow ? { customWorkflow: character.custom_workflow } : {}),
     });
     if (genResult.success && genResult.images.length > 0) {
@@ -667,7 +671,8 @@ ${directorPrompt}`
     summary: eventData.description,
     image: imageUrl,
     // 存储多人模式信息，供后续分支生成时复用
-    multiPerson: multiPerson ? { otherId: multiPerson.otherId, otherName: multiPerson.otherName, otherPersona: multiPerson.otherPersona, relDesc: multiPerson.relDesc } : null,
+    multiPerson: multiPerson ? { otherId: multiPerson.otherId, otherName: multiPerson.otherName, otherPersona: multiPerson.otherPersona, outfitSnapshot: multiPerson.outfitSnapshot, relDesc: multiPerson.relDesc } : null,
+    outfitSnapshots: [outfitSnapshot, multiPerson?.outfitSnapshot].filter(Boolean),
     // 开场日程绑定必须**落库**（上游 v3.9.0）：extendEventSchedule 靠它把「开场活动」
     // 钉回日程；不落库时 reapplyActiveEventSchedule / 后续分支延长都会退回
     // 「按 created_at 重新捕获」并落到下一个活动上（本地从 v3.6.2 起漏了这一行，2026-10-15 补）。
@@ -933,6 +938,10 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
 
   // 2.5 检查是否为多人模式（从 choice_history[0] 读取初始事件时存储的 multiPerson 数据）
   const choiceHistory = JSON.parse(event.choice_history || '[]');
+  const initialOutfitSnapshots = Array.isArray(choiceHistory[0]?.outfitSnapshots)
+    ? choiceHistory[0].outfitSnapshots : [];
+  const outfitSnapshot2 = initialOutfitSnapshots.find(snapshot => Number(snapshot.characterId) === Number(character.id))
+    || captureCharacterOutfitSnapshot(character, { outfitScene: 'current', date: getProgramNow() });
   const storedMultiPerson = choiceHistory.length > 0 ? choiceHistory[0].multiPerson : null;
   let multiPerson2 = null;
   if (storedMultiPerson) {
@@ -940,6 +949,7 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
       otherId: storedMultiPerson.otherId,
       otherName: storedMultiPerson.otherName,
       otherPersona: storedMultiPerson.otherPersona,
+      outfitSnapshot: storedMultiPerson.outfitSnapshot || initialOutfitSnapshots.find(snapshot => Number(snapshot.characterId) === Number(storedMultiPerson.otherId)) || null,
       relDesc: storedMultiPerson.relDesc,
     };
   }
@@ -970,7 +980,7 @@ export async function generateNextBranch(character, event, choice, deps = {}) {
   const timeTag2 = getTimeTag(now, false);
 
   const displayName2 = character.display_name;
-  let personaText2 = buildCharacterPersona(character, { variant: 'full', person: displayName2 });
+  let personaText2 = buildCharacterPersona(character, { variant: 'full', person: displayName2, outfitSnapshot: outfitSnapshot2 });
 
   // 誓约角色：银白细戒指外观细节
   const ringUserName2 = config.user?.nickname || 'user';
@@ -997,14 +1007,16 @@ ${multiPerson2.otherPersona}`;
   // 交叉角色引用：从事件上下文中加载被提及的角色信息
   const crossRefIds = JSON.parse(event.referenced_character_ids || '[]');
   let crossRefNames = [];
+  let crossOutfitSnapshots = [];
   if (crossRefIds.length > 0) {
     const crossChars = crossRefIds.map(id =>
       db.prepare('SELECT id, display_name, short_prompt, base_prompt FROM characters WHERE id = ?').get(id)
     ).filter(Boolean);
     if (crossChars.length > 0) {
+      crossOutfitSnapshots = crossChars.map(c => captureCharacterOutfitSnapshot(c, { outfitScene: 'current', date: getProgramNow() }));
       crossRefNames = crossChars.map(c => c.display_name);
-      const crossBlocks = crossChars.map(c => {
-        const parts = [buildCharacterPersona(c, { variant: 'short', person: c.display_name })].filter(Boolean);
+      const crossBlocks = crossChars.map((c, index) => {
+        const parts = [buildCharacterPersona(c, { variant: 'short', person: c.display_name, outfitSnapshot: crossOutfitSnapshots[index] })].filter(Boolean);
         // 查询角色间关系
         const relParts = [];
         const fwd = db.prepare(
@@ -1243,6 +1255,7 @@ ${directorPrompt2}${prevSceneBlock}`
       loras: branchAllLoras,
       // 身份锚点：分支画面里实际入画的角色各自用自己的锚点（主角 + 多人对象 + 交叉引用角色）
       identity: branchOtherChars.length ? [character, ...branchOtherChars] : character,
+      outfitSnapshots: [outfitSnapshot2, multiPerson2?.outfitSnapshot, ...crossOutfitSnapshots].filter(Boolean),
       ...(!multiPerson2 && character.custom_workflow ? { customWorkflow: character.custom_workflow } : {}),
     });
     if (genResult.success && genResult.images.length > 0) {

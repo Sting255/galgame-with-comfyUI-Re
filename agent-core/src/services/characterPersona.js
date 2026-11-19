@@ -29,6 +29,7 @@ import { getBodyBuildLine } from './bodyBuildRegistry.js';
 // 人格裁剪抽在零依赖的叶子模块里：emotionEngine 反过来 import 本文件（它要用 buildCharacterPersona），
 // 所以这里**不能**直接 import emotionEngine（会成环，还会把 db/llm 拖进这个被 58 处引用的模块）。
 import { cropPersonalityForEmotion } from './personalityCrop.js';
+import { createHash } from 'node:crypto';
 
 /**
  * 场景服装注入（2026-10-13）。
@@ -353,7 +354,9 @@ export function isAppearanceOnlyPromptChange(oldBase, newBase) {
  * @returns {string} base_prompt 无外观段且无生效外观时返回 ''
  */
 export function buildCharacterAppearanceSection(character, opts = {}) {
-  const outfits = resolveOutfits(character, opts.outfits);
+  const outfits = opts.outfitSnapshot?.__outfitSnapshot === true
+    ? resolveOutfits(character, opts.outfitSnapshot, opts.outfitScene || 'current')
+    : resolveOutfits(character, opts.outfits, opts.outfitScene || 'current');
   const appearance = extractAppearanceSection(character?.base_prompt);
   // 多角色场景调用方会传 opts.person（角色名）⇒ 着装段带上归属，避免"衣服串到一起"；
   // 不传时输出与改动前逐字节一致（单角色生图路径不受影响）
@@ -382,27 +385,69 @@ export function buildCharacterAppearanceSection(character, opts = {}) {
  *   ② 'auto'/缺省 → outfitService 的限时服饰/道具，**再叠加** outfitScene 的场景服装；
  *   ③ 场景服装是增强项：查不到/没配 ⇒ 与移植前逐字节一致。
  */
-function resolveOutfits(character, outfits, outfitScene = 'current') {
+function resolveOutfits(character, outfits, outfitScene = 'current', date = null) {
+  if (outfits?.__outfitSnapshot === true) {
+    if (outfits.characterId != null && Number(character?.id) !== Number(outfits.characterId)) {
+      return { limited: [], exclusive: null };
+    }
+    return outfits.outfits || { limited: [], exclusive: null };
+  }
   if (outfits === null) return { limited: [], exclusive: null };
   if (outfits && typeof outfits === 'object') {
-    if (Array.isArray(outfits)) return { limited: mergeScene(character, outfits, outfitScene), exclusive: null };
+    if (Array.isArray(outfits)) return { limited: mergeScene(character, outfits, outfitScene, date), exclusive: null };
     return outfits;
   }
   const base = getActiveOutfits(character?.id);
   return {
-    limited: mergeScene(character, Array.isArray(base?.limited) ? base.limited : [], outfitScene),
+    limited: mergeScene(character, Array.isArray(base?.limited) ? base.limited : [], outfitScene, date),
     exclusive: base?.exclusive || null,
   };
 }
 
 /** 把「此刻该穿的场景服装」追加到 limited 末尾（限时服饰在前，优先级更高） */
-function mergeScene(character, limited, outfitScene = 'current') {
-  const scene = getSceneOutfitProvider(character?.id, { scene: outfitScene });
+function mergeScene(character, limited, outfitScene = 'current', date = null) {
+  const scene = getSceneOutfitProvider(character?.id, { scene: outfitScene, ...(date ? { date } : {}) });
   if (!scene?.limited?.length) return limited;
   // 锁定语义属于场景服装本身，不能提升为整批 limited 的全局标志：
   // 同批的换装道具/角色专属形态仍允许整体替换发型、身体等属性。
   const sceneLimited = scene.limited.map(item => ({ ...item, bodyLocked: scene.bodyLocked === true }));
   return [...limited, ...sceneLimited];
+}
+
+/** Freeze schedule-selected clothing and active overlays for one image task. */
+export function captureCharacterOutfitSnapshot(character, opts = {}) {
+  const characterId = Number(character?.id);
+  const mode = opts.outfitScene ?? opts.scene ?? 'current';
+  const emptyOutfits = { limited: [], exclusive: null };
+  if (!Number.isSafeInteger(characterId) || characterId <= 0) {
+    return { version: 1, characterId: null, scene: null, source: 'none', outfitId: null,
+      description: '', descriptionHash: '', outfits: emptyOutfits, __outfitSnapshot: true };
+  }
+  const hasExplicit = Object.hasOwn(opts, 'outfits') && opts.outfits !== 'auto';
+  const active = opts.outfits === null
+    ? { limited: [], exclusive: null }
+    : hasExplicit
+      ? (Array.isArray(opts.outfits) ? { limited: opts.outfits, exclusive: null } : opts.outfits)
+      : getActiveOutfits(characterId);
+  const scene = mode === 'none' || (hasExplicit && !Array.isArray(opts.outfits)) ? null : getSceneOutfitProvider(characterId, {
+    scene: mode, ...(opts.date instanceof Date ? { date: opts.date } : {}),
+    ...(opts.ignoreOverride === true ? { ignoreOverride: true } : {}),
+  });
+  const outfits = {
+    limited: [...(Array.isArray(active?.limited) ? active.limited : []),
+      ...(Array.isArray(scene?.limited) ? scene.limited.map(item => ({ ...item, bodyLocked: scene.bodyLocked === true })) : [])],
+    exclusive: active?.exclusive || null,
+  };
+  const selected = scene?.outfit || null;
+  const description = String(selected?.description || '').trim();
+  const descriptionHash = description
+    ? createHash('sha256').update(description).digest('hex').slice(0, 16)
+    : '';
+  return {
+    version: 1, characterId, scene: scene?.scene || null, source: scene?.source || 'none',
+    outfitId: scene?.outfitId ?? selected?.id ?? null, description, descriptionHash,
+    outfits: { limited: outfits.limited, exclusive: outfits.exclusive }, __outfitSnapshot: true,
+  };
 }
 
 /**
@@ -427,7 +472,9 @@ export function buildCharacterPersona(character, opts = {}) {
   const variant = opts.variant || 'short';
   const person = typeof opts.person === 'string' ? opts.person : null;
   const joiner = typeof opts.joiner === 'string' ? opts.joiner : '\n';
-  const outfits = resolveOutfits(character, opts.outfits, opts.outfitScene || 'current');
+  const outfits = opts.outfitSnapshot?.__outfitSnapshot === true
+    ? resolveOutfits(character, opts.outfitSnapshot, opts.outfitScene || 'current')
+    : resolveOutfits(character, opts.outfits, opts.outfitScene || 'current', opts.outfitDate || null);
 
   if (variant === 'full') {
     const base = String(character?.base_prompt || character?.short_prompt || '');
@@ -564,7 +611,9 @@ export function buildImageCrossRefInfo(char, opts = {}) {
   //   所以这里不做"可选 owner"——一律用 char.display_name 写清这是谁的着装。
   const injected = injectOutfitsIntoAppearance(
     appearance,
-    buildOutfitInjectionBlocks(resolveOutfits(char, opts.outfits), { owner: person }),
+    buildOutfitInjectionBlocks(opts.outfitSnapshot?.__outfitSnapshot === true
+      ? resolveOutfits(char, opts.outfitSnapshot, opts.outfitScene || 'current')
+      : resolveOutfits(char, opts.outfits, opts.outfitScene || 'current', opts.outfitDate || null), { owner: person }),
     { owner: person },
   );
   if (injected) {

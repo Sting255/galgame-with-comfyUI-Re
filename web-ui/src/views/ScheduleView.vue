@@ -569,6 +569,7 @@ const peekImage = ref<string | null>(null)
 const peekError = ref<string | null>(null)
 const peekPrompt = ref<string | null>(null)
 const peekParticipantIds = ref<number[]>([])
+const peekOutfitSnapshots = ref<any[]>([])
 const peekChar = ref<any>(null)
 const peekAct = ref<any>(null)
 const shutterFire = ref(false) // 相机快门动画触发器
@@ -832,6 +833,9 @@ onMounted(async () => {
     peekUnsubscribers.push(onEvent('schedule_peek_ready', (d: any) => {
       if (d.prompt) peekPrompt.value = d.prompt
       if (d.participant_ids) peekParticipantIds.value = d.participant_ids
+      if (d.outfit_snapshot || d.participant_outfit_snapshots) {
+        peekOutfitSnapshots.value = [d.outfit_snapshot, ...Object.values(d.participant_outfit_snapshots || {})].filter(Boolean)
+      }
       if (d.images?.length) { peekImage.value = d.images[0]; peekError.value = null }
       else if (d.error) { peekError.value = d.error }
       peekLoading.value = false; peekBusy.value = false
@@ -879,7 +883,7 @@ function onPeek() {
   const act = detailActs.value.find((a: any) => a.isCurrent) || detailActs.value[0]
   peekChar.value = detailChar.value
   peekAct.value = act || null
-  peekImage.value = null; peekError.value = null; peekPrompt.value = null
+  peekImage.value = null; peekError.value = null; peekPrompt.value = null; peekOutfitSnapshots.value = []
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
   store.peekSnapshot(detailChar.value.id)
@@ -889,7 +893,7 @@ function onPeekAt(act: any) {
   if (!detailChar.value || !act) return
   peekChar.value = detailChar.value
   peekAct.value = act
-  peekImage.value = null; peekError.value = null; peekPrompt.value = null
+  peekImage.value = null; peekError.value = null; peekPrompt.value = null; peekOutfitSnapshots.value = []
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
   store.peekSnapshot(detailChar.value.id, {
@@ -951,7 +955,7 @@ async function onCardPeek(id: number) {
   const act = detailActs.value.find((a: any) => a.isCurrent) || detailActs.value[0]
   peekChar.value = detailChar.value
   peekAct.value = act || null
-  peekImage.value = null; peekError.value = null; peekPrompt.value = null
+  peekImage.value = null; peekError.value = null; peekPrompt.value = null; peekOutfitSnapshots.value = []
   peekOpen.value = true; peekBusy.value = true; peekLoading.value = true
   startFakeProgress()
   store.peekSnapshot(id)
@@ -1130,7 +1134,7 @@ async function onClearFromModal() {
 
 function retryPeek() {
   if (!peekChar.value) return
-  peekError.value = null; peekPrompt.value = null; peekLoading.value = true; peekBusy.value = true
+  peekError.value = null; peekPrompt.value = null; peekOutfitSnapshots.value = []; peekLoading.value = true; peekBusy.value = true
   startFakeProgress()
   store.peekSnapshot(peekChar.value.id)
 }
@@ -1141,7 +1145,7 @@ async function retakePeek() {
   peekLoading.value = true; peekBusy.value = true
   startFakeProgress()
   try {
-    await api.retakePeekSnapshot(peekChar.value.id, peekPrompt.value, peekParticipantIds.value)
+    await api.retakePeekSnapshot(peekChar.value.id, peekPrompt.value, peekParticipantIds.value, peekOutfitSnapshots.value)
   } catch (err: any) {
     peekError.value = err.message
     peekLoading.value = false
