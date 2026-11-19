@@ -11,6 +11,7 @@ import { splitResidenceSleep, assertCompleteDay, overlaps, reconcileSharedActivi
 import { reapplyActiveEventSchedule, reserveEventTime } from './eventSchedule.js';
 import { intervals } from './cohabitationSchedule.js';
 import { broadcast } from './unifiedStreamBus.js';
+import { normalizeScheduleOutfitMarkers, resolveScheduleOutfit, scheduleOutfits } from './outfitScene.js';
 
 let active = null;
 let initialization = null;
@@ -39,7 +40,10 @@ export function protectedScheduleActivities(db, ids, date = getLocalDateKey()) {
 }
 
 function fixedFingerprint(fixed) {
-  return JSON.stringify(Object.entries(fixed).map(([id, acts]) => [id, acts.map(a => ({ startTime: a.startTime, endTime: a.endTime, activity: a.activity, location: a.location, description: a.description }))]));
+  return JSON.stringify(Object.entries(fixed).map(([id, acts]) => [id, acts.map(a => ({
+    startTime: a.startTime, endTime: a.endTime, activity: a.activity, location: a.location,
+    description: a.description, outfit: a.outfit ?? null,
+  }))]));
 }
 
 function assertSharedActivities(schedules, events) {
@@ -48,6 +52,19 @@ function assertSharedActivities(schedules, events) {
     if (!actual.length || actual.some(a => a.location !== event.location || JSON.stringify(a.participantIds) !== JSON.stringify(event.participantIds))
       || intervals(event).some(([s, e]) => !actual.some(a => intervals(a).some(([x, y]) => x === s && y === e)))) throw new Error('共同活动未在所有参与者日程中完整落实');
   }
+}
+
+/** Revalidate against the live owner's wardrobe immediately before publishing. */
+function normalizePublishedOutfits(characterId, schedule) {
+  const candidates = scheduleOutfits(Number(characterId));
+  for (const activity of schedule || []) {
+    const marker = activity?.outfit;
+    if (marker == null || String(marker).trim() === '') continue;
+    if (!resolveScheduleOutfit(marker, candidates)) {
+      throw new Error(`角色 ${characterId} 的日程引用了不存在或有歧义的衣柜槽，请重新生成草稿`);
+    }
+  }
+  return normalizeScheduleOutfitMarkers(schedule, candidates).schedule;
 }
 
 export function getScheduleBatchStatus(db = getDb()) {
@@ -158,6 +175,12 @@ export function startScheduleBatch({ kind = 'manual', direction = '', resume = f
     const lockedIds = plan.lockedSharedEventIds || plan.events.filter(e => !e.sharedEventId?.startsWith(`${plan.id}:`)).map(e => e.sharedEventId);
     const reconciled = reconcileSharedActivities({ ...plan.frozenSchedules, ...plan.drafts }, plan.events, plan.fixed, lockedIds, Object.keys(plan.frozenSchedules || {}).map(Number));
     const schedules = splitResidenceSleep(reconciled.schedules, plan.rooms, names);
+    // The wardrobe may change while a resumable batch draft is waiting. Resolve every
+    // explicit marker against its own character's current slots before any write.
+    for (const [id, schedule] of Object.entries(schedules)) {
+      schedules[id] = normalizePublishedOutfits(id, schedule);
+      assertCompleteDay(schedules[id]);
+    }
     // 失败重试仍从原提案和原草稿协调，不累计移动距离。
     const proposedEvents = plan.events;
     for (const id of plan.characterIds) assertCompleteDay(schedules[id]);
@@ -191,7 +214,10 @@ export function startScheduleBatch({ kind = 'manual', direction = '', resume = f
       const affectedIds = Object.keys(schedules).map(Number);
       const actual = Object.fromEntries(affectedIds.map(id => [id, readArray(db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id=? AND schedule_date=?').get(id, plan.date)?.schedule_json || JSON.stringify(schedules[id]))]));
       const splitActual = splitResidenceSleep(actual, plan.rooms, names);
-      for (const id of plan.characterIds) assertCompleteDay(splitActual[id]);
+      for (const [id, schedule] of Object.entries(splitActual)) {
+        splitActual[id] = normalizePublishedOutfits(id, schedule);
+        if (plan.characterIds.includes(Number(id))) assertCompleteDay(splitActual[id]);
+      }
       assertSharedActivities(splitActual, plan.events);
       for (const id of affectedIds) db.prepare('UPDATE daily_schedules SET schedule_json=? WHERE character_id=? AND schedule_date=?').run(JSON.stringify(splitActual[id]), id, plan.date);
       plan.status = 'done'; plan.phase = 'done'; plan.drafts = {};

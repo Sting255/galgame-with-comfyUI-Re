@@ -1,6 +1,6 @@
 import { readTemplate } from '../db/cohabitationRepository.js';
 import { splitResidenceSleep } from './cohabitationSchedule.js';
-import { getLocalDateKey } from '../utils/localDate.js';
+import { getProgramDateKey, getProgramNow } from './programTime.js';
 import { reapplyActiveEventSchedule } from './eventSchedule.js';
 
 export function writeScheduleTemplate(db, id, schedule) {
@@ -9,10 +9,10 @@ export function writeScheduleTemplate(db, id, schedule) {
     .run(id, JSON.stringify(schedule));
 }
 
-export function refreshResidenceDailySleep(db, characterId) {
+export function refreshResidenceDailySleep(db, characterId, programNow = getProgramNow()) {
   const room = readTemplate(db, characterId).find(a => a.residence)?.residence;
   if (!room) return [Number(characterId)];
-  const date = getLocalDateKey();
+  const date = getProgramDateKey(programNow);
   const schedules = {};
   const names = Object.fromEntries(db.prepare('SELECT id,display_name FROM characters').all().map(c => [c.id, c.display_name]));
   for (const id of room.memberIds) {
@@ -20,15 +20,25 @@ export function refreshResidenceDailySleep(db, characterId) {
     if (!row) {
       const template = db.prepare('SELECT schedule_json FROM schedule_templates WHERE character_id=?').get(id);
       if (template) {
-        db.prepare('INSERT INTO daily_schedules(character_id,schedule_date,schedule_json) VALUES(?,?,?)').run(id, date, template.schedule_json);
+        db.prepare(`INSERT INTO daily_schedules(character_id,schedule_date,schedule_json) VALUES(?,?,?)
+          ON CONFLICT(character_id,schedule_date) DO NOTHING`).run(id, date, template.schedule_json);
         reapplyActiveEventSchedule(id, db);
         row = db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id=? AND schedule_date=?').get(id, date);
       }
     }
-    if (row) schedules[id] = JSON.parse(row.schedule_json);
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.schedule_json);
+        const schedule = Array.isArray(parsed) ? parsed : parsed?.activities;
+        if (Array.isArray(schedule)) schedules[id] = schedule;
+      } catch { /* malformed snapshot is left untouched */ }
+    }
   }
   const updated = splitResidenceSleep(schedules, [room], names);
-  for (const [id, schedule] of Object.entries(updated)) db.prepare('UPDATE daily_schedules SET schedule_json=? WHERE character_id=? AND schedule_date=?').run(JSON.stringify(schedule), id, date);
+  for (const [id, schedule] of Object.entries(updated)) {
+    if (!schedules[id]) continue;
+    db.prepare('UPDATE daily_schedules SET schedule_json=? WHERE character_id=? AND schedule_date=?').run(JSON.stringify(schedule), id, date);
+  }
   return room.memberIds;
 }
 
@@ -47,14 +57,18 @@ export function persistIndividualSchedule(db, character, schedule, room) {
         writeScheduleTemplate(db, id, updated[id]); changed.push(id);
       }
     }
-    const today = getLocalDateKey();
+    const today = getProgramDateKey();
     const daily = Object.fromEntries(ids.map(id => {
       const row = db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id=? AND schedule_date=?').get(id, today);
-      return [id, id === Number(character.id) ? updated[id] : row ? JSON.parse(row.schedule_json) : templates[id]];
+      let existing = null;
+      try { existing = row ? JSON.parse(row.schedule_json) : null; } catch { /* malformed snapshot falls back below */ }
+      return [id, id === Number(character.id) ? updated[id] : row ? (Array.isArray(existing) ? existing : []) : templates[id]];
     }));
     const splitDaily = splitResidenceSleep(daily, rooms, names);
     for (const id of ids) {
       if (id === Number(character.id) || !splitDaily[id]?.length) continue;
+      const hasSnapshot = db.prepare('SELECT 1 FROM daily_schedules WHERE character_id=? AND schedule_date=?').get(id, today);
+      if (!hasSnapshot) continue;
       db.prepare('UPDATE daily_schedules SET schedule_json=? WHERE character_id=? AND schedule_date=?').run(JSON.stringify(splitDaily[id]), id, today);
     }
   })();

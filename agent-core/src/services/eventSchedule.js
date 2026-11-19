@@ -2,6 +2,7 @@
 import { getDb } from '../db/index.js';
 import { config } from '../config.js';
 import { getLocalDateKey } from '../utils/localDate.js';
+import { getScheduleOutfitMarkerAt } from './scheduleRules.js';
 
 function toMinutes(value) {
   if (!/^\d{1,2}:\d{2}$/.test(String(value || ''))) return null;
@@ -49,7 +50,11 @@ export function captureEventSchedule(characterId, now = new Date(), db = getDb()
     const endAt = new Date(startAt);
     endAt.setHours(0, end, 0, 0);
     if (crossesMidnight) endAt.setDate(endAt.getDate() + 1);
-    return { activity: { ...activity }, startAt: startAt.toISOString(), endAt: endAt.toISOString() };
+    return {
+      activity: { ...activity, outfit: getScheduleOutfitMarkerAt(schedule, minute) },
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+    };
   }
   return null;
 }
@@ -59,7 +64,11 @@ export function reserveEventTime(schedule, activity, start, end) {
   // 后续分支保留运行中更新的状态（例如特殊朋友圈已经发送），避免恢复开场时的旧标记。
   const existing = schedule.find(item => item.startTime === toTime(start)
     && item.activity === activity.activity && item.location === activity.location);
-  const reserved = existing ? { ...activity, ...existing } : activity;
+  const inheritedOutfit = getScheduleOutfitMarkerAt(schedule, start);
+  const requestedOutfit = activity?.outfit;
+  const outfit = requestedOutfit != null && String(requestedOutfit).trim()
+    ? requestedOutfit : inheritedOutfit;
+  const reserved = existing ? { ...activity, ...existing, outfit } : { ...activity, outfit };
   const kept = [];
   for (const item of schedule) {
     const s = toMinutes(item.startTime);
@@ -77,12 +86,21 @@ export function reserveEventTime(schedule, activity, start, end) {
       }
     }
   }
+  // Restore the state active beyond the reservation, including an implicit
+  // default that could otherwise inherit the reservation's explicit marker.
+  const outfitAtEnd = end < 1440
+    ? getScheduleOutfitMarkerAt(schedule, end)
+    : null;
   // 午夜沿用日程系统的 00:00；整日占用拆成两段，避免 00:00-00:00 被当作零长度。
   if (start === 0 && end === 1440) {
     kept.push({ ...reserved, startTime: '00:00', endTime: '12:00' },
       { ...reserved, startTime: '12:00', endTime: '00:00' });
   } else {
     kept.push({ ...reserved, startTime: toTime(start), endTime: toTime(end) });
+  }
+  if (end < 1440 && getScheduleOutfitMarkerAt(kept, end) !== outfitAtEnd) {
+    const continuationIndex = kept.findIndex(item => item.startTime === toTime(end) && item !== reserved);
+    if (continuationIndex >= 0) kept[continuationIndex] = { ...kept[continuationIndex], outfit: outfitAtEnd ?? 'work' };
   }
   return kept.sort((a, b) => toMinutes(a.startTime) - toMinutes(b.startTime));
 }

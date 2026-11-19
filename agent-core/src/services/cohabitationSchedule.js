@@ -1,4 +1,6 @@
 /** 纯时间运算：不调用模型，不改变睡眠长度，不用姓名推断共同活动身份。 */
+import { getScheduleOutfitMarkerAt } from './scheduleRules.js';
+
 export function minuteOf(value) {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(value))) return null;
   const [h, m] = value.split(':').map(Number);
@@ -59,7 +61,8 @@ export function reconcileSharedActivities(schedules, events, fixed = {}, lockedI
     const changed = events.filter(e => e.participantIds.includes(Number(id)) && adjustments.some(a => a.sharedEventId === e.sharedEventId));
     const clean = acts.map(a => a.replyDelay !== -1 && changed.some(e => a.sharedEventId === e.sharedEventId
       || (a.activity === e.activity && a.location === e.location && a.startTime === e.startTime && a.endTime === e.endTime))
-      ? { startTime: a.startTime, endTime: a.endTime, activity: '自由活动', location: a.location, replyDelay: 0, tags: ['日常'], description: '按自己的节奏处理个人事务。' } : a);
+      ? { startTime: a.startTime, endTime: a.endTime, activity: '自由活动', location: a.location, replyDelay: 0,
+        tags: ['日常'], description: '按自己的节奏处理个人事务。', outfit: a.outfit ?? null } : a);
     output[id] = applySharedActivities(clean, accepted, Number(id));
     assertCompleteDay(output[id]);
   }
@@ -88,7 +91,13 @@ export function applySharedActivities(schedule, events, characterId) {
   for (const event of events) {
     if (!event.participantIds.includes(Number(characterId))) continue;
     if (result.some(a => a.replyDelay === -1 && overlaps(a, event))) throw new Error(`共同活动「${event.activity}」与睡眠冲突`);
-    for (const [start, end] of intervals(event)) {
+    const timeline = intervals(event);
+    // Keep one character's look across a shared activity that crosses midnight.
+    const inheritedOutfit = getScheduleOutfitMarkerAt(result, minuteOf(event.startTime) ?? timeline[0]?.[0] ?? 0);
+    for (const [start, end] of timeline) {
+      // A shared replacement is still one person's activity: freeze that person's
+      // active sparse marker on their copy rather than copying another member's.
+      const outfitAtEnd = getScheduleOutfitMarkerAt(result, end === 1440 ? 1439 : end);
       const kept = [];
       for (const act of result) {
         if (!intervals(act).some(([s, e]) => s < end && start < e)) { kept.push(act); continue; }
@@ -100,8 +109,15 @@ export function applySharedActivities(schedule, events, characterId) {
           }
         }
       }
-      kept.push({ ...event, replyDelay: 0, startTime: timeOf(start), endTime: timeOf(end) });
+      kept.push({ ...event, replyDelay: 0, startTime: timeOf(start), endTime: timeOf(end), outfit: inheritedOutfit });
       result = kept;
+      if (end < 1440 && getScheduleOutfitMarkerAt(result, end) !== outfitAtEnd) {
+        const continuation = result.find(a => a.startTime === timeOf(end % 1440)
+          && a.sharedEventId !== event.sharedEventId);
+        // Residents always have an implicit work candidate. null would inherit
+        // the shared activity's marker instead of restoring the default outfit.
+        if (continuation) continuation.outfit = outfitAtEnd ?? 'work';
+      }
     }
   }
   return result.sort((a, b) => minuteOf(a.startTime) - minuteOf(b.startTime));

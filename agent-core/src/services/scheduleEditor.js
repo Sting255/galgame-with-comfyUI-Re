@@ -25,6 +25,8 @@ import {
 import { assertScheduleEditable } from './scheduleGenerationLock.js';
 import { overlaps } from './cohabitationSchedule.js';
 import { refreshResidenceDailySleep } from './cohabitationPersistence.js';
+import { getScheduleOutfitMarkerAt } from './scheduleRules.js';
+import { resolveScheduleOutfit, scheduleOutfits } from './outfitScene.js';
 
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
@@ -86,7 +88,7 @@ export function sanitizeActivityInput(patch = {}, { clampCrossMidnight = false }
     ? patch.tags.map(t => String(t).trim()).filter(Boolean).slice(0, 6)
     : [];
 
-  return {
+  const cleaned = {
     startTime,
     endTime,
     activity: activity.slice(0, 60),
@@ -95,6 +97,15 @@ export function sanitizeActivityInput(patch = {}, { clampCrossMidnight = false }
     tags,
     description: String(patch.description || '').trim().slice(0, 200),
   };
+  // An outfit is a sparse state-change marker. Preserve it through edits,
+  // including legacy row IDs and names, until the caller validates its slot.
+  if (Object.hasOwn(patch, 'outfit')) {
+    const outfit = patch.outfit;
+    if (outfit == null || (typeof outfit === 'string' && !outfit.trim())) cleaned.outfit = null;
+    else if (typeof outfit === 'string' || Number.isSafeInteger(outfit)) cleaned.outfit = outfit;
+    else return null;
+  }
+  return cleaned;
 }
 
 function saveTodaySchedule(characterId, schedule) {
@@ -165,9 +176,19 @@ export function updateScheduleActivity(characterId, index, patch = {}) {
     ...patch,
     startTime: patch.startTime || base.startTime,
     endTime: patch.endTime || base.endTime,
+    activity: Object.hasOwn(patch, 'activity') ? patch.activity : base.activity,
+    location: Object.hasOwn(patch, 'location') ? patch.location : base.location,
+    description: Object.hasOwn(patch, 'description') ? patch.description : base.description,
+    replyDelay: Object.hasOwn(patch, 'replyDelay') ? patch.replyDelay : base.replyDelay,
+    outfit: Object.hasOwn(patch, 'outfit') ? patch.outfit : base.outfit,
   });
   if (!clean) {
     return { ok: false, error: '字段不合法：活动名不能为空' };
+  }
+  if (clean.outfit != null) {
+    const resolved = resolveScheduleOutfit(clean.outfit, scheduleOutfits(characterId));
+    if (!resolved) return { ok: false, error: '服装标注不属于该角色的衣柜' };
+    clean.outfit = resolved.scene;
   }
 
   const updated = [...schedule];
@@ -255,12 +276,20 @@ export function applyScheduleChange(characterId, newActivity, now = getProgramNo
     }
   }
 
-  const marked = { ...clean };
+  const preservedStartOutfit = getScheduleOutfitMarkerAt(schedule, newS);
+  const preservedEndOutfit = getScheduleOutfitMarkerAt(schedule, newE % 1440);
+  const marked = { ...clean, outfit: preservedStartOutfit };
   markEdited(marked, 'chat');
   kept.push(marked);
 
   // 过滤裁剪产生的零长度残块（如 [23:59,23:59]），再排序并补空档（优先拉伸原有条目，不改约定时长）
   const merged = kept.filter(a => toMin(a.startTime) !== toMin(a.endTime));
+  const replacedOutfitChange = schedule.some(a => a.outfit != null && String(a.outfit).trim()
+    && toMin(a.startTime) >= newS && toMin(a.startTime) < newE);
+  if (replacedOutfitChange) {
+    const continuation = merged.find(a => toMin(a.startTime) === newE && a !== marked);
+    if (continuation) continuation.outfit = preservedEndOutfit;
+  }
   merged.sort((a, b) => toMin(a.startTime) - toMin(b.startTime));
   if (toMin(merged[0].startTime) > 0) merged[0].startTime = '00:00';
   for (let i = 1; i < merged.length; i++) {

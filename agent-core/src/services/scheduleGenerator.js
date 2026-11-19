@@ -19,7 +19,7 @@ import { getWorldIntegrationRule } from '../builtinRules.js';
 // 奇遇时长预留（上游 v3.9.0）：写完当天日程快照后，把进行中的事件开场活动重新钉回去。
 // 本地从 v3.6.2 起漏了这条接线（2026-10-14 补）。
 import { reapplyActiveEventSchedule, reserveEventTime } from './eventSchedule.js';
-import { buildOutfitAnnotateLayer, buildOutfitAnnotation, ensureOutfitAnnotations } from './outfitScene.js';
+import { buildOutfitAnnotation, buildScheduleOutfitCandidates, ensureOutfitAnnotations, normalizeScheduleOutfitMarkers, resolveScheduleOutfit, scheduleOutfits } from './outfitScene.js';
 import { publishedCohabitationContext } from '../db/cohabitationRepository.js';
 import { applySharedActivities, assertCompleteDay, intervals } from './cohabitationSchedule.js';
 import { persistIndividualSchedule, refreshResidenceDailySleep } from './cohabitationPersistence.js';
@@ -131,7 +131,7 @@ async function generateScheduleImpl(character, direction, options = {}) {
 ## 共同生活安排（提供时执行）
 如果后文提供本轮已确认的共同活动，必须完整保留每件活动的起止时间、地点和参与者，睡眠避开这些时间；其余时间独立安排。
 如果提供居室，通常在该居室睡眠：location逐字使用居室名称，并增加sleepAtHome:true；外宿或异地补觉使用实际地点和sleepAtHome:false。保持自己的作息，睡眠描述只写自身状态，不提前写独自或与谁同睡；系统在所有人完成后统一按睡眠交集拆分。
-带居室的睡眠条目完整示例：{"startTime":"23:00","endTime":"07:00","activity":"就寝","location":"输入中的居室原名","replyDelay":-1,"tags":["睡眠"],"description":"放松肩膀躺进柔软被褥，伴着窗外渐渐安静的夜色沉入安稳的睡眠。","sleepAtHome":true}。sleepAtHome必须为布尔值，不能用字符串；location必须替换为实际地点。
+带居室的睡眠条目完整示例：{"startTime":"23:00","endTime":"07:00","activity":"就寝","location":"输入中的居室原名","replyDelay":-1,"tags":["睡眠"],"description":"放松肩膀躺进柔软被褥，伴着窗外渐渐安静的夜色沉入安稳的睡眠。","outfit":null,"sleepAtHome":true}。sleepAtHome必须为布尔值，不能用字符串；location必须替换为实际地点；outfit在没有对应衣柜场景键时写null。
 
 ## 输出格式
 输出一个 JSON 对象，外层 key 为 "activities"，值为活动数组。通常8~15个活动，可按共同活动和实际作息增减，不设条数硬上限；按时间顺序覆盖完整24小时。
@@ -168,13 +168,14 @@ async function generateScheduleImpl(character, direction, options = {}) {
   "location": "地点（比如「公寓书房」）",
   "replyDelay": 数字（0 / -1）,
   "tags": ["标签1", "标签2"],
-  "description": "26-52 字，只写「在做什么」：动作 + 所处场景，中性叙述。如「在厨房煎蛋，顺手把锅移开」或「坐在教室后排记笔记」。省略主语或用第三人称（角色名），不出现「我」「你」「她/他」"
+  "description": "26-52 字，只写「在做什么」：动作 + 所处场景，中性叙述。如「在厨房煎蛋，顺手把锅移开」或「坐在教室后排记笔记」。省略主语或用第三人称（角色名），不出现「我」「你」「她/他」",
+  "outfit": "衣柜场景键（仅在衣柜清单中有对应换装点时填写），无换装或无匹配槽位时填 null"
 }
 
 完整 JSON 结构示例（示例仅2个活动，实际需要覆盖完整24小时）：
-{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗——整理长发","location":"公寓浴室","replyDelay":0,"tags":["日常","晨间"],"description":"甘雨站在镜前慢慢理顺长发，水汽沾湿额发，动作安静而认真。"},{"startTime":"22:00","endTime":"07:00","activity":"就寝安眠","location":"公寓卧室","replyDelay":-1,"tags":["睡眠"],"description":"甘雨裹好被子沉入睡眠，角上铃兰微光映着窗帘，呼吸逐渐平稳。"}]}
+{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗——整理长发","location":"公寓浴室","replyDelay":0,"tags":["日常","晨间"],"description":"甘雨站在镜前慢慢理顺长发，水汽沾湿额发，动作安静而认真。","outfit":null},{"startTime":"22:00","endTime":"07:00","activity":"就寝安眠","location":"公寓卧室","replyDelay":-1,"tags":["睡眠"],"description":"甘雨裹好被子沉入睡眠，角上铃兰微光映着窗帘，呼吸逐渐平稳。","outfit":null}]}
 
-只输出 JSON 对象，不要输出任何解释、Markdown 代码块或 JSON 以外的文字。activities 数组必须按时间顺序排列，startTime 和 endTime 必须是 HH:MM 格式、24 小时制，数组里每个对象都必须严格包含并输出上述七个字段。`;
+只输出 JSON 对象，不要输出任何解释、Markdown 代码块或 JSON 以外的文字。activities 数组必须按时间顺序排列，startTime 和 endTime 必须是 HH:MM 格式、24 小时制，数组里每个对象都必须严格包含并输出上述八个字段。outfit 为场景键时只能逐字使用衣柜清单中的键；尚无衣柜清单时写 null。`;
 
   // ── 用户指定的日程方向 ──
   const directionMsg = direction ? `## 用户指定的日程方向
@@ -184,15 +185,14 @@ ${direction}**
 
 **注意：以上是用户指定的日程"方向"或"主题"，这就是严格的指令。所有日程编排以用户的意愿为准，可以想象理由，适当破坏角色原有的角色设定，自然地融入这个方向的元素。**` : null;
 
-  // ── 场景服装标注层（2026-10-13 合并上游 + PR #24）──
-  // 只有该角色配了场景服装（≥2 套）时才拼；没配的角色日程生成保持原样（零影响）。
-  // 这段要求模型为「换装的那一刻」额外输出 outfit 字段，供 outfitScene.getSceneOutfitForNow 按日程选装。
-  // ⚠ 必须在 triggerContent 声明**之后**再用它（TDZ：本仓踩过"引用后声明变量整块静默全废"）。
-  // options.outfits：系统角色（天使）自带衣柜，直接用传入的那几套；
-  // options.persist === false：旁路生成不落库，也就不需要按角色查库里的场景服装。
-  const outfitLayer = Array.isArray(options.outfits)
-    ? buildOutfitAnnotation(options.outfits.filter(outfit => outfit.description))
-    : options.persist === false ? null : buildOutfitAnnotateLayer(character.id);
+  // ── 场景服装标注层 ──
+  // 居民的草稿/预览也需要读取同一角色衣柜；persist=false 只决定是否落库，不能改变穿衣规则。
+  // 系统角色可显式提供独立衣柜（如天使），复用同一标注逻辑。
+  const outfitCandidates = Array.isArray(options.outfits)
+    ? buildScheduleOutfitCandidates(options.outfits.filter(outfit => outfit.description?.trim()
+      || (outfit.scene === 'nude' && outfit.body?.trim())), character)
+    : (options.persist !== false || options.resident) ? scheduleOutfits(character.id) : null;
+  const outfitLayer = outfitCandidates ? buildOutfitAnnotation(outfitCandidates, character) : null;
 
   // ── 组装多层 system（前三层为跨角色共享前缀，提高 LLM 缓存命中率）──
   const msgs = [];
@@ -227,7 +227,7 @@ ${outfitLayer}`;
   // 实测首轮几乎必定写成 Markdown。贴在紧邻生成点的 user 消息末尾后，首轮成功率明显提高。
   triggerContent += `
 
-${SCHEDULE_FORMAT_TAIL}`;
+${buildScheduleFormatTail(Boolean(outfitLayer), outfitCandidates)}`;
   msgs.push({ role: 'user', content: triggerContent });
 
   let rawResult = '';
@@ -280,7 +280,7 @@ ${SCHEDULE_FORMAT_TAIL}`;
     let schedule;
     try {
       const diagnostics = [];
-      schedule = parseAndValidateSchedule(rawResult, character.display_name, diagnostics);
+      schedule = parseAndValidateSchedule(rawResult, character.display_name, diagnostics, outfitCandidates);
       if (!schedule) {
         throw new Error(diagnostics[0] || '日程字段、时间或完整24小时覆盖不符合要求');
       }
@@ -300,16 +300,29 @@ ${SCHEDULE_FORMAT_TAIL}`;
       throw err;
     }
 
-    // 着装标注校验 + 一次专注修复（仅当该角色配了场景服装）。
-    // 提示词已要求「出门/回家必须标」，但 LLM 有波动：同一角色两次生成可能一次给 6 个换装点、
-    // 一次只给 3 个 —— 漏标会让角色穿着居家服在街上活动。只压提示词不够，加这道确定性兜底。
+    // 使用本轮提示词的同一候选集规范化换装标注：新值落稳定 scene，旧名称/行 id 兼容读取；
+    // 只校正不可解析标记和主睡眠冲突，不按固定数量制造换装点，也不改活动正文。
     if (outfitLayer) {
       try {
-        const r = await ensureOutfitAnnotations(schedule, character.id);
+        const r = await ensureOutfitAnnotations(schedule, character.id, options.chat || chatSync, outfitCandidates);
         schedule = r.schedule;
       } catch (err) {
         console.warn(`[scheduleGen] 着装标注修复失败（不影响日程生成）: ${err.message}`);
       }
+    }
+    // A single-character wardrobe can change while generation is in flight. Before
+    // persisting, verify against the live owner wardrobe so a removed slot cannot be
+    // saved as a dangling marker. Detached previews are rechecked by their publisher.
+    if (options.persist !== false && Array.isArray(outfitCandidates)) {
+      const liveOutfits = scheduleOutfits(character.id);
+      for (const activity of schedule) {
+        const marker = activity?.outfit;
+        if (marker == null || String(marker).trim() === '') continue;
+        if (!resolveScheduleOutfit(marker, liveOutfits)) {
+          throw new Error(`角色 ${character.id} 的日程引用了不存在或有歧义的衣柜槽，请重新生成`);
+        }
+      }
+      schedule = normalizeScheduleOutfitMarkers(schedule, liveOutfits).schedule;
     }
     const json = JSON.stringify(schedule);
     // 系统角色（天使）复用生成与校验，但由自己的存储负责，不混入普通居民表。
@@ -418,13 +431,19 @@ export function repairScheduleOverlaps(activities) {
 }
 
 /** 首轮就把格式约束贴在最后一条 user 消息里：长 system 中间那份规范，模型经常读不到 */
-const SCHEDULE_FORMAT_TAIL = `【输出格式 · 硬性要求】
-只输出一个 JSON 对象，形如：
-{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常"],"description":"在浴室洗脸，把毛巾挂回架子上。"}]}
-8~15 条，按时间顺序覆盖完整 24 小时、上一条 endTime 等于下一条 startTime，不留空档；只有睡觉那条 replyDelay=-1，其余为 0；description 20~40 字且必须有内容。
-description 只写动作与场景，中性叙述：不写身体部位、衣物穿着、表情、声音或情绪反应。**即使 <world_setting> 要求露骨描写，这里也不写**——日程是给系统看的时间线，露骨内容由聊天正文承载。
-activity 和 location 也保持中性：写「深夜自习」「走廊巡逻」「晨间梳洗」，不要写任何性行为、体液、身体状态相关的名目。
-不要标题、不要 Markdown、不要代码块围栏、不要任何解释或前后缀，第一个字符必须是 {。`;
+function buildScheduleFormatTail(includeOutfit, outfits = []) {
+  const activityOutfit = includeOutfit ? ',"outfit":"work"' : ',"outfit":null';
+  const sleepOutfit = `,"outfit":${includeOutfit && outfits.some(o => o.scene === 'sleep') ? '"sleep"' : 'null'}`;
+  const example = `{"activities":[{"startTime":"07:00","endTime":"07:30","activity":"晨间梳洗","location":"公寓浴室","replyDelay":0,"tags":["日常","晨间"],"description":"清点洗漱用品并擦净台面水渍，再把毛巾挂回原位。"${activityOutfit}},{"startTime":"22:00","endTime":"07:00","activity":"就寝安眠","location":"公寓卧室","replyDelay":-1,"tags":["睡眠"],"description":"关好床边灯并整理床头物品，随后在卧室进入安稳睡眠。"${sleepOutfit}}]}`;
+  const outfitRule = includeOutfit
+    ? `\n每条活动必须有 outfit 字段：只填衣柜清单中的场景键 ${outfits.map(o => `\`${o.scene}\``).join('、')} 或 null；只在穿衣发生变化时填写场景键，其余时段填 null。`
+    : '\noutfit 字段必须为 null，因为本轮没有可用的场景服装清单。';
+  return `【输出格式 · 硬性要求】
+只输出一个 JSON 对象，完整结构示例：
+${example}
+实际生成 8～15 条，按时间顺序覆盖完整 24 小时，相邻活动的 endTime 与 startTime 必须相同，不留空档。每项必须包含 startTime、endTime、activity、location、replyDelay、tags、description、outfit，不得省略字段。只有睡眠活动的 replyDelay 为 -1，其余为 0。description 必须为 26～52 字，只写具体动作和场景，中性叙述，不写身体部位、衣物穿着、表情、声音或情绪反应。activity 和 location 也保持中性，不写性行为或身体状态。${outfitRule}
+不要标题、Markdown、代码围栏、解释或 JSON 以外文字；第一个字符必须是 {。`;
+}
 
 /**
  * 解析并校验 LLM 输出的日程 JSON。
@@ -433,13 +452,13 @@ activity 和 location 也保持中性：写「深夜自习」「走廊巡逻」�
  * 失败时统一补一条原始输出预览（具体原因仍由 inner 里各自的 warn 说明），
  * 这样"校验为什么没过"永远能从日志里看出来。
  */
-export function parseAndValidateSchedule(raw, displayName, diagnostics = null) {
-  const result = validateScheduleInner(raw, displayName, diagnostics);
+export function parseAndValidateSchedule(raw, displayName, diagnostics = null, outfitCandidates = null) {
+  const result = validateScheduleInner(raw, displayName, diagnostics, outfitCandidates);
   if (!result) dumpScheduleRaw(raw, displayName, '日程校验未通过（具体原因见上一条 warn）');
   return result;
 }
 
-function validateScheduleInner(raw, displayName, diagnostics = null) {
+function validateScheduleInner(raw, displayName, diagnostics = null, outfitCandidates = null) {
   const fail = (reason) => {
     if (Array.isArray(diagnostics)) diagnostics.push(reason);
     return null;
@@ -476,7 +495,9 @@ function validateScheduleInner(raw, displayName, diagnostics = null) {
   }
 
   // 校验每个活动
+  const hasOutfitCandidateList = Array.isArray(outfitCandidates);
   const required = ['startTime', 'endTime', 'activity', 'location', 'replyDelay', 'description'];
+  if (hasOutfitCandidateList && outfitCandidates.length > 1) required.push('outfit');
   // 24:00 是合法终点（表示当天结束），模型与手写日程都常用它；正规化后再校验，
   // 否则一条 24:00 结尾的完整日程会被整份判废（真机表现为「日日重生成」）。
   const hhmm = (value) => {
@@ -507,6 +528,9 @@ function validateScheduleInner(raw, displayName, diagnostics = null) {
         return fail(`活动缺少必需字段 ${key}`);
       }
     }
+    // A single available slot has no outfit decision to encode. Keep old
+    // drafts valid while normalizing omitted markers to sparse inheritance.
+    if (hasOutfitCandidateList && !Object.hasOwn(act, 'outfit')) act.outfit = null;
     if (typeof act.description !== 'string' || !act.description.trim()) {
       console.warn(`[scheduleGen] Empty or invalid description in activity for ${displayName}: "${act.activity}"`);
       return fail('每条活动的 description 都必须是非空字符串');
@@ -611,6 +635,18 @@ function validateScheduleInner(raw, displayName, diagnostics = null) {
   for (const act of activities) {
     act.tags = normalizeTags(act.tags);
     act.description = String(act.description).trim();
+  }
+
+  if (hasOutfitCandidateList) {
+    for (const activity of activities) {
+      const marker = activity.outfit;
+      if (marker != null && String(marker).trim()) {
+        const resolved = resolveScheduleOutfit(marker, outfitCandidates);
+        if (!resolved) return fail('outfit 必须是该角色衣柜中的场景键或无歧义的旧标注');
+        if (marker !== resolved.scene) activity.outfit = resolved.scene;
+      }
+    }
+    activities = normalizeScheduleOutfitMarkers(activities, outfitCandidates).schedule;
   }
 
   return activities;

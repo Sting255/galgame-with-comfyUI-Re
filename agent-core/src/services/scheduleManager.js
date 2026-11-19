@@ -11,15 +11,18 @@ import { continuousSleepEnd } from './cohabitationSchedule.js';
  */
 
 import { getDb } from '../db/index.js';
+import { refreshResidenceDailySleep } from './cohabitationPersistence.js';
 import { config } from '../config.js';
 import { snapshotTodaySchedule } from './scheduleGenerator.js';
-import { refreshResidenceDailySleep } from './cohabitationPersistence.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { onCharacterWake } from './dreamService.js';
 // 奇遇时长预留（上游 v3.9.0）：事件存续期间的日程要把「开场活动」钉住，不被刷新挪走。
 // 本地从 v3.6.2 起漏了这条接线（2026-10-14 补）。eventSchedule.js 只依赖 db/config/localDate，无循环。
-import { extendEventSchedule, reapplyActiveEventSchedule } from './eventSchedule.js';
+import { extendEventSchedule } from './eventSchedule.js';
 import { getLocalDateKey } from '../utils/localDate.js';
+import { getScheduleSnapshot, registerScheduleSnapshotDerivedHandler } from './scheduleSnapshot.js';
+import { classifySleepBlock, classifySleepBlockInSchedule, findActivityAtTime, isInTimeSlot, SLEEP_KINDS, timeToMinutes } from './scheduleRules.js';
+export { classifySleepBlock, isInTimeSlot, isMainSleepBlock, NAP_MAX_MINUTES, NAP_WINDOW_END_MINUTE, NAP_WINDOW_START_MINUTE, SLEEP_KINDS } from './scheduleRules.js';
 import {
   MAX_ADVANCE_DAYS,
   addDaysToKey,
@@ -37,66 +40,11 @@ import {
 // ── 缓存 ──
 // key: characterId, value: { activity, expireAt }
 const activityCache = new Map();
+registerScheduleSnapshotDerivedHandler(invalidateCache);
 const groggyShown = new Set();  // 已展示过groggy唤醒提示的角色（key 统一为 Number，每次唤醒周期仅首条消息触发一次）
 const CACHE_TTL = 60 * 1000; // 1 分钟
 
-// ── 睡眠块分类（主睡眠 / 小憩）──
-//
-// 用户口径（2026-09-29）：「白天怎么睡觉上了 这个不对吧」。日程生成 prompt 刻意鼓励
-// 「碎片化睡眠→分两段睡」（夜猫子/病人人设），于是会有 15:00~15:45 这种**白天小憩**块。
-// 旧实现把**任何** replyDelay=-1 的块都当成"睡觉中"（is_sleeping=1），后果有两个：
-//   ① 白天显示"睡觉中"；② 主动聊天/奇遇/朋友圈/催眠触发全被这块挡住（用户：「睡觉怎么就不能直接触发了」）。
-// 现在把两件事分开：
-//   · **主睡眠**（长睡眠、跨昼夜的补觉、催眠强制入睡）→ `characters.is_sleeping = 1`（全局暂停闸门）
-//   · **小憩**（≤90 分钟且整体落在白天窗口内的短睡块）→ 仍然"暂不回复"（replyDelay=-1、
-//     写 sleep_until 供聊天排队），但**不占全局闸门**，也不再显示成"睡觉中"
-export const SLEEP_KINDS = { MAIN: 'main', NAP: 'nap' };
-/** 小憩时长上限（分钟）：超过就算主睡眠（昼伏夜出型一睡 10 小时不会被误判成小憩） */
-export const NAP_MAX_MINUTES = 90;
-/** 小憩必须整体落在 [07:00, 21:00) 的本地白天窗口内 */
-export const NAP_WINDOW_START_MINUTE = 7 * 60;
-export const NAP_WINDOW_END_MINUTE = 21 * 60;
-
 // ── 时间工具 ──
-
-function timeToMinutes(hhmm) {
-  if (!hhmm) return 0;
-  const [h, m] = String(hhmm).split(':').map(Number);
-  return h * 60 + (m || 0);
-}
-
-/** 日程块的时长（分钟，跨午夜按正向补齐，零长按整天算） */
-function blockDurationMinutes(block) {
-  if (!block) return 0;
-  const start = timeToMinutes(block.startTime);
-  const end = timeToMinutes(block.endTime);
-  if (end === start) return 24 * 60;
-  return end > start ? end - start : end + 24 * 60 - start;
-}
-
-/**
- * 判定一个日程块是不是睡眠块、是哪一种（**唯一判定点**，别在调用点复制规则）。
- * @param {object|null} block 日程条目（或 getCurrentActivity 的返回值）
- * @returns {'main'|'nap'|null} null = 不是睡眠块
- */
-export function classifySleepBlock(block) {
-  if (!block || Number(block.replyDelay) !== -1) return null;
-  // 催眠手机「立刻入睡」写进来的强制睡眠块：明确是主睡眠，绝不能被小憩启发式降级
-  if (block.forcedSleep === 1 || block.forcedSleep === true) return SLEEP_KINDS.MAIN;
-
-  const duration = blockDurationMinutes(block);
-  const sameDay = timeToMinutes(block.endTime) > timeToMinutes(block.startTime);
-  const insideDayWindow = sameDay
-    && timeToMinutes(block.startTime) >= NAP_WINDOW_START_MINUTE
-    && timeToMinutes(block.endTime) <= NAP_WINDOW_END_MINUTE;
-  if (duration > 0 && duration <= NAP_MAX_MINUTES && insideDayWindow) return SLEEP_KINDS.NAP;
-  return SLEEP_KINDS.MAIN;
-}
-
-/** 是否属于「全局睡眠闸门」（主睡眠） */
-export function isMainSleepBlock(block) {
-  return classifySleepBlock(block) === SLEEP_KINDS.MAIN;
-}
 
 function normalizeTags(tags) {
   if (Array.isArray(tags)) return tags.map(tag => String(tag).trim()).filter(Boolean);
@@ -110,23 +58,6 @@ function normalizeTags(tags) {
     return trimmed.split(/[,，、\n]/).map(tag => tag.trim()).filter(Boolean);
   }
   return [];
-}
-
-/**
- * 判断当前时间是否在给定的 [startTime, endTime) 区间内
- * 正确处理跨午夜（如 startTime="23:00", endTime="07:00"）
- */
-function isInTimeSlot(startTime, endTime, now) {
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const startMin = timeToMinutes(startTime);
-  const endMin = timeToMinutes(endTime);
-
-  if (endMin < startMin) {
-    // 跨午夜：如 23:00 ~ 07:00
-    return nowMin >= startMin || nowMin < endMin;
-  }
-  // 同日：如 08:00 ~ 12:00
-  return nowMin >= startMin && nowMin < endMin;
 }
 
 // ── 初始化 ──
@@ -289,49 +220,8 @@ export function currentSleepBlock(characterId, programNow = getProgramNow()) {
  * 获取角色今日日程的原始 JSON（优先 daily_schedules，fallback template）
  * 「今日」= **程序日期**（跳天之后取到的是那一天的快照）
  */
-function getTodayScheduleRaw(characterId, programNow = getProgramNow()) {
-  const db = getDb();
-  const today = getProgramDateKey(programNow);
-
-  // 优先查 daily_schedules
-  let row = db.prepare(
-    'SELECT schedule_json FROM daily_schedules WHERE character_id = ? AND schedule_date = ?'
-  ).get(characterId, today);
-
-  if (!row) {
-    // fallback: 从 template 快照一条
-    const template = db.prepare(
-      'SELECT schedule_json FROM schedule_templates WHERE character_id = ?'
-    ).get(characterId);
-
-    if (template) {
-      db.prepare(`
-        INSERT OR REPLACE INTO daily_schedules (character_id, schedule_date, schedule_json)
-        VALUES (?, ?, ?)
-      `).run(characterId, today, template.schedule_json);
-      // 奇遇时长预留：新快照要把进行中的事件开场活动重新钉回去（上游 v3.9.0）
-      reapplyActiveEventSchedule(characterId, db);
-      for (const id of refreshResidenceDailySleep(db, characterId)) invalidateCache(id);
-      // 清理阈值沿用本次快照的 today，不读取 SQLite 墙钟。
-      db.prepare(
-        `DELETE FROM daily_schedules WHERE character_id = ? AND schedule_date < date(?, '-2 days')`
-      ).run(characterId, today);
-      // 取回「重新钉回奇遇开场活动之后」的行，而不是 template 原文（上游 v3.9.0 口径）。
-      // 本地从 v3.6.2 起漏了这一步：fallback 派生的快照里事件占用被丢掉，
-      // 事件期间删掉当日快照再次回落到 template 时，当前活动会退回「睡眠」而不是被占用的「上课」
-      // （2026-10-15 补）。取不到时回落 template，保持旧行为不炸。
-      row = db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id = ? AND schedule_date = ?')
-        .get(characterId, today) || { schedule_json: template.schedule_json };
-    }
-  }
-
-  if (!row) return null;
-
-  try {
-    return JSON.parse(row.schedule_json);
-  } catch {
-    return null;
-  }
+export function getTodayScheduleRaw(characterId, programNow = getProgramNow()) {
+  return getScheduleSnapshot(characterId, programNow);
 }
 
 /**
@@ -345,7 +235,7 @@ export function getTodaySchedule(characterId, programNow = getProgramNow()) {
     ...act,
     tags: normalizeTags(act.tags),
     isCurrent: isInTimeSlot(act.startTime, act.endTime, programNow),
-    sleepKind: classifySleepBlock(act),
+    sleepKind: classifySleepBlockInSchedule(schedule, schedule.indexOf(act)),
   }));
 
   return enriched;
@@ -383,25 +273,27 @@ export function getCurrentActivity(characterId, now = getProgramNow()) {
     return null;
   }
 
-  for (const act of schedule) {
-    if (isInTimeSlot(act.startTime, act.endTime, now)) {
-      const result = {
-        ...act,
-        sleepEndTime: act.replyDelay === -1 ? continuousSleepEnd(schedule, act) : undefined,
-        activity: act.activity,
-        location: act.location,
-        replyDelay: act.replyDelay,
-        snapshotPrompt: act.snapshotPrompt || '',
-        description: act.description || '',
-        startTime: act.startTime,
-        endTime: act.endTime,
-        // 催眠手机「立刻入睡」打的主睡眠标记（classifySleepBlock 依赖它，别在投影里丢掉）
-        forcedSleep: act.forcedSleep === 1 || act.forcedSleep === true ? 1 : 0,
-        tags: normalizeTags(act.tags),
-      };
-      activityCache.set(key, { activity: result, expireAt: Date.now() + CACHE_TTL });
-      return result;
-    }
+  const matched = findActivityAtTime(schedule, now);
+  if (matched) {
+    const act = matched.activity;
+    const sleepKind = classifySleepBlockInSchedule(schedule, matched.index);
+    const result = {
+      ...act,
+      sleepEndTime: sleepKind ? continuousSleepEnd(schedule, act) : undefined,
+      activity: act.activity,
+      location: act.location,
+      replyDelay: act.replyDelay,
+      snapshotPrompt: act.snapshotPrompt || '',
+      description: act.description || '',
+      startTime: act.startTime,
+      endTime: act.endTime,
+      // 催眠手机「立刻入睡」打的主睡眠标记（classifySleepBlock 依赖它，别在投影里丢掉）
+      forcedSleep: act.forcedSleep === 1 || act.forcedSleep === true ? 1 : 0,
+      sleepKind,
+      tags: normalizeTags(act.tags),
+    };
+    activityCache.set(key, { activity: result, expireAt: Date.now() + CACHE_TTL });
+    return result;
   }
 
   // 当前时间不在任何活动中 → 空闲状态
@@ -1078,7 +970,7 @@ export function invalidateCache(characterId) {
 export function syncEventSchedule(event) {
   const changes = extendEventSchedule(event);
   if (!changes.length) return;
-  for (const id of refreshResidenceDailySleep(getDb(), event.character_id)) {
+  for (const id of refreshResidenceDailySleep(getDb(), event.character_id, getProgramNow())) {
     invalidateCache(id);
     syncSleepingState(id);
   }
