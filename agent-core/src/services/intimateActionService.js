@@ -1354,7 +1354,6 @@ export function buildDenialOnlyBlock(state, { chatUserName = '', affinityText = 
 
 /** 反应正文上限（与 touchActionService.MAX_REACTION_CHARS 同口径，300 字） */
 export const MAX_REACTION_CHARS = 300;
-export const MAX_IMAGE_PROMPT_CHARS = 400;
 
 /**
  * 组装「这一下的即时反应」prompt（**只构造、不发请求**，调用方拿 messages 去调模型，

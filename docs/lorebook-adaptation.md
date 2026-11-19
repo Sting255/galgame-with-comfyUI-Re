@@ -47,7 +47,7 @@ Outlet 在缓存模式保留原占位符，以保证命中/未命中不修改前
 
 照相馆提示词润色 `photoStudioPolish.js`：请求按基础规则（getSystemRules，roleplay:false，不含世界观）→ 固定润色任务要求 → 独立 system 的共用 `IMAGE_PROMPT_RULE` 生图规则 → 实际 `short_prompt` →【初步画面提示词】及需保留的 tag → 唯一 user（本次任务与可选【任务额外需求】）分层。不注入世界观及 photo 强化，并显式使用 `lorebook:false` 关闭世界书，防止关联世界内容重新进入；因此无需向运行时传 personaTexts、staticTexts、cacheBoundary。前三层组成稳定前缀，额外需求只放动态尾部。人物资料只传原始 `short_prompt`；缺失则省略，不回退完整卡，也不用会追加默认外观的 characterPersona short 变体。初步画面提示词里的外观仍由 characterPersona 的外观入口提取。任务规范只保留照相馆的服装覆盖、tag 保真、人物动作归属、背景保留及去除拼装标记等差异约束，通用格式与身份要求由生图规则负责。
 
-润色输出按生图规则重组为单段英文提示词，禁止保留 `Pose:`、`Character N — Appearance/Outfit:`、`Clothing tags:`、`Custom clothing:`、`Background:`、`Direction:` 等拼装标记。用户额外指定的服装优先于所选外观和简短资料中的默认服装，冲突衣物及附属细节必须移除，不留下“替换衣服”的编辑指令。服装 tag 和姿势中逗号分隔的 tag／短语（含权重、下划线）逐字保留，程序校验遗漏后报错，不静默丢弃或追加独立 Outfit 段；人物归属和自定义服装细节由润色规则约束。长度限制与明确指定的内容冲突时，优先完整保留约束。原始拼装稿留在 image_tasks.prompt_original，实际生图提示词写入 prompt_refined 与拍摄任务，润色失败不退回原稿。
+润色输出按生图规则重组为单段英文提示词，禁止保留 `Pose:`、`Character N — Appearance/Outfit:`、`Clothing tags:`、`Custom clothing:`、`Background:`、`Direction:` 等拼装标记。用户额外指定的服装优先于所选外观和简短资料中的默认服装，冲突衣物及附属细节必须移除，不留下“替换衣服”的编辑指令。服装 tag 和姿势中逗号分隔的 tag／短语（含权重、下划线）逐字保留，程序校验遗漏后报错，不静默丢弃或追加独立 Outfit 段；人物归属和自定义服装细节由润色规则约束。简洁表达不得省略明确指定的内容，不设通用字符硬上限；专用输入校验与模型实际编码容量另行区分。原始拼装稿留在 image_tasks.prompt_original，实际生图提示词写入 prompt_refined 与拍摄任务，润色失败不退回原稿。
 
 服务内缓存最近 32 组成功润色结果，按完整拼装稿、short_prompt、tag、实际入镜角色、姿势、尺寸、LoRA，以及润色任务额外需求、基础规则／任务规则／生图规则和模型配置区分（世界观与世界书不参与）。相同参数再次按快门直接生图，不重新请求润色；出图失败不丢失已成功的润色，润色失败不写缓存。切换页面后仍可复用，后端重启清空缓存。未指定搭档时先随机选定实际角色，再判断缓存；随机得到不同角色属于不同输入。
 

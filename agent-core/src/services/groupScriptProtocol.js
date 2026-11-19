@@ -136,9 +136,6 @@ export function formatGroupUserMessage(content, chatUserName = config.user.nickn
 
 const EMBEDDED_IMG_RE = /\{([^{}]*)\}/g;
 
-// 画面描述规则上限 800 字；超过两倍说明模型复读的不是画面而是整段文本（如规范原文）
-const MAX_GROUP_IMAGE_PROMPT_CHARS = 2000;
-
 /**
  * 兜底提取任意位置的 {...}。群聊协议将花括号保留给生图，因此即使模型把它
  * 单独换行或粘在台词后面，也不能让其中内容进入聊天气泡。
@@ -154,8 +151,8 @@ export function extractEmbeddedGroupImagePrompt(body) {
     if (fieldWrapped) prompt = fieldWrapped[1].trim().replace(/^["'“]|["'”]$/g, '').trim();
     return prompt && !/^\.{3}$/.test(prompt) ? prompt : null;
   }).filter(Boolean)
-    .filter(prompt => !isImageRuleEcho(prompt) && !isPlaceholderImagePrompt(prompt))
-    .filter(prompt => prompt.length <= MAX_GROUP_IMAGE_PROMPT_CHARS);
+    // 按内容剔除规则回显与占位，不能仅因多人描述较长就整段丢弃。
+    .filter(prompt => !isImageRuleEcho(prompt) && !isPlaceholderImagePrompt(prompt));
 
   // 同一行出现多个花括号块时合并为一次图片任务，并确保所有块都不会泄漏到气泡。
   const text = source.replace(EMBEDDED_IMG_RE, ' ')

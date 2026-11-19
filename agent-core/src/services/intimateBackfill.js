@@ -48,6 +48,7 @@ import {
   saveBackfillState,
 } from './intimateService.js';
 import { recordFromPrompt, recordUnspecifiedFromText } from './intimateAutoRecord.js';
+import { isImageRuleEcho, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
 
 const DEFAULT_MAX_MESSAGES = 5000;
 const DEFAULT_BATCH_SIZE = 200;
@@ -55,9 +56,6 @@ const MAX_MESSAGES_CAP = 200000;
 const MAX_BATCH_SIZE = 2000;
 const CONVERSATION_PREFIX = 'char_';
 const GROUP_CONVERSATION_PREFIX = 'group_';
-
-/** 群聊画面描述的单行长度上限，与 groupChatEngine.MAX_GROUP_IMAGE_PROMPT_CHARS 同口径 */
-const MAX_GROUP_IMAGE_PROMPT_CHARS = 2000;
 
 /**
  * 群聊线进度列：只加列、不改既有列语义。
@@ -140,9 +138,9 @@ const GROUP_BRACE_RE = /\{([^{}]*)\}/g;
 
 /**
  * 从一行群聊正文里取出生图 prompt。
- * 清洗口径对齐 groupChatEngine.extractEmbeddedGroupImagePrompt（兼容 `{"prompt":"…"}` 包裹、
- * 剔除空串/`...` 占位与超长复读）。这里不 import 那个模块：它会把整个群聊引擎（LLM 客户端、
- * 调度器等）拖进回填路径，而回填只需要这条行协议。
+ * 清洗口径对齐 groupScriptProtocol.extractEmbeddedGroupImagePrompt（兼容 `{"prompt":"…"}` 包裹、
+ * 复用纯工具剔除规则回显与占位，不按字符数丢弃完整画面）。只引入内容判断工具，
+ * 不将群聊协议模块的 config / DB / 表情服务依赖带入这条提取路径。
  * @param {string} body
  * @returns {string} 取不到返回 ''
  */
@@ -154,8 +152,7 @@ function extractLineImagePrompt(body) {
     let prompt = match[1].trim();
     const wrapped = prompt.match(/^["'“”]?prompt["'“”]?\s*:\s*([\s\S]+)$/i);
     if (wrapped) prompt = wrapped[1].trim().replace(/^["'“]|["'”]$/g, '').trim();
-    if (!prompt || /^\.{3}$/.test(prompt)) continue;
-    if (prompt.length > MAX_GROUP_IMAGE_PROMPT_CHARS) continue;
+    if (isImageRuleEcho(prompt) || isPlaceholderImagePrompt(prompt)) continue;
     prompts.push(prompt);
   }
   // 一行里多个花括号块仍然只算这一个角色的一次发图（与实时路径合并成一次图片任务一致）

@@ -598,7 +598,7 @@ export function generateAssetPrompts({ step = 'tiles', styleTags, keys = [] } = 
     for (const target of targets) {
       const prompt = String(generated[target.key] || '').trim();
       if (!prompt) throw new Error(`素材「${target.item.name}」缺少提示词`);
-      target.item.desc = prompt.slice(0, 1200);
+      target.item.desc = prompt;
       prompts.push({ section: target.section, key: target.key, kind: target.kind, prompt: target.item.desc });
     }
     persistJob();

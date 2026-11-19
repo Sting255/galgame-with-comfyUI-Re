@@ -990,7 +990,7 @@ export function normalizeNewspaperDraft(raw, { withWorldState } = {}) {
       category: cleanText(item?.category, 8) || '民生',
       title: cleanText(item?.title, 30),
       content: cleanText(item?.content, 400),
-      image_prompt: cleanText(item?.image_prompt ?? item?.imagePrompt, 1200),
+      image_prompt: String(item?.image_prompt ?? item?.imagePrompt ?? '').trim(),
       image: null,
     }))
     .filter(item => item.title && item.content)
@@ -1001,7 +1001,7 @@ export function normalizeNewspaperDraft(raw, { withWorldState } = {}) {
     title: cleanText(ceRaw.title, 30),
     content: cleanText(ceRaw.content, 500),
     note: cleanText(ceRaw.note, 500),
-    image_prompt: cleanText(ceRaw.image_prompt ?? ceRaw.imagePrompt, 1200),
+    image_prompt: String(ceRaw.image_prompt ?? ceRaw.imagePrompt ?? '').trim(),
     image: null,
   } : null;
   if (!characterEvent?.title || !characterEvent.content || !characterEvent.note) {
@@ -1020,7 +1020,7 @@ export function normalizeNewspaperDraft(raw, { withWorldState } = {}) {
         outfit: cleanText(wsRaw.outfit ?? wsRaw.outfitDescription, 400),
         news: cleanText(wsRaw.news, 400),
         effect_prompt: effectPrompt,
-        image_prompt: cleanText(wsRaw.image_prompt ?? wsRaw.imagePrompt, 1200),
+        image_prompt: String(wsRaw.image_prompt ?? wsRaw.imagePrompt ?? '').trim(),
         image: null,
       };
     } else {

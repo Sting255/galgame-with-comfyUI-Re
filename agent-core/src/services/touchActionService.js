@@ -508,9 +508,6 @@ export const MAX_TOUCH_BLOCK_CHARS = 900;
 /** 反应正文上限（解析时也按它截断） */
 export const MAX_REACTION_CHARS = 300;
 
-/** §一①：LLM 现写的画面描述上限（英文，太长会挤掉外观块与画质词） */
-export const MAX_IMAGE_PROMPT_CHARS = 400;
-
 /**
  * §4.1②：**催眠轮的耐受行降级文案**。
  *
@@ -1164,7 +1161,8 @@ export function parseReactionOutput(text) {
   // §一①：LLM 现写的画面描述（英文）。非字符串不认（数字/对象一律当没给 ⇒ 走 TOUCH_IMAGE_HINTS 兜底）
   const rawImagePrompt = typeof parsed.image_prompt === 'string' ? parsed.image_prompt
     : (typeof parsed.imagePrompt === 'string' ? parsed.imagePrompt : '');
-  const imagePrompt = rawImagePrompt.trim().slice(0, MAX_IMAGE_PROMPT_CHARS);
+  // 图像描述不是定宽 UI 文案；保留完整动作与人物信息，不在任意字符位置截断。
+  const imagePrompt = rawImagePrompt.trim();
   return {
     ok: true,
     error: '',

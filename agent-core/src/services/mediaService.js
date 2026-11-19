@@ -678,7 +678,7 @@ export function normalizeMediaDraft(raw, boards, authors = []) {
       likes,
       views: Number.isFinite(viewsRaw) && viewsRaw > 0 ? Math.floor(viewsRaw) : likes * randInt(8, 25),
       comments,
-      image_prompt: clampText(rawImagePrompt, 1200),
+      image_prompt: rawImagePrompt.trim(),
     });
   });
 
@@ -870,7 +870,7 @@ export function normalizeWeeklyDraft(raw, prevVolume = 0) {
       interview: clampText(raw.credits?.interview, 24),
       editor: clampText(raw.credits?.editor, 24),
     },
-    image_prompt: clampText(raw.image_prompt, 1200),
+    image_prompt: String(raw.image_prompt ?? '').trim(),
     views: randInt(8000, 60000),
   };
 }
@@ -968,7 +968,7 @@ export function normalizePosterDraft(raw, prevNo = 0) {
   const caption = (Array.isArray(raw.caption) ? raw.caption : [])
     .map(x => clampText(x, 300)).filter(Boolean).slice(0, 6);
   const panels = (Array.isArray(raw.panels) ? raw.panels : [])
-    .map(x => ({ label: clampText(x?.label, 40), image_prompt: clampText(x?.image_prompt, 1200), image: null }))
+    .map(x => ({ label: clampText(x?.label, 40), image_prompt: String(x?.image_prompt ?? '').trim(), image: null }))
     .filter(x => x.label && x.image_prompt).slice(0, 3);
 
   const bigTitle = clampText(raw.bigTitle, 12);
@@ -988,7 +988,7 @@ export function normalizePosterDraft(raw, prevNo = 0) {
       reporter: clampText(raw.credits?.reporter, 24),
       editor: clampText(raw.credits?.editor, 24),
     },
-    image_prompt: clampText(raw.image_prompt, 1200),
+    image_prompt: String(raw.image_prompt ?? '').trim(),
     views: randInt(5000, 40000),
   };
 }
@@ -1115,7 +1115,7 @@ export function normalizePortalDraft(raw, prevIssue = 0) {
         key,
         name,
         lead: clampText(s?.lead, 120),
-        image_prompt: clampText(s?.image_prompt, 1200),
+        image_prompt: String(s?.image_prompt ?? '').trim(),
         image: null,
         body: null,       // 第 2 层：点开时才填
         body_at: null,

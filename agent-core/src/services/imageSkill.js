@@ -480,19 +480,13 @@ export function injectLoraNodes(wf, loras) {
 }
 
 /**
- * 最终阀门：统计 prompt 中所有 "数字+单词" 样式标签，汇总后拼到最前面
+ * 最终阀门：仅汇总明确的人数标签（如 1girl、2boys、2 girls、1other）。
  *
- * 2026-11-07：原来的 `\b\d+\s*[a-z]{3,}s?\b` 会把**比例写法里的后半截**当成数量标签。
- * 真机日志（backend-2026-11-07.log）里反复出现的正是这个：
- *   "centered in a 1:2 vertical frame"  → 前缀多出 `2verticals`，正文残缺成 `1:frame`
- *   "suit the 1:2 vertical frame"       → `1:frame`
- *   "a full-body 1:2 composition"       → `1:composition`
- * 成因：`1:2 vertical` 里的 `2 vertical` 完全符合「数字+单词」，被摘走汇总成 `2verticals`。
- * 处置：两处正则都加负向后顾 `(?<![\d:.])`，数字前面是冒号/小数点/数字时不认作数量标签。
- * 注意 `\b` 挡不住这个——`:` 是非单词字符，`\b2` 在 `1:2` 里照样成立。
+ * 不把任意「数字+单词」当作标签，以免改写日期、时长及衣物数量/尺寸。
+ * 数字前的保护继续排除比例、小数和时刻；统计与剥离共用同一识别范围。
  */
 function finalizeCountTags(prompt) {
-  const tagRe = /(?<![\d:.])\b(\d+)\s*([a-z]{3,})s?\b/gi;
+  const tagRe = /(?<![\d:.])\b(\d+)\s*((?:girl|boy|other)s?)\b/gi;
   const counts = new Map();
 
   let m;
@@ -509,7 +503,7 @@ function finalizeCountTags(prompt) {
     .sort((a, b) => b[1] - a[1])
     .map(([stem, count]) => count === 1 ? `1${stem}` : `${count}${stem}s`);
 
-  let cleaned = prompt.replace(/(?<![\d:.])\b\d+\s*[a-z]{3,}s?\b\s*,?\s*/gi, '');
+  let cleaned = prompt.replace(new RegExp(`${tagRe.source}\\s*,?\\s*`, tagRe.flags), '');
   cleaned = cleaned.replace(/^,\s*/, '').replace(/,\s*$/, '').trim();
 
   return parts.join(', ') + (cleaned ? ', ' + cleaned : '');
