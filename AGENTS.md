@@ -1,41 +1,45 @@
-## 运行与验收环境（要点）
-
-- LLM 网关：`http://127.0.0.1:7863/v1`，模型 `cn:deepseek-v4.1-flash`（Key 与其余参数在 `agent-core/.env`，不要在会话里另猜）
-- 生图 ComfyUI：`http://127.0.0.1:8199`
-- 后端端口取自 `.env` 的 `PORT`（默认 `3099`）；向量服务 `8765`；前端开发态 Vite `5173`
-- 验证一律用内存库（`DB_PATH=:memory:`），不许落 `agent-core/data/agent.db`
-
 ## UI / UX
+
+所有 UI 修改、新功能设计、页面设计必须遵循 `docs/design-system.md`。
 
 涉及 UI 时：
 
-1. 优先复用现有组件和设计模式
-2. 新功能必须融入现有设计语言，不得自行引入新的视觉风格
-3. 修改完成后检查与现有 Toast、世界观、信箱等页面的一致性
-4. UI 切换（如页面、页签、内容区域切换）需要考虑 0.3 秒的过渡动画，避免生硬跳变
-5. 窗口（含弹窗）打开时使用 0.3 秒的渐入动画，关闭时使用 0.3 秒的渐出动画；关闭动画完成后再隐藏或卸载窗口
+1. 先阅读 `docs/design-system.md`
+2. 优先复用现有组件和设计模式
+3. 新功能必须融入现有设计语言，不得自行引入新的视觉风格
+4. 修改完成后检查与现有 Toast、世界观、信箱等页面的一致性
+5. UI 切换（如页面、页签、内容区域切换）需要考虑 0.3 秒的过渡动画，避免生硬跳变
+6. 窗口（含弹窗）打开时使用 0.3 秒的渐入动画，关闭时使用 0.3 秒的渐出动画；关闭动画完成后再隐藏或卸载窗口
 
 除非任务明确要求，不要随意重做已有设计或引入新的 UI 体系。
 Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
 
-## 小镇（已剥离）
+### 游戏模块 UI 例外
 
-小镇（世界页）已于 2026-10-20 整个剥离：页面、渲染器、store、路由、调度器与专属服务均删除；本节原有的游戏化 UI 约定作废。仍被聊天/事件/朋友圈引用的 5 个 town 组件按普通组件维护，不再新增小镇玩法。
+整个游戏模块（`web-ui/src/views/GameCenter.vue`、`GamePlayer.vue`、`web-ui/src/games/` 与 `games/official/`）按用户要求独立制作 UI，不使用任何 Linshe 组件。游戏中心沿用本地 `game-test` 分支的游戏馆风格及 `GameAction` / `GameOverlay`，独立游戏保持各自视觉语言。主站其他页面继续遵循下方统一组件约定。窗口、页签和页面切换保留300ms过渡，关闭动画完成后再卸载。
+
+## 小镇游戏化 UI
+
+小镇玩法以「奇遇」为唯一链路：NPC 互动（`TownResidentActions.vue`）发出邀请 → 服务线索/特殊奇遇走 LLM 叙事事件 → 玩家在奇遇页（`EventsView.vue`）用选项推进。建筑服务（按摩、喝酒、喝咖啡等）、NPC 邀请与 NPC 服务都由奇遇承载，不做步骤式结算面板。
+
+1. 小镇内的 UI 设计以「在地图上点击 NPC 后打开的对话框」为直接参考，优先复用 `web-ui/src/components/town/TownDialogueStage.vue` 的立绘舞台、暖纸不规则对话框、墨色描边和游戏选项布局，整体偏向游戏化。
+2. 金币钱包、NPC 赠礼/交易是仅存的轻结算（`TownWalletPanel.vue`、`TownNpcTradePanel.vue`）；新的玩法一律优先奇遇叙事，不要重新引入步骤机/表单式面板。
+3. 镇内生活面板复用 `TownPaperPanel.vue`；对话与人物互动优先复用 `TownDialogueStage.vue`，不得另造不一致的视觉体系。
+4. 按钮、输入框、选择框、开关和弹窗继续遵循下方统一组件约定；配色、尺寸和反馈沿用 `docs/design-system.md` 与现有 token。
+5. 修改完成后，对照点击 NPC 打开的对话框检查视觉一致性，并验证桌面、移动端及暖色 / 暗夜主题。
 
 ## 统一组件（Linshe）
 
 按钮、输入框、选择框、开关、分段选择与弹窗一律使用 `web-ui/src/components/ui/` 下的 Linshe 组件，禁止写裸 `<button>` / `<input>` / `<select>` 或遮罩面板皮肤。
 
-以下各小节只写**接入口径**（引入方式、prop 行为、特例白名单、改哪个文件），不重复描述皮肤语言（软糖立体 / 软糖凹陷）、变体语义与色值归属。
-
-**例外：关系图**（`RelationshipWorkspace.vue` / `RelationshipCanvas.vue` / `RelationshipWindow.vue` + `styles/relationship.css`）是上游 v4.4.0 的自绘控件域，按钮/输入/弹窗沿用其 `rel-*` 样式与自建窗口，不套 Linshe 组件；改动只在这组文件内进行，不要再把 Linshe 皮肤混进去。
+以下各小节只写**接入口径**（引入方式、prop 行为、特例白名单、改哪个文件）；皮肤语言（软糖立体 / 软糖凹陷）、变体语义、色值与 token 归属以 `docs/design-system.md`「Linshe 表单控件层」为准，不要在本文件重复描述。
 
 ## 按钮（LinsheButton）
 
 web-ui 中所有常规按钮必须使用统一组件 `web-ui/src/components/ui/LinsheButton.vue`，禁止写裸 `<button>` 标签或全局 button 样式。
 
 1. 引入：`import LinsheButton from '.../components/ui/LinsheButton.vue'`，模板中写 `<linshe-button>`
-2. 按层级选 variant：`primary`（主操作实心，每屏至多一个）/ `secondary`（默认）/ `danger`（危险操作）/ `ghost`（弱操作）/ `icon`（圆形图标钮，如弹窗关闭 ✕）/ `chip`（胶囊选择、页签，配 `:active`）/ `link`（文字链接）；尺寸用 `size="sm|md|lg"`
+2. 按层级选 variant：`primary`（主操作实心，每屏至多一个）/ `secondary`（默认）/ `danger`（危险操作）/ `ghost`（弱操作）/ `icon`（圆形图标钮，如弹窗关闭 ✕）/ `chip`（胶囊选择、页签，配 `:active`）/ `link`（文字链接）；尺寸用 `size="sm|md|lg"`；各变体的皮肤与色值见设计系统
 3. 禁用与加载用 `:disabled` / `loading` prop，不要手写禁用样式
 4. 特殊交互元素（长按手势、动态配色、整卡热区、下拉菜单项、已有独立设计的控件）不套组件：用 `<div role="button" tabindex="0">` + 自包含样式，补齐 `cursor/text-align` 等基础属性，禁用态用 `.is-disabled` class + `aria-disabled` + 点击守卫
 5. 调整按钮风格只改 `LinsheButton.vue`，不要在各页面里覆盖组件皮肤
@@ -83,10 +87,53 @@ web-ui 中所有分段选择 / 页签统一使用组件 `web-ui/src/components/u
 web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.vue`（原 `BaseModal.vue` 已改名收编），禁止手写遮罩 / 面板皮肤。
 
 1. 引入：`import LinsheModal from '.../components/ui/LinsheModal.vue'`，模板中写 `<linshe-modal>`；`v-model` 控制显隐（旧代码仍可传 `:visible`），`title` 为标题
-2. 尺寸用 `wide`（加宽）/ `full`（大型管理面板）；内容用默认插槽，底部操作区用 `#footer`，头部右侧附加内容（如计数）用 `#header-extra`；需要局部布局差异用 `panel-class` / `body-class`；需要「相对所属页面而不是整个视口居中」时传 `anchor`（宿主选择器，如小镇页传 `anchor=".page-host"`，宿主须为定位元素；留空＝视口居中）
+2. 尺寸用 `wide`（加宽）/ `full`（大型管理面板）；内容用默认插槽，底部操作区用 `#footer`，头部右侧附加内容（如计数）用 `#header-extra`；需要局部布局差异用 `panel-class` / `body-class`；需要「相对所属页面而不是整个视口居中」时传 `anchor`（宿主选择器，如小镇页传 `anchor=".page-host"`，宿主须为定位元素；留空＝视口居中）。注意：`.page-host` 在 `#app`（z-index:1 的层叠上下文）内，从管理面板等 body 层抽屉（z-index:900）里打开的弹窗**不要传 anchor**，否则整个锚定子树会被抽屉压住
 3. 暖色为暖纸外壳 + 白色内衬（标题栏与 `#footer` 留在外壳上、白色内衬只包正文），暗夜保持 Cel Glow 深色玻璃；主题色值一律走 `styles/tokens.css` 的 `--modal-*`；Esc / 点遮罩关闭
 4. 调整弹窗风格只改 `LinsheModal.vue` 与 `tokens.css` 的 `--modal-*`，不要在各页面里覆盖组件皮肤
+5. 弹窗内容禁止使用没有明确排版的孤立 `<p>`：说明、提示、空状态和正文必须复用已有内容样式，或由业务内容类明确控制字号、行高、颜色和段落间距（使用设计系统 token），不能依赖浏览器默认字号与 margin。保留正确的段落语义，不要仅把 `<p>` 换成 `<div>` 来规避此规则；已有业务段落样式继续保留，不在 `LinsheModal.vue` 或全局样式里对所有 `<p>` 统一加皮肤。
+6. 条目数量、激活数量、token 用量等统计信息应融入对应区域的标题、工具栏或紧凑状态行，区分标签与数值，并与相邻控件对齐；不要直接放一行默认正文大小的统计文字悬在表单或表格之间。完成后检查说明、统计、警告与正文的信息层级，以及暖色 / 暗夜、窄屏换行和间距是否协调。
 
+
+## 图片预览（ImageLightbox）
+
+图片点击放大统一复用 `web-ui/src/components/ImageLightbox.vue`。从弹窗、日记等浮层打开时，参考 `NewspaperModal.vue` / `DiaryBookOverlay.vue`：
+
+1. 用 `<Teleport to="body">` 将灯箱移到全局，避免被父级层叠上下文压住；在 Teleport **内部**包一层 div 设置 `--vel-z-index`，让灯箱继承
+2. 层级由 CSS 变量 `--vel-z-index` 控制（默认 9998），不要只传 `:z-index`：当前底层灯箱不消费该 prop。按宿主层级选择值，例如日报用 11000，日记用 14000；不要在页面里覆盖全局 `.vel-modal` 样式
+3. `:visible` 控制显示、`:imgs` 传图片、`:index` 指定初始图片，`@hide` 将显示状态设为 false；只读图片按需传 `:show-regenerate="false"` / `:show-upscale="false"` / `:show-delete="false"`
+
+```vue
+<Teleport to="body">
+  <div style="--vel-z-index: 14000">
+    <ImageLightbox
+      :visible="lightboxVisible"
+      :imgs="images"
+      :index="lightboxIndex"
+      @hide="lightboxVisible = false"
+    />
+  </div>
+</Teleport>
+```
+
+## LLM 请求分层（高缓存）
+
+新增或重构创作类提示词前，先阅读 [世界书适配清单：新提示词的插槽约定](docs/lorebook-adaptation.md#新提示词的插槽约定)。必须保留可定位的世界观前后、角色前后、首个动态字段之前的稳定区末尾、历史边界（如有）、末条 user 前的示例区和当前任务前的动态尾部。插槽使用原消息的文本边界，不预发空消息或占位标签；Outlet 仅按需引用。接入时分别提供准确的 `personaTexts` / `staticTexts` / `cacheBoundary` 与扫描用 `history`，消息偏移从当次未注入的结构计算。共用规则放在人设之前，角色原文在同角色同版本下可复用，动态着装、天气等不得认证为静态。新生成请求只使用一个最终 user，已有历史结构保持原样；具体映射、接入字段与验收要求以该文档为准。
+
+世界书接入不得破坏业务原有的消息结构：保留原 system/user/assistant 的角色、顺序、历史封装与附件位置，禁止把聊天记录拆开或统一改成 system。世界书优先嵌入原 system/user 内的合适文本位置；按原位置模式的深度定位使用历史块内的文本偏移，不展开 `<active_chat_history>` / `<group_transcript>`。确实没有合适载体时，才新增仅放世界书的 system 槽位，禁止新增 user/assistant。无世界书、未激活、禁用及记忆二次请求不得产生额外改写。原条目 role 保留用于导出，实际注入继承原消息角色；默认缓存模式按下文的稳定性规则分层。
+
+世界书高缓存模式必须按条目的稳定性分层：无条件、概率 100%、无分组竞争/持续条件/动态宏的常驻条目，在聊天记录与动态数据之前注入；概率、关键词、角色/生成类型筛选、分组、持续条件及含动态或未知宏的条目放尾部。分类必须读取宏展开前的原始条目，旧快照也要按原文重新分类；预算先分配稳定常驻，再分配条件条目，仍遵守上下文上限。
+
+世界书位置按邻舍语义适配，统一由 `lorebook/promptProfile.js` / `layout.js` / `engine.js` 定位：角色前后＝实际角色正文边界；作者注前后＝`world_setting` 前后；示例前后＝user 前的前、后两组文本示例（不伪造对话），常驻示例提前到稳定区末尾；缓存模式下深度条目按稳定性映射到稳定区末尾或动态尾部，按位置模式才使用历史文本偏移。常驻的语义锚点如果越过动态内容，必须截到最后一个已确认稳定的边界；未知的 system 内容不可仅因角色为 system 就认作静态。调用方可提供 `personaTexts`（实际序列化的人设）、`staticTexts`（确实不随调用变化的文本）、`cacheBoundary`（经过检查的稳定区末尾），不得把含天气、随机形态、历史、帖子或当次任务数据的段落声明为静态。未知结构回退到已确认稳定区，完全未知则前置首个 system；没有 system 才新增专用 system。Outlet 依赖引用条件，在缓存模式下走动态尾部（仅引用后生效），保留原占位符以免条件触发改变原前缀；按原位置模式才原位展开。预览、重试与缓存测试必须使用相同策略，报告必须同时包含请求位置和实际边界。完整映射清单见 `docs/lorebook-adaptation.md`。
+
+编写新的 LLM 请求时，按「稳定前缀优先」分层：不随单次调用变化的内容尽量往前堆，变量内容靠后，user 永远最后。提供商的前缀缓存按 token 前缀命中，前面任何一层只要有一个字节变化，其后所有内容的缓存即全部失效，所以静态层必须逐字节稳定（严禁内插日期、时间戳、随机 id、用户名等每次变化的内容）。标准分层参考 `agent-core/src/services/town/townPromptBuilder.js` 头部注释（编号从 system0 数起；旧代码里也有从 1 数起的注释，以内容职责为准。中间层可按功能增删，原则不变——静态在前、变量靠后）：
+
+1. system0＝破甲词 + 世界观（如果有）：走 `getSystemRulesWithWorld({ roleplay: false })`，无世界观退 `getSystemRules`（都在 `agent-core/src/db/worldRepository.js`）
+2. system1＝世界观强化（有世界观才注入）：`getWorldIntegrationRule(scope)`（`agent-core/src/builtinRules.js`），scope 按任务选（`interaction` / `moments` / `photo` / `event` / `town_asset` 等）；没有世界观就不要加这层
+3. 任务角色人设与输出规范同属不变内容，共用静态 system 层：设计师身份 + 任务要求 + 输出格式写进同一段（或紧挨的静态层组），形如「你是一个日程安排设计师，你将给下面注入的角色人设设计一张日程表；日程要求是……；输出为 JSON，具体格式为……」；JSON 需给完整示例（字段名 + 示例值 + 字段约束，口径见下节「LLM 输出」，参考 `townPromptBuilder.js` 的 `NPC_SET_OUTPUT_STRUCTURE`）。这一层紧跟世界观强化之后、角色人设注入之前；不要拆进 user，也不要内插本次调用才有的数据
+4. 静态层结束后才注入变量内容：本次调用的角色人设（含小镇居民）、素材/场景信息等随调用变化的数据，如 `townPromptBuilder.js` 的 `【角色外观信息】` 层；角色人设统一走 characterPersona 组装入口（见「角色生图人格组装」），不要手写正则截取
+5. user 收尾：最后一条 user 消息只简要强调本次任务（执行什么、按什么格式输出），用户额外指定也放这里；不复述规范、不塞长上下文
+
+参考实现：`townPromptBuilder.js`（纯文本与 JSON 输出两套齐备）、`libraryGenerator.js` 的 `buildSystemLayers`（静态前缀 + designer 层）、`characterReactionService.js` 的 `promptPrefixFingerprint`（前缀稳定性核对）。
 
 ## LLM 输出
 
@@ -96,68 +143,17 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 2. 示例中每个字段的值要写明该字段的内容要求与约束（如字数、语气、格式、禁止项），让模型照着填，参考 `agent-core/src/services/eventGenerator.js` 中 `formatPrompt` 的写法
 3. 必须明确要求模型严格按示例格式输出，不要输出任何解释或 JSON 以外的文字
 4. 新增或修改输出字段时，同步更新 prompt 中的 JSON 示例与解析代码，保持两者一致
-5. **输出被截断或审核中断时不要自己写兜底**：`llm-client.chatSync` 收口已经有「自动继续 + 拼接」循环（判据 `classifyIncomplete`、文本用 `mergeContinuationText`、JSON 用 `concatJsonContinuation`，最多 5 次、短任务 2 次、每次放大 1.6 倍额度）。业务层再包一层「格式不对请重新生成」只会让同一次失败被重试两轮。
-6. 需要「一定拿到合法 JSON」的调用，用 `response_format: { type: 'json_object' }` + 解析后做字段校验（如 `normalizeMediaOutletDraft`），不要靠提示词保证格式。
-7. **判「输出是否完整」必须容忍 ``` 围栏，但不容忍截断**：模型经常整段套 ` ```json … ``` `，裸 `JSON.parse` 会把它判成没写完，于是每轮生成都白烧 5 次续写（2026-11-08 真机：一个 327 tokens 的完整答案被重试 5 次）。判完整性一律走 `llm-client` 的 `isCompleteJsonText`（内部先剥围栏再严格 parse），**不要**用会补齐结构的 `repairJsonText` 去判——它会把半截 JSON 修成合法，截断续写就再也不会触发。
-8. **流式也有截断续写，别再各自兜**：`chatStream`（文本流）与 `chatAgentStream`（主聊天/神说的原生工具流）遇到 `finish_reason=length` 会自己追加「继续」把下半段接上，最多 2 次（`MAX_STREAM_CONTINUATIONS`，指令是 `STREAM_CONTINUE_INSTRUCTION`）。流式撤不回已推给用户的内容，所以口径是**只追加不重发**；`readAgentResponse` 的 `length` 也不再抛错（除非调用方没传 `softLength`）。调这两条链时不要另写一套截断续写。
-
-## 角色作用域（characters.is_system）
-
-内置角色（目前只有默认助手 `name='default'`）是 `characters` 表里的一行，所以任何「遍历所有角色」的链路都会顺手把它带上——批量覆盖设置、日程、朋友圈、事件、主动性、立绘台词……以前靠各调用点自己写 `name != 'default'`，加一条新链路就会漏一次（2026-11-08 用户因此要求根治）。
-
-口径：
-
-1. `characters.is_system = 1` = 系统内置角色，不属于用户的角色集合。迁移与标记在 `db/index.js` 的 `migrateCharacterScope`（在 `seedAll` 之后跑，幂等）。
-2. **面向用户的角色集合一律带作用域**：`import { USER_SCOPE, USER_SCOPE_ALIASED } from '../services/characterScope.js'`，拼进 WHERE。别再用 `name != 'default'` 这种按名字的特判。
-3. **按 id 取单个角色**（`WHERE id = ?`）不过滤：用户点到它时仍可查看/编辑/聊天。批量任务显式点名（`character_ids`）同样放行。
-4. 默认助手开关（`system_settings.default_assistant_enabled`，设置页「功能开关」）只决定它**是否出现在角色列表**（`userVisibleScope`）；后台自动化永远跳过系统角色，不受开关影响。
-5. 已全量覆盖（2026-11-08 收尾）：除下列**写法例外**，其余 `FROM characters` 的集合查询都带作用域。例外都是无害的：按 id 取单体（`WHERE id = ?`）、按名取单体（`WHERE name = ?`）、`NOT IN (SELECT id FROM characters)` 这种只用 id 集合的清理、以及同居房间成员 id→名字的映射表。新增查询请照口径带作用域。
-
-## 后台生成的角色状态校验（2026-11-08 用户定）
-
-凡是**后台自动产生内容、用户能在界面上看到**的入口（朋友圈、群聊、奇遇、媒体、报纸、信箱、日记、共同生活…），必须在落库前用**代码**校验参与角色此刻的状态；prompt 里写的「睡着的人不要说话」只负责自然，不负责正确。
-
-1. 睡眠判定一律用 `scheduleManager.isSleeping()`（全仓唯一判定点），不要自己拿时间算睡眠；角色开关看 `characters` 行的 `moments_disabled` / `proactive_disabled` / `events_disabled` / `schedule_enabled`。
-2. 调度层先拦：全员睡眠/全部关闭时不该发起这一轮（参考 `groupIdleScheduler.countAwakeMembers`，0 人醒着就跳过并把下次时间推迟，**不扣当日额度**）。
-3. 解析层再拦一次：多角色同场的入口（群聊）要按说话人过滤，睡着的人不许自己开口，只有「被点名」或「本轮有人喊她+带唤醒动作」才放行（`groupChatEngine.canAsleepSpeakerTalk`，与 `applyGroupWake` 同口径）。
-4. 异步交互要排队而不是丢弃：她睡着时被私聊/被评论，进延迟队列，醒后 5~15 分钟补上（`reply_queue` 与 `moment_comment_queue` 各一套）。
-5. 新增入口照抄现有实现，不要重新发明：`momentScheduler`（候选筛选 SQL）、`proactiveChatScheduler`（`is_sleeping = 0`）、`momentInteractionService`（逐个好友判定）、`mediaService.pickActiveCharacters`（排除睡眠与关朋友圈）。
 
 ## 最少必要测试与脚本清理
 
 **核心原则：编码过程中尽量少做测试，只验证本次改动的必要风险；测试流程结束后，不保留本次生成的测试脚本。**
 
-1. 临时脚本只用于当场验证，跑完、结论确认后就删除；随手生成的调试日志（如 `*.log`）一并清理
-2. 临时脚本用完即删。项目以真机验收为主（解压交付包真启动 + 真机点一遍）。2026-11-12 合并上游 v4.3.0 时按「能独立跑通才留」筛选，只保留两类回归测试：`agent-core/test/photoStudio*.test.js`（照相馆）与 `memoryThinking.test.js`，入口 `npm --prefix agent-core test`；其余 `*.test.js` 不再新增，跑不通的直接删。上游 v4.4.0 删掉了其中 5 个，本地在合并时恢复并继续维护
-3. 判断口径：没有「正式测试」这一层。要留的验证逻辑写成文档里的复现步骤，或留成可按需手动跑的独立脚本放 `scripts/`，不要伪装成测试收集链
-
-## 交付前的验收（2026-11-06 用户定，必做）
-
-只跑语法检查和"服务能起来"不算验收。历史上因此把一个**所有生图都抛 `opts is not defined`** 的包发了出去，也把"动作面板被 flex 压成一条线"这种 DOM 完全正常的界面问题留到了用户手里。交付前固定做三步：
-
-1. **生图冒烟**（十几秒）：
-   `cd agent-core && DB_PATH=":memory:" ../runtime/nodejs/node.exe ../scripts/smoke-image.mjs`
-   退出码 0=出图成功、2=ComfyUI 未开（环境问题）、1=代码链路有错。
-2. **浏览器截图巡检**：起临时库后端，用 `playwright-cli`（`--browser=chrome`，会话放后台 shell 保活）打开页面，
-   **桌面宽度与移动端 390×844 各截一遍**关键页面（聊天、群聊、朋友圈、设置），再看两套主题。
-   理由：flex 压缩、overflow 裁切、z-index 遮挡、对比度这几类问题，DOM 快照和自动化断言全都会通过，只有眼睛能看出来。
-3. **解压真启动**：交付包解压到干净目录，起 vector-service 与 agent-core，抽查 `/api/health`、`/api/characters`，
-   再看一眼包内是否带上了 `.env`（不该带）与 `launcher_config.json`（不该带）。
-
-三步都过再说交付；哪一步没做，汇报时必须写明没做。
-
-
-## 角色身份锚点（2026-11-08 用户定）
-
-角色「是谁」有独立存储位，**不再寄生在服装表里**。起因：`character_outfits` 的 work（默认）那套同时被当作角色外观真源，任何一次「自动生成本套」都会把发色发型瞳色与 `Name (Series)` 识别 tag 换成一句衣服描述，冷门 / LoRA 角色随即画成路人，且污染会沿 base_prompt 扩散到聊天、亲密、立绘、朋友圈全部生图。
-
-1. **存储**：`characters.identity_anchor`（身份 tag + 身体特征，英文 tag 串）与 `identity_anchor_source`（`auto` 自动维护 / `manual` 用户手改过）。启动时按 `PRAGMA` + `ALTER TABLE` 惰性迁移，**不新增表**。
-2. **提取**：`services/identityAnchor.js` 是唯一入口。正则优先（`Name (Series) has ...` 与 danbooru tag 串两种形态），提不到时 LLM 抽一次；提取时剥掉身份 tag 前缀、过滤配饰/表情/构图/负面权重写法。**不要在各处另写正则截取**。
-3. **写入时机**：新建角色（异步，允许 LLM）、保存角色且 `base_prompt` 变化（只跑正则）、`POST /:id/identity-anchor/extract`（强制，可选 overwrite）、启动补齐（只处理空锚点行，不调 LLM，幂等）。`manual` 永不被自动覆盖。
-4. **注入**：唯一收口在 `imageSkill._execute`，调用方传 `opts.identity`（角色行，至少要 id）。传入后 `applyIdentityAnchorToPrompt` 把锚点前置；prompt 已有同名身份 tag 时不重复；梦境前缀插在冒号后。**新增生图入口必须传 identity，否则那个场景的角色会飘**（当前已接：聊天配图、触摸亲密、立绘、头像、梦话、朋友圈、礼物反应、日程拍照、日记、主动聊天、报纸、媒体、信箱）。
-5. **身体唯一真源**：`listSceneOutfits` 在读取层把 `body` 与 `text` 统一成「本体身体」（`getIdentityBody`），`character_outfits.body` 只在锚点缺失时回退。不要再从外观段反推身体（会把旧衣服带进 body）。
-6. **禁止**：work（默认那套）不可被任何生成覆盖（前后端双重拒绝）；场景服装注入 `bodyLocked`，只换衣服不换发型发色瞳色体型；换装道具 / 角色专属形态仍可整体替换。
-7. **前端**：角色详情卡三分区「人设提示词 / 角色本体 / 外观服装」，本区块可编辑、可一键重提取、显示 auto/manual 来源。手改随角色保存提交并标记 manual。
+1. 测试前明确要验证的具体行为或风险，选择能确认结果的最小验证方式；已有测试、直接操作、语法检查或构建能回答问题时，不另写脚本，也不默认把所有检查都跑一遍。低风险的文案、样式等修改可仅审查差异或直接查看效果，不强制运行自动化测试。
+2. 同一功能的相关修改完成后集中验证，不每改一行、一个文件就测试。编码中只有定位具体故障或确认会影响后续实现的关键假设时才提前验证；禁止为增加覆盖率、假想边界或“再保险”开展与本次需求无关的测试。
+3. 优先运行已有测试中与改动直接相关的最小范围，不默认跑全量测试、重复构建或多套等价检查。相关验证通过即停止；仅在后续修改影响已验证行为、出现失败或仍有明确风险时追加对应验证，不无依据地扩大范围。涉及数据写入、权限、迁移等高风险行为时，仍须验证受影响的关键路径。
+4. 确需编写一次性验证逻辑时，优先直接执行命令；必须落盘时，同一问题复用一个临时脚本，不生成多份变体。不得编写仅断言源码字符串存在、复述实现或重复已有覆盖的测试。
+5. 验证结束后，无论通过还是失败，都清理本次生成的测试脚本、临时测试用例及配套日志、数据和产物；失败原因与验证结论保留在回复中。不得以“以后可能复用”“属于 bug 回归”或放入 `test/` 目录为由自行转成永久测试，也不要将临时用例混入已有测试文件后保留。仅当用户明确要求保留测试，或仓库规则明确要求维护某项既有测试时，按指定范围执行。
+6. 清理只针对本次自行生成的验证产物，不删除仓库原有测试、用户文件或其他任务的改动，不为使测试通过而删除或弱化既有断言。交付前检查差异和新增文件，确认没有测试残留；简要说明实际验证内容、结果及未验证的关键风险，不把未运行的检查说成已通过。
 
 ## 角色生图人格组装（characterPersona）
 
@@ -177,67 +173,9 @@ web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.v
 
 **角色外观系统：**
 
-1. 数据源两张表：`character_outfits`（角色专属形态/装甲/衣服，每角色同时只启用一套，启用互斥由 `outfitService` 保证；详情卡入口已开放，位于「外观服装」页签的「外观 / 形态」工具栏）、`global_outfits`（通用限时服饰如女仆装 tag 组合，可多套叠加；管理方式未定，`condition_json` 预留注入条件，当前 `enabled` 即生效）
+1. 数据源两张表：`character_outfits`（角色专属形态/装甲/衣服，每角色同时只启用一套，启用互斥由 `outfitService` 保证；详情卡 UI 入口暂注释隐藏在 `CharacterDetailModal.vue`，搜「暂时隐藏」）、`global_outfits`（通用限时服饰如女仆装 tag 组合，可多套叠加；管理方式未定，`condition_json` 预留注入条件，当前 `enabled` 即生效）
 2. 查询生效外观只走 `outfitService.getActiveOutfits(characterId)`；注入文本格式与着装优先级说明（两者都有 / 只有限时 / 只有专属三种）只改 `buildOutfitInjectionBlocks`，不要在调用点拼
-3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`；改完在真机上换一次衣服确认五套身体没漂
-
-## 分支结构与上游同步
-
-上游仓库 `icecranberry/galgame-with-comfyUI`（remote 名 `origin`）会持续发版，本地 fork 在 `Sting255/galgame-with-comfyUI-Re`（remote 名 `mine`）。
-
-本仓历史曾在 2026-11-06 重建为三层，**从此与上游有共同祖先，可以直接 merge**（在此之前只能 `git diff 旧tag..新tag` 打补丁，14 文件 24 处冲突全靠手工挑边）：
-
-| 分支 | 角色 | 规则 |
-|---|---|---|
-| `upstream` | 上游纯净镜像，永远等于某个 `vX.Y.Z` 标签 | 只读：只做 `reset --hard <tag>`，永不 commit |
-| `local` | 本地全部改动，父提交链挂在上游标签之上 | 日常开发都在这里 |
-| `archive/pre-421` | 改成三层结构之前的完整历史 | 只读存档，查历史用 |
-
-### 跟上游更新（日常流程）
-
-```bash
-node scripts/上游-同步.mjs            # fetch + upstream 对齐最新标签 + 合进 local
-node scripts/上游-同步.mjs --dry-run  # 只看会做什么
-node scripts/上游-同步.mjs --tag v4.2.2
-```
-
-脚本会在冲突时停下并列出冲突文件。手工解决后 `git add` + `git commit` 收尾。
-
-手动等价命令：
-
-```bash
-git fetch origin --tags
-git checkout upstream && git reset --hard v4.2.2
-git checkout local && git merge upstream
-```
-
-### 冲突解决口径
-
-1. **本地特性优先保留**：世界观优先前缀、世界钟（`toProgramTime`）、角色级负面提示词、服装手动指定、运行状态面板、离线编年等，都是本仓刻意加的，不能因为上游没写就丢
-2. **上游新增能力必须吸收**：新参数、新模块、新提示词规则要接进来（例如 `forceThinkingMode`、`ensureImagePromptIdentity`、`hasActiveWorldLanguageStyle`）
-3. **两边都改同一段时**：先看 `git diff v4.2.0..v4.2.1 -- <文件>` 弄清上游到底改了什么，再决定合，不要直接选一边
-4. **冲突解决完必须验证**：frontend `npx vite build`、后端临时库启动 `/api/health` 返回 200。历史上出现过补丁"报 cleanly 应用"但导出缺失、启动即崩的情况
-
-### 首次初始化（分支丢了或换机器）
-
-```bash
-git fetch origin --tags
-git branch upstream v4.2.1                      # 换成当时的标签
-PARENT=$(git rev-parse v4.2.1^{commit})
-TREE=$(git rev-parse HEAD^{tree})
-git branch local $(git commit-tree "$TREE" -p "$PARENT" -m "本地改动基线")
-git checkout local
-```
-
-关键点：`local` 的父提交必须指向上游标签的 **commit**（用 `^{commit}`，标签是 annotated tag 时直接引用会报 not a valid commit）。
-
-### 推到自己的 fork
-
-```bash
-git push mine local:main --force-with-lease
-```
-
-历史被重建过，第一次推新结构必须 force；用 `--force-with-lease` 而不是 `--force`，避免覆盖掉别处新推的提交。
+3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`，并同步维护 `agent-core/test/characterPersona.test.js`（含无外观时与旧口径逐字节一致的回归断言）
 
 ## git commit 提交
 

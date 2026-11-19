@@ -11,8 +11,7 @@ function files(directory, pattern) {
     return entry.isDirectory() ? files(file, pattern) : pattern.test(entry.name) ? [file] : [];
   });
 }
-// 文档检查是可选的：本仓已把 docs/ 目录剥离（2026-11-06），没有文档时跳过这一层，
-// 不要让它把整个健康检查带崩（CI 报 ENOENT: scandir .../docs）。
+// 文档检查是可选的：兼容历史上不包含 docs/ 的源码树；存在时必须验证导航与链接。
 const docsDir = path.join(root, 'docs');
 const docs = fs.existsSync(docsDir) ? files(docsDir, /\.md$/) : [];
 const errors = [];
