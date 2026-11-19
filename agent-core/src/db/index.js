@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { assertDatabaseAvailable } from './maintenance.js';
+import { migrateGameSchema } from './gameSchema.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -1228,7 +1229,7 @@ function initSchema(db) {
   migrateExpressionStandings(db);
   // 上游 v3.9.0 合并：立绘互动（空手触摸台词 + 触碰配置/区域，见 services/standingTouchLines.js
   // 与 services/standingInteractionService.js）。必须排在 migrateExpressionStandings 之后：
-  // standing_interaction_regions 外键引用 character_expression_standings。
+  // standing_interaction_regions 外键引用 expression_standings。
   migrateStandingInteractions(db);
 
   // 上游 v3.9.0 合并：媒体内容页建表（传媒 / 数字媒体，见 services/mediaService.js）
@@ -1290,6 +1291,7 @@ function initSchema(db) {
   migrateWorldTimelineSchema(db);
   migrateCharacterBondSchema(db);
   migratePhotoStudioSchema(db);
+  migrateGameSchema(db);
 
   // 迁移: moment_comments 新增 auto_trigger + thread_root_id（朋友圈关系网互动）
   migrateMomentAutoTrigger(db);

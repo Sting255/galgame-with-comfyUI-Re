@@ -166,6 +166,10 @@
     <Transition name="menu-slide">
       <div v-if="showMoreMenu" class="more-menu-overlay" @click.self="showMoreMenu = false">
         <div class="more-menu-panel">
+          <router-link to="/games" class="more-menu-item" @click="onMenuItemClick">
+            <GamepadIcon :size="28" />
+            <span>游戏中心</span>
+          </router-link>
           <router-link to="/tavern" class="more-menu-item" @click="onMenuItemClick">
             <div class="nav-icon-wrap">
               <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
@@ -347,6 +351,7 @@ import { useNewspaperStore } from '../stores/newspaper.js'
 import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'
 import GearIcon from './GearIcon.vue'
+import GamepadIcon from './GamepadIcon.vue'
 import GodEntryEmblem from './godSays/GodEntryEmblem.vue'
 import { useGodSaysStore } from '../stores/godSays.js'
 import { selectStandingCharacter } from '../utils/standingDisplay.js'
@@ -1021,7 +1026,7 @@ function formatTime(iso) {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 20px 20px 0 0;
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .more-menu-item {
   display: flex; align-items: center; gap: 10px;
@@ -1035,7 +1040,7 @@ function formatTime(iso) {
 
 /* 弹窗动画 */
 .menu-slide-enter-active, .menu-slide-leave-active {
-  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .menu-slide-enter-from, .menu-slide-leave-to {
   opacity: 0;

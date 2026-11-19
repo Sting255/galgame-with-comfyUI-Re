@@ -105,7 +105,7 @@ function diagnosisHint(diagnosis, selected, modelsError) {
           // A10：把实际配置的 ComfyUI 地址传给安装器。不传的话，本地语音侧的
           // speechGpuPolicy 读不到 TTS_COMFYUI_URL 会退回 config 默认值 —— 用户在设置里
           // 改了 ComfyUI 端口/主机，安装与显存调度判断就会指向一个不存在的地址。
-          env: { ...env, TTS_LOCAL_MODEL: model, TTS_COMFYUI_URL: __comfyUrlForSpeech(env) },
+          env: { ...env, TTS_LOCAL_MODEL: model, TTS_COMFYUI_URL: __comfyUrlForSpeech(env), LINSHE_TTS_NODE: process.execPath },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       const append = chunk => { if (installation === active) installation.log = (installation.log + String(chunk)).slice(-12000); };

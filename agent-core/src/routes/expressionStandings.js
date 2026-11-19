@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../db/index.js';
-import { listExpressionStandings, listStandingOverview, startAllStandingBatches, startStandingBatch, controlStandingBatch, updateStandingPrompt, editStandingImage, deleteStanding } from '../services/expressionStandingService.js';
+import { PLAYER_STANDING_SUBJECT, listExpressionStandings, listStandingOverview, startAllStandingBatches, startStandingBatch, controlStandingBatch, updateStandingPrompt, editStandingImage, deleteStanding } from '../services/expressionStandingService.js';
 import { getStandingDisplay } from '../services/standingDisplay.js';
-// 上游 v3.9.0 合并：立绘互动 —— 触碰配置（save/saveRegions 本地暂无 UI 入口，但接口与
-// standingInteractionService 一并合进来，供以后接互动设置面板；台词三件套是当前实际使用的链路。
 import { createStandingInteractionService } from '../services/standingInteractionService.js';
 import { imageUrlExists } from '../services/imagePaths.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
@@ -13,13 +11,18 @@ import { regenerateStandingTouchLines, generateStandingTouchLines } from '../ser
 import { previewStandingBatches, previewCharacterStandingBatch } from '../services/expressionStandingService.js';
 
 const router = Router();
+const playerBase = '/expression-standings/player';
+router.put(`${playerBase}/:slot`, async (req, res) => {
+  await editStandingImage(PLAYER_STANDING_SUBJECT, req.params.slot, 'upload', req.body);
+  res.json(listExpressionStandings(PLAYER_STANDING_SUBJECT));
+});
 router.get('/expression-standings/overview', (_req, res) => res.json({ characters: listStandingOverview() }));
 router.post('/expression-standings/preflight', (req, res) => res.json(previewStandingBatches(req.body)));
 router.post('/expression-standings/generate', (req, res) => res.status(202).json(startAllStandingBatches(req.body)));
 router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
 router.post('/expression-standings/touch-lines/speech/fill', (_req, res) => res.status(202).json(standingTouchSpeech().fill()));
 const base = '/characters/:id/expression-standings';
-// 台词三件套（立绘管理的「反馈台词管理」用）
+const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast, readLines: readStandingTouchLines });
 router.get(`${base}/touch-lines`, (req,res)=>{
   if(!getDb().prepare('SELECT id FROM characters WHERE id=?').get(req.params.id))return res.status(404).json({error:'角色不存在'});
   res.json(readStandingTouchLines(getDb(),req.params.id));
@@ -30,34 +33,33 @@ router.put(`${base}/touch-lines`, (req,res)=>{
 });
 router.post(`${base}/touch-lines/speech`, (req, res) => res.status(202).json(standingTouchSpeech().generate(req.params.id, req.body)));
 router.post(`${base}/touch-lines/generate`, (req,res)=>res.status(202).json(regenerateStandingTouchLines(req.params.id,req.body.expectedVersion)));
-// 批量补齐：给所有还没有台词的角色各起一个后台台词任务
-router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
-// 触碰配置（本地暂无前端入口，接口随服务一并合并；readLines 供立绘触摸读取台词）
-const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast, readLines: readStandingTouchLines });
 router.get('/characters/:id/standing-interaction', (req, res) => res.json(interactions().get(req.params.id)));
 router.put('/characters/:id/standing-interaction', (req, res) => res.json(interactions().save(req.params.id, req.body)));
 router.put(`${base}/:slot/interaction-regions`, (req, res) => res.json(interactions().saveRegions(req.params.id, req.params.slot, req.body)));
-router.get(base, (req, res) => res.json(listExpressionStandings(req.params.id)));
 router.post(`${base}/preflight`, (req, res) => res.json(previewCharacterStandingBatch(req.params.id, req.body)));
-router.post(`${base}/generate`, (req, res) => res.status(202).json(startStandingBatch(req.params.id, req.body)));
-// 控制任务的暂停 / 继续 / 重新开始。2026-11-09（方案 A08）：接收请求体 ——
-// 「暂停后改要求再重新开始」必须能把新的 requirement / outfitScene / 缺服装策略传下去，
-// 否则 restart 只能按旧快照重跑，用户改了方向也不会生效。
-// resume 继续原任务未完成部分，忽略这些新参数（那是 restart 的语义）。
-router.post(`${base}/jobs/:jobId/:action`, (req, res) => res.json(controlStandingBatch(req.params.id, req.params.jobId, req.params.action, undefined, req.body || {})));
-router.patch(`${base}/:slot/prompt`, (req, res) => {
-  updateStandingPrompt(req.params.id, req.params.slot, req.body.prompt, req.body.generation);
-  res.json({ ok: true });
-});
-for (const action of ['upload', 'image', 'crop', 'hires']) {
-  router.post(`${base}/:slot/${action}`, async (req, res) => {
-    await editStandingImage(req.params.id, req.params.slot, action, req.body);
+function mountStandingRoutes(basePath, subject) {
+  router.get(basePath, (req, res) => res.json(listExpressionStandings(subject(req))));
+  router.post(`${basePath}/generate`, (req, res) => res.status(202).json(startStandingBatch(subject(req), req.body)));
+  router.post(`${basePath}/jobs/:jobId/:action`, (req, res) => res.json(controlStandingBatch(subject(req), req.params.jobId, req.params.action, undefined, req.body || {})));
+  router.patch(`${basePath}/:slot/prompt`, (req, res) => {
+    updateStandingPrompt(subject(req), req.params.slot, req.body.prompt, req.body.generation);
     res.json({ ok: true });
   });
+  for (const action of ['upload', 'image', 'crop', 'hires']) {
+    router.post(`${basePath}/:slot/${action}`, async (req, res) => {
+      await editStandingImage(subject(req), req.params.slot, action, req.body);
+      res.json({ ok: true });
+    });
+  }
+  router.delete(`${basePath}/:slot`, (req, res) => {
+    const id = subject(req);
+    deleteStanding(id, req.params.slot);
+    res.json(id === PLAYER_STANDING_SUBJECT ? listExpressionStandings(id) : { ok: true });
+  });
 }
-router.delete(`${base}/:slot`, (req, res) => { deleteStanding(req.params.id, req.params.slot); res.json({ ok: true }); });
+mountStandingRoutes(base, req => Number(req.params.id));
+mountStandingRoutes(playerBase, () => PLAYER_STANDING_SUBJECT);
 router.get('/standing-display/state', (_req, res) => res.json(getStandingDisplay().snapshot()));
-// 上游 v3.9.0 合并：单个角色的立绘展示快照（galgame 舞台 useDialogueStanding 走这个）
 router.get('/characters/:id/standing-display', (req, res) => {
   if (!getDb().prepare('SELECT id FROM characters WHERE id=?').get(req.params.id)) return res.status(404).json({ error: '角色不存在' });
   res.json(getStandingDisplay().characterSnapshot(req.params.id));

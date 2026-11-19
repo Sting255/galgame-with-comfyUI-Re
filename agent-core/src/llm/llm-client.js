@@ -118,7 +118,7 @@ const STREAM_CONTINUE_INSTRUCTION = '继续。紧接在你上一段话的最后�
   + '不要重复已经写过的内容，不要重新开头，不要解释或道歉，直接续写。';
 
 /** 神说使用结构化原生工具流，不合并消息、不丢弃 tool 角色、不自动重放。 */
-export async function* chatAgentStream(messages, { tools = [], toolChoice = 'auto', signal, label = '神说', requestId, forceThinking = true, temperature = 0.72 } = {}) {
+export async function* chatAgentStream(messages, { tools = [], toolChoice = 'auto', signal, label = '神说', requestId, forceThinking = true, temperature = 0.72, requestBudget } = {}) {
   // 按调用链路由模型：神说固定命中 angel（前缀表在 modelRouting），免费鸡蛋模式不路由。
   const agentRoutedModel = resolveModelForLabel(label);
   const llm = { ...config.llm, model: config.llm.freeEgg ? freeEggCandidates()[0] : (agentRoutedModel || config.llm.model) };
@@ -138,10 +138,11 @@ export async function* chatAgentStream(messages, { tools = [], toolChoice = 'aut
     // （deepseek v4 族猜 32768，而中转站实际给 393216），拿它去砍用户额度会砍掉 92% 的空间。
     // 拿不到上游信息 → 传 undefined，走 applyOutputTokenLimit 的默认参数（= 用户设置值）。
     const cap = getUpstreamCapability(config.llm.baseURL, next.model)?.maxTokens;
-    applyOutputTokenLimit(next,
-      isValidMaxTokens(cap) && isValidMaxTokens(config.llm.maxTokens)
-        ? Math.min(config.llm.maxTokens, cap)
-        : undefined);
+    const configuredLimit = isValidMaxTokens(cap) && isValidMaxTokens(config.llm.maxTokens)
+      ? Math.min(config.llm.maxTokens, cap) : undefined;
+    applyOutputTokenLimit(next, requestBudget
+      ? Math.min(requestBudget.maxOutputTokens, configuredLimit ?? requestBudget.maxOutputTokens)
+      : configuredLimit);
     if (isDeepseek()) next.stream_options = { ...next.stream_options, include_usage: true };
     return next;
   };
@@ -160,13 +161,14 @@ export async function* chatAgentStream(messages, { tools = [], toolChoice = 'aut
       let roundResponse;
       const params = buildRoundParams(messages);
       signal?.throwIfAborted();
+      requestBudget?.validate(params, messages);
       console.log(`\n══════════ [${providerLabel()} → ${logLabel}] ══════════`);
       // P1-16：默认不打印完整请求体（含角色卡、世界观、聊天正文）。
       // 只留结构与体量，足以判断「消息条数/角色分配对不对」这类排障问题。
       if (VERBOSE_LLM_LOG) {
-        console.log(JSON.stringify(compressLogMessages(messages), null, 2));
+        console.log(JSON.stringify(compressLogMessages(params.messages), null, 2));
       } else {
-        const compact = compressLogMessages(messages);
+        const compact = compressLogMessages(params.messages);
         const totalChars = compact.reduce((sum, m) => sum + String(m?.content ?? '').length, 0);
         console.log(`[${logLabel} 请求] ${compact.length} 条消息，共 ${totalChars} 字（已脱敏；设 LINSHE_LLM_VERBOSE_LOG=1 看全文）`);
         console.log(`[${logLabel} 请求角色] ${compact.map(m => m?.role || '?').join(', ')}`);
@@ -369,14 +371,16 @@ function logReasoning(label, reasoning, thinkingMode = config.llm.thinkingMode) 
  */
 const OPTIONAL_GATEWAY_PARAMS = ['thinking', 'reasoning_effort'];
 
-async function createCompletionWithFallback(client, params, options, label) {
+async function createCompletionWithFallback(client, params, options, label, validate) {
   try {
+    validate?.(params);
     return await client.chat.completions.create(params, options);
   } catch (err) {
     const present = OPTIONAL_GATEWAY_PARAMS.filter(key => Object.hasOwn(params, key));
     if (Number(err?.status) !== 400 || present.length === 0) throw err;
     for (const key of present) delete params[key];
     console.error(`[llm${label ? ':' + label : ''}] HTTP 400：去掉可选参数 ${present.join('/')} 后重试一次`);
+    validate?.(params);
     return await client.chat.completions.create(params, options);
   }
 }
@@ -1278,9 +1282,9 @@ function compressLogMessages(messages) {
   });
 }
 
-async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-flash', temperature = 0.7, response_format, thinking, forceDisableThinking = false, forceThinkingMode, fallbackToConfiguredThinking = false, presence_penalty: presencePenalty, frequency_penalty: frequencyPenalty, label = 'sync', retries = 2, retryDelay = 1000, signal, timeout, maxRetries } = {}) {
+async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-flash', temperature = 0.7, response_format, thinking, forceDisableThinking = false, forceThinkingMode, fallbackToConfiguredThinking = false, presence_penalty: presencePenalty, frequency_penalty: frequencyPenalty, label = 'sync', retries = 2, retryDelay = 1000, signal, timeout, maxRetries, requestBudget } = {}) {
   throwIfSyncAborted(signal);
-  if (config.features.mergeMessages) messages = mergeConsecutiveRoles(messages);
+  if (config.features.mergeMessages && !requestBudget) messages = mergeConsecutiveRoles(messages);
   const limited = _limitEnabled();
   const slot = limited ? await acquireSyncSlot(signal) : null;
   try {
@@ -1338,7 +1342,7 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
   if (!forceDisableThinking && (forceThinkingMode === 'enabled' || forceThinkingMode === 'disabled')) {
     applyForcedThinking(params, forceThinkingMode, config.llm);
   }
-  applyOutputTokenLimit(params);
+  applyOutputTokenLimit(params, requestBudget?.maxOutputTokens);
   // 实际生效的思考模式（关闭优先于开启），供请求日志与响应处理使用
   const forcedMode = forceDisableThinking ? 'disabled' : forceThinkingMode;
   let canFallbackThinking = !forceDisableThinking && forceThinkingMode === 'enabled' && fallbackToConfiguredThinking;
@@ -1356,6 +1360,7 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
     JSON.stringify(logMsgs, null, 2) + '\n' +
     '───────────────────────────────────────────────';
 
+  const validateRequest = requestBudget ? next => requestBudget.validate(next, messages) : undefined;
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -1369,15 +1374,15 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
       throwIfSyncAborted(signal);
       let res;
       try {
-        res = await createCompletionWithFallback(getClient(), params, requestOptions, 'sync');
+        res = await createCompletionWithFallback(getClient(), params, requestOptions, 'sync', validateRequest);
       } catch (err) {
         throwIfSyncAborted(signal, err);
         if (!canFallbackThinking || !isThinkingModeRejected(err)) throw err;
         canFallbackThinking = false;
         params = { ...configuredParams };
-        applyOutputTokenLimit(params);
+        applyOutputTokenLimit(params, requestBudget?.maxOutputTokens);
         console.warn(`[${providerLabel()} → ${label}] 强制开启思考失败，按 LLM 设置重试：${err.message}`);
-        res = await createCompletionWithFallback(getClient(), params, requestOptions, 'sync');
+        res = await createCompletionWithFallback(getClient(), params, requestOptions, 'sync', validateRequest);
       }
       throwIfSyncAborted(signal);
       const choice = res.choices[0];
@@ -1400,10 +1405,13 @@ async function _chatSyncInner(messages, { model = config.llm.model || 'deepseek-
       // 同额度重试只会得到同样的空结果，所以不能走普通重试路径。
       if (isReasoningStarved(res.usage, content)) {
         const starved = params.max_tokens ?? params.max_completion_tokens;
-        if (!Number.isFinite(starved) || starved < REASONING_STARVED_MIN_TOKENS) {
-          console.warn(`[usage] ${label}: 思考吃光了 ${starved} tokens 的额度、正文为空，放大到 ${REASONING_STARVED_MIN_TOKENS} 重发一次`);
-          const retryParams = { ...params, [params.max_completion_tokens != null ? 'max_completion_tokens' : 'max_tokens']: REASONING_STARVED_MIN_TOKENS };
-          const retried = await createCompletionWithFallback(getClient(), retryParams, requestOptions, 'sync');
+        const recoveryLimit = requestBudget
+          ? Math.min(REASONING_STARVED_MIN_TOKENS, requestBudget.maxOutputTokens)
+          : REASONING_STARVED_MIN_TOKENS;
+        if (!Number.isFinite(starved) || starved < recoveryLimit) {
+          console.warn(`[usage] ${label}: 思考吃光了 ${starved} tokens 的额度、正文为空，放大到 ${recoveryLimit} 重发一次`);
+          const retryParams = { ...params, [params.max_completion_tokens != null ? 'max_completion_tokens' : 'max_tokens']: recoveryLimit };
+          const retried = await createCompletionWithFallback(getClient(), retryParams, requestOptions, 'sync', validateRequest);
           const retryChoice = retried?.choices?.[0];
           const retryContent = retryChoice?.message?.content;
           if (typeof retryContent === 'string' && retryContent.trim()) {

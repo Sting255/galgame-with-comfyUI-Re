@@ -32,6 +32,7 @@ const SECRET_JSON_SETTING_KEYS = Object.freeze([
   'llm_profiles',
   'novelai_profiles',
   'memory_settings',
+  'games_github',
 ]);
 
 /** 这些字段名一旦出现就视为秘密（不区分大小写，比较时去掉下划线与连字符） */
@@ -51,7 +52,7 @@ const SECRET_FIELD_NAMES = new Set([
 /** 秘密类别：manifest 只写类别名，不写值，也不写具体是哪个键 */
 export const SECRET_CLASSES = Object.freeze({
   env: 'config/.env 中的密钥（LLM / NovelAI 等）',
-  settings: '数据库内保存的 provider 凭据（LLM / NovelAI / TTS / MaiBot / Vertex）',
+  settings: '数据库内保存的服务凭据（LLM / NovelAI / TTS / MaiBot / Vertex / GitHub）',
 });
 
 function normalizedFieldName(name) {

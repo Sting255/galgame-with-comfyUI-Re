@@ -16,10 +16,10 @@ export function getStandingDisplay() {
     emit: state => broadcast('standing_display_state', state),
     resolveImage: (id, slot) => {
       // 【上游 v3.9.0 合并：立绘互动】带上 slot_id / version：小窗要按"这一版图"判断互动配置是否还有效。
-      const row = db.prepare(`SELECT slot_id,version,image_url,bounds_json FROM character_expression_standings WHERE character_id=? AND slot_id IN (?, 'normal') AND image_url IS NOT NULL ORDER BY CASE WHEN slot_id=? THEN 0 ELSE 1 END`).all(id, slot, slot).find(r => imageUrlExists(r.image_url));
+      const row = db.prepare(`SELECT slot_id,version,image_url,bounds_json FROM expression_standings WHERE character_id=? AND slot_id IN (?, 'normal') AND image_url IS NOT NULL ORDER BY CASE WHEN slot_id=? THEN 0 ELSE 1 END`).all(id, slot, slot).find(r => imageUrlExists(r.image_url));
       if (row) return { ...row, bounds: JSON.parse(row.bounds_json || 'null') };
       const slots = ['normal', ...db.prepare('SELECT id FROM emoji_categories').all().map(r => `emoji:${r.id}`)];
-      const available = new Set(db.prepare('SELECT slot_id,image_url FROM character_expression_standings WHERE character_id=? AND image_url IS NOT NULL').all(id).filter(r => imageUrlExists(r.image_url)).map(r => r.slot_id));
+      const available = new Set(db.prepare('SELECT slot_id,image_url FROM expression_standings WHERE character_id=? AND image_url IS NOT NULL').all(id).filter(r => imageUrlExists(r.image_url)).map(r => r.slot_id));
       return { missingCount: slots.filter(key => !available.has(key)).length };
     },
   };

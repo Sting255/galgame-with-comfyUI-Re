@@ -37,6 +37,10 @@ Outlet 在缓存模式保留原占位符，以保证命中/未命中不修改前
 
 ## 新提示词的插槽约定
 
+游戏跑团请求由 `games/gameServices.js` 统一组装。回合固定层包括基础规则与世界观、可选 interaction 强化、任务规范、统一的 `<group_info>` 成员卡和固定剧本资料。角色 KP 通过 `taskPersona` 把主持角色的口吻资料接在任务规范之后，共用同一条 system，并将该角色块与成员卡分别传给 `personaTexts`。成员卡按姓名组织 `short_prompt` 与公开身份。`cacheBoundary` 截止固定快照，`staticTexts` 认证共用规则与快照。调查员组只使用公开情报和身份，KP 视角持有完整剧本。回合沿用神说的严格追加世界书模式。首轮只冻结已注入常驻条目的 system 前缀。跨轮按公开卷宗的顺序重放，已确认的 AI 发言和叙事作为 assistant，玩家发言和检定等引擎记录作为 user。状态差量及本轮条件世界书进入末条 user 的动态区，任务置于其后。含世界书的尾部随该轮保存。原始 KP 工具配对及推理字段只用于本轮续调用和断点恢复。世界观、规则或世界书版本变化时重建固定层。接近模型预算时优先合并状态快照，再按需归档旧公开对话。扫描用 `history` 独立提供本次可见材料、保留区间的逐条公开发言和任务。出卡和剧本提取的稳定边界仍截止固定规则。外部 SDK 自定义 LLM 请求默认 `lorebook:false`，由游戏明确选择是否接入。
+
+玩家表情立绘通过 `expressionStandingPrompt.js` 共用批量立绘的 JSON 协议。固定规则之后依次放玩家资料、本批槽位及完整示例、唯一末条 user。已设置的酒馆头像只作为末条 user 的视觉附件，世界书扫描只读取文本。缓存边界截止玩家立绘固定规范末尾，实际资料层通过 `personaTexts` 定位。
+
 照相馆上传姿势识图 `photoStudioPose.js`：system0 仅 `getSystemRules({ roleplay: false })` 破甲规则 → 固定姿势描述规范与完整 JSON 示例 → 唯一 user（简短任务与图片附件）。不传角色资料、世界观或强化，显式 `lorebook:false`，防止世界书引入世界内容；前两层逐字稳定，图片只在最终 user；「再次修改」的补充描述也只追加到该 user 的任务文本，要求按补充需求调整最终输出，不新增消息、不改变 system 前缀。该识图请求显式传 `thinking:{type:"disabled"}` 与 `forceDisableThinking:true`，强制关闭思考并覆盖全局及 extraBody 的开启参数。JSON 的 `personCount` 为1或2，`posePrompt` 为英文四肢动作、表情、简单场景与物品，禁止外貌和服装。成功后保存参考图，前端实时保存可编辑文本；预览、润色、拍摄统一把该文本作为普通姿势放入 `Pose:` 段，不再识图或翻译，character 1/2 沿用原有人物名称替换。
 
 照相馆自定义背景 `photoStudioBackgrounds.js`：世界规则与世界观 → 可选 photo 强化 → 固定背景转换规范 → 本次中英文背景描述 → 唯一 user。背景只描述环境，不加入角色、服装或动作；输出纯英文正文，不使用 JSON。`personaTexts` 为空，`staticTexts` 仅前三类规则，`cacheBoundary` 截止固定规范末尾；扫描 `history` 为实际背景材料与末条 user。确认后保存英文结果用于后续拼装，预置库直接按 ID 读取英文，不请求 LLM。拍摄润色中的 Background 属于动态拼装材料，明确保留其地点、光线等要求。

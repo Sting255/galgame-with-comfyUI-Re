@@ -17,6 +17,8 @@ import { asyncHandler, wrapRouterAsync } from './src/middleware/asyncHandler.js'
 import { imageAvifFallback } from './src/middleware/imageAvifFallback.js';
 import { healthCheck as vectorHealth } from './src/services/vectorClient.js';
 import chatRoutes from './src/routes/chat.js';
+import gameRoutes, { initGames, mountGameAssets, closeGames } from './src/games/gameRoutes.js';
+import githubUpdateRoutes from './src/routes/githubUpdates.js';
 import ttsRoutes from './src/routes/tts.js';
 import memoryRoutes from './src/routes/memory.js';
 import imagesRoutes from './src/routes/images.js';
@@ -228,6 +230,9 @@ try {
 app.use('/api', godCommitGuard);
 app.use('/api', wrapRouterAsync(expressionStandingRoutes));
 app.use('/api', wrapRouterAsync(chatRoutes));           // /api/characters/:id/chat, /api/characters/:id/messages
+app.use('/api/games', wrapRouterAsync(gameRoutes));
+app.use('/api/github', wrapRouterAsync(githubUpdateRoutes));
+mountGameAssets(app);
 app.use('/api/tts', wrapRouterAsync(ttsRoutes));
 app.use('/api/memory', wrapRouterAsync(memoryRoutes));
 app.use('/api/images', wrapRouterAsync(imagesRoutes));
@@ -291,7 +296,7 @@ app.use('/api/maibot', wrapRouterAsync(maibotBridgeRoutes));
 
 // 应用自身版本号（仓库根目录 VERSION，不带 v 前缀）
 // 前端「有更新噢」拿它当本地版本去比 GitHub 上的 tag —— 这一步只读本地文件、不碰网络，
-// 所以放后端；查 GitHub 那一步是浏览器直连，见 web-ui/src/utils/githubUpdate.js
+// 远端版本由 /api/github 读取，和工坊共用 GitHub 代理。
 app.get('/api/version', (req, res) => {
   let version = '';
   try {
@@ -346,6 +351,7 @@ console.log('============================================');
 
 // 初始化数据库
 getDb();
+initGames();
 photoStudioQueue.start();
 console.log('[db] SQLite initialized');
 
@@ -690,6 +696,7 @@ const shutdown = async (exitCode = 0, { reason = '' } = {}) => {
     ['background services', stopBackgroundServices],
     ['memory index worker', stopMemoryIndexWorker],
     ['god-says runtime', stopGodSays],
+    ['game plugins', closeGames],
   ]) {
     try {
       await stop?.();

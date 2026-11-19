@@ -128,6 +128,10 @@
 </div>
 
     <div class="nav-bottom">
+      <router-link to="/games" data-nav="games" class="nav-item" :class="{ active: $route.path.startsWith('/games') }" title="游戏中心">
+        <GamepadIcon />
+        <span class="nav-label">游戏</span>
+      </router-link>
       <router-link to="/settings" data-nav="settings" class="nav-item" :class="{ active: $route.path === '/settings' }" :title="updateInfo.hasUpdate ? '设置 · 有新版本' : '设置'">
         <div class="nav-icon-wrap">
           <gear-icon :size="24" />
@@ -170,6 +174,7 @@ import { useUpdateStore } from '../stores/updateInfo.js'
 import { startUnifiedStream, stopUnifiedStream } from '../stores/unifiedStream.js'
 import { comfyuiHealth } from '../api/index.js'
 import GearIcon from './GearIcon.vue'
+import GamepadIcon from './GamepadIcon.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -252,6 +257,7 @@ const activeNavKey = computed(() => {
   if (p.startsWith('/schedule')) return 'schedule'
   if (p.startsWith('/gallery')) return 'gallery'
   if (p.startsWith('/tavern')) return 'tavern'
+  if (p.startsWith('/games')) return 'games'
   if (p.startsWith('/settings')) return 'settings'
   return 'chat'
 })

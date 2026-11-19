@@ -38,3 +38,11 @@
 2026-11-05：前次 PyInstaller 重建继承工具 PATH，误收集 Poppler 的 icuuc.dll 与外部 CRT，产物 QtWidgets 导入报 WinError 127。TOC 和提取 DLL 的加载试验确认根因，预加载系统 ICU 后 QtCore／Gui／Widgets 均成功。三个构建入口现共用隔离 PATH 的 builder，并要求临时空项目下真实窗口自检通过后才替换 EXE。CollapseTransition 必须传 :show；仅用外部 v-if 不会渲染其默认隐藏的内容。
 
 2026-11-05：普通睡眠 UI 回归中，模板调用检查把 store.method() 的 method 当成顶层函数；应解析成员链的根绑定，再用浏览器实际点击证明接线。使用说明生成源更新后，应先执行 --usage-guide-only 再跑以生成文件为基线的全量回归。PowerShell 的 rg 路径不支持 shell 通配符；本轮再次误用后改为明确目录，后续搜索一律目录配 -g。
+
+## 2026-11-19 · 上游集成的隔离验收
+
+- `force-memory-db.cjs` 只隔离数据库，不会禁止模块顶层网络请求；直接导入立绘 Service 会触发 ComfyUI `/object_info` 预取。无网络验收必须在任何业务动态 import 前安装 fetch 拒绝桩或完整 mock，并设置不存在的 `LINSHE_ENV_PATH`。
+- 上游增加 3 个平面拼贴背景后，原有精确数量回归仍预期 320，首轮为 72/73。维护原测试的严格契约为 323 个、16 类（拼贴 23，其余 20），保留唯一性、语言、提示词与解析断言；背景专项 6/6 复验通过，不靠放松断言或删测试处理。
+- 沙箱媒体地址的权限范围与 URL 规范化必须采用同一口径。先按原始前缀授权、再用 `new URL` 签名会消去 `../` 并跨范围；在规范化前拒绝明文和编码 dot-segment。普通 script/img 请求可能完全没有 Origin，需同时验证 Fetch Metadata 形态，不能只测 `Origin: null`。
+- Windows 仓库 Node 22 的 `fs.cpSync` 递归复制前端产物时进程意外退出且未输出可捕获异常。先检查目标和完整源缓存，再用 PowerShell 原生 `Copy-Item -LiteralPath -Recurse` 完成复制；107 文件 SHA-256 逐一核对通过后才删除缓存。目录删除和复制应分阶段读回，不能依赖长脚本末尾日志确认前段写入。
+- 末轮 GitHub `ls-remote` 发生一次 TLS unexpected EOF；保留证书验证，用仅作用于当次命令的 `http.version=HTTP/1.1` 重试成功，确认 main 与 v4.5.0 均剥离到 `4731ebd4`，未改全局 Git 配置。

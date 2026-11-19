@@ -15,6 +15,7 @@
  */
 
 import fs from 'fs';
+import { saveGameOutput } from '../games/gameMedia.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { submitWorkflow, apiToGui, guiToApi } from './comfyClient.js';
@@ -148,7 +149,7 @@ export function findNegativeEncodeNode(wf) {
   return null;
 }
 
-async function submitNovelaiImage(promptText, { onProgress } = {}) {
+async function submitNovelaiImage(promptText, { onProgress, width, height, negativePrompt } = {}) {
   const novelaiArtist = String(config.comfyui.novelaiArtist || '').trim();
   const qualityPrompt = String(config.comfyui.novelaiQualityPrompt || '').trim();
   const finalPrompt = [qualityPrompt, novelaiArtist, finalizeCountTags(String(promptText || '').trim())]
@@ -162,10 +163,10 @@ async function submitNovelaiImage(promptText, { onProgress } = {}) {
   const payload = await generateNovelaiImage(finalPrompt, {
     apiFormat: settings.novelaiApiFormat, url: settings.novelaiUrl,
     apiKey: getNovelaiApiKey(), proxyUrl: settings.novelaiProxyUrl,
-    model: settings.novelaiModel, width: settings.novelaiWidth, height: settings.novelaiHeight,
+    model: settings.novelaiModel, width: width ?? settings.novelaiWidth, height: height ?? settings.novelaiHeight,
     steps: settings.novelaiSteps, sampler: settings.novelaiSampler,
     noiseSchedule: settings.novelaiNoiseSchedule, scale: settings.novelaiGuidance,
-    negativePrompt: settings.novelaiNegativePrompt || '',
+    negativePrompt: negativePrompt ?? settings.novelaiNegativePrompt ?? '',
   });
   const { images } = payload;
   onProgress?.({ phase: 'executed' });
@@ -545,11 +546,12 @@ async function submitWithRetry(rawPrompt, {
   characterNegative, sceneNegative, poseJson, sceneKey,
   sourceWorkflow,
   imageProvider = config.comfyui.imageProvider,
+  outputScope,
 } = {}) {
   if (!sourceWorkflow && imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
     // but does not use either character or global LoRA data.
-    return submitNovelaiImage(rawPrompt, { artist, onProgress });
+    return submitNovelaiImage(rawPrompt, { artist, onProgress, ...(outputScope === 'game' ? { width, height, negativePrompt } : {}) });
   }
 
   // 1. 最终阀门
@@ -741,10 +743,9 @@ async function _execute(rawPrompt, opts) {
     // 原图重生完全跳过提示词加工与当前角色/全局配置，仍共用并发槽与提交重试。
     if (opts.sourceWorkflow) {
       if (_limitEnabled()) {
-        await acquireSlot();
-        slotAcquired = true;
+        slotAcquired = await acquireSlot();
       }
-      return await submitWithRetry('', opts);
+      return await saveGameOutput(await submitWithRetry('', opts), opts);
     }
 
     // 0. 送进 CLIP 之前先剥掉模型回显的生图规范原文（2026-10-01 修，见 groupImagePrompt.js 长注释）。
@@ -824,7 +825,7 @@ async function _execute(rawPrompt, opts) {
       globalLoras: filterGlobalLoras(config.comfyui.globalLora || [], opts.scene),
       provider: config.comfyui.imageProvider,
     });
-    const result = await submitWithRetry(preparation.promptRefined, opts);
+    const result = await saveGameOutput(await submitWithRetry(preparation.promptRefined, opts), opts);
     return {
       ...result,
       promptOriginal: preparation.promptOriginal,

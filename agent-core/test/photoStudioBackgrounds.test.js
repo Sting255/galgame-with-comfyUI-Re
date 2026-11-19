@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { getStudioBackgrounds, resolveStudioBackground, buildStudioBackgroundRequest, DEFAULT_STUDIO_BACKGROUND } from '../src/services/photoStudioBackgrounds.js';
 import { buildPhotoStudioPrompt } from '../src/services/photoStudioWorkflow.js';
 
-test('background library contains 320 distinct bilingual scenes across sixteen balanced categories', () => {
+test('background library contains 323 distinct bilingual scenes across sixteen categories', () => {
   const { entries, categories } = getStudioBackgrounds();
-  assert.equal(entries.length, 320);
+  assert.equal(entries.length, 323);
   assert.equal(categories.length, 16);
-  for (const field of ['id', 'label', 'prompt']) assert.equal(new Set(entries.map(entry => entry[field])).size, 320, field);
-  for (const category of categories) assert.equal(entries.filter(entry => entry.category === category.value).length, 20);
+  for (const field of ['id', 'label', 'prompt']) assert.equal(new Set(entries.map(entry => entry[field])).size, 323, field);
+  for (const category of categories) assert.equal(entries.filter(entry => entry.category === category.value).length, category.value === '平面拼贴' ? 23 : 20);
   for (const entry of entries) {
     assert.match(entry.label, /[\u4e00-\u9fff]/);
     assert.match(entry.description, /[\u4e00-\u9fff]/);

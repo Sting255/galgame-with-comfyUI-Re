@@ -6,6 +6,8 @@
  *   agent-core/data/town/         小镇地图与像素素材（含 town/assets）
  *   agent-core/data/images/       聊天 / 朋友圈 / 奇遇 / 报纸等配图（**2026-10-01 补上**：
  *                                 原来漏了它，导出/导入不对称，用户的图会在换机后全部变成死链）
+ *   agent-core/data/game/         游戏独立媒体
+ *   agent-core/data/games_community/ 已安装社区游戏包
  *   agent-core/.env               可选（里面有 LLM_API_KEY）——默认不导出，includeConfig=1 才带
  *
  * 不导出：node_modules / logs / public（前端产物，可重建）/ data/backups（备份自身，避免套娃）。
@@ -17,6 +19,8 @@
  *   data/town/...
  *   data/images/...
  *   data/audio/...       ← 支持 TTS_AUDIO_DIR 映射
+ *   data/game/...
+ *   data/games_community/...
  *   [config/.env]        ← 仅 includeConfig=1 且磁盘上确实有 .env
  *
  * 安全口径（导入）：
@@ -24,7 +28,7 @@
  *   2) **先全部校验、解到另一临时 staging 目录**，任何一项不过就整单拒绝，绝不碰现有数据；
  *      校验：文件流 gunzip → tar → manifest 存在 / format / version → 每个文件 bytes+sha256 与 manifest 一致
  *      → 路径安全（拒绝绝对路径、`..`、反斜杠、盘符、超长、符号链接/硬链接/设备/FIFO）
- *      → 只允许数据库、avatars/town/images/audio 与（仅 includeConfig 时）config/.env
+ *      → 只允许数据库、avatars/town/images/audio/game/games_community 与（仅 includeConfig 时）config/.env
  *      → 总解压大小上限（默认 2GB，LINSHE_BACKUP_MAX_BYTES 覆盖）；
  *   3) 校验通过后加维护锁 → checkpoint/关库 → 备份 → 换库与合并素材；失败回滚，HTTP 成功后保持锁定直到重启。
  *
@@ -532,6 +536,8 @@ async function buildBackupInto(workDir, { includeConfig, includeSecrets, roots, 
   walkTree(path.join(roots.dataDir, 'avatars'), 'data/avatars', tree);
   walkTree(path.join(roots.dataDir, 'town'), 'data/town', tree);
   walkTree(path.join(roots.dataDir, 'images'), 'data/images', tree);
+  walkTree(path.join(roots.dataDir, 'game'), 'data/game', tree);
+  walkTree(path.join(roots.dataDir, 'games_community'), 'data/games_community', tree);
   walkTree(roots.audioDir || path.join(roots.dataDir, 'audio'), 'data/audio', tree);
 
   const manifestFiles = [{ path: 'data/agent.db', bytes: dbBytes, sha256: await sha256File(snapshotFile) }];
@@ -674,7 +680,7 @@ function classifyEntryPath(rawPath, type) {
     }
     if (rel === 'data/agent.db' && !isDir) return { kind: 'data', rel };
     if (rel === 'data' && isDir) return { kind: 'data', rel };
-    if (/^data\/(avatars|town|images|audio)\//.test(rel) || (isDir && /^data\/(avatars|town|images|audio)$/.test(rel))) {
+    if (/^data\/(avatars|town|images|audio|game|games_community)\//.test(rel) || (isDir && /^data\/(avatars|town|images|audio|game|games_community)$/.test(rel))) {
       return { kind: 'data', rel };
     }
     throw bad('归档数据路径不在允许范围内', name);

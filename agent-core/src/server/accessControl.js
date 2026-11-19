@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
 import { verifyDeviceToken, issueDeviceToken, listDeviceTokens, revokeDeviceToken, revokeAllDeviceTokens } from './deviceTokens.js';
+import { createGameMediaAccess } from './gameMediaAccess.js';
 
 const BEARER_PREFIX = 'bearer ';
 
@@ -54,17 +55,23 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
   const allowedHosts = new Set(['localhost', '127.0.0.1', '::1', ...hosts.map(normalize)]);
   for (const list of Object.values(os.networkInterfaces())) for (const address of list || []) allowedHosts.add(normalize(address.address));
   const attempts = new Map();
+  const gameMedia = createGameMediaAccess(token);
   return function accessControl(req, res, next) {
+    const readOnly = req.method === 'GET' || req.method === 'HEAD';
+    const gameAsset = /^\/(?:game-assets\/|game-sdk\.js(?:\?|$))/i.test(req.originalUrl || req.url || '');
+    const signedMedia = readOnly && gameMedia.verify(req.originalUrl || req.url || '');
+    const gameRead = readOnly && (gameAsset || signedMedia);
+    const opaqueGameRead = req.headers.origin === 'null' && gameRead;
     let host, origin;
     try {
       host = new URL(`http://${req.headers.host}`).hostname;
-      if (req.headers.origin) origin = new URL(req.headers.origin);
+      if (req.headers.origin && !opaqueGameRead) origin = new URL(req.headers.origin);
     } catch { return res.status(403).json({ error: '不允许的访问来源' }); }
     if (!allowedHosts.has(normalize(host))) return res.status(403).json({ error: '不允许的访问地址' });
     const forwarded = Object.keys(req.headers).some(key => key === 'forwarded' || key.startsWith('x-forwarded-'));
-    const local = isLoopback(req.socket.remoteAddress) && localHost(host) && !forwarded && (!origin || localHost(origin.hostname));
+    const local = !opaqueGameRead && isLoopback(req.socket.remoteAddress) && localHost(host) && !forwarded && (!origin || localHost(origin.hostname));
     const devOrigin = development && origin?.port === '5173' && allowedHosts.has(normalize(origin.hostname));
-    if ((origin && origin.host !== req.headers.host && !devOrigin) || req.headers['sec-fetch-site'] === 'cross-site') {
+    if (!gameRead && ((origin && origin.host !== req.headers.host && !devOrigin) || req.headers['sec-fetch-site'] === 'cross-site')) {
       return res.status(403).json({ error: '不允许跨站访问邻舍' });
     }
     if (devOrigin) {
@@ -76,6 +83,10 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE');
         return res.sendStatus(204);
       }
+    }
+    if (gameRead && !devOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Vary', 'Origin');
     }
     let cookie = '';
     for (const part of String(req.headers.cookie || '').split(';')) {
@@ -93,6 +104,7 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
     // 于是已配对设备能读写 MaiBot 管理凭据。写权限必须按这个标记再收一次。
     req.linsheLocal = local;
     res.locals.linsheLocal = local;
+    res.locals.gameMediaUrl = gameMedia.sign;
     // Express 默认大小写不敏感、允许尾斜杠；授权边界必须采用同一口径。
     let pathname;
     try { pathname = decodeURIComponent(req.path).toLowerCase().replace(/\/+$/, '') || '/'; }
@@ -147,8 +159,12 @@ export function createAccessControl({ token, development = false, hosts = [] }) 
     }
     // 健康检查不含聊天/配置内容，启动器必须能在配对前检查实例身份。
     if (pathname === '/api/health') return next();
-    const protectedPath = /^\/(api(?:\/|$)|images(?:\/|$)|avatars(?:\/|$)|town-assets(?:\/|$))/.test(pathname);
-    if (protectedPath && !isAuthorized) return res.status(401).json({ error: '请先在本机设置页获取配对码并连接此设备', code: 'PAIRING_REQUIRED' });
+    const protectedPath = /^\/(api(?:\/|$)|images(?:\/|$)|avatars(?:\/|$)|town-assets(?:\/|$)|game-media(?:\/|$))/.test(pathname);
+    if (protectedPath && !isAuthorized && !signedMedia) return res.status(401).json({ error: '请先在本机设置页获取配对码并连接此设备', code: 'PAIRING_REQUIRED' });
+    if (signedMedia) {
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+    }
     if (!local && (pathname === '/api/shutdown' || pathname === '/api/config/llm/key' || /^\/api\/data(?:\/|$)/.test(pathname))) {
       return res.status(403).json({ error: '数据备份、恢复与密钥操作请在电脑本机完成' });
     }

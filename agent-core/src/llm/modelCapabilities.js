@@ -29,10 +29,11 @@ export function rememberUpstreamCapabilities(baseURL, capabilities) {
   if (!key || !capabilities || typeof capabilities !== 'object') return;
   for (const [model, cap] of Object.entries(capabilities)) {
     if (!model || !cap || typeof cap !== 'object') continue;
-    if (!isValidMaxTokens(cap.maxTokens) && !isValidMaxTokens(cap.contextWindow)) continue;
+    if (!isValidMaxTokens(cap.maxTokens) && !isValidMaxTokens(cap.contextWindow) && !isValidMaxTokens(cap.inputLimit)) continue;
     upstreamCapabilities.set(`${key}|${model}`, {
       ...(isValidMaxTokens(cap.maxTokens) ? { maxTokens: cap.maxTokens } : {}),
       ...(isValidMaxTokens(cap.contextWindow) ? { contextWindow: cap.contextWindow } : {}),
+      ...(isValidMaxTokens(cap.inputLimit) ? { inputLimit: cap.inputLimit } : {}),
     });
   }
 }
@@ -72,12 +73,14 @@ export function normalizeModelCapabilities(rows) {
       row.top_provider?.max_completion_tokens].find(isValidMaxTokens);
     // 上下文窗口各家字段名不同：中转常用 context_length / max_allowed_size，
     // OpenRouter 用 context_length，Llama 系自建服务用 max_model_len。
-    const contextWindow = [row.context_length, row.max_allowed_size, row.max_context_length,
-      row.context_window, row.max_model_len].find(isValidMaxTokens);
-    if (!maxTokens && !contextWindow) continue;
+    const windows = [row.context_length, row.max_allowed_size, row.max_context_length,
+      row.context_window, row.max_model_len, row.contextWindow, row.top_provider?.context_length].filter(isValidMaxTokens);
+    const inputs = [row.max_input_tokens, row.inputTokenLimit].filter(isValidMaxTokens);
+    if (!maxTokens && !windows.length && !inputs.length) continue;
     result[id] = {
       ...(maxTokens ? { maxTokens } : {}),
-      ...(contextWindow ? { contextWindow } : {}),
+      ...(windows.length ? { contextWindow: Math.min(...windows) } : {}),
+      ...(inputs.length ? { inputLimit: Math.min(...inputs) } : {}),
     };
   }
   return result;

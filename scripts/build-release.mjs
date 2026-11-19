@@ -32,6 +32,7 @@
  */
 
 import { spawn, execSync } from "node:child_process";
+import { downloadGithubFile, isGithubDownload } from "./lib/github-download.mjs";
 import { existsSync, mkdirSync, rmSync, createWriteStream } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +151,7 @@ function ensureDir(dir) {
  * 下载文件，失败返回 false
  */
 function downloadFile(url, dest, timeoutSec = 300) {
+  if (isGithubDownload(url)) return downloadGithubFile(url, dest, timeoutSec);
   return new Promise((resolvePromise) => {
     const proto = url.startsWith("https") ? https : http;
     const req = proto.get(url, { timeout: timeoutSec * 1000 }, (res) => {
@@ -712,7 +714,7 @@ async function main() {
 
   // shallow clone 保留 .git/
   log("创建 shallow clone (保留 .git 用于版本更新)...");
-  const GITHUB_REPO_URL = "https://github.com/Sting255/linshe-gai.git";
+  const GITHUB_REPO_URL = "https://github.com/Sting255/galgame-with-comfyUI-Re.git";
   // depth=50 覆盖足够历史，确保用户端 git describe / checkout tag 不出问题
   const cloneResult = await exec("git", ["clone", "--depth", "50", ROOT, RELEASE_DIR]);
   let hasGit = cloneResult.ok;
@@ -736,6 +738,7 @@ async function main() {
     const robocopyExcludeFiles = [
       "*.tmp.json", ".access-token", ".env", ".env.*", "local.properties", "launcher_config.json",
       "settings.local.json", "*.tar.gz", "*.jks", "*.keystore", "*.p12", "*.pfx",
+      "github-proxy*.json", "github-proxy*.json.*.tmp",
     ];
     const rcOk = await robocopy(ROOT, RELEASE_DIR, robocopyExclude, robocopyExcludeFiles);
     if (!rcOk) { fail("文件复制失败!"); process.exit(1); }
