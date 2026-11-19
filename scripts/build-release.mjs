@@ -25,7 +25,7 @@
  *
  *   **.git 不进排除** —— 交付包保留 .git（审查 §六 第 1 条，Lead 已采纳）。
  *
- *   若改用 **7z 手工打包**（本脚本用的是 PowerShell Compress-Archive，不是 7z），等价参数是：
+ *   若改用 **7z 手工打包**（本脚本用的是 Windows 内置 .NET ZipFile，不是 7z），等价参数是：
  *     -xr'!*.mimosa' -xr'!e2e\node_modules' -xr'!logs'
  *   ⚠️ 别动 -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -mqs=on -ms=on -mmt=on -mf=off，
  *     尤其 -mf=off 丢了会破坏「方法集合只有 LZMA2」这条历史验收口径。
@@ -819,7 +819,8 @@ async function main() {
     ensureDir(modelDst);
     const rcOk = await robocopy(
       resolve(VECTOR_SVC, "models"),
-      modelDst
+      modelDst,
+      [".mimosa"]
     );
     if (!rcOk) { fail("向量模型复制失败，终止打包!"); process.exit(1); }
     ok("vector-service\\models");
@@ -902,11 +903,11 @@ async function main() {
     unlinkSync(zipFile);
   }
 
-  // 使用 PowerShell Compress-Archive（Windows 内置，无需额外依赖）
+  // Compress-Archive 会跳过带 Hidden 属性的 .git；直接使用内置 .NET，保留更新所需仓库。
   const zipResult = await exec("powershell", [
     "-NoProfile", "-Command",
-    `Compress-Archive -Path '${RELEASE_DIR}\\*' -DestinationPath '${zipFile}' -Force`
-  ]);
+    `$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory('${RELEASE_DIR.replace(/'/g, "''")}', '${zipFile.replace(/'/g, "''")}', [System.IO.Compression.CompressionLevel]::Optimal, $false)`
+  ], { shell: false });
   if (!zipResult.ok) { fail("zip 创建失败!"); process.exit(1); }
 
   // 直接读取最终 zip 的成员名，不读文件内容；默认头像之外不允许任何玩家数据。
@@ -919,6 +920,20 @@ async function main() {
   let zipMembers;
   try { zipMembers = JSON.parse(zipMembersResult.stdout); }
   catch { fail("最终 zip 成员清单不是合法 JSON，终止交付!"); process.exit(1); }
+  const normalizedMembers = zipMembers.map(member => member.replace(/\\/g, "/"));
+  if (!normalizedMembers.includes(".git/HEAD") || !normalizedMembers.includes(".git/config") ||
+      !normalizedMembers.some(member => member.startsWith(".git/objects/") && !member.endsWith("/"))) {
+    fail("最终 zip 缺少完整 Git 更新元数据（HEAD / config / objects），终止交付!");
+    process.exit(1);
+  }
+  ok("最终 zip Git 更新元数据检查通过");
+  const cacheMembers = normalizedMembers.filter(member => member.split("/").some(part => part.toLowerCase() === ".mimosa"));
+  if (cacheMembers.length) {
+    for (const member of cacheMembers.slice(0, 20)) fail(`禁止交付开发缓存: ${member}`);
+    fail(`最终 zip 含 ${cacheMembers.length} 个 .mimosa 成员，终止交付!`);
+    process.exit(1);
+  }
+  ok("最终 zip 开发缓存检查通过");
   const sensitiveMembers = findSensitiveArchiveMembers(zipMembers, {
     allowedDataFiles: ["agent-core/data/avatars/default_assistant_header.png"],
   });
