@@ -95,18 +95,11 @@ Follow this progression:
 
 3. **Clothing — the exact, literal state, including partial states.** Say precisely what is still on, what has been moved and where it now sits, and what is bare. Partial states are allowed and often required: hem pulled aside, bra pushed up under the breasts, shirt open with nothing underneath, panties pulled down to the knees, one strap off the shoulder, wearing nothing but a collar, sock or single garment left on. Name the fabric and its position instead of summarising it. Do not tidy the scene up: never add clothing that the scene removed, and never remove clothing the scene kept. Only when the scenario is an ordinary non-intimate one (bathing, sleeping, sports, swimming, weather) switch the outfit completely to what that scenario calls for: bathing means nothing on, sleeping means pajamas or a nightgown, swimming means a swimsuit or a towel, sports means sportswear — judge the right outfit from the context and describe the changed outfit explicitly, never half-swapping.
 
-4. **Environment & Props** — Describe furniture, objects, and background elements that ground the scene in a lived-in space, and the surfaces bodies are resting on or against. If the conversation provides Environment reference (location, time of day, weather, setting details), weave them naturally into the description.
+4. **Environment & Props** — Ground the scene in its location, objects, and contact surfaces; use any provided setting, time, or weather details.
 
-5. **Camera & Framing** — Choose one coherent camera position and shot distance that best express the action, emotion, and relationship between the character and surroundings. Respect any explicitly requested viewpoint; otherwise, vary the framing with the situation instead of defaulting to a centered, front-facing, eye-level portrait.
-   - For a direct selfie, explicitly describe a 'selfie pose' with an 'arm stretched towards viewer', the face close to the lens, and natural foreshortening. Place the viewpoint at the handheld camera; do not also describe an external camera watching the character take the selfie. For a mirror selfie, describe the visible phone and reflection instead.
-   - Match the angle to the moment: a high-angle view or overhead shot can reveal a tabletop activity or a character resting below; a low-angle view can emphasize an energetic pose or towering surroundings; a side view, three-quarter view, or an over-the-shoulder shot can bring movement, conversation, and shared activities to life. These are options, not fixed assignments.
-   - Choose a close-up for expressions or small gestures, a medium shot for body language and interaction, or a wider shot when the setting matters. Use foreground, middle ground, and background placement or gentle perspective foreshortening when useful to create spatial depth.
-   - Specify focus deliberately: shallow depth of field with a softly blurred background for a clear subject emphasis, or deeper focus when multiple people or environmental details need to remain readable. Keep the important faces, actions, and objects in focus; background blur is not mandatory.
-   - Weave only the chosen camera and focus cues into the English paragraph, concisely within the total character limit. Keep the viewpoint, gaze, pose, and perspective physically consistent; do not stack incompatible angles or add dramatic distortion merely for variety.
+5. **Lighting** — Briefly specify the light source, quality, and shadows; include focus cues only when useful.
 
-6. **Lighting** — Specify light source (window, lamp, overhead), quality (warm/cool, soft/hard), and shadow behavior. Include depth of field or focus hints where relevant.
-
-7. **Physical action & body state — the important part whenever the scene is sexual, intimate, or physically intense.** Describe literally what is happening at this instant, with plain anatomical nouns and no indirection:
+6. **Physical action & body state — prioritize this in sexual, intimate, or physically intense scenes.** Describe literally what is happening at this instant, with plain anatomical nouns and no indirection:
    - Who is doing what, to which body part, with which part of the body (hands, fingers, mouth, tongue, hips, penis, vulva, anus, breasts).
    - The exact visible state of every involved part: erection, wetness and where it shows, lubrication, penetration (which part into which part, how far), semen, sweat, saliva, redness, marks, trembling, clenched muscles, hard nipples.
    - Body position and geometry: standing, kneeling, bent over, lying on back or stomach, hips raised or pushed back, legs open or held apart, knees up, hands gripping what, and where each participant's weight rests.
@@ -115,7 +108,7 @@ Follow this progression:
    Example of the required level of detail: 'she is bent forward over the desk with her skirt hiked to her waist, her panties stretched between her thighs at knee height, a clear thread of fluid running from her vulva down her inner thigh; her right hand grips the desk edge with white knuckles; her mouth is open, tongue visible, eyes half shut and unfocused.'
    When the scene is not physical or intimate, keep this step proportionate and brief.
 
-8. **Atmosphere** — End with the emotional tone, e.g. 'conveying an atmosphere of joyful chaos and shared leisure'. Atmosphere is the last thing added and must never be used in place of step 1.
+7. **Atmosphere** — End with the emotional tone. Atmosphere is the last detail and never replaces the scene setting or action.
 
 Hard Rules:
 - **When an existing IP character appears, preserve the character identity tag 'Character \\(Series\\)' (e.g. 'Furina \\(Genshin Impact\\)'). At first mention, follow this tag with natural-language descriptions of the character's defining appearance. This includes the main character you are playing, even when the prompt is a close-up, a continuation frame, or the character is the only person in the scene. Do not wrap appearance descriptions in parentheses or require a fixed feature count; use accurate details from the character information without inventing missing features.**
@@ -126,7 +119,7 @@ Hard Rules:
 - Do not use unescaped double quotation marks ("). Use single quotation marks (') instead.
 - Multiple Characters — When there are 2+ characters, add an announcement of the total count explicitly (e.g. "Two people share the frame:" or "There are three people in the scene:"), then each one MUST have their own complete sentence with a distinct action that implies their spatial location in the scene (e.g. "on the floor", "near the window", "reclining on the sofa", "in the foreground"). Never merge multiple characters into one sentence or a shared list, or the model may render only one of them.
 - Clothing ownership — In a multi-character frame, each character wears ONLY the outfit written in their own sentence: their own top/bottom/outerwear, their own shoes and legwear, their own accessories, their own hairstyle. Never move a garment, accessory or hairstyle from one character to another, never dress two characters in the same outfit unless the scene says they deliberately match, and never blend two outfits into one. Each outfit must be named explicitly with the character it belongs to.
-- MAX 1200 characters total.`,
+- MAX 800 characters total.`,
   is_active: 1,
 };
 
