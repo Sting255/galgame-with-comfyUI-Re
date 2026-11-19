@@ -46,3 +46,11 @@
 - 沙箱媒体地址的权限范围与 URL 规范化必须采用同一口径。先按原始前缀授权、再用 `new URL` 签名会消去 `../` 并跨范围；在规范化前拒绝明文和编码 dot-segment。普通 script/img 请求可能完全没有 Origin，需同时验证 Fetch Metadata 形态，不能只测 `Origin: null`。
 - Windows 仓库 Node 22 的 `fs.cpSync` 递归复制前端产物时进程意外退出且未输出可捕获异常。先检查目标和完整源缓存，再用 PowerShell 原生 `Copy-Item -LiteralPath -Recurse` 完成复制；107 文件 SHA-256 逐一核对通过后才删除缓存。目录删除和复制应分阶段读回，不能依赖长脚本末尾日志确认前段写入。
 - 末轮 GitHub `ls-remote` 发生一次 TLS unexpected EOF；保留证书验证，用仅作用于当次命令的 `http.version=HTTP/1.1` 重试成功，确认 main 与 v4.5.0 均剥离到 `4731ebd4`，未改全局 Git 配置。
+
+## 2026-11-19 · 真实 ComfyUI 服装验收
+
+- 日程夹具端点只允许 00:00–23:59，跨午夜结束写 `00:00`，不能写 `24:00`；否则服装标记会被合法性过滤，不能把这种夹具错误记成产品缺陷。
+- `scheduleActivityTargetDate` 返回程序墙钟，`timeLight` 的 Date 入参却按真实时刻再加偏移。瞄一眼调用点先 `toRealTime`，避免非零偏移把指定下午漂到夜间；真实 14:00 生图及跨日、零偏移两组断言已验证。
+- PreviewImage 产物可能在 `temp` 而非 output；从 `/history` 获取 type／filename 再用 `/view` 解码。正向提示词可能经 PrimitiveString／StringConcatenate 连接编码器，必须沿 sampler 的实际连接检查，不能只看 CLIPTextEncode 的内联字符串。修正检查后复用原 history，不重复出图。
+- OpenAI SDK 不一定走全局 fetch；全局 fetch 零计数不能作为“未调用真实 LLM”的依据，应结合真实回包／用量日志、无 fallback 和最终业务提示词核对。包依赖用 createRequire 从 agent-core/package.json 解析公开导出，不猜 sharp 内部路径。
+- 隐藏 Start-Process 包装与一次 PowerShell 递归清理被工具策略拒绝，均未执行。启动改为可管理的前台会话；结束后先核对测试服务已退出，再以真实路径／固定目录名／非符号链接守卫限定 Node 清理，只删本轮临时根，已读回删除完成。

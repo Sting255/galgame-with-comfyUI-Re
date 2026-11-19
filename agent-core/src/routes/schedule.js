@@ -25,7 +25,7 @@ import {
   syncSleepingState, isTempWoken, isSleeping,
   scheduleTempWakeExpiry, resetGroggyShown,
 } from '../services/scheduleManager.js';
-import { getProgramDateKey, getProgramNow, getProgramState, formatHhmm } from '../services/programTime.js';
+import { getProgramDateKey, getProgramNow, getProgramState, formatHhmm, toRealTime } from '../services/programTime.js';
 import timeRoutes from './time.js';
 import { generateSchedule, assignNextRefreshTime, snapshotTodaySchedule, parseAndValidateSchedule } from '../services/scheduleGenerator.js';
 import { scheduleOutfits } from '../services/outfitScene.js';
@@ -453,7 +453,8 @@ router.post('/:characterId/peek', async (req, res) => {
         lightTime.setHours(h, m || 0, 0, 0);
       }
     }
-    const timeLightInline = getTimeLightInline(lightTime);
+    // lightTime 已是程序墙钟；光线入口接收真实时间并自行加偏移，先还原以免重复偏移。
+    const timeLightInline = getTimeLightInline(toRealTime(lightTime));
     const sleepNote = isSleeping
       ? `\n\n【极其重要】角色正在睡觉，双眼必须紧闭，**房间里没有灯光，睡觉时候不开灯**，不能睁眼。表情安详放松，呈现深度睡眠的自然状态，盖被子。睡姿、床、被子、**睡衣（睡觉时候绝对不会穿本来的衣服）**等细节贴合角色性格。`
       : '';
