@@ -1,5 +1,9 @@
 # Errors
 
+2026-11-19：阶段 2 内存定向验证先后误从 scheduleGenerator.js 导入仅由 outfitScene.js 导出的规范化函数、并在夹具中使用无效 scene=`casual`；检查真实导出与 `custom_*` 槽位契约后修正，全部验证通过。临时脚本经 stdin 执行，没有留在仓库。
+
+2026-11-19：PowerShell 直接删除 Playwright CLI 临时日志与页面快照被执行策略拒绝；改用 apply_patch 按明确路径删除本轮文件，源码、截图证据与项目数据未受影响。
+
 2026-11-05：源码查找先用 rg --files 确认路径，不按模块名猜路由文件名（上下文路由实际为 routes/context.js）。命令的相对路径必须与 workdir 对应；PowerShell 搜索通配符应交给 rg 的 -g 参数。旧 UI 源码断言应更新为共享组件的接线契约，并用真实浏览器行为覆盖替代原先的内联事件数量断言。
 
 ## 2026-11-04 · 修复交接路径定位
