@@ -1,5 +1,13 @@
 # Errors
 
+## 2026-11-20 · 删除工作树顺着目录链接清空了主仓库运行时（事故）
+
+- 现象：清理 `.pai/.worktree/*` 后，主仓库 `runtime/nodejs`、`runtime/python`、`runtime/git` 被删空，`agent-core/node_modules`、`web-ui/node_modules` 只剩空目录；`agent-core/data`、`.env`、全部 git 跟踪文件未受影响。删除 `review-release` 时报 `Filename too long`，即删到一半。
+- 根因：这些工作树里有指向主仓库的 Junction（同类结构仍见 `.pai/temp/shadow/agent-core → agent-core`、`shadow/web-ui/node_modules`、`up/pristine/agent-core/node_modules`）。`git worktree remove` 以及随后的 `rd /s /q` 会进入 Junction 删除目标内容。删除前只检查了「没有未提交改动」，没有检查目录链接。
+- 恢复：c 包 `v4.5.0-c / f9ef053e` 与 HEAD 之间只有文档差异、依赖与锁文件无差异；从包内按「仅写入不存在的文件」解压 `runtime/nodejs|python|git` 与 `agent-core/node_modules`（共 30,548 个文件，越界成员 0），再用仓库 Node 22.18.0 `npm ci --prefix web-ui`。发布包里的 `runtime/python` 是发布版，可能少于原开发环境里另装的包。
+- 规则：删除仓库内任何目录前，先 `cmd /c "dir /a:l /s /b <目录>"` 列出 Junction／符号链接；有链接时先只删链接本身（`rmdir <链接>`，**不带 /s**；PowerShell 用 `(Get-Item <链接>).Delete()`），确认链接已消失后再删其余内容。**禁止对 `.pai/temp` 递归删除**：`shadow/agent-core` 原来直接链到含玩家数据的 `agent-core`。（2026-11-20 已用不带 /s 的 `rmdir` 只删除 `.pai/temp` 下 4 个链接——`shadow/agent-core`、`shadow/web-ui/node_modules`、`shadow/web-ui/public`、`up/pristine/agent-core/node_modules`；删前删后链接目标的文件数与字节数一致。工具再次生成影子目录时可能重新建链接，删除前仍须先列链接。）
+- 规则：清理前的「安全」检查必须包含链接、挂载点和进程占用，不只是 git 状态。
+
 ## 2026-11-20 · 桌面验收与清理边界
 
 - CUA 对尚未显示的启动器窗口点击返回 `coordinate input geometry is unavailable`；读回发现尚未启动，使用该窗口已暴露的 Raise 后重新观察，再正常操作。失败点击不算执行成功，不操作底层其它应用。
