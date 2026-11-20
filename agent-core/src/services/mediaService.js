@@ -37,7 +37,8 @@ import { saveBase64Image, deleteImageFileByUrl } from './imagePaths.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { recordCompletedImageTask } from './imageTaskRecorder.js';
 import { broadcast } from './unifiedStreamBus.js';
-import { MEDIA_PUBLICATION_ORDER, publishMediaPostIfReady, isMediaPostPublished, publishReadyDeferredPosts } from './mediaPublication.js';
+import { MEDIA_PUBLICATION_ORDER, MEDIA_IMAGE_OFFLINE, MEDIA_IMAGE_SKIPPED_OFFLINE, mediaImagesReady, publishMediaPostIfReady, isMediaPostPublished, publishReadyDeferredPosts } from './mediaPublication.js';
+import { onComfyRecovered } from './comfyAvailability.js';
 import { filterPublishable } from './publishGate.js';
 import { config } from '../config.js';
 import { extractFirstJson } from './jsonExtract.js';
@@ -1231,7 +1232,7 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
     SELECT p.id, p.payload_json FROM media_posts p
     JOIN media_outlets o ON o.id = p.outlet_id
     WHERE json_extract(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.portal') = 1
-      AND p.image_status != 'discarded'
+      AND p.image_status NOT IN ('discarded', '${MEDIA_IMAGE_SKIPPED_OFFLINE}')
       AND (p.published_seq IS NULL OR p.image_status != 'done')
       ${scope.sql}
     ORDER BY (p.published_seq IS NULL) DESC, p.id DESC
@@ -1239,6 +1240,7 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
 
   let filled = 0;
   let attempted = 0;
+  let sawOffline = false;
   for (const row of rows) {
     if (attempted >= limit) break;
     const payload = safeParse(row.payload_json, null);
@@ -1250,7 +1252,10 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
       attempted++;
       try {
         const result = await generateMediaImage(section.image_prompt, null, priority);
-        if (!result) continue;
+        if (!result?.url) {
+          if (result?.offline) sawOffline = true;
+          continue;
+        }
         // 重新读一次 payload：生成期间可能有别的写入（如用户点了某块生成正文）
         const fresh = safeParse(db.prepare('SELECT payload_json FROM media_posts WHERE id = ?').get(row.id)?.payload_json, null);
         const target = isPortalPayload(fresh) ? fresh.sections.find(s => s.key === section.key) : null;
@@ -1285,6 +1290,9 @@ async function fillPortalImagesNow(limit, postIds = null, priority = 'low') {
       if (cover) db.prepare('UPDATE media_posts SET image = ? WHERE id = ? AND (image IS NULL OR image = \'\')').run(cover, row.id);
       const published = publishMediaPostIfReady(row.id);
       if (changed || published) broadcast('media_portal_ready', { postId: row.id });
+    } else if (sawOffline) {
+      // ComfyUI 离线：这一期文字先发，缺的板块头图等恢复后补
+      deferMediaImagesForOffline(row.id);
     }
   }
   return filled;
@@ -1475,7 +1483,8 @@ async function generateMediaImage(prompt, character = null, priority = 'low') {
     ...(character ? { identity: character } : {}),
     ...(loras.length ? { customWorkflow: character?.custom_workflow || null, loras } : {}),
   });
-  if (!result?.success || !result.images?.length) return null;
+  // 失败时区分「ComfyUI 连不上」：调用方据此先发文字、记账待补，而不是把帖子标成失败
+  if (!result?.success || !result.images?.length) return result?.comfyOffline ? { offline: true } : null;
   const img = result.images[0];
   return {
     url: saveBase64Image('media', `media_${Date.now()}_${img.filename || 'comfy.png'}`, img.base64),
@@ -1523,7 +1532,14 @@ async function fillPendingImagesNow(limit, postIds = null, priority = 'low') {
         ? db.prepare('SELECT id, loras, artist_override, custom_workflow FROM characters WHERE id = ?').get(p.character_id)
         : null;
       const result = await generateMediaImage(p.image_prompt, character, priority);
-      if (!result) {
+      if (!result?.url) {
+        if (result?.offline) {
+          // ComfyUI 离线：放回 pending 并打标记，文字先发；恢复后由 refillOfflineMediaImages 补
+          db.prepare("UPDATE media_posts SET image_status = 'pending', image_error = ? WHERE id = ? AND image_status = 'generating'")
+            .run(MEDIA_IMAGE_OFFLINE, p.id);
+          deferMediaImagesForOffline(p.id);
+          continue;
+        }
         updatePostImage(p.id, { status: 'failed', error: 'ComfyUI 未返回图片' });
         continue;
       }
@@ -1578,7 +1594,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
     SELECT p.id, p.payload_json FROM media_posts p
     JOIN media_outlets o ON o.id = p.outlet_id
     WHERE json_type(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.panels') = 'array'
-      AND p.image_status != 'discarded'
+      AND p.image_status NOT IN ('discarded', '${MEDIA_IMAGE_SKIPPED_OFFLINE}')
       ${scope.sql}
       AND EXISTS (
         SELECT 1 FROM json_each(CASE WHEN json_valid(p.payload_json) THEN p.payload_json ELSE '{}' END, '$.panels') panel
@@ -1594,6 +1610,7 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
     if (attempted >= limit) break;
     const payload = safeParse(row.payload_json, null);
     const panels = Array.isArray(payload?.panels) ? payload.panels : [];
+    let sawOffline = false;
 
     for (const panel of panels) {
       if (attempted >= limit) break;
@@ -1601,7 +1618,10 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
       attempted++;
       try {
         const result = await generateMediaImage(panel.image_prompt, null, priority);
-        if (!result) continue;
+        if (!result?.url) {
+          if (result?.offline) sawOffline = true;
+          continue;
+        }
         panel.image = result.url;
         // Persist each panel before notifying clients so a reload sees the completed image.
         db.prepare('UPDATE media_posts SET payload_json = ? WHERE id = ?').run(JSON.stringify(payload), row.id);
@@ -1623,10 +1643,90 @@ async function fillPosterPanelImages(limit = 3, postIds = null, priority = 'low'
         console.error(`[media] 数字报刊小图失败 #${row.id}:`, err.message);
       }
     }
-    publishMediaPostIfReady(row.id);
+    if (sawOffline) deferMediaImagesForOffline(row.id);
+    else publishMediaPostIfReady(row.id);
   }
   return filled;
 }
+
+// ══════════════════════════════════════════
+// ComfyUI 离线：文字先发，配图记账待补（2026-11-20，规划 N1）
+// ══════════════════════════════════════════
+
+/**
+ * 离线积压的补图上限：每个媒体只给最近 N 条「文字先发」的内容补图。
+ * 离线一整天会积下几十条，恢复时全补会把 GPU 占满一两个小时；旧帖几乎没人回看。
+ * 超出的标成 skipped_offline，不再自动补（用户仍可在帖子上手动「重新生图」）。
+ */
+export const OFFLINE_IMAGE_BACKLOG_PER_OUTLET = 2;
+
+/** 打离线标记、文字先发、裁剪积压。幂等：已发布的只补标记。 */
+function deferMediaImagesForOffline(postId) {
+  const db = getDb();
+  db.prepare(`
+    UPDATE media_posts SET image_error = ?
+    WHERE id = ? AND image_status NOT IN ('discarded', '${MEDIA_IMAGE_SKIPPED_OFFLINE}')
+  `).run(MEDIA_IMAGE_OFFLINE, postId);
+  if (publishMediaPostIfReady(postId, { allowMissingImages: true })) {
+    console.log(`[media] ComfyUI 离线：post #${postId} 文字先发布，配图待恢复后补`);
+  }
+  pruneOfflineImageBacklog(db);
+}
+
+/** 每个媒体只保留最近 N 条已发布、待补图的离线内容；更早的不再自动补。返回裁掉的条数。 */
+export function pruneOfflineImageBacklog(db = getDb(), keep = OFFLINE_IMAGE_BACKLOG_PER_OUTLET) {
+  const r = db.prepare(`
+    UPDATE media_posts SET image_status = ?, image_error = ?
+    WHERE id IN (
+      SELECT id FROM (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY outlet_id ORDER BY id DESC) AS rn
+        FROM media_posts
+        WHERE image_error = ? AND published_seq IS NOT NULL AND image_status IN ('pending', 'failed')
+      ) WHERE rn > ?
+    )
+  `).run(MEDIA_IMAGE_SKIPPED_OFFLINE, `ComfyUI 离线期间未配图（每个媒体只自动补最近 ${keep} 条）`, MEDIA_IMAGE_OFFLINE, keep);
+  if (r.changes > 0) console.log(`[media] 离线补图积压超出上限：${r.changes} 条旧内容不再自动补图`);
+  return r.changes;
+}
+
+/**
+ * ComfyUI 恢复后补离线期间缺的图：只补带离线标记的帖子，低优先级，不抢聊天配图。
+ * 由 comfyAvailability 的恢复事件触发一次，不是定时扫描。
+ * @returns {Promise<{posts: number, filled: number}>}
+ */
+export async function refillOfflineMediaImages() {
+  const db = getDb();
+  pruneOfflineImageBacklog(db);
+  const rows = db.prepare(`
+    SELECT id, payload_json FROM media_posts
+    WHERE image_error = ? AND image_status NOT IN ('discarded', '${MEDIA_IMAGE_SKIPPED_OFFLINE}')
+    ORDER BY id DESC
+  `).all(MEDIA_IMAGE_OFFLINE);
+  if (rows.length === 0) return { posts: 0, filled: 0 };
+  const portalIds = [];
+  const feedIds = [];
+  for (const row of rows) (isPortalPayload(safeParse(row.payload_json, null)) ? portalIds : feedIds).push(row.id);
+  console.log(`[media] ComfyUI 恢复：开始给 ${rows.length} 条离线内容补图（低优先级）`);
+  let filled = 0;
+  // 主图 + 数字报刊小图走 fillPendingImages；门户逐板块走 fillPortalImages。限定在这些 id 内。
+  if (feedIds.length) filled += await fillPendingImages(feedIds.length * 4, feedIds);
+  if (portalIds.length) filled += await fillPortalImages(portalIds.length * 8, portalIds);
+  // 素材已齐的去掉离线标记（数字报刊主图先到、小图后补的那种不会被上面的写回清掉）
+  for (const { id } of rows) {
+    const post = db.prepare('SELECT * FROM media_posts WHERE id = ?').get(id);
+    if (post && post.image_error === MEDIA_IMAGE_OFFLINE && mediaImagesReady(post)) {
+      db.prepare(`
+        UPDATE media_posts SET image_error = NULL,
+          image_status = CASE WHEN image_status = 'pending' THEN 'done' ELSE image_status END
+        WHERE id = ?
+      `).run(id);
+    }
+  }
+  console.log(`[media] 离线内容补图完成：补上 ${filled} 张`);
+  return { posts: rows.length, filled };
+}
+
+onComfyRecovered(() => refillOfflineMediaImages());
 
 // ══════════════════════════════════════════
 // 自动补充（replyQueueScheduler tick 调用）

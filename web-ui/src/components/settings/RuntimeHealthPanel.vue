@@ -64,6 +64,7 @@ const errors = ref([])
 const warnings = ref([])
 const selfCheck = ref({})
 const imageQueue = ref(null)
+const comfyGate = ref(null)
 let timer = null
 
 const llmState = computed(() => {
@@ -71,7 +72,9 @@ const llmState = computed(() => {
   if (!c) return 'unknown'
   return c.ok ? 'ok' : 'error'
 })
+// 运行中的离线保护比启动自检更新：自检说连上了、后来 ComfyUI 关了，以离线保护为准
 const comfyState = computed(() => {
+  if (comfyGate.value?.offline) return 'warn'
   const c = selfCheck.value?.comfy
   if (!c) return 'unknown'
   return c.ok ? 'ok' : 'error'
@@ -84,6 +87,11 @@ const llmText = computed(() => {
   return truncate(c.error) || '失败'
 })
 const comfyText = computed(() => {
+  const g = comfyGate.value
+  if (g?.offline) {
+    const minutes = Math.round((g.sinceMs || 0) / 60000)
+    return `离线保护中${minutes > 0 ? ` · ${minutes} 分钟` : ''}${g.skipped ? ` · 跳过 ${g.skipped} 张` : ''}`
+  }
   const c = selfCheck.value?.comfy
   if (!c) return '未检测'
   if (c.ok) return '已连接'
@@ -111,6 +119,7 @@ function truncate(text, max = 80) {
 
 function stateClass(state) {
   if (state === 'ok') return 'is-ok'
+  if (state === 'warn') return 'is-warn'
   if (state === 'error') return 'is-error'
   return 'is-unknown'
 }
@@ -125,6 +134,7 @@ async function refresh() {
     warnings.value = Array.isArray(data?.warnings) ? data.warnings : []
     selfCheck.value = data?.selfCheck || {}
     imageQueue.value = data?.imageQueue || null
+    comfyGate.value = data?.comfyui?.availability || null
     loaded.value = true
   } catch {
     // 读失败不打扰用户：面板本来就是旁路信息

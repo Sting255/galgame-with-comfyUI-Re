@@ -89,6 +89,7 @@ import { withGpu } from './src/services/gpuQueue.js';
 import { initFileLogging, getFileLogging } from './src/utils/fileLogger.js';
 import { installRuntimeHealthConsoleHook, getRuntimeFailures, getSelfCheck, setSelfCheckResult } from './src/services/runtimeHealth.js';
 import { getImageQueueStatus } from './src/services/imageSkill.js';
+import { getComfyAvailability } from './src/services/comfyAvailability.js';
 // 体型行注册（副作用 import）：characterPersona 通过 bodyBuildRegistry 取用，避免三角环
 import './src/services/characterBuild.js';
 
@@ -337,7 +338,7 @@ app.get('/api/health/runtime', asyncHandler(async (req, res) => {
     ...getRuntimeFailures(),
     selfCheck: getSelfCheck(),
     imageQueue: getImageQueueStatus(),
-    comfyui: { url: config.comfyui.url || '', imageProvider: config.comfyui.imageProvider || 'comfyui' },
+    comfyui: { url: config.comfyui.url || '', imageProvider: config.comfyui.imageProvider || 'comfyui', availability: getComfyAvailability() },
   });
 }));
 

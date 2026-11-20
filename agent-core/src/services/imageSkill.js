@@ -31,6 +31,7 @@ import { stripImagePromptRuleEcho } from '../utils/groupImagePrompt.js';
 import { getIdentityAnchorForPrompt, applyIdentityAnchorToPrompt } from './identityAnchor.js';
 import { captureProvenance } from './imageProvenance.js';
 import { resolveComfySubdir } from '../utils/comfyPaths.js';
+import { isComfyOffline, noteComfySkipped, probeComfyNow, recordComfyOutcome } from './comfyAvailability.js';
 
 const _limitEnabled = () => config.features.serializeBackgroundLLM;
 import { ACTIVE_WORKFLOW, PRO_WORKFLOW, checkWorkflowHealth, resolveCustomWorkflowPath } from './workflowTemplates.js';
@@ -607,6 +608,7 @@ async function submitWithRetry(rawPrompt, {
       }, { poseJson: activePoseJson, generation: recomposed?.generation });
       if (result.images.length > 0) {
         console.log(`\n🎨 [imageSkill] 图片生成完成: ${result.images.length} 张 (workflow: ${wfMode}, promptId: ${result.promptId})`);
+        recordComfyOutcome({ ok: true });
         return { success: true, images: result.images, source: 'api', promptId: result.promptId, wfMode };
       }
       lastResult = result;
@@ -648,8 +650,11 @@ async function submitWithRetry(rawPrompt, {
   const errText = lastResult?.error || 'All ComfyUI attempts exhausted';
   const unreachable = isComfyUnreachable(errText);
   console.log(`[imageSkill] All ComfyUI submit attempts exhausted, generation failed${unreachable ? '（ComfyUI 不可达）' : ''}`);
+  // 整轮结束才记账：连不上 ⇒ 进入离线保护；有响应但被拒 ⇒ 说明它在线（见 comfyAvailability.js）
+  recordComfyOutcome({ ok: false, unreachable, error: errText });
   return {
     success: false, images: [], source: null, wfMode,
+    ...(unreachable ? { comfyOffline: true } : {}),
     // 给调用方/界面一句能看懂的原因：连不上 vs 被拒（后者通常是缺节点或缺模型）
     error: unreachable ? `ComfyUI 连不上（没启动或还在加载），最后一次错误：${errText}` : errText,
   };
@@ -734,6 +739,12 @@ async function _execute(rawPrompt, opts) {
   // 来源快照要记「这张图锚了谁、锚了什么」（方案 A04）
   let identityForProvenance = null;
   try {
+    // ComfyUI 离线保护（2026-11-20）：放在提示词加工之前，离线时连 RAG / 提示词优化也不做。
+    // 用户正在等的请求先探测一次 —— ComfyUI 刚起来、熔断还没轮到探测时不误伤。
+    if (usesComfy(opts) && isComfyOffline()) {
+      const back = opts.priority !== 'low' && await probeComfyNow();
+      if (!back) return comfyOfflineResult();
+    }
     // 原图重生完全跳过提示词加工与当前角色/全局配置，仍共用并发槽与提交重试。
     if (opts.sourceWorkflow) {
       if (_limitEnabled()) {
@@ -879,8 +890,24 @@ export function getImageQueueStatus() {
   };
 }
 
+/** 这次请求是否会落到 ComfyUI（NovelAI 不受 ComfyUI 离线影响；原图重生总是走 ComfyUI） */
+function usesComfy(opts = {}) {
+  return !!opts.sourceWorkflow || (opts.imageProvider ?? config.comfyui.imageProvider) !== 'novelai';
+}
+
+/** 离线保护下的失败结果：形状与 submitWithRetry 的失败一致，调用方按原来的「失败」分支处理 */
+function comfyOfflineResult() {
+  noteComfySkipped();
+  return {
+    success: false, images: [], source: null, comfyOffline: true,
+    error: 'ComfyUI 当前连不上（离线保护中），本次未生成图片',
+  };
+}
+
 export async function generateImage(rawPrompt, opts = {}) {
   if (opts.priority === 'low') {
+    // 离线时后台请求不进低优队列：否则每张都要先等静默期（最长 60s）才得到同一个失败
+    if (usesComfy(opts) && isComfyOffline()) return comfyOfflineResult();
     return new Promise((resolve, reject) => {
       lowQueue.push({ rawPrompt, opts, resolve, reject, enqueuedAt: Date.now() });
       processLowQueue();
@@ -892,6 +919,7 @@ export async function generateImage(rawPrompt, opts = {}) {
 
 export async function generateImageRaw(rawPrompt, opts = {}) {
   if (opts.priority === 'low') {
+    if (usesComfy(opts) && isComfyOffline()) return comfyOfflineResult();
     return new Promise((resolve, reject) => {
       lowQueue.push({ rawPrompt, opts, resolve, reject, enqueuedAt: Date.now() });
       processLowQueue();

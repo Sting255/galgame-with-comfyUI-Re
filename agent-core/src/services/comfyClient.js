@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { maybeApplyPoseControl } from './poseControl.js';
 import { withImageGpu } from './speechGpu.js';
 import { isApiWorkflow, attachPngWorkflow } from './imageWorkflowMetadata.js';
+import { resetComfyAvailability } from './comfyAvailability.js';
 
 const getBase = () => config.comfyui.url.replace(/\/+$/, '');
 const getWsBase = () => config.comfyui.url.replace(/^http/, 'ws');
@@ -954,6 +955,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 export function restartComfyClient() {
   objectInfoCache = null;
   widgetSlotMap = null;
+  // 地址可能改了：旧的离线判断不再可信，按新地址立刻探测
+  resetComfyAvailability();
   if (pollingTimer) {
     clearInterval(pollingTimer);
     pollingTimer = null;

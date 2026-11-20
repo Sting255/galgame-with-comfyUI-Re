@@ -5,6 +5,14 @@ import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
 // NULL = 待发布；0 = 升级前已展示的旧内容（沿用 id 游标）；正数 = 实际发布顺序。
 export const MEDIA_PUBLICATION_ORDER = 'COALESCE(NULLIF(p.published_seq, 0), p.id)';
 
+/**
+ * ComfyUI 离线时「文字先发、配图待补」的标记（2026-11-20，规划 N1）。
+ * 写在 `image_error`，`image_status` 保持 `pending`：恢复后由补图路径按原逻辑认领。
+ */
+export const MEDIA_IMAGE_OFFLINE = 'comfy_offline';
+/** 离线积压超出每个媒体的补图上限后，旧帖不再补图（用户仍可手动重新生图） */
+export const MEDIA_IMAGE_SKIPPED_OFFLINE = 'skipped_offline';
+
 export function mediaImagesReady(post) {
   let payload;
   try { payload = JSON.parse(post.payload_json || 'null'); } catch { return false; }
@@ -17,8 +25,11 @@ export function isMediaPostPublished(postId) {
   return !!getDb().prepare('SELECT 1 FROM media_posts WHERE id = ? AND published_seq IS NOT NULL').get(postId);
 }
 
-/** 发布一次：配图齐全后才分配游标，晚完成的旧草稿仍排在最新位置。 */
-export function publishMediaPostIfReady(postId) {
+/**
+ * 发布一次：配图齐全后才分配游标，晚完成的旧草稿仍排在最新位置。
+ * `allowMissingImages`：ComfyUI 离线时先发文字；图片状态保持原样（pending），恢复后再补。
+ */
+export function publishMediaPostIfReady(postId, { allowMissingImages = false } = {}) {
   const db = getDb();
   const published = db.transaction(() => {
     const post = db.prepare('SELECT * FROM media_posts WHERE id = ?').get(postId);
@@ -36,7 +47,8 @@ export function publishMediaPostIfReady(postId) {
         return null;
       }
     }
-    if (!mediaImagesReady(post)) return null;
+    const ready = mediaImagesReady(post);
+    if (!ready && !allowMissingImages) return null;
 
     const previous = Number(db.prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'media_publication_sequence'").pluck().get()) || 0;
     const lastId = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'media_posts'").pluck().get() || 0;
@@ -44,7 +56,11 @@ export function publishMediaPostIfReady(postId) {
     const payload = JSON.parse(post.payload_json || 'null');
     const cover = post.image || (payload?.portal ? payload.sections.find(section => section.image)?.image : null) || null;
     db.prepare("INSERT OR REPLACE INTO system_settings (setting_key, setting_value) VALUES ('media_publication_sequence', ?)").run(String(seq));
-    db.prepare("UPDATE media_posts SET published_seq = ?, image = ?, image_status = 'done', image_error = NULL WHERE id = ? AND published_seq IS NULL").run(seq, cover, postId);
+    if (ready) {
+      db.prepare("UPDATE media_posts SET published_seq = ?, image = ?, image_status = 'done', image_error = NULL WHERE id = ? AND published_seq IS NULL").run(seq, cover, postId);
+    } else {
+      db.prepare('UPDATE media_posts SET published_seq = ?, image = ? WHERE id = ? AND published_seq IS NULL').run(seq, cover, postId);
+    }
     return { outletId: post.outlet_id, postId, count: 1 };
   })();
   if (published) broadcast('media_new_posts', published);
@@ -84,10 +100,12 @@ export function publishReadyDeferredPosts({ limit = 20 } = {}) {
   }
   let published = 0;
   for (const post of rows) {
-    // 素材不齐的直接跳过——本函数绝不触发补图
-    if (!mediaImagesReady(post)) continue;
+    // 素材不齐的直接跳过——本函数绝不触发补图。
+    // 例外：ComfyUI 离线时已决定「文字先发」的帖子（作者当时在睡而延期），醒后照样只发文字。
+    const offlineText = post.image_error === MEDIA_IMAGE_OFFLINE;
+    if (!mediaImagesReady(post) && !offlineText) continue;
     try {
-      if (publishMediaPostIfReady(post.id)) published += 1;
+      if (publishMediaPostIfReady(post.id, { allowMissingImages: offlineText })) published += 1;
     } catch (err) {
       console.warn(`[media] deferred publish failed for #${post.id}:`, err?.message || err);
     }

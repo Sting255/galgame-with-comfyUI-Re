@@ -34,6 +34,7 @@ import { charArtistOverrideWithFallback } from './characterImageOpts.js';
 import { ITEM_EFFECTS, WORLD_OUTFIT_CHANCE } from './itemService.js';
 import { parseCharacterLoras as parseCharacterLorasImpl } from './characterLoras.js';
 import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
+import { isComfyOffline, onComfyRecovered } from './comfyAvailability.js';
 
 export const NEWSPAPER_NAME = '邻舍日报';
 export const NEWSPAPER_TAGLINE = '今日事 · 早知道';
@@ -330,6 +331,8 @@ export async function regenerateTodayNewspaper() {
 
 function maybeRefillTodayImages(row) {
   if (collectImageTasks(row).length === 0) return null;
+  // ComfyUI 离线保护期间不补：报纸文字已经上线，恢复事件会清掉冷却、下一次 tick 立刻补
+  if (isComfyOffline()) return null;
   if (Date.now() - lastImageRefillFailedAt < IMAGE_REFILL_RETRY_DELAY_MS) return null;
   if (refillingImages) return refillingImages;
   refillingImages = (async () => {
@@ -347,6 +350,9 @@ function maybeRefillTodayImages(row) {
   })();
   return refillingImages;
 }
+
+// ComfyUI 恢复：清掉补印失败冷却，下一次调度 tick 就补当天缺的图（不在这里直接生图，避免与 tick 并发）
+onComfyRecovered(() => { lastImageRefillFailedAt = 0; });
 
 // ── 生成 ──
 
