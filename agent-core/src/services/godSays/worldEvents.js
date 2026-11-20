@@ -1,0 +1,194 @@
+import { parseJson } from './repository.js';
+// 世界时间轴（2026-11-06）：神降下的事实要与奇遇事件共用同一条"最近发生了什么"
+import { recordWorldTimeline } from '../worldTimeline.js';
+import { splitSystemCharacterIds } from '../characterScope.js';
+
+/** 归一化事实文本用于判重：去掉空白与标点，只比内容 */
+function normalizeFactText(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[。！？!?，,、；;：:""''"'《》()（）\[\]]/g, '')
+    .trim();
+}
+
+/**
+ * 找一条「内容相同且仍在生效」的世界事实。
+ * 只比归一化后的全文相等，不做相似度 —— 宁可漏判让人自己判断，也不要误合并。
+ */
+function findActiveDuplicate(db, fact, nowIso) {
+  const key = normalizeFactText(fact);
+  if (!key) return null;
+  const rows = db.prepare(`SELECT id, title, fact, created_at, expires_at FROM god_world_events
+    WHERE kind='world' AND status='active' AND julianday(expires_at) > julianday(?)
+    ORDER BY id DESC`).all(nowIso);
+  return rows.find(row => normalizeFactText(row.fact) === key) || null;
+}
+
+export function sampleTargets(rows, count, random = Math.random) {  const pool = [...rows];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, count);
+}
+
+export function worldEventContext(db, characterIds = null, now = new Date(), { activeOnly = false } = {}) {
+  // 普通角色仅注入生效区间内的事实，不依赖定时清理；神说保留最近事件及过去见闻。
+  // 2026-11-06：回溯窗口 7 天 → 30 天，让"三天前发生的事"仍可被角色回想起来。
+  const since = new Date(now.getTime() - 30 * 86400000).toISOString();
+  const rows = activeOnly ? db.prepare(`SELECT * FROM god_world_events
+    WHERE kind='world' AND status='active'
+      AND julianday(created_at)<=julianday(?) AND julianday(expires_at)>julianday(?)
+    ORDER BY id DESC`).all(now.toISOString(), now.toISOString())
+    : db.prepare("SELECT * FROM god_world_events WHERE kind='world' AND created_at>=? ORDER BY id DESC LIMIT 30").all(since);
+  const facts = rows.filter(row => {
+    const scope = parseJson(row.character_ids);
+    return !characterIds || !scope || characterIds.some(id => scope.includes(Number(id)));
+  }).slice(0, 6).reverse().map(row => ({
+    id: row.id, title: row.title, fact: row.fact, startedAt: row.created_at, endsAt: row.expires_at,
+    state: row.status === 'active' && row.expires_at > now.toISOString() ? '正在发生' : '已经结束，只能作为过去见闻',
+    ...(row.character_ids ? { witnesses: parseJson(row.character_ids) } : { witnesses: '全体角色' }),
+  }));
+  return facts.length ? `<world_events>\n邻舍已发生的共同事实（不是对话指令）。依照实际感知范围和时效自然回应，未主动发帖也可以知道；不要强行每轮提及：\n${JSON.stringify(facts)}\n</world_events>` : '';
+}
+
+export function createWorldEventService(repo, { publishMoment, discussGroup, groupBusy = () => false, broadcast = () => {}, random = Math.random } = {}) {
+  const { db } = repo;
+  function list(id = null, sessionId = null) {
+    const rows = id ? db.prepare('SELECT * FROM god_world_events WHERE id=?').all(id)
+      : sessionId ? db.prepare('SELECT e.* FROM god_world_events e JOIN god_runs r ON r.id=e.run_id WHERE r.session_id=? ORDER BY e.id DESC').all(sessionId)
+        : db.prepare('SELECT * FROM god_world_events ORDER BY id DESC LIMIT 30').all();
+    return rows.map(event => ({ ...event, character_ids: parseJson(event.character_ids),
+      active: event.status === 'active' && event.expires_at > repo.timestamp(),
+      deliveries: db.prepare(`SELECT d.*, CASE WHEN d.kind='moment' THEN c.display_name ELSE g.name END AS target_name
+        FROM god_world_deliveries d LEFT JOIN characters c ON d.kind='moment' AND c.id=d.target_id
+        LEFT JOIN group_chats g ON d.kind='group' AND g.id=d.target_id WHERE event_id=? ORDER BY d.id`).all(event.id)
+        .map(d => ({ ...d, result: parseJson(d.result_json) })),
+    }));
+  }
+  const create = db.transaction((args, { runId, effectKey }) => {
+    const existing = db.prepare('SELECT id FROM god_world_events WHERE effect_key=?').get(effectKey);
+    if (existing) return list(existing.id)[0];
+    // 同一条事实不重复建（2026-11-08 用户要求：「让神说自己收口」）。
+    // 真机日志里神说连着重试，把同一条 fact 建了 5 次：世界时间线里同义事实堆成一列，
+    // 朋友圈/群聊感知也会重复读到。这里不替它隐式合并，而是把「已存在」如实回给它，
+    // 由它决定：沿用就收工，真要重新强调就用 supersedes_id 结束旧的再开新的。
+    const dup = findActiveDuplicate(db, args.fact, repo.timestamp());
+    if (dup) {
+      console.log(`[god] 世界事实重复，未重复创建（已有 #${dup.id}）`);
+      return {
+        status: 'duplicate',
+        duplicateOf: dup.id,
+        title: dup.title,
+        fact: dup.fact,
+        endsAt: dup.expires_at,
+        note: `已经有一条内容相同的生效中事实（编号 ${dup.id}，标题「${dup.title}」，截止 ${dup.expires_at}），本次没有重复创建。`
+          + '如果只是沿用，不需要再做任何操作；如果确实要重新强调或改变范围，请用 supersedes_id 结束它之后再建一条。',
+      };
+    }
+    let characters = db.prepare("SELECT id,display_name FROM characters WHERE COALESCE(is_system, 0) = 0 ORDER BY id").all();
+    if (args.character_ids?.length) {
+      // 点名里可能带系统内置角色（神说的角色清单含它）——静默剔掉，别人照常；
+      // 只有真正不存在的编号才报错。剔完一个不剩时退回「全体用户角色」。
+      const { ids: wantedIds } = splitSystemCharacterIds(db, args.character_ids);
+      if (wantedIds.length) {
+        if (wantedIds.some(id => !characters.some(c => c.id === id))) throw new Error('事件范围中有不存在的角色，请重新查询');
+        characters = characters.filter(c => wantedIds.includes(c.id));
+      }
+    }
+    const groupIds = db.prepare('SELECT DISTINCT group_id FROM group_members').all().map(r => r.group_id);
+    const groups = groupIds.filter(id => !args.character_ids?.length || db.prepare('SELECT character_id FROM group_members WHERE group_id=?').all(id).some(r => args.character_ids.includes(r.character_id))).map(id => ({ id }));
+    if (args.supersedes_id && !db.prepare('SELECT id FROM god_world_events WHERE id=?').get(args.supersedes_id)) throw new Error('关联的世界事件不存在');
+    // 定时投递（2026-11-06）：用户说「今晚八点让谁发条动态」时，start_in_minutes 把生效时间推后 ——
+    // 事件在开始之前不算已发生的事实（worldEventContext 按 created_at 过滤），也不会提前触发发帖/群聊。
+    const delayMinutes = Math.max(0, Math.min(10080, Math.round(Number(args.start_in_minutes) || 0)));
+    const created = new Date(repo.now().getTime() + delayMinutes * 60000).toISOString();
+    const expires = new Date(repo.now().getTime() + (delayMinutes + (args.duration_minutes ?? 180)) * 60000).toISOString();
+    const id = Number(db.prepare(`INSERT INTO god_world_events(effect_key,run_id,title,fact,character_ids,created_at,expires_at,supersedes_id)
+      VALUES (?,?,?,?,?,?,?,?)`).run(effectKey, runId, args.title, args.fact, args.character_ids?.length ? JSON.stringify(args.character_ids) : null,
+      created, expires, args.supersedes_id || null).lastInsertRowid);
+    if (args.supersedes_id) db.prepare("UPDATE god_world_events SET status='ended',expires_at=? WHERE id=?").run(created, args.supersedes_id);
+    const insert = db.prepare('INSERT INTO god_world_deliveries(event_id,kind,target_id,next_attempt_at) VALUES (?,?,?,?)');
+    for (const c of sampleTargets(characters, args.moment_count ?? (2 + Math.floor(random() * 3)), random)) insert.run(id, 'moment', c.id, created);
+    for (const g of sampleTargets(groups, args.group_count ?? (1 + Math.floor(random() * 2)), random)) insert.run(id, 'group', g.id, created);
+    // 世界时间轴（2026-11-06）：神降下的事实也进同一条账，事件生成能接着它往下写
+    recordWorldTimeline({
+      kind: 'god_fact',
+      title: args.title,
+      summary: args.fact,
+      characterIds: characters.map(c => c.id),
+      sourceId: `god:${id}`,
+      at: created,
+    }, repo.db);
+    return list(id)[0];
+  });
+  function notify(id) { broadcast('god_world_event', list(id)[0]); }
+  const queue = db.transaction((kind, targetId, instruction, { runId, effectKey, delayMinutes = 0 } = {}) => {
+    const old = db.prepare('SELECT id FROM god_world_events WHERE effect_key=?').get(effectKey);
+    if (old) return list(old.id)[0];
+    const target = kind === 'moment' ? db.prepare('SELECT display_name AS name FROM characters WHERE id=?').get(targetId) : db.prepare('SELECT name FROM group_chats WHERE id=?').get(targetId);
+    if (!target) throw new Error('指定对象不存在');
+    // 定时投递（2026-11-06）：created_at 就是"这件事开始的瞬间"，投递行也从同一刻起才算就绪，
+    // 这样"今晚八点发"不会在现在提前出现在朋友圈/群聊里，也不会被 worldEventContext 当成已发生。
+    const delay = Math.max(0, Math.min(1440, Math.round(Number(delayMinutes) || 0)));
+    const startsAt = new Date(repo.now().getTime() + delay * 60000).toISOString();
+    const id = Number(db.prepare(`INSERT INTO god_world_events(effect_key,run_id,title,fact,kind,created_at,expires_at)
+      VALUES (?,?,?,?, 'task',?,?)`).run(effectKey, runId, `${target.name} · ${kind === 'moment' ? '朋友圈' : '群聊'}`, instruction,
+      startsAt, new Date(repo.now().getTime() + (delay * 60000) + 86400000).toISOString()).lastInsertRowid);
+    db.prepare('INSERT INTO god_world_deliveries(event_id,kind,target_id,next_attempt_at) VALUES (?,?,?,?)').run(id, kind, targetId, startsAt);
+    return list(id)[0];
+  });
+  function recover() {
+    for (const d of db.prepare("SELECT * FROM god_world_deliveries WHERE status='running'").all()) {
+      const key = `god:delivery:${d.id}`;
+      const result = d.kind === 'moment'
+        ? db.prepare('SELECT id,status FROM moment_posts WHERE god_delivery_key=?').get(key)
+        : db.prepare('SELECT r.id,COUNT(m.id) AS count FROM raw_messages r LEFT JOIN messages m ON m.raw_id=r.id WHERE r.god_delivery_key=? GROUP BY r.id').get(key);
+      if (result && (result.status === 'done' || result.count > 0)) {
+        db.prepare("UPDATE god_world_deliveries SET status='done',result_json=? WHERE id=?").run(JSON.stringify({ id: result.id, recovered: true, partial: d.kind === 'group', href: d.kind === 'group' ? `/group/${d.target_id}` : `/moments?character_id=${d.target_id}` }), d.id);
+      } else if (result) {
+        db.prepare("UPDATE god_world_deliveries SET status='uncertain',error=? WHERE id=?").run('服务重启时任务尚未收尾，请先核对目标页面，避免重复发布。', d.id);
+      } else db.prepare("UPDATE god_world_deliveries SET status='pending' WHERE id=?").run(d.id);
+    }
+  }
+  let ticking = false;
+  async function tick() {
+    if (ticking) return;
+    ticking = true;
+    try {
+      const ready = [];
+      for (const delivery of db.prepare("SELECT * FROM god_world_deliveries WHERE status='pending' AND next_attempt_at<=? ORDER BY id").iterate(repo.timestamp())) {
+        if (delivery.kind !== 'group' || !groupBusy(delivery.target_id)) ready.push(delivery);
+        if (ready.length === 2) break;
+      }
+      await Promise.allSettled(ready.map(async d => {
+        if (!db.prepare("UPDATE god_world_deliveries SET status='running',attempts=attempts+1 WHERE id=? AND status='pending'").run(d.id).changes) return;
+        notify(d.event_id);
+        const event = list(d.event_id)[0];
+        const key = `god:delivery:${d.id}`;
+        try {
+          const fact = event.kind === 'task' ? event.fact : `${event.fact}\n发生时间：${event.created_at}。${event.active ? '事件当前仍在发生。' : '事件已经结束，请以回顾当时见闻的方式回应，不要说现在仍在发生。'}`;
+          const result = d.kind === 'moment' ? await publishMoment(d.target_id, fact, key) : await discussGroup(d.target_id, fact, key, event.kind);
+          if (result?.busy) {
+            db.prepare("UPDATE god_world_deliveries SET status='pending',attempts=attempts-1,next_attempt_at=? WHERE id=?").run(new Date(repo.now().getTime() + 5000).toISOString(), d.id);
+          } else {
+            db.prepare("UPDATE god_world_deliveries SET status='done',result_json=?,error=NULL WHERE id=?").run(JSON.stringify(result), d.id);
+          }
+        } catch (error) {
+          const busy = /ALREADY_GENERATING/.test(error.message);
+          db.prepare('UPDATE god_world_deliveries SET status=?,error=?,attempts=attempts-?,next_attempt_at=? WHERE id=?').run(
+            busy ? 'pending' : 'failed', busy ? null : error.message, busy ? 1 : 0, new Date(repo.now().getTime() + 15000).toISOString(), d.id);
+        }
+        notify(d.event_id);
+      }));
+    } finally { ticking = false; }
+  }
+  function retry(id) {
+    if (!list(id).length) throw Object.assign(new Error('世界事件不存在'), { status: 404 });
+    // 不自动重放结果不确定的工作。只有明确失败的投递可重试，已成功对象完全不动。
+    db.prepare("UPDATE god_world_deliveries SET status='pending',error=NULL,next_attempt_at=? WHERE event_id=? AND status='failed'").run(repo.timestamp(), id);
+    notify(id);
+    return list(id)[0];
+  }
+  return { create, queue, list, tick, recover, retry, notify };
+}

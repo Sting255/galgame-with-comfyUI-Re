@@ -1,0 +1,103 @@
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
+import { resolveServicePort } from '../agent-core/src/utils/servicePort.js'
+import { watchGameFiles } from '../scripts/lib/gameDevWatch.mjs'
+
+const backendTarget = `http://localhost:${resolveServicePort()}`
+
+// 开发服务器也能被手机访问；转发时保留远端来源，避免后端误认为本机。
+function preserveDeviceOrigin(proxy) {
+  proxy.on('proxyReq', (proxyReq, req) => {
+    const address = req.socket.remoteAddress
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)) {
+      proxyReq.setHeader('X-Forwarded-For', address || 'unknown')
+    }
+  })
+}
+
+function gameDevReload() {
+  let stopWatching
+  return {
+    name: 'linshe-game-reload',
+    apply: 'serve',
+    configureServer(server) {
+      stopWatching = watchGameFiles(changes => {
+        // A backend change will refresh open games once the new process is ready.
+        if (changes.some(change => change.backend)) return
+        for (const { gameId, official } of changes) server.ws.send('linshe:game-reload', { gameId, official })
+      })
+    },
+    closeBundle() { stopWatching?.() },
+  }
+}
+
+export default defineConfig({
+  plugins: [vue(), gameDevReload()],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    proxy: {
+      '^/docs/linshe_community_game_guide\\.md$': { target: backendTarget, changeOrigin: true, configure: preserveDeviceOrigin },
+      '/game-assets': { target: backendTarget, changeOrigin: true, configure: preserveDeviceOrigin },
+      '/game-media': { target: backendTarget, changeOrigin: true, configure: preserveDeviceOrigin },
+      '/game-sdk.js': { target: backendTarget, changeOrigin: true, configure: preserveDeviceOrigin },
+      '/api': {
+        target: backendTarget,
+        changeOrigin: true,
+        // SSE 长连接在生图期间可能长时间无数据，禁用代理层超时
+        timeout: 0,
+        proxyTimeout: 0,
+        configure(proxy) {
+          preserveDeviceOrigin(proxy)
+          proxy.on('proxyRes', (upstream, req, res) => {
+            if (!/^\/api\/games\/[^/]+\/events(?:\?|$)/.test(req.url)) return
+            // End the SSE response when a dev restart cuts off the upstream socket.
+            upstream.once('aborted', () => { if (!res.writableEnded) res.end() })
+          })
+        },
+      },
+      '/images': {
+        target: backendTarget,
+        changeOrigin: true,
+        configure: preserveDeviceOrigin,
+      },
+      '/avatars': {
+        target: backendTarget,
+        changeOrigin: true,
+        configure: preserveDeviceOrigin,
+      },
+      // 小镇像素素材（data/town/assets，由 agent-core 静态服务）
+      '/town-assets': {
+        target: backendTarget,
+        changeOrigin: true,
+        configure: preserveDeviceOrigin,
+      },
+    },
+  },
+  build: {
+    outDir: '../agent-core/public',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // 小镇渲染包（Hd2dTownRenderer，动态 import）依赖的一批纯计算模块，
+        // 若留在入口包里，入口包的文件名会被写进渲染包内容，入口任何改动都会
+        // 连带重建渲染包。这里把它们固定成一个自足分包，让两侧都引用稳定的文件名。
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, '/')
+          const sharedModules = [
+            'projection.js',
+            'groundTexture.js',
+            'imageAlpha.js',
+            'TownSceneAdapter.js',
+            'buildingVolumeProfile.js',
+            'agentMotion.js',
+          ]
+          if (sharedModules.some((name) => normalized.endsWith(`/src/town/renderers/${name}`))) {
+            return 'town-shared'
+          }
+          return undefined
+        },
+      },
+    },
+  },
+})

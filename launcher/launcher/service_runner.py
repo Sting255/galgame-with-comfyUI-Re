@@ -1,0 +1,756 @@
+"""
+服务运行器 —— 管理 2 个生产服务进程（vector-service + agent-core）。
+包括端口清理、启动、健康检查、优雅停止。
+
+运行时发现顺序:
+  1. runtime/ 目录下捆绑的 Node.js / Python（预构建 release）
+  2. 系统已安装的 Node.js / Python（开发环境）
+"""
+import os
+import sys
+import json
+from PySide6.QtCore import QObject, Signal, QProcess, QTimer, QUrl, QByteArray, QThread
+
+# 2026-11-06：后端（agent-core/src/services/procRestart.js）用这个退出码表示
+# 「我要换一个进程跑，不是崩溃」——导入备份后旧库句柄与旧 config 都失效，必须新进程重读。
+# 两边必须一致，改一处就要同步另一处。
+RESTART_EXIT_CODE = 75
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+
+from .process_env import ensure_system_env
+from .service_config import service_port, vector_service_port, belongs_to_project, existing_service, PortConflictError
+
+
+# ── 捆绑运行时发现 ──
+
+def find_bundled_node(project_path: str) -> str | None:
+    """在 runtime/nodejs*/ 中查找捆绑的 Node.js，返回 node.exe 路径。"""
+    runtime_dir = os.path.join(project_path, "runtime")
+    if not os.path.isdir(runtime_dir):
+        return None
+    for entry in sorted(os.listdir(runtime_dir), reverse=True):
+        if entry.startswith("nodejs") or entry.startswith("node-v"):
+            node_exe = os.path.join(runtime_dir, entry, "node.exe")
+            if os.path.isfile(node_exe):
+                return node_exe
+    return None
+
+
+def find_bundled_python(project_path: str) -> str | None:
+    """在 runtime/python/ 中查找捆绑的 Python，返回 python.exe 路径。"""
+    python_exe = os.path.join(project_path, "runtime", "python", "python.exe")
+    if os.path.isfile(python_exe):
+        return python_exe
+    return None
+
+
+def find_bundled_npm(project_path: str) -> str | None:
+    """查找捆绑 Node.js 附带的 npm.cmd。"""
+    node_exe = find_bundled_node(project_path)
+    if node_exe:
+        npm_cmd = os.path.join(os.path.dirname(node_exe), "npm.cmd")
+        if os.path.isfile(npm_cmd):
+            return npm_cmd
+    return None
+
+
+def find_bundled_git(project_path: str) -> str | None:
+    """在 runtime/git/ 中查找捆绑的 Git，返回 git.exe 路径。"""
+    for sub in ("cmd", "bin"):
+        candidate = os.path.join(project_path, "runtime", "git", sub, "git.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+# ── 服务定义 ──
+
+def _resolve_node(project_path: str) -> str:
+    """获取 Node.js 可执行文件路径。"""
+    bundled = find_bundled_node(project_path)
+    if bundled:
+        return bundled
+    return "node.exe" if sys.platform == "win32" else "node"
+
+
+def _resolve_python(project_path: str) -> str:
+    """获取 Python 可执行文件路径。
+
+    优先级: 捆绑 Python > venv > 系统 Python 已知路径 > PATH
+    """
+    # 1. 捆绑 Python（预构建 release）
+    bundled = find_bundled_python(project_path)
+    if bundled:
+        return bundled
+
+    # 2. venv（开发环境或启动器构建的）
+    venv_py = os.path.join(project_path, "vector-service", "venv", "Scripts", "python.exe")
+    if os.path.isfile(venv_py):
+        return venv_py
+
+    # 3. 系统已知安装路径
+    for candidate in [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python313\python.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Python313\python.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Python312\python.exe"),
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 4. 开发环境兜底
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+
+    return "python.exe"
+
+
+SERVICES = {
+    "vector": {
+        "name": "vector",
+        "display": "向量服务",
+        "port": 8765,
+        "health_path": "/health",
+        "cwd": "vector-service",
+        "get_cmd": lambda project_path: _resolve_python(project_path),
+        "get_args": lambda port=8765: [
+            "-m",
+            "uvicorn",
+            "server:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--no-access-log",
+        ],
+    },
+    "agent_core": {
+        "name": "agent_core",
+        "display": "主控后端",
+        "port": 3099,
+        "health_path": "/api/health",
+        "shutdown_path": "/api/shutdown",
+        "cwd": "agent-core",
+        "get_cmd": lambda project_path: _resolve_node(project_path),
+        "get_args": lambda: ["app.js"],
+    },
+}
+
+
+class PortCleaner(QObject):
+    """后台检查端口；本安装已运行的服务复用，其他占用取消启动。"""
+
+    output = Signal(str, str)  # (service_name, text)
+    finished = Signal(bool)  # 是否确认清理成功
+    port_conflict = Signal(str)
+
+    def __init__(self, project_path, parent=None, *, ports=None):
+        super().__init__(parent)
+        self._project_path = project_path
+        self._ports = tuple(ports) if ports is not None else None
+
+    def run(self):
+        """在后台线程中执行（由 QThread.started 触发）。"""
+        success = False
+        try:
+            ports = self._ports if self._ports is not None else (
+                vector_service_port(self._project_path), service_port(self._project_path)
+            )
+            for service, port in zip(SERVICES.values(), ports):
+                proc = existing_service(self._project_path, {**service, "port": port})
+                if proc:
+                    self.output.emit("system", f"{service['display']} 已在运行（PID {proc.pid}），将复用")
+            success = True
+        except PortConflictError as exc:
+            self.output.emit("system", f"[ERROR] {exc}")
+            self.port_conflict.emit(str(exc))
+        except Exception as exc:
+            self.output.emit("system", f"[ERROR] 端口检查失败，已取消启动: {exc}")
+        finally:
+            self.finished.emit(success)
+
+
+class ServiceWorker(QObject):
+    """单个服务的 QProcess 包装。"""
+
+    output = Signal(str, str)  # (service_name, text)
+    status_changed = Signal(str, str)  # (service_name, status)
+    health_changed = Signal(str, bool)  # (service_name, healthy)
+    port_conflict = Signal(str)
+
+    STATUS_STOPPED = "stopped"
+    STATUS_STARTING = "starting"
+    STATUS_RUNNING = "running"
+    STATUS_STOPPING = "stopping"
+    STATUS_ERROR = "error"
+    STATUS_TIMEOUT = "timeout"
+
+    def __init__(self, svc_def: dict, project_path: str, parent=None):
+        super().__init__(parent)
+        self._def = dict(svc_def)
+        if self._def["name"] == "agent_core":
+            self._def["port"] = service_port(project_path)
+            self._vector_port_override = vector_service_port(project_path, default=None)
+        elif self._def["name"] == "vector":
+            self._def["port"] = vector_service_port(project_path)
+        self._project_path = project_path
+        self._proc: QProcess | None = None
+        self._status = self.STATUS_STOPPED
+        self._pid: int | None = None
+        self._existing_proc = None
+        self._existing_timer = QTimer(self)
+        self._existing_timer.setInterval(2000)
+        self._existing_timer.timeout.connect(self._check_existing_process)
+
+    @property
+    def name(self) -> str:
+        return self._def["name"]
+
+    @property
+    def display(self) -> str:
+        return self._def["display"]
+
+    @property
+    def port(self) -> int:
+        return self._def["port"]
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @property
+    def pid(self) -> int | None:
+        return self._pid
+
+    # ------------------------------------------------------------------
+    # Public
+    # ------------------------------------------------------------------
+
+    def start(self):
+        if self._status in (self.STATUS_STARTING, self.STATUS_RUNNING, self.STATUS_STOPPING):
+            return
+        self._set_status(self.STATUS_STARTING)
+        try:
+            proc = existing_service(self._project_path, self._def)
+        except Exception as exc:
+            self.output.emit(self.name, f"[ERROR] {exc}")
+            if isinstance(exc, PortConflictError):
+                self.port_conflict.emit(str(exc))
+            self._set_status(self.STATUS_ERROR)
+            return
+        if proc:
+            self._existing_proc = proc
+            self._pid = proc.pid
+            self._existing_timer.start()
+            self._health_retries = 0
+            self._health_max_retries = 30
+            self.output.emit(self.name, f"[{self.display}] 复用已运行服务（PID {proc.pid}）")
+            self._health_check()
+            return
+        self._launch_process()
+
+    def _check_existing_process(self):
+        if self._existing_proc and not self._existing_proc.is_running():
+            self._existing_timer.stop()
+            self._existing_proc = None
+            self._on_finished(0, None)
+
+    def stop(self):
+        was_running = self._status == self.STATUS_RUNNING
+        self._set_status(self.STATUS_STOPPING)
+
+        shutdown_url = self._def.get("shutdown_path")
+        if shutdown_url and was_running:
+            self._graceful_shutdown(shutdown_url)
+        else:
+            self._kill_process()
+
+    # ------------------------------------------------------------------
+    # Internal — Launch
+    # ------------------------------------------------------------------
+
+    def _launch_process(self):
+        self._proc = QProcess(self)
+        cwd = os.path.join(self._project_path, self._def["cwd"])
+
+        # 以系统环境为底，补全关键变量（尤其是 chromadb 需要的 HOME/USERPROFILE）
+        env = self._proc.processEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("NODE_ENV", "production")
+        if self.name == "agent_core":
+            env.insert("PORT", str(self.port))
+            if self._vector_port_override is not None:
+                env.insert("VECTOR_SERVICE_URL", f"http://127.0.0.1:{self._vector_port_override}")
+            elif "VECTOR_SERVICE_URL" in os.environ:
+                env.insert("VECTOR_SERVICE_URL", os.environ["VECTOR_SERVICE_URL"])
+            # 2026-11-06：告诉后端「你现在被启动器托管」。
+            # 托管时后端不自己 spawn 新进程，而是用 RESTART_EXIT_CODE 退出、由这里拉起 ——
+            # 否则新进程的 stdout 是 ignore 的，启动器看不到它，界面只会停在"意外退出"。
+            env.insert("LINSHE_MANAGED_BY_LAUNCHER", "1")
+        # 服务定义中的额外环境变量（如 MaiBot 的 PYTHONUTF8）
+        for _key, _value in self._def.get("env", {}).items():
+            env.insert(_key, _value)
+        # 确保路径、用户目录和系统变量存在（收窄环境可能缺 PATHEXT 等）
+        ensure_system_env(env)
+        # 捆绑 Git 目录前置进 PATH：子进程（如 MaiBot 插件安装）只通过
+        # shutil.which("git") 按 PATH 找 git，不会走 launcher 的显式路径解析
+        bundled_git = find_bundled_git(self._project_path)
+        if bundled_git:
+            env.insert("PATH", os.path.dirname(bundled_git) + os.pathsep + env.value("PATH"))
+        self._proc.setProcessEnvironment(env)
+
+        self._proc.setWorkingDirectory(cwd)
+        self._proc.setProcessChannelMode(QProcess.SeparateChannels)
+        self._proc.readyReadStandardOutput.connect(self._on_stdout)
+        self._proc.readyReadStandardError.connect(self._on_stderr)
+        self._proc.finished.connect(self._on_finished)
+
+        cmd = self._def["get_cmd"](self._project_path)
+        args = self._def["get_args"](self.port) if self.name == "vector" else self._def["get_args"]()
+
+        self.output.emit(self.name, f"[{self.display}] 启动: {cmd} {' '.join(args)}")
+        self._proc.start(cmd, args)
+
+        if self._proc.processId():
+            self._pid = self._proc.processId()
+            # 开始健康检查轮询
+            self._health_retries = 0
+            self._health_max_retries = 30  # 最多 60s (2s × 30)
+            QTimer.singleShot(2000, self._health_check)
+        else:
+            self._set_status(self.STATUS_ERROR)
+            self.output.emit(self.name, f"[ERROR] [{self.display}] 无法启动进程")
+
+    def _health_check(self):
+        if self._status not in (self.STATUS_STARTING,):
+            return
+
+        self._health_retries += 1
+        url = f"http://localhost:{self.port}{self._def['health_path']}"
+        manager = QNetworkAccessManager(self)
+        req = QNetworkRequest(QUrl(url))
+        req.setTransferTimeout(2000)
+        reply = manager.get(req)
+        reply.finished.connect(lambda: self._on_health_reply(reply))
+        self._health_manager = manager
+        self._health_reply = reply
+
+    def _on_health_reply(self, reply):
+        reply.deleteLater()
+        self._health_manager = None
+        self._health_reply = None
+        if self._status not in (self.STATUS_STARTING,):
+            return
+        healthy = reply.error() == QNetworkReply.NoError
+        if healthy and self.name == "agent_core":
+            try:
+                body = json.loads(bytes(reply.readAll()).decode("utf-8"))
+                healthy = body.get("application") == "linshe" and body.get("pid") == self._pid
+            except (ValueError, TypeError):
+                healthy = False
+        if healthy:
+            self._set_status(self.STATUS_RUNNING)
+            self.health_changed.emit(self.name, True)
+            self.output.emit(self.name, f"[{self.display}] ✓ :{self.port} healthy")
+            return
+        if self._health_retries >= self._health_max_retries:
+            self.output.emit(self.name, f"[WARN] [{self.display}] 健康检查超时，但进程仍在运行")
+            self._set_status(self.STATUS_TIMEOUT)
+            return
+        QTimer.singleShot(2000, self._health_check)
+
+    # ------------------------------------------------------------------
+    # Internal — Stop
+    # ------------------------------------------------------------------
+
+    def _graceful_shutdown(self, shutdown_path: str):
+        """POST /api/shutdown 优雅关闭（非阻塞，使用 Qt 网络栈）。"""
+        url = f"http://localhost:{self.port}{shutdown_path}"
+        try:
+            manager = QNetworkAccessManager()
+            req = QNetworkRequest(QUrl(url))
+            req.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
+            manager.post(req, QByteArray())
+            manager.finished.connect(manager.deleteLater)
+            self.output.emit(self.name, f"[{self.display}] 已发送关闭请求")
+        except Exception:
+            pass
+
+        # 等待 3 秒后强制 kill
+        QTimer.singleShot(3000, self._kill_process)
+
+    def _kill_process(self):
+        """强制终止进程（非阻塞：terminate → 3s → kill → 2s → 放弃）。"""
+        if self._existing_proc:
+            import psutil
+
+            try:
+                # Process 对象会检查 PID 是否复用；归属再核实，避免误停其他安装。
+                if belongs_to_project(self._existing_proc, self._project_path):
+                    self._existing_proc.terminate()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied:
+                self.output.emit(self.name, f"[ERROR] 无权停止已运行服务（PID {self._pid}）")
+            self._check_existing_process()
+            return
+        if self._proc and self._proc.state() != QProcess.NotRunning:
+            self._proc.terminate()
+            # 非阻塞：3 秒后检查是否仍在运行，若在则强制 kill
+            QTimer.singleShot(3000, self._check_terminate_timeout)
+        else:
+            self._pid = None
+            self._set_status(self.STATUS_STOPPED)
+            self.health_changed.emit(self.name, False)
+
+    def _check_terminate_timeout(self):
+        """terminate() 3 秒后仍未退出 → force kill。"""
+        if self._proc and self._proc.state() != QProcess.NotRunning:
+            self._proc.kill()
+            QTimer.singleShot(2000, self._check_kill_timeout)
+
+    def _check_kill_timeout(self):
+        """kill() 2 秒后仍未退出 → 放弃等待，强制标记为已停止。"""
+        if self._proc and self._proc.state() != QProcess.NotRunning:
+            self.output.emit(
+                self.name,
+                f"[WARN] [{self.display}] 进程无法终止，强制标记为停止",
+            )
+        self._pid = None
+        self._set_status(self.STATUS_STOPPED)
+        self.health_changed.emit(self.name, False)
+
+    # ------------------------------------------------------------------
+    # Internal — Output
+    # ------------------------------------------------------------------
+
+    def _on_stdout(self):
+        if self._proc:
+            data = self._proc.readAllStandardOutput()
+            text = _decode_output(data.data())
+            if text.strip():
+                self.output.emit(self.name, f"[{self.display}] {text.strip()}")
+
+    def _on_stderr(self):
+        if self._proc:
+            data = self._proc.readAllStandardError()
+            text = _decode_output(data.data())
+            if text.strip():
+                self.output.emit(self.name, f"[{self.display}] {text.strip()}")
+
+    def _on_finished(self, exit_code, exit_status):
+        self._pid = None
+        if self._status == self.STATUS_STOPPING:
+            self._set_status(self.STATUS_STOPPED)
+        elif exit_code == RESTART_EXIT_CODE:
+            # 2026-11-06：后端要求「换一个进程」——导入备份后旧库句柄与旧 config 都失效，
+            # 必须由新进程重新读库和 .env。由这里拉起，日志与状态都归启动器管。
+            self.output.emit(self.name, f"[{self.display}] 数据已恢复，正在自动重启…")
+            self._set_status(self.STATUS_STOPPING)   # 先落到"停"态，避免重启期间被判成崩溃
+            QTimer.singleShot(1200, self._restart_after_data_restore)
+        else:
+            # 意外退出
+            self._set_status(self.STATUS_ERROR)
+            self.output.emit(self.name, f"[ERROR] [{self.display}] 意外退出 (code: {exit_code})")
+        self.health_changed.emit(self.name, False)
+
+    def _restart_after_data_restore(self):
+        """数据恢复后的自动重启：旧进程已退出、端口已释放，直接重开即可。"""
+        self._set_status(self.STATUS_STOPPED)
+        self.start()
+
+    # ------------------------------------------------------------------
+    # Internal — Status
+    # ------------------------------------------------------------------
+
+    def _set_status(self, status: str):
+        if self._status != status:
+            self._status = status
+            self.status_changed.emit(self.name, status)
+
+
+class ServiceRunner(QObject):
+    """管理 2 个服务的启停和端口清理。"""
+
+    status_summary = Signal(str, str, str)  # (vector_status, agent_status, overall)
+    output = Signal(str, str)  # (service_name, text) — 转发给日志
+    startup_started = Signal()  # 清理成功，已进入服务启动链
+    port_conflict = Signal(str)
+
+    def __init__(self, project_path: str, parent=None):
+        super().__init__(parent)
+        self._project_path = project_path
+        self._workers: dict[str, ServiceWorker] = {}
+        self._startup_cancelled = False
+        self._startup_connections = []
+
+        for key, svc_def in SERVICES.items():
+            worker = ServiceWorker(svc_def, project_path, self)
+            worker.output.connect(self.output)
+            worker.status_changed.connect(self._on_worker_status)
+            worker.port_conflict.connect(self._on_port_conflict)
+            self._workers[key] = worker
+
+    @property
+    def vector_worker(self) -> ServiceWorker:
+        return self._workers["vector"]
+
+    @property
+    def agent_worker(self) -> ServiceWorker:
+        return self._workers["agent_core"]
+
+    # ------------------------------------------------------------------
+    # Public
+    # ------------------------------------------------------------------
+
+    def set_project_path(self, path: str):
+        self._project_path = path
+
+    def start_all(self):
+        """顺序启动：端口清理（后台线程） → vector → agent_core。"""
+        # 防止重复点击 —— 必须覆盖**整个启动流程**，不能只看清理线程是否还在跑：
+        # 清理只要 1~2 秒，之后用户再点一次启动，第二次的端口清理会把**刚起来的新进程**
+        # 当成残留杀掉（日志表现：连续两次「启动: …」→ code 15/1 退出、端口反复被占）。
+        if getattr(self, "_starting", False):
+            self.output.emit("system", "[!] 正在启动中，请稍候（不要重复点击启动）")
+            return
+        if hasattr(self, "_cleaner_thread") and self._cleaner_thread and self._cleaner_thread.isRunning():
+            self.output.emit("system", "[!] 端口清理正在进行中，请稍后再试")
+            return
+        self._starting = True
+        # 兜底复位：启动流程异常中断时不至于永久锁死
+        QTimer.singleShot(45000, lambda: setattr(self, "_starting", False))
+
+        self._startup_cancelled = False
+        self._clear_startup_connections()
+        self.output.emit("system", "正在检查端口...")
+
+        # 在后台线程中执行 psutil 端口清理，避免阻塞 GUI
+        self._cleaner_thread = QThread(self)
+        self._cleaner_worker = PortCleaner(
+            self._project_path, ports=[worker.port for worker in self._workers.values()]
+        )
+        self._cleaner_worker.moveToThread(self._cleaner_thread)
+        self._cleaner_worker.output.connect(self.output)
+        self._cleaner_worker.port_conflict.connect(self._on_port_conflict)
+        self._cleaner_thread.started.connect(self._cleaner_worker.run)
+        self._cleaner_worker.finished.connect(self._on_ports_cleaned)
+        self._cleaner_worker.finished.connect(self._cleaner_thread.quit)
+        self._cleaner_thread.finished.connect(self._on_cleanup_finished)
+        self._cleaner_thread.start()
+
+    def _clear_startup_connections(self):
+        connections, self._startup_connections = self._startup_connections, []
+        for signal, callback in connections:
+            signal.disconnect(callback)
+
+    def _on_cleanup_finished(self):
+        if self._startup_cancelled:
+            # 关闭窗口时要等清理线程结束，再通知已有停止流程退出应用。
+            self._on_worker_status("cleanup", ServiceWorker.STATUS_STOPPED)
+
+    def _on_port_conflict(self, message):
+        self._startup_cancelled = True
+        self._starting = False
+        self._clear_startup_connections()
+        self.port_conflict.emit(message)
+        self.status_summary.emit(self.vector_worker.status, self.agent_worker.status, "start_failed")
+
+    def _on_ports_cleaned(self, success: bool):
+        """端口清理完成 → 启动服务链。"""
+        if self._startup_cancelled:
+            return
+        if not success:
+            self._starting = False
+            self.status_summary.emit(
+                self.vector_worker.status, self.agent_worker.status, "start_failed"
+            )
+            return
+        self.output.emit("system", "端口检查完成")
+
+        # vector 健康后启 agent_core
+        def on_vector_healthy(name, is_healthy):
+            if is_healthy and name == "vector":
+                self._clear_startup_connections()
+                self._workers["agent_core"].start()
+
+        # 如果 vector 已经超时/失败，仍然尝试启动 agent_core
+        def on_vector_status(name, status):
+            if name == "vector" and status in (
+                ServiceWorker.STATUS_TIMEOUT,
+                ServiceWorker.STATUS_ERROR,
+            ):
+                self._clear_startup_connections()
+                self.output.emit("system", "[!] 向量服务启动异常，继续启动主控后端...")
+                self._workers["agent_core"].start()
+
+        self._startup_connections = [
+            (self.vector_worker.health_changed, on_vector_healthy),
+            (self.vector_worker.status_changed, on_vector_status),
+        ]
+        for signal, callback in self._startup_connections:
+            signal.connect(callback)
+        # 先注册回调，避免同步启动失败的信号遗漏。
+        self._workers["vector"].start()
+        if not self._startup_cancelled:
+            self.startup_started.emit()
+
+    def stop_all(self):
+        """优雅停止：agent_core 先 stop → vector 后 stop。"""
+        self._starting = False
+        self._startup_cancelled = True
+        self._clear_startup_connections()
+        self._workers["agent_core"].stop()
+
+        def on_agent_done(name, status):
+            if name == "agent_core" and status == ServiceWorker.STATUS_STOPPED:
+                self._workers["agent_core"].status_changed.disconnect(on_agent_done)
+                self._workers["vector"].stop()
+
+        self._workers["agent_core"].status_changed.connect(on_agent_done)
+
+        # 如果 agent_core 已经停了就直接停 vector
+        if self._workers["agent_core"].status == ServiceWorker.STATUS_STOPPED:
+            self._workers["vector"].stop()
+
+        # 兜底：10s 后强制清理
+        self._stop_timer = QTimer(self)
+        self._stop_timer.setSingleShot(True)
+        self._stop_timer.timeout.connect(self._force_kill_all)
+        self._stop_timer.start(10000)
+
+        # 当所有服务停止后取消兜底定时器
+        def on_all_stopped(vs, acs, overall):
+            if overall == "all_stopped":
+                if hasattr(self, "_stop_timer") and self._stop_timer:
+                    self._stop_timer.stop()
+                self.status_summary.disconnect(on_all_stopped)
+
+        self.status_summary.connect(on_all_stopped)
+
+    def _force_kill_all(self):
+        self._startup_cancelled = True
+        self._clear_startup_connections()
+        if hasattr(self, "_stop_timer") and self._stop_timer:
+            self._stop_timer.stop()
+        for w in self._workers.values():
+            if w.status not in (ServiceWorker.STATUS_STOPPED,):
+                w._kill_process()
+        self._kill_port_processes()
+
+    def is_any_running(self) -> bool:
+        return any(
+            w.status == ServiceWorker.STATUS_RUNNING for w in self._workers.values()
+        )
+
+    def any_active(self) -> bool:
+        """是否有进程仍存活或正在启停（ERROR/STOPPED 视为不活跃）。"""
+        if hasattr(self, "_cleaner_thread") and self._cleaner_thread.isRunning():
+            return True
+        return any(
+            w.status in (
+                ServiceWorker.STATUS_STARTING,
+                ServiceWorker.STATUS_RUNNING,
+                ServiceWorker.STATUS_STOPPING,
+            )
+            for w in self._workers.values()
+        )
+
+    def is_all_running(self) -> bool:
+        return all(
+            w.status == ServiceWorker.STATUS_RUNNING for w in self._workers.values()
+        )
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _on_worker_status(self, name: str, status: str):
+        v = self._workers["vector"].status
+        a = self._workers["agent_core"].status
+
+        if status == ServiceWorker.STATUS_RUNNING and self.is_all_running():
+            self._starting = False
+            self.status_summary.emit(v, a, "all_running")
+            self.output.emit("system", "🎉 全部启动完成")
+        elif all(
+            s == ServiceWorker.STATUS_STOPPED for s in [v, a]
+        ):
+            self.status_summary.emit(v, a, "all_stopped")
+        else:
+            self.status_summary.emit(v, a, "partial")
+
+    def _kill_port_processes(self):
+        """仅清理当前服务端口上残留的本项目进程，并等端口真正空出来。"""
+        killed = False
+        try:
+            import psutil
+
+            ports = [w.port for w in self._workers.values()]
+            keywords = [
+                "agent-core", "vector-service", "web-ui",
+                "app.js", "server:app", "uvicorn", "nodemon",
+            ]
+            for conn in psutil.net_connections(kind="inet"):
+                if conn.laddr.port in ports and conn.status == "LISTEN":
+                    try:
+                        proc = psutil.Process(conn.pid)
+                        name = proc.name().lower()
+                        if name in ("node.exe", "python.exe"):
+                            cmdline = " ".join(proc.cmdline()).lower()
+                            if belongs_to_project(proc, self._project_path) and any(kw.lower() in cmdline for kw in keywords):
+                                proc.kill()
+                                killed = True
+                                self.output.emit(
+                                    "system",
+                                    f"  已终止残留进程: {proc.name()} (PID {conn.pid}) on port {conn.laddr.port}",
+                                )
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+        except Exception:
+            pass  # psutil 不可用时静默跳过
+        # proc.kill() 是异步的：不等进程真正退出就拉起新进程，会撞
+        # 「WinError 10048 端口已占用」，向量服务/主控后端直接退出。
+        if killed:
+            self._wait_ports_released()
+        self.output.emit("system", "端口清理完成")
+
+    def _wait_ports_released(self, timeout: float = 6.0):
+        """轮询到端口不再 LISTEN 为止；超时也放行，但明确提示。"""
+        try:
+            import time
+
+            import psutil
+        except Exception:
+            return
+        ports = {w.port for w in self._workers.values()}
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                busy = any(
+                    conn.laddr.port in ports and conn.status == "LISTEN"
+                    for conn in psutil.net_connections(kind="inet")
+                )
+            except Exception:
+                return
+            if not busy:
+                return
+            time.sleep(0.2)
+        self.output.emit(
+            "system", "  [!] 端口仍被占用，继续启动；若服务起不来，再点一次启动"
+        )
+
+
+# ------------------------------------------------------------------
+# Helper
+# ------------------------------------------------------------------
+
+
+def _decode_output(data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return data.decode("gbk")
+        except UnicodeDecodeError:
+            return data.decode("utf-8", errors="replace")

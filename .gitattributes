@@ -1,0 +1,95 @@
+# Git 行尾与文本属性
+#
+# ── 为什么需要这个文件（2026-10-19 补，修一个查了半天的真 bug）──────────────
+#
+# 症状：**源码一个字没改，重新 `vite build` 却产出全新 hash 的产物**。
+#   实测：连续构建两次，入口包从 `index-oV5DDfA1.js` 变成 `index-sUKCEhUO.js`，
+#   连带 `index.html`、`.css` 一起变，`git status` 多出 7 条 diff。
+#   而两次产物的**字节数完全相同**（2,100,863 B）—— 只有 44 个字节不同。
+#
+# 根因（逐字节定位）：那 44 个字节是 **Vue `<style scoped>` 生成的 scopeId**。
+#   例：`data-v-b5ed58ce`（提交者机器） vs `data-v-f041d3c2`（本机）。
+#   Vue 的 scopeId = hash(文件路径 + **源码原始字节**)，**对行尾符敏感**。
+#   而本仓 `core.autocrlf = true` 且**没有 .gitattributes**：
+#     · git blob 里存的是 LF（实测 1227 个文本文件，0 个含 CRLF）
+#     · 检出到工作区时被转成 CRLF（145 个 `.vue` 与 blob 不一致）
+#   ⇒ 同一份「源码」在不同检出状态下算出不同的 scopeId ⇒ 产物 hash 不稳定。
+#
+# 危害不只是「diff 噪音」：
+#   · 每次构建都产生一批假 diff，掩盖真实改动（R0 轮就因此差点误判）
+#   · 产物 hash 不可复现 ⇒ 「按 index.html 引用删旧产物」这类脚本无法做幂等校验
+#   · 别人在自己机器上构建，得到的 hash 与提交的产物对不上
+#
+# 修法：入库与检出**统一 LF**（文本文件的事实标准）。
+#   ⚠️ 前提已验证：全仓 1227 个文本 blob **已经全是 LF** ⇒
+#      本文件**不产生任何入库内容变化**，只纠正「检出行尾」这一层。
+#      （若将来发现某个 blob 含 CRLF，用 `git add --renormalize .` 一次性纠正。）
+#   ⚠️ `.bat` / `.ps1` / `.cmd` 显式保持 CRLF：cmd.exe 与部分 PowerShell 场景
+#      对 LF 结尾的批处理容错不一致，没必要为统一而冒险。
+#
+# 验证修好的方法（不要只跑一次构建就下结论）：
+#   `cd web-ui && npm run build && git status --porcelain -- ../agent-core/public`
+#   ⇒ 必须**零输出**。源码没改而这里出现 diff，就是行尾又漂了。
+
+# ── 默认：文本文件入库与检出都用 LF ────────────────────────────────────────
+* text=auto eol=lf
+
+# ── Windows 批处理与脚本：保持 CRLF（见上面说明）────────────────────────────
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# ── 明确标注为文本（避免 git 的自动探测误判）──────────────────────────────
+*.js    text
+*.mjs   text
+*.cjs   text
+*.vue   text
+*.css   text
+*.html  text
+*.json  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.toml  text
+*.py    text
+*.kt    text
+*.kts   text
+*.java  text
+*.xml   text
+*.txt   text
+*.sh    text
+
+# ── 二进制：绝不规范化（放最后，优先级最高）────────────────────────────────
+*.woff2 binary
+*.woff  binary
+*.ttf   binary
+*.otf   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.avif  binary
+*.ico   binary
+*.wav   binary
+*.mp3   binary
+*.ogg   binary
+*.mp4   binary
+*.exe   binary
+*.dll   binary
+*.apk   binary
+*.7z    binary
+*.zip   binary
+*.gz    binary
+*.node  binary
+*.db    binary
+*.sqlite binary
+*.bin   binary
+*.onnx  binary
+*.pt    binary
+*.safetensors binary
+
+# ── 产物目录：不做 diff（内容为压缩后的单行 JS/CSS，diff 无意义且体积巨大）──
+agent-core/public/assets/index-*.js   -diff
+agent-core/public/assets/index-*.css  -diff
+agent-core/public/assets/*.js         -diff

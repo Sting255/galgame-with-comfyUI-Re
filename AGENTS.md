@@ -1,0 +1,194 @@
+## UI / UX
+
+所有 UI 修改、新功能设计、页面设计必须遵循 `docs/design-system.md`。
+
+涉及 UI 时：
+
+1. 先阅读 `docs/design-system.md`
+2. 优先复用现有组件和设计模式
+3. 新功能必须融入现有设计语言，不得自行引入新的视觉风格
+4. 修改完成后检查与现有 Toast、世界观、信箱等页面的一致性
+5. UI 切换（如页面、页签、内容区域切换）需要考虑 0.3 秒的过渡动画，避免生硬跳变
+6. 窗口（含弹窗）打开时使用 0.3 秒的渐入动画，关闭时使用 0.3 秒的渐出动画；关闭动画完成后再隐藏或卸载窗口
+
+除非任务明确要求，不要随意重做已有设计或引入新的 UI 体系。
+Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+
+### 游戏模块 UI 例外
+
+整个游戏模块（`web-ui/src/views/GameCenter.vue`、`GamePlayer.vue`、`web-ui/src/games/` 与 `games/official/`）按用户要求独立制作 UI，不使用任何 Linshe 组件。游戏中心沿用本地 `game-test` 分支的游戏馆风格及 `GameAction` / `GameOverlay`，独立游戏保持各自视觉语言。主站其他页面继续遵循下方统一组件约定。窗口、页签和页面切换保留300ms过渡，关闭动画完成后再卸载。
+
+## 小镇（已冻结，2026-11-20）
+
+上游的「世界 / 小镇」页已在本 fork 移除，后端不挂载 `/api/town`。小镇代码**保留但冻结**：不删除、不加新功能、不纳入结构重构，也不得留下用户点了会报错的入口。
+
+1. 冻结范围：`agent-core/src/services/town/`、`agent-core/src/db/townSchema.js`、`web-ui/src/components/town/`、`web-ui/src/api/townLife.js`、`web-ui/src/api/townBuildingFeatures.js`。数据表与迁移原样保留，不要删表或改表结构。
+2. 禁止在冻结目录里新增功能；禁止新写对冻结代码的依赖。`node scripts/project-health.mjs` 会统计冻结目录外仍引用冻结代码的文件数，只许减少；确实必须新增时先说明理由，再更新脚本里的基线。
+3. 结构重构（拆 `routes/chat.js`、`db/index.js` 等）时，涉及小镇的引用原样保留，只挪位置、不改行为。
+4. 冻结期间仍在使用的少数入口：背包里小镇货摊买来的礼物（`TownServiceStage` 的 `gift` 会话，走 `/api/items`）、表情立绘编辑器复用的 `TownImageEditor` / `TownPromptPanel`（传入自己的保存与裁剪回调）、对话里的 `TownVnChoice`。改这些组件时只修复，不扩展小镇玩法。
+5. 建筑服务奇遇（`building_feature`）的操作依赖 `/api/town`，冻结期间 `routes/events.js` 不再列出（`TOWN_ROUTES_MOUNTED = false`）。
+6. 以前写在这里的小镇 UI 约定所引用的 `TownResidentActions`、`TownDialogueStage`、`TownPaperPanel`、`TownWalletPanel`、`TownNpcTradePanel` 已随小镇页删除，不要再按那些约定施工。将来恢复小镇时需要重新立项：挂载路由、补回组件并重写本节。
+
+## 统一组件（Linshe）
+
+按钮、输入框、选择框、开关、分段选择与弹窗一律使用 `web-ui/src/components/ui/` 下的 Linshe 组件，禁止写裸 `<button>` / `<input>` / `<select>` 或遮罩面板皮肤。
+
+以下各小节只写**接入口径**（引入方式、prop 行为、特例白名单、改哪个文件）；皮肤语言（软糖立体 / 软糖凹陷）、变体语义、色值与 token 归属以 `docs/design-system.md`「Linshe 表单控件层」为准，不要在本文件重复描述。
+
+## 按钮（LinsheButton）
+
+web-ui 中所有常规按钮必须使用统一组件 `web-ui/src/components/ui/LinsheButton.vue`，禁止写裸 `<button>` 标签或全局 button 样式。
+
+1. 引入：`import LinsheButton from '.../components/ui/LinsheButton.vue'`，模板中写 `<linshe-button>`
+2. 按层级选 variant：`primary`（主操作实心，每屏至多一个）/ `secondary`（默认）/ `danger`（危险操作）/ `ghost`（弱操作）/ `icon`（圆形图标钮，如弹窗关闭 ✕）/ `chip`（胶囊选择、页签，配 `:active`）/ `link`（文字链接）；尺寸用 `size="sm|md|lg"`；各变体的皮肤与色值见设计系统
+3. 禁用与加载用 `:disabled` / `loading` prop，不要手写禁用样式
+4. 特殊交互元素（长按手势、动态配色、整卡热区、下拉菜单项、已有独立设计的控件）不套组件：用 `<div role="button" tabindex="0">` + 自包含样式，补齐 `cursor/text-align` 等基础属性，禁用态用 `.is-disabled` class + `aria-disabled` + 点击守卫
+5. 调整按钮风格只改 `LinsheButton.vue`，不要在各页面里覆盖组件皮肤
+
+## 输入框（LinsheInput）
+
+web-ui 中所有文本输入框 / 文本域统一使用组件 `web-ui/src/components/ui/LinsheInput.vue`，禁止手写 input/textarea 皮肤样式（背景、边框、圆角、focus 光环等）。
+
+1. 引入：`import LinsheInput from '.../components/ui/LinsheInput.vue'`，模板中写 `<linshe-input>`；文本域用 `type="textarea"`（配 `rows`）
+2. `v-model` 与原生一致，支持 `.number` / `.trim` 修饰符；`id`、`min/max/step`、`maxlength`、`autocomplete`、`@keyup.enter` 等原生属性和事件直接透传；`ref` 拿到组件实例，已 expose `focus()` / `blur()` / `select()`
+3. 尺寸用 `size="sm|md|lg"`（与 LinsheButton 对齐）；校验错误态用 `invalid` prop（红色描边），不要手写 `.xx-error` 样式；禁用用 `:disabled`
+4. 组件上遗留的 `class="fi"` 只承担部分页面的表单间距（margin/width）布局，新页面不要依赖它
+5. 特殊输入界面不套组件，保持自包含样式：聊天主输入框（`.chat-input`）、信纸 textarea（`.paper-textarea`）、透明嵌入输入（`.vn-input`、`.fav-input`、日程筛选胶囊搜索）、深色玻璃输入（TavernView `.inline-input`）、测试画风折叠输入（`.free-scene-textarea`）、提示词预览盒（`.generated-prompt-box`）
+6. 需要自动增高、或收起时单行省略的长文本域用 `LinsheAutoTextarea.vue`（`collapsible` / `min-height`，SettingsView 在用），不要自己写 auto-resize
+7. 调整输入框风格只改 `LinsheInput.vue`；`App.vue` 里的全局 `input, textarea` 样式只是少数未组件化控件的兜底
+
+## 选择框（LinsheSelect）
+
+web-ui 中所有下拉选择统一使用组件 `web-ui/src/components/ui/LinsheSelect.vue`（原 `DropdownSelect.vue` 已改名收编），禁止手写 `<select>` 或下拉皮肤样式。
+
+1. 引入：`import LinsheSelect from '.../components/ui/LinsheSelect.vue'`，模板中写 `<linshe-select>`；`v-model` 绑定选中值，`options` 为 `{ label, value }` 数组
+2. 触发器与 LinsheInput 同皮肤；尺寸用 `size="sm|md|lg"`（与按钮/输入框对齐）；禁用用 `:disabled`
+3. `searchable` 开启搜索过滤；`allow-free-input` 允许自由输入（输入即值，选项仅作联想）；`ref` 拿到组件实例，已 expose `open()`（程序化展开，如获取模型列表后自动弹出）
+4. 特殊下拉界面（已有独立设计的胶囊搜索等）不套组件；调整选择框风格只改 `LinsheSelect.vue`，不要在各页面里覆盖组件皮肤
+
+## 开关（LinsheSwitch）
+
+web-ui 中所有拨动开关（toggle switch）统一使用组件 `web-ui/src/components/ui/LinsheSwitch.vue`，禁止手写 `input[type=checkbox]` + slider 的开关皮肤（全局 `.switch`、`.toggle-switch`、`.lora-toggle-switch`、`.lora-enable-toggle`、MemorySettingsView 局部 `.switch` 等旧实现已全部收口删除）。
+
+1. 引入：`import LinsheSwitch from '.../components/ui/LinsheSwitch.vue'`，模板中写 `<linshe-switch>`；`v-model` 绑定布尔值
+2. `@change` 在值更新后触发（参数为新布尔值）；`title` / `aria-label` 等属性透传到内部 input；禁用用 `:disabled`；需要「已启用/已禁用」这类状态文字用 `on-text` / `off-text`（传其一即显示，文字在开关左侧，不要在外面再包一层 label）
+3. 尺寸用 `size="sm|md|lg"`（默认 md），与 LinsheButton / LinsheInput 尺寸档位对齐
+4. 调整开关风格只改 `LinsheSwitch.vue`，不要在各页面里覆盖组件皮肤
+
+## 分段选择（LinsheTabs）
+
+web-ui 中所有分段选择 / 页签统一使用组件 `web-ui/src/components/ui/LinsheTabs.vue`，禁止手写裸 div 或 button 分段控件。
+
+1. 引入：`import LinsheTabs from '.../components/ui/LinsheTabs.vue'`，模板中写 `<linshe-tabs>`；`v-model` 绑定选中值，`options` 为 `{ label, value }` 数组，选项可带 `disabled` / `title`
+2. 尺寸用 `size="sm|md"`：`md` 页签式（同级内容切换）、`sm` 小分段（筛选 / 模式切换）；整体禁用用 `:disabled`
+3. 调整分段选择风格只改 `LinsheTabs.vue`，不要在各页面里覆盖组件皮肤
+
+## 弹窗（LinsheModal）
+
+web-ui 中所有弹窗统一使用组件 `web-ui/src/components/ui/LinsheModal.vue`（原 `BaseModal.vue` 已改名收编），禁止手写遮罩 / 面板皮肤。
+
+1. 引入：`import LinsheModal from '.../components/ui/LinsheModal.vue'`，模板中写 `<linshe-modal>`；`v-model` 控制显隐（旧代码仍可传 `:visible`），`title` 为标题
+2. 尺寸用 `wide`（加宽）/ `full`（大型管理面板）；内容用默认插槽，底部操作区用 `#footer`，头部右侧附加内容（如计数）用 `#header-extra`；需要局部布局差异用 `panel-class` / `body-class`；需要「相对所属页面而不是整个视口居中」时传 `anchor`（宿主选择器，如小镇页传 `anchor=".page-host"`，宿主须为定位元素；留空＝视口居中）。注意：`.page-host` 在 `#app`（z-index:1 的层叠上下文）内，从管理面板等 body 层抽屉（z-index:900）里打开的弹窗**不要传 anchor**，否则整个锚定子树会被抽屉压住
+3. 暖色为暖纸外壳 + 白色内衬（标题栏与 `#footer` 留在外壳上、白色内衬只包正文），暗夜保持 Cel Glow 深色玻璃；主题色值一律走 `styles/tokens.css` 的 `--modal-*`；Esc / 点遮罩关闭
+4. 调整弹窗风格只改 `LinsheModal.vue` 与 `tokens.css` 的 `--modal-*`，不要在各页面里覆盖组件皮肤
+5. 弹窗内容禁止使用没有明确排版的孤立 `<p>`：说明、提示、空状态和正文必须复用已有内容样式，或由业务内容类明确控制字号、行高、颜色和段落间距（使用设计系统 token），不能依赖浏览器默认字号与 margin。保留正确的段落语义，不要仅把 `<p>` 换成 `<div>` 来规避此规则；已有业务段落样式继续保留，不在 `LinsheModal.vue` 或全局样式里对所有 `<p>` 统一加皮肤。
+6. 条目数量、激活数量、token 用量等统计信息应融入对应区域的标题、工具栏或紧凑状态行，区分标签与数值，并与相邻控件对齐；不要直接放一行默认正文大小的统计文字悬在表单或表格之间。完成后检查说明、统计、警告与正文的信息层级，以及暖色 / 暗夜、窄屏换行和间距是否协调。
+
+
+## 图片预览（ImageLightbox）
+
+图片点击放大统一复用 `web-ui/src/components/ImageLightbox.vue`。从弹窗、日记等浮层打开时，参考 `NewspaperModal.vue` / `DiaryBookOverlay.vue`：
+
+1. 用 `<Teleport to="body">` 将灯箱移到全局，避免被父级层叠上下文压住；在 Teleport **内部**包一层 div 设置 `--vel-z-index`，让灯箱继承
+2. 层级由 CSS 变量 `--vel-z-index` 控制（默认 9998），不要只传 `:z-index`：当前底层灯箱不消费该 prop。按宿主层级选择值，例如日报用 11000，日记用 14000；不要在页面里覆盖全局 `.vel-modal` 样式
+3. `:visible` 控制显示、`:imgs` 传图片、`:index` 指定初始图片，`@hide` 将显示状态设为 false；只读图片按需传 `:show-regenerate="false"` / `:show-upscale="false"` / `:show-delete="false"`
+
+```vue
+<Teleport to="body">
+  <div style="--vel-z-index: 14000">
+    <ImageLightbox
+      :visible="lightboxVisible"
+      :imgs="images"
+      :index="lightboxIndex"
+      @hide="lightboxVisible = false"
+    />
+  </div>
+</Teleport>
+```
+
+## LLM 请求分层（高缓存）
+
+新增或重构创作类提示词前，先阅读 [世界书适配清单：新提示词的插槽约定](docs/lorebook-adaptation.md#新提示词的插槽约定)。必须保留可定位的世界观前后、角色前后、首个动态字段之前的稳定区末尾、历史边界（如有）、末条 user 前的示例区和当前任务前的动态尾部。插槽使用原消息的文本边界，不预发空消息或占位标签；Outlet 仅按需引用。接入时分别提供准确的 `personaTexts` / `staticTexts` / `cacheBoundary` 与扫描用 `history`，消息偏移从当次未注入的结构计算。共用规则放在人设之前，角色原文在同角色同版本下可复用，动态着装、天气等不得认证为静态。新生成请求只使用一个最终 user，已有历史结构保持原样；具体映射、接入字段与验收要求以该文档为准。
+
+世界书接入不得破坏业务原有的消息结构：保留原 system/user/assistant 的角色、顺序、历史封装与附件位置，禁止把聊天记录拆开或统一改成 system。世界书优先嵌入原 system/user 内的合适文本位置；按原位置模式的深度定位使用历史块内的文本偏移，不展开 `<active_chat_history>` / `<group_transcript>`。确实没有合适载体时，才新增仅放世界书的 system 槽位，禁止新增 user/assistant。无世界书、未激活、禁用及记忆二次请求不得产生额外改写。原条目 role 保留用于导出，实际注入继承原消息角色；默认缓存模式按下文的稳定性规则分层。
+
+世界书高缓存模式必须按条目的稳定性分层：无条件、概率 100%、无分组竞争/持续条件/动态宏的常驻条目，在聊天记录与动态数据之前注入；概率、关键词、角色/生成类型筛选、分组、持续条件及含动态或未知宏的条目放尾部。分类必须读取宏展开前的原始条目，旧快照也要按原文重新分类；预算先分配稳定常驻，再分配条件条目，仍遵守上下文上限。
+
+世界书位置按邻舍语义适配，统一由 `lorebook/promptProfile.js` / `layout.js` / `engine.js` 定位：角色前后＝实际角色正文边界；作者注前后＝`world_setting` 前后；示例前后＝user 前的前、后两组文本示例（不伪造对话），常驻示例提前到稳定区末尾；缓存模式下深度条目按稳定性映射到稳定区末尾或动态尾部，按位置模式才使用历史文本偏移。常驻的语义锚点如果越过动态内容，必须截到最后一个已确认稳定的边界；未知的 system 内容不可仅因角色为 system 就认作静态。调用方可提供 `personaTexts`（实际序列化的人设）、`staticTexts`（确实不随调用变化的文本）、`cacheBoundary`（经过检查的稳定区末尾），不得把含天气、随机形态、历史、帖子或当次任务数据的段落声明为静态。未知结构回退到已确认稳定区，完全未知则前置首个 system；没有 system 才新增专用 system。Outlet 依赖引用条件，在缓存模式下走动态尾部（仅引用后生效），保留原占位符以免条件触发改变原前缀；按原位置模式才原位展开。预览、重试与缓存测试必须使用相同策略，报告必须同时包含请求位置和实际边界。完整映射清单见 `docs/lorebook-adaptation.md`。
+
+编写新的 LLM 请求时，按「稳定前缀优先」分层：不随单次调用变化的内容尽量往前堆，变量内容靠后，user 永远最后。提供商的前缀缓存按 token 前缀命中，前面任何一层只要有一个字节变化，其后所有内容的缓存即全部失效，所以静态层必须逐字节稳定（严禁内插日期、时间戳、随机 id、用户名等每次变化的内容）。标准分层参考 `agent-core/src/services/town/townPromptBuilder.js` 头部注释（编号从 system0 数起；旧代码里也有从 1 数起的注释，以内容职责为准。中间层可按功能增删，原则不变——静态在前、变量靠后）：
+
+1. system0＝破甲词 + 世界观（如果有）：走 `getSystemRulesWithWorld({ roleplay: false })`，无世界观退 `getSystemRules`（都在 `agent-core/src/db/worldRepository.js`）
+2. system1＝世界观强化（有世界观才注入）：`getWorldIntegrationRule(scope)`（`agent-core/src/builtinRules.js`），scope 按任务选（`interaction` / `moments` / `photo` / `event` / `town_asset` 等）；没有世界观就不要加这层
+3. 任务角色人设与输出规范同属不变内容，共用静态 system 层：设计师身份 + 任务要求 + 输出格式写进同一段（或紧挨的静态层组），形如「你是一个日程安排设计师，你将给下面注入的角色人设设计一张日程表；日程要求是……；输出为 JSON，具体格式为……」；JSON 需给完整示例（字段名 + 示例值 + 字段约束，口径见下节「LLM 输出」，参考 `townPromptBuilder.js` 的 `NPC_SET_OUTPUT_STRUCTURE`）。这一层紧跟世界观强化之后、角色人设注入之前；不要拆进 user，也不要内插本次调用才有的数据
+4. 静态层结束后才注入变量内容：本次调用的角色人设（含小镇居民）、素材/场景信息等随调用变化的数据，如 `townPromptBuilder.js` 的 `【角色外观信息】` 层；角色人设统一走 characterPersona 组装入口（见「角色生图人格组装」），不要手写正则截取
+5. user 收尾：最后一条 user 消息只简要强调本次任务（执行什么、按什么格式输出），用户额外指定也放这里；不复述规范、不塞长上下文
+
+参考实现：`townPromptBuilder.js`（纯文本与 JSON 输出两套齐备）、`libraryGenerator.js` 的 `buildSystemLayers`（静态前缀 + designer 层）、`characterReactionService.js` 的 `promptPrefixFingerprint`（前缀稳定性核对）。
+
+## LLM 输出
+
+编写或修改 LLM 生成相关的 prompt 时：
+
+1. 如果要求模型输出 JSON 格式，必须在 prompt 中举例说明 JSON 输出的完整格式（字段名 + 示例值），不能只口头描述
+2. 示例中每个字段的值要写明该字段的内容要求与约束（如字数、语气、格式、禁止项），让模型照着填，参考 `agent-core/src/services/eventGenerator.js` 中 `formatPrompt` 的写法
+3. 必须明确要求模型严格按示例格式输出，不要输出任何解释或 JSON 以外的文字
+4. 新增或修改输出字段时，同步更新 prompt 中的 JSON 示例与解析代码，保持两者一致
+
+## 最少必要测试与脚本清理
+
+**核心原则：编码过程中尽量少做测试，只验证本次改动的必要风险；测试流程结束后，不保留本次生成的测试脚本。**
+
+1. 测试前明确要验证的具体行为或风险，选择能确认结果的最小验证方式；已有测试、直接操作、语法检查或构建能回答问题时，不另写脚本，也不默认把所有检查都跑一遍。低风险的文案、样式等修改可仅审查差异或直接查看效果，不强制运行自动化测试。
+2. 同一功能的相关修改完成后集中验证，不每改一行、一个文件就测试。编码中只有定位具体故障或确认会影响后续实现的关键假设时才提前验证；禁止为增加覆盖率、假想边界或“再保险”开展与本次需求无关的测试。
+3. 优先运行已有测试中与改动直接相关的最小范围，不默认跑全量测试、重复构建或多套等价检查。相关验证通过即停止；仅在后续修改影响已验证行为、出现失败或仍有明确风险时追加对应验证，不无依据地扩大范围。涉及数据写入、权限、迁移等高风险行为时，仍须验证受影响的关键路径。
+4. 确需编写一次性验证逻辑时，优先直接执行命令；必须落盘时，同一问题复用一个临时脚本，不生成多份变体。不得编写仅断言源码字符串存在、复述实现或重复已有覆盖的测试。
+5. 验证结束后，无论通过还是失败，都清理本次生成的测试脚本、临时测试用例及配套日志、数据和产物；失败原因与验证结论保留在回复中。不得以“以后可能复用”“属于 bug 回归”或放入 `test/` 目录为由自行转成永久测试，也不要将临时用例混入已有测试文件后保留。仅当用户明确要求保留测试，或仓库规则明确要求维护某项既有测试时，按指定范围执行。
+6. 清理只针对本次自行生成的验证产物，不删除仓库原有测试、用户文件或其他任务的改动，不为使测试通过而删除或弱化既有断言。交付前检查差异和新增文件，确认没有测试残留；简要说明实际验证内容、结果及未验证的关键风险，不把未运行的检查说成已通过。
+
+## 角色生图人格组装（characterPersona）
+
+所有「配合生图」的角色人格拼接——整卡 `base_prompt`，或 `short_prompt + ## 你的外观` 段——必须统一走 `agent-core/src/services/characterPersona.js`，禁止在各模块内写 `match(/##\s*你的外观/)` 之类的正则自行截取（历史上 16+ 处内联实现口径不一，已全部收口）。
+
+**什么时候用哪种：**
+
+1. `buildCharacterPersona(character, opts)` 是主入口：
+   - `variant: 'short'`（默认）＝ `short_prompt + 外观段`，用于多角色参考（事件/朋友圈 otherPersona）、群聊成员资料卡、梦境 system3、maibot 桥生图描述器等紧凑场景
+   - `variant: 'full'` ＝ 整卡 `base_prompt`（缺失回退 `short_prompt`），用于角色以完整人格出场的生图：私聊 needImage 配图、主动聊天、日程拍照、事件一/二期、礼物反应、信件、AI 头像、发帖 LLM
+   - `person`：把「你」替换为指定名（`display_name`、`'角色'` 等），`null` 保持第一人称；short 只替换外观段（short_prompt 本就是第三人称），full 替换整卡
+   - `outfits`：默认 `'auto'` 自动注入生效外观并附优先级说明；传 `null` 显式关闭；单测可显式传 `{limited, exclusive}`
+2. 只要外观段（不含人格，如表情包 system3、主动聊天配图的外观块）用 `buildCharacterAppearanceSection(character, opts)`（含 `## 你的外观` 标题行与注入，标题自行取舍）；画面交叉参考（图中出现其他角色）用 `buildImageCrossRefInfo(char, opts)`，不要再引用已删除的 `extractImageCrossRefInfo`
+3. **传入对象的 `id` 必须是角色 id**（自动注入按它查外观）。JOIN/别名行要先重映射：如 mailboxScheduler 传 `{ id: letter.char_id, base_prompt: letter.base_prompt, short_prompt: ... }`
+
+**什么时候不用：** 非生图用途不套本入口，保持原逻辑——聊天人格稳定块（chat.js 身份块）、记忆整理、关系图谱、日程模板与字体分配（取外观段之前/之后文本）、`cropPersonalityForEmotion` 等 short_prompt 维护逻辑。`appendOathRing` 仍由各调用方在组装结果之后追加，职责不并入本入口。
+
+**角色外观系统：**
+
+1. 数据源两张表：`character_outfits`（角色专属形态/装甲/衣服，每角色同时只启用一套，启用互斥由 `outfitService` 保证；详情卡 UI 入口暂注释隐藏在 `CharacterDetailModal.vue`，搜「暂时隐藏」）、`global_outfits`（通用限时服饰如女仆装 tag 组合，可多套叠加；管理方式未定，`condition_json` 预留注入条件，当前 `enabled` 即生效）
+2. 查询生效外观只走 `outfitService.getActiveOutfits(characterId)`；注入文本格式与着装优先级说明（两者都有 / 只有限时 / 只有专属三种）只改 `buildOutfitInjectionBlocks`，不要在调用点拼
+3. 修改拼接口径（正则、连接符、注入格式）只改 `characterPersona.js`，并同步维护 `agent-core/test/characterPersona.test.js`（含无外观时与旧口径逐字节一致的回归断言）
+
+## git commit 提交
+
+commit提交必须按照大功能划分，大功能里如果还有小功能点，划分到一起写进注释里的要点，不要把其他功能的改动混在同一个commit中，每个commit中文注释作用或功能
+
+### 候选与公开发布
+
+候选用 `npm run tag:local -- vX.Y.Z-a`，只在本地构建、提交和打 tag；`npm run tag` 默认也只做本地候选，不联网。完成候选验收并得到用户明确发布指令后，才运行 `npm run tag -- --push-only vX.Y.Z-a`，原子推送当前 `local` 到 fork 的 `main` 与该 tag。推送前必须工作区干净且 tag 精确指向 `local` 的 HEAD；不顺带推送其他 tag。
+
+## 最终结论输出格式要求
+
+运用第一性原理思考，拒绝经验主义和路径盲从，不要假设我完全清楚目标，保持审慎，从原始需求和问题出发，若目标模糊请停下和我讨论，若目标清晰但路径非最优，请直接建议更短、更低成本的办法。
+所有最终结论必须分为两个部分：
+• ​直接执行：按照我当前的要求和逻辑，直接给出任务结果。
+• ​深度交互：基于底层逻辑对我的原始需求进行“审慎挑战”。包括但不限于：质疑我的动机是否偏离目标（XY问题）、分析当前路径的弊端、并给出更优雅的替代方案。

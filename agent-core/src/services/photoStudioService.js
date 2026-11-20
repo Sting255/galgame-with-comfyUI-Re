@@ -1,0 +1,499 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { config } from '../config.js';
+import { getDb } from '../db/index.js';
+import { buildCharacterImageAppearance, extractCharacterEnglishName, extractCharacterIdentityTag, replaceAppearanceSection } from './characterPersona.js';
+import { resolveClothingTags } from './clothingLibrary.js';
+import { resolveStudioBackground, getStudioBackgrounds, DEFAULT_STUDIO_BACKGROUND, WHITE_BACKDROP_SCENE_NEGATIVE } from './photoStudioBackgrounds.js';
+import { angelOutfits } from './godSays/angelWardrobe.js';
+import { resolveCustomStudioPose } from './photoStudioPose.js';
+import { collectCharacterLoras } from './groupImageLoraMatcher.js';
+import { polishStudioPrompt, getStudioPolishContext, generateStudioClothing, splitStudioTags, studioPoseTags } from './photoStudioPolish.js';
+import { generateImage, getLastWorkflowMode, composeNegativePrompt } from './imageSkill.js';
+import { saveBase64Image } from './imagePaths.js';
+import { broadcast } from './unifiedStreamBus.js';
+import { createPhotoStudioFinishService } from './photoStudioFinish.js';
+import { ACTIVE_WORKFLOW, PRO_WORKFLOW, resolveCustomWorkflowPath } from './workflowTemplates.js';
+import { buildPhotoStudioPrompt, appendPhotoStudioOutfits, DEFAULT_PHOTO_STUDIO_DIMENSIONS, isPairPose, photoStudioDimensions, studioFramingNegative } from './photoStudioWorkflow.js';
+import { USER_SCOPE } from './characterScope.js';
+import { isValidSceneKey, listSceneOutfits } from './outfitScene.js';
+
+export const POSE_GALLERY_DIR = fileURLToPath(new URL('../../assets/pose-gallery/', import.meta.url));
+const WORKFLOW_DIR = fileURLToPath(new URL('../../../workflow/', import.meta.url));
+let catalogPromise;
+
+export function getPoseCatalog() {
+  catalogPromise ||= Promise.all([
+    fs.readFile(path.join(POSE_GALLERY_DIR, 'catalog.json'), 'utf8').then(JSON.parse),
+    fs.readFile(path.join(POSE_GALLERY_DIR, 'pose-prompts.json'), 'utf8').then(JSON.parse).catch(() => ({ prompts: {} })),
+  ]).then(([catalog, additions]) => {
+    const prompts = additions.prompts || {};
+    return catalog.map(pose => {
+      const addition = prompts[pose.id];
+      // Existing single-person entries are strings; pair entries also bind each actor's role.
+      return {
+        ...pose,
+        posePrompt: (typeof addition === 'string' ? addition : addition?.posePrompt) || pose.posePrompt || '',
+        ...(Array.isArray(addition?.characterRoles) ? { characterRoles: addition.characterRoles } : {}),
+      };
+    });
+  }).catch(error => { catalogPromise = null; throw error; });
+  return catalogPromise;
+}
+
+export async function getRecognizedPoseCatalog() {
+  return (await getPoseCatalog()).filter(pose => pose.posePrompt);
+}
+
+function selectedWorkflowPath() {
+  const mode = config.workflow?.mode || 'turbo';
+  if (mode === 'base') return path.join(WORKFLOW_DIR, PRO_WORKFLOW);
+  if (mode === 'custom') return resolveCustomWorkflowPath(config.workflow?.customTemplate);
+  if (mode === 'hybrid' && config.workflow?.scene?.standalone === 'base') return path.join(WORKFLOW_DIR, PRO_WORKFLOW);
+  return path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+}
+
+export async function photoStudioCapability() {
+  if ((config.comfyui.imageProvider || 'comfyui') !== 'comfyui') {
+    return { available: false, engine: 'Anima', error: '照相馆使用默认 Anima 工作流，请先将图片提供商切换为 ComfyUI。' };
+  }
+  try {
+    const workflowPath = selectedWorkflowPath();
+    if (!workflowPath) throw new Error('当前自定义工作流不存在');
+    const workflow = await fs.readFile(workflowPath, 'utf8');
+    if (!/anima_(?:base|turbo)/i.test(workflow)) throw new Error('当前默认工作流未检测到 Anima 模型');
+    const response = await fetch(`${config.comfyui.url}/queue`, { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error(`ComfyUI HTTP ${response.status}`);
+    return { available: true, engine: `Anima · ${config.workflow?.mode || 'turbo'}`, error: null };
+  } catch (error) {
+    return { available: false, engine: 'Anima', error: `默认 Anima 暗房未就绪：${error.message}` };
+  }
+}
+
+export function createPhotoStudioService({
+  database = getDb,
+  catalog = getPoseCatalog,
+  capability = photoStudioCapability,
+  persona = buildCharacterImageAppearance,
+  render = generateImage,
+  save = savePhoto,
+  publish = broadcast,
+  polish = polishStudioPrompt,
+  polishContext = getStudioPolishContext,
+  clothing = generateStudioClothing,
+  random = values => values[Math.floor(Math.random() * values.length)],
+  finishing,
+} = {}) {
+  const db = () => database();
+  const finishes = finishing || createPhotoStudioFinishService({ database });
+  const withFinish = row => {
+    if (!row) return row;
+    const finish = finishes.get(row.id);
+    return finish ? { ...row, finish } : row;
+  };
+  const job = id => withFinish(db().prepare('SELECT * FROM photo_studio_jobs WHERE id = ?').get(id));
+  const notify = (id, terminal = false) => publish(terminal ? 'photo_studio_ready' : 'photo_studio_progress', { job: job(id) });
+  const list = () => db().prepare('SELECT * FROM photo_studio_jobs ORDER BY created_at DESC, rowid DESC LIMIT 30').all().map(withFinish);
+  // A bounded result cache survives navigation and image-render retries, but not
+  // a server restart. Store only successful rewrites, never failures.
+  const polishedPrompts = new Map();
+  // 走项目统一的 listSceneOutfits 拿该角色已配置的非空服装（含 custom_*），
+  // 并带上 sceneLabel（内置标签或用户自定义名称）。
+  // private 私密（nude）不放进衣柜，避免在拍摄里点出不该出现的内容。
+  function listCharacters() {
+    // 与酒馆 /api/characters 一致：列出全部角色资料，不按小镇身份、立绘或服装筛选。
+    const perCharacter = (cid) => {
+      try {
+        return listSceneOutfits(cid)
+          .filter(o => o.scene !== 'nude' && o.description?.trim())
+          .map(o => ({ scene: o.scene, label: o.sceneLabel || o.name || o.scene }));
+      } catch { return []; }
+    };
+    // 列表与随机选角始终只使用用户角色；按 id 指定系统角色仍走 loadCharacter 原口径。
+    return db().prepare(`SELECT id, name, display_name, avatar_path, standing_url FROM characters WHERE ${USER_SCOPE} ORDER BY pinned DESC, id DESC`).all().map(character => ({
+      ...character,
+      // 衣柜至少要有「默认服装」这一项；其余是该角色已配置但非私密的套（含自定义类型）
+      outfits: [{ scene: 'work', label: '默认服装' }, ...perCharacter(Number(character.id)).filter(o => o.scene !== 'work')],
+      outfitScenes: ['work', ...perCharacter(Number(character.id)).map(o => o.scene).filter(s => s !== 'work')],
+    }));
+  }
+
+  function loadCharacter(id) {
+    if (id !== 'angel') return db().prepare('SELECT * FROM characters WHERE id = ?').get(Number(id));
+    const exists = db().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='god_angel'").get();
+    const angel = exists && db().prepare('SELECT * FROM god_angel WHERE id = 1').get();
+    if (!angel) throw Object.assign(new Error('尚未创建天使，请先在神说中召唤天使'), { status: 400 });
+    return { id: 'god:angel', name: 'the angel', display_name: angel.display_name || '天使', base_prompt: angel.persona, angel };
+  }
+
+  async function prepare({ characterId, secondCharacterId = null, outfitScene = 'work', secondOutfitScene = 'work', appearanceOverride = '', secondAppearanceOverride = '', clothingTags = [], secondClothingTags = [], customClothingPrompt = '', secondCustomClothingPrompt = '', poseId, customPose, instruction = '', backgroundId = '', customBackgroundPrompt = '', width, height, polishPrompt = false, polishInstruction = '', strictParticipants = false }) {
+    if (typeof polishInstruction !== 'string' || polishInstruction.length > 1000) throw Object.assign(new Error('润色任务额外需求最多 1000 字'), { status: 400 });
+    polishInstruction = polishInstruction.trim();
+    if (typeof strictParticipants !== 'boolean') throw Object.assign(new Error('入镜名单参数无效'), { status: 400 });
+    const hasSecond = secondCharacterId !== null && secondCharacterId !== '';
+    if (strictParticipants && (characterId == null || characterId === '' || (hasSecond && secondCharacterId === characterId))) throw Object.assign(new Error('请明确指定一至两位不同的入镜角色'), { status: 400 });
+    if (backgroundId === 'random') {
+      if (customBackgroundPrompt) throw Object.assign(new Error('随机背景不能同时指定自定义背景'), { status: 400 });
+      const entries = getStudioBackgrounds().entries;
+      if (!entries.length) throw Object.assign(new Error('背景库没有可用条目'), { status: 400 });
+      backgroundId = random(entries).id;
+    }
+    const backgroundPrompt = resolveStudioBackground({ backgroundId, customBackgroundPrompt });
+    // 只有「背景就是默认纯白棚拍」时才压外景；用户选了背景库条目或写了自定义背景都算有意指定场景，不注入。
+    const whiteBackdropNegative = backgroundPrompt === DEFAULT_STUDIO_BACKGROUND ? WHITE_BACKDROP_SCENE_NEGATIVE : '';
+    if (typeof polishPrompt !== 'boolean') throw Object.assign(new Error('AI 润色开关无效'), { status: 400 });
+    for (const appearance of [appearanceOverride, secondAppearanceOverride]) {
+      if (typeof appearance !== 'string' || appearance.length > 30000) throw Object.assign(new Error('服装提示词最多 30000 字'), { status: 400 });
+    }
+    if (typeof instruction !== 'string' || instruction.length > 1000) throw Object.assign(new Error('补充要求最多 1000 字'), { status: 400 });
+    let dimensions;
+    try { dimensions = photoStudioDimensions(width ?? DEFAULT_PHOTO_STUDIO_DIMENSIONS.width, height ?? DEFAULT_PHOTO_STUDIO_DIMENSIONS.height); }
+    catch (error) { throw Object.assign(error, { status: 400 }); }
+    let pose;
+    if (poseId === 'random' || poseId === undefined) {
+      const candidates = (await catalog()).filter(item => item.posePrompt && isPairPose(item) === hasSecond);
+      if (!candidates.length) throw Object.assign(new Error(hasSecond ? '没有可用的已校准双人姿势' : '没有可用的已校准单人姿势'), { status: 400 });
+      pose = random(candidates);
+    } else {
+      pose = poseId === 'custom-upload' ? resolveCustomStudioPose(customPose) : (await catalog()).find(item => item.id === poseId);
+    }
+    if (!pose) throw Object.assign(new Error('请选择有效的姿势和主角'), { status: 400 });
+    if (!pose.posePrompt) throw Object.assign(new Error('该姿势的专属提示词尚未校准，请先选择已有完整描述的姿势'), { status: 400 });
+    // 场景级负面词在姿势确定后再合并：白底压外景 + 姿势类型压构图（上半身不许画全身）。
+    const negativeExtra = [whiteBackdropNegative, studioFramingNegative(pose)].filter(Boolean).join(', ');
+
+    const duo = isPairPose(pose);
+    if (strictParticipants && duo !== hasSecond) throw Object.assign(new Error(duo ? '双人姿势必须指定搭档' : '单人姿势不能加入第二位角色'), { status: 400 });
+    const randomFirst = characterId === null || characterId === '';
+    const randomSecond = secondCharacterId === null || secondCharacterId === '';
+    let second = null;
+    if (duo && !randomSecond) {
+      second = loadCharacter(secondCharacterId);
+      if (!second) throw Object.assign(new Error('请选择有效的第二位角色'), { status: 400 });
+    }
+    let first;
+    if (randomFirst) {
+      const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(second?.id ?? -1);
+      if (!candidates.length) throw Object.assign(new Error(duo ? '双人姿势至少需要两位可用角色' : '没有可选择的角色'), { status: 400 });
+      first = random(candidates);
+    } else {
+      first = loadCharacter(characterId);
+      if (!first) throw Object.assign(new Error('请选择有效的姿势和主角'), { status: 400 });
+    }
+    if (duo) {
+      if (!randomSecond) {
+        if (second.id === first.id) throw Object.assign(new Error('双人姿势需要选择两位不同角色'), { status: 400 });
+      } else {
+        const candidates = db().prepare(`SELECT * FROM characters WHERE ${USER_SCOPE} AND id != ? ORDER BY pinned DESC, id DESC`).all(first.id);
+        if (!candidates.length) throw Object.assign(new Error('双人姿势至少需要两位可用角色'), { status: 400 });
+        second = random(candidates);
+      }
+    }
+
+    const outfitInputs = [[clothingTags, customClothingPrompt], ...(second ? [[secondClothingTags, secondCustomClothingPrompt]] : [])];
+    const outfits = outfitInputs.map(([tags, custom]) => {
+      if (!Array.isArray(tags) || typeof custom !== 'string' || custom.length > 4000 || /```|\p{Script=Han}/u.test(custom)) throw Object.assign(new Error('本次服装参数无效，请重新选择或翻译'), { status: 400 });
+      let entries;
+      try { entries = tags.length ? resolveClothingTags(tags) : []; }
+      catch (error) { throw Object.assign(error, { status: 400 }); }
+      return { tags: entries.map(entry => entry.tag), custom: custom.trim() };
+    });
+    const scenes = [outfitScene, secondOutfitScene];
+    const overrides = [randomFirst ? '' : appearanceOverride, randomSecond ? '' : secondAppearanceOverride];
+    const characters = [first, ...(second ? [second] : [])].map((character, index) => {
+      const scene = scenes[index];
+      // 这里只校验场景类型；是否已配置由下面分别处理：随机槽回退人物卡，指定槽给出明确错误。
+      const randomSlot = index === 0 ? randomFirst : randomSecond;
+      if (scene !== 'work' && !isValidSceneKey(scene)) throw Object.assign(new Error('请选择有效的服装：默认服装或该角色已配置的套装'), { status: 400 });
+      let selected = character;
+      if (overrides[index].trim()) {
+        selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, overrides[index].trim()) };
+      } else if (scene !== 'work') {
+        const inSceneOutfits = listSceneOutfits(character.id).find(o => o.scene === scene);
+        const outfit = inSceneOutfits && inSceneOutfits.description?.trim()
+          ? inSceneOutfits
+          : (character.angel ? angelOutfits(character.angel).find(outfit => outfit.scene === scene) : null);
+        if (!outfit?.description?.trim() && !randomSlot) throw Object.assign(new Error(`${character.display_name || character.name}尚未配置所选服装，请选择默认服装或先到人物详情卡配置`), { status: 400 });
+        // 本地口径（2026-11-13）：本仓服装是「body 身体真源 + description 只有衣服」两段式，
+        // 必须用 listSceneOutfits 的 text（body + 衣服）整段替换外观段。
+        // 上游 v4.3.0 是按自己「description 自包含整段外观」的口径写的，只取 description，
+        // 落到本仓会把发色/瞳色/体型全丢掉 —— 真机表现就是「角色不像本人」。
+        if (outfit?.description?.trim()) selected = { ...character, base_prompt: replaceAppearanceSection(character.base_prompt, outfit.text || outfit.description) };
+      }
+      const name = extractCharacterEnglishName(selected) || extractCharacterEnglishName(character) || `the ${index === 0 ? 'first' : 'second'} character`;
+      const appearance = persona(selected);
+      if (!appearance) throw Object.assign(new Error(`${character.display_name || character.name}缺少可用的外观正文，请先完善人物详情卡`), { status: 400 });
+      return { name, appearance, identityTag: extractCharacterIdentityTag(selected) || extractCharacterIdentityTag(character), aliases: [character.display_name, character.name] };
+    });
+    const basePrompt = buildPhotoStudioPrompt({ pose, characters, instruction: instruction.trim(), backgroundPrompt });
+    const outfitBlocks = characters.map((character, index) => {
+      const { tags, custom } = outfits[index];
+      if (!tags.length && !custom) return '';
+      return [`Character ${index + 1} — Outfit: Replace ${character.name}'s original clothing with the following outfit; preserve their physical appearance.`,
+        ...(tags.length ? [`Clothing tags: (${tags.join(', ')})`] : []),
+        ...(custom ? [`Custom clothing: (${custom})`] : []),
+      ].join('\n');
+    });
+    const prompt = appendPhotoStudioOutfits(basePrompt, outfitBlocks);
+    // This task explicitly needs short_prompt alone, not characterPersona's
+    // short variant (which also appends the default appearance and outfits).
+    const personas = polishPrompt ? [first, ...(second ? [second] : [])].map(character => character.short_prompt || '').filter(text => text.trim()) : [];
+    const poseText = basePrompt.slice('Pose: '.length, basePrompt.indexOf('\n\n'));
+    const requiredTags = [...new Set([
+      ...outfits.flatMap(outfit => [...outfit.tags.flatMap(splitStudioTags), ...splitStudioTags(outfit.custom)]),
+      ...studioPoseTags(poseText),
+    ])];
+    const loras = collectCharacterLoras([first, ...(second ? [second] : [])].filter(character => !character.angel));
+    return { first, second, pose, backgroundId, negativeExtra, prompt, dimensions, personas, loras, requiredTags, polishInstruction };
+  }
+
+  async function preview(input) {
+    const { prompt, dimensions } = await prepare(input);
+    return { prompt, ...dimensions };
+  }
+
+  async function submit(input, batch = null) {
+    const { id } = input;
+    if (!/^[a-zA-Z0-9_-]{8,100}$/.test(id || '')) throw Object.assign(new Error('拍摄请求编号无效'), { status: 400 });
+    const previous = job(id);
+    if (previous) return previous;
+    function checkBatch() {
+      const active = db().prepare("SELECT * FROM photo_studio_batches WHERE status IN ('running','stopping') LIMIT 1").get();
+      if (batch) {
+        if (!active || active.id !== batch.id || active.status !== 'running' || active.current_job_id !== id) {
+          throw Object.assign(new Error('连拍已停止'), { status: 409 });
+        }
+      } else if (active) throw Object.assign(new Error('已有连拍任务，请等待完成或停止后续拍摄'), { status: 409 });
+    }
+    checkBatch();
+    const { first, second, pose, backgroundId, negativeExtra, prompt, dimensions, personas, loras, requiredTags, polishInstruction } = await prepare(input);
+    const supported = await capability();
+    if (!supported.available) throw Object.assign(new Error(supported.error), { status: 503 });
+    const firstName = first.display_name || first.name;
+    const secondName = second?.display_name || null;
+    const created = db().transaction(() => {
+      if (job(id)) return false;
+      checkBatch();
+      const active = db().prepare("SELECT id FROM photo_studio_jobs WHERE status = 'running' LIMIT 1").get();
+      if (active) throw Object.assign(new Error('已有照片正在拍摄，请等待完成'), { status: 409 });
+      const task = db().prepare("INSERT INTO image_tasks (prompt_original, prompt_refined, status) VALUES (?, ?, 'running')").run(prompt, prompt);
+      const finishDefaults = finishes.defaults();
+      db().prepare(`INSERT INTO photo_studio_jobs
+        (id, character_id, character2_id, character_kind, character2_kind, background_id, negative_extra, character_name, character2_name, pose_id, pose_name, image_task_id, prompt, width, height, finish_recipe, batch_id, batch_index)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, first.angel ? null : first.id, second?.angel ? null : second?.id ?? null, first.angel ? 'angel' : 'resident', second?.angel ? 'angel' : 'resident', backgroundId, negativeExtra,
+          firstName, secondName, pose.id, `${pose.name} · ${pose.angle}`, Number(task.lastInsertRowid), prompt, dimensions.width, dimensions.height,
+          batch ? batch.finishRecipe : finishDefaults.enabled ? JSON.stringify(finishDefaults.recipe) : null, batch?.id ?? null, batch?.index ?? null);
+      return true;
+    })();
+    if (created) {
+      notify(id);
+      void execute(job(id), { polishPrompt: input.polishPrompt === true, personas, loras, requiredTags, polishInstruction });
+    }
+    return job(id);
+  }
+
+  async function execute(snapshot, { polishPrompt, personas, loras, requiredTags, polishInstruction }) {
+    const database = db();
+    try {
+      if (polishPrompt) {
+        const context = polishContext();
+        const key = createHash('sha256').update(JSON.stringify({
+          prompt: snapshot.prompt, personas, requiredTags, polishInstruction, context,
+          actors: [snapshot.character_kind, snapshot.character_id, snapshot.character2_kind, snapshot.character2_id], poseId: snapshot.pose_id,
+          // Resolution belongs to rendering; it does not change the LLM input.
+          loras,
+        })).digest('hex');
+        if (polishedPrompts.has(key)) {
+          snapshot.prompt = polishedPrompts.get(key);
+        } else {
+          database.prepare("UPDATE photo_studio_jobs SET stage = 'polishing' WHERE id = ?").run(snapshot.id);
+          notify(snapshot.id);
+          snapshot.prompt = await polish({ prompt: snapshot.prompt, personas, requiredTags, polishInstruction, context });
+          polishedPrompts.set(key, snapshot.prompt);
+          if (polishedPrompts.size > 32) polishedPrompts.delete(polishedPrompts.keys().next().value);
+        }
+        database.prepare('UPDATE photo_studio_jobs SET prompt = ? WHERE id = ?').run(snapshot.prompt, snapshot.id);
+        database.prepare('UPDATE image_tasks SET prompt_refined = ? WHERE id = ?').run(snapshot.prompt, snapshot.image_task_id);
+      }
+      database.prepare("UPDATE photo_studio_jobs SET stage = 'queued' WHERE id = ?").run(snapshot.id);
+      notify(snapshot.id);
+      const result = await render(snapshot.prompt, {
+        promptScene: 'standalone',
+        alreadyPrepared: true,
+        // 本地口径（2026-11-08）：所有生图入口都要把身份锚点交给 imageSkill，否则照片里的角色会漂。
+        // 天使没有 characters 行，按 id 查不到就跳过，行为与不传一致。
+        identity: [snapshot.character_id, snapshot.character2_id]
+          .filter(id => Number(id) > 0)
+          .map(id => database.prepare('SELECT * FROM characters WHERE id = ?').get(Number(id)))
+          .filter(Boolean),
+        // 角色级负面词（2026-11-13）：照相馆此前漏传，导致「把容易画串的特征推开」这条
+        // 在照相馆完全不生效（其他生图入口都走 composeNegativePrompt）。与身份锚点同源，
+        // 按 job 记录的主角/搭档 id 回查；两人同框时合并成一条负面词。
+        characterNegative: [snapshot.character_id, snapshot.character2_id]
+          .filter(id => Number(id) > 0)
+          .map(id => database.prepare('SELECT negative_prompt FROM characters WHERE id = ?').get(Number(id))?.negative_prompt || '')
+          .filter(Boolean)
+          .join(', '),
+        // 场景级负面词（2026-11-13）：纯白棚拍背景时压住海滩/外景漂移，见 WHITE_BACKDROP_SCENE_NEGATIVE。
+        sceneNegative: snapshot.negative_extra || '',
+        artist: config.comfyui.momentsArtist ?? config.comfyui.artist,
+        // Keep LoRA triggers out of AI rewriting; the shared workflow adds them
+        // to its dedicated trigger node and loads the models with their saved weights.
+        loras,
+        width: snapshot.width,
+        height: snapshot.height,
+        onProgress: event => {
+          const progress = Number(event.progress);
+          const hasProgress = !event.estimated && event.progress != null && Number.isFinite(progress);
+          const stage = event.phase === 'executed' || event.phase === 'done' ? 'saving'
+            : event.stage === 'submitting' || event.stage === 'retrying' || event.phase === 'submitted' || event.phase === 'waiting' ? 'queued'
+              : hasProgress ? 'sampling' : 'generating';
+          // ComfyUI reports the current sampling pass, not total job completion.
+          // A new pass/retry may restart at zero; non-sampling phases have no percentage.
+          database.prepare('UPDATE photo_studio_jobs SET stage = ?, progress = ? WHERE id = ?')
+            .run(stage, stage === 'sampling' ? Math.min(1, Math.max(0, progress)) : 0, snapshot.id);
+          notify(snapshot.id);
+        },
+      });
+      if (!result.success || !result.images?.[0]?.base64) throw new Error(result.error || 'Anima 工作流未返回图片');
+      database.prepare("UPDATE photo_studio_jobs SET stage = 'saving', progress = 0 WHERE id = ?").run(snapshot.id);
+      notify(snapshot.id);
+      const url = await save(result.images[0].base64, snapshot.id);
+      if (snapshot.finish_recipe) {
+        database.prepare("UPDATE photo_studio_jobs SET output_url = ?, stage = 'finishing' WHERE id = ?").run(url, snapshot.id);
+        notify(snapshot.id);
+        try {
+          const bytes = Buffer.from(result.images[0].base64.replace(/^data:image\/[^;]+;base64,/, ''), 'base64');
+          await finishes.automatic(snapshot.id, JSON.parse(snapshot.finish_recipe), bytes);
+        } catch (error) {
+          // The photo succeeded. A finishing failure must never discard it or retry image generation.
+          database.prepare('UPDATE photo_studio_jobs SET finish_error = ? WHERE id = ?').run(error.message, snapshot.id);
+        }
+      }
+      database.transaction(() => {
+        database.prepare("UPDATE photo_studio_jobs SET status = 'done', stage = 'done', progress = 1, output_url = ?, finished_at = datetime('now') WHERE id = ?").run(url, snapshot.id);
+        database.prepare("UPDATE image_tasks SET status = 'done', prompt_refined = ?, output_paths = ?, workflow_template = ?, finished_at = datetime('now') WHERE id = ?")
+          .run(snapshot.prompt, JSON.stringify([url]), `photo-studio-anima-${result.wfMode || getLastWorkflowMode()}`, snapshot.image_task_id);
+      })();
+      notify(snapshot.id, true);
+    } catch (error) {
+      database.transaction(() => {
+        database.prepare("UPDATE photo_studio_jobs SET status = 'failed', stage = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?").run(error.message, snapshot.id);
+        database.prepare("UPDATE image_tasks SET status = 'failed', error_message = ?, workflow_template = ?, finished_at = datetime('now') WHERE id = ?")
+          .run(error.message, `photo-studio-anima-${getLastWorkflowMode()}`, snapshot.image_task_id);
+      })();
+      notify(snapshot.id, true);
+    }
+  }
+
+  async function clothingDraft({ brief = '' }) {
+    if (typeof brief !== 'string' || brief.length > 2000) throw Object.assign(new Error('自定义服装最多 2000 字'), { status: 400 });
+    if (!brief.trim()) return { prompt: '' };
+    return { prompt: await clothing({ brief: brief.trim() }) };
+  }
+
+  /**
+   * 拍摄诊断（2026-11-13）：把「这张图到底是被哪几段文本喂出来的」摊给用户看。
+   *
+   * 起因是真机上「角色不像本人 / 上半身出成全身」只能靠翻后端日志的 Final prompt 反推，
+   * 而这些信息本来就躺在库里（job.prompt / negative_extra / 角色锚点 / image_tasks）。
+   * 本函数只读，不参与生图，也不改动任何状态。
+   */
+  function diagnostics(id) {
+    const database = db();
+    const snapshot = job(id);
+    if (!snapshot) throw Object.assign(new Error('没有这张照片的记录'), { status: 404 });
+    const task = database.prepare('SELECT prompt_original, prompt_refined, workflow_template, status, error_message FROM image_tasks WHERE id = ?').get(snapshot.image_task_id) || {};
+    const characterIds = [snapshot.character_id, snapshot.character2_id]
+      .filter(value => Number(value) > 0)
+      .map(Number);
+    const characterRows = characterIds
+      .map(cid => database.prepare('SELECT id, name, display_name, identity_anchor, negative_prompt FROM characters WHERE id = ?').get(cid))
+      .filter(Boolean);
+    // 与 execute() 里的取用完全同源，保证界面上看到的就是真正喂进模型的。
+    const characterNegative = characterRows
+      .map(character => String(character.negative_prompt || '').trim())
+      .filter(Boolean)
+      .join(', ');
+    const globalNegative = String(config.comfyui.negativePrompt || '').trim();
+    const sceneNegative = String(snapshot.negative_extra || '').trim();
+    const backgroundEntry = snapshot.background_id
+      ? getStudioBackgrounds().entries.find(entry => entry.id === snapshot.background_id)
+      : null;
+    const loras = collectCharacterLoras(characterRows).map(lora => ({
+      name: String(lora.path).split(/[\\/]/).pop() || lora.path,
+      trigger: lora.triggerWord || '',
+      weight: lora.weight,
+    }));
+    const participantName = index => (index === 1 ? snapshot.character2_name : snapshot.character_name)
+      || (index === 1 ? '第二位角色' : '主角');
+    return {
+      id: snapshot.id,
+      status: snapshot.status,
+      stage: snapshot.stage,
+      error: snapshot.error || task.error_message || '',
+      created_at: snapshot.created_at,
+      finished_at: snapshot.finished_at,
+      pose: snapshot.pose_name,
+      dimensions: { width: snapshot.width, height: snapshot.height },
+      background: {
+        id: snapshot.background_id || '',
+        label: backgroundEntry?.label || (snapshot.background_id ? snapshot.background_id : '白色背景'),
+      },
+      prompts: {
+        // 拼装稿 = 送进润色前的原始分段提示词；最终稿 = 真正提交给 ComfyUI 的那一段。
+        original: String(task.prompt_original || ''),
+        final: String(snapshot.prompt || ''),
+        polished: Boolean(task.prompt_original && task.prompt_refined && task.prompt_refined !== task.prompt_original),
+      },
+      negative: {
+        character: characterNegative,
+        scene: sceneNegative,
+        global: globalNegative,
+        composed: composeNegativePrompt(characterNegative, globalNegative, sceneNegative),
+      },
+      identity: [snapshot.character_kind === 'angel' ? 'the angel' : participantName(0), snapshot.character2_kind === 'angel' ? 'the angel' : participantName(1)]
+        .filter((name, index) => index === 0 || snapshot.character2_id || snapshot.character2_name)
+        .map((name, index) => ({
+          name,
+          anchor: String(characterRows[index]?.identity_anchor || '').trim(),
+        })),
+      workflow: {
+        template: String(task.workflow_template || ''),
+        mode: config.workflow?.mode || '',
+      },
+      loras,
+    };
+  }
+
+  async function retryFinish(id) {
+    const current = job(id);
+    if (!current) throw Object.assign(new Error('找不到这次拍摄'), { status: 404 });
+    if (current.status !== 'done' || current.stage === 'finishing') throw Object.assign(new Error('照片仍在处理中'), { status: 409 });
+    if (!current.finish_recipe) throw Object.assign(new Error('这张照片没有自动装裱设置'), { status: 400 });
+    db().prepare("UPDATE photo_studio_jobs SET stage = 'finishing', finish_error = NULL WHERE id = ?").run(id);
+    notify(id);
+    try {
+      await finishes.automatic(id, JSON.parse(current.finish_recipe));
+      db().prepare("UPDATE photo_studio_jobs SET stage = 'done', finish_error = NULL WHERE id = ?").run(id);
+      notify(id, true);
+      return job(id);
+    } catch (error) {
+      db().prepare("UPDATE photo_studio_jobs SET stage = 'done', finish_error = ? WHERE id = ?").run(error.message, id);
+      notify(id, true);
+      throw error;
+    }
+  }
+  return { submit, preview, clothingDraft, job, list, listCharacters, diagnostics, retryFinish };
+}
+
+export function savePhoto(dataUri, id) {
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(id || '')) throw new Error('拍摄请求编号无效');
+  // Match schedule peek: persist the original bytes, then push a small URL over
+  // SSE. Optional compression belongs to the shared background compressor.
+  const extension = String(dataUri).match(/^data:image\/(png|jpe?g|webp|avif);base64,/i)?.[1]?.toLowerCase() || 'png';
+  return saveBase64Image('photo_studio', `${id}.${extension}`, dataUri);
+}

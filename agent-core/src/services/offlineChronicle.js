@@ -1,0 +1,652 @@
+/**
+ * offlineChronicle.js —— 离线世界编年（2026-11-06）
+ *
+ * 用户关机期间世界无法运行，所以「离线期间发生了什么」只能在**回来时一次性补算**：
+ *   心跳记录上次在线 → 启动时算真实时间差 → 按 6 小时切片 → 逐片串行生成（后一片读前一片的结局）
+ *   → 写进世界时间轴与角色记忆 → 回来后角色能提起、日报能看到。
+ *
+ * 三条硬边界：
+ *   1. 只认真实时间差，不碰程序时间（世界钟被手动推进时不与它打架）；
+ *   2. 分片是**串行**的，前一片的结局是后一片的输入，所以补出来是一条因果线而不是各自随机；
+ *   3. 全程 try/catch + 单实例锁 + source_id 幂等，失败只 warn，绝不阻塞启动与聊天。
+ */
+import { getDb, getWorldSetting } from '../db/index.js';
+import { getSetting, setSetting } from '../db/settings.js';
+import { chatSync } from '../llm/llm-client.js';
+import { extractFirstJson } from './jsonExtract.js';
+import { recordWorldTimeline, recentWorldTimeline } from './worldTimeline.js';
+import { applyMemoryActions } from './memory/memoryRepository.js';
+import { config } from '../config.js';
+import { toSqlUtc } from './programTime.js';
+import { checkCharacterPublishable, filterPublishable, GATE_REASON } from './publishGate.js';
+
+const HEARTBEAT_KEY = 'runtime.last_seen_at';
+const CURSOR_KEY = 'runtime.offline_cursor';   // 补算进行到哪一刻（断点续跑）
+const PENDING_TAIL_KEY = 'runtime.offline_pending_tail';
+const PENDING_CHUNK_KEY = 'runtime.offline_pending_chunk';
+// P1-08：延期的下一次重试时刻。以前「延期」只是 return，没有任何驱动会在之后重跑，
+// 于是角色醒来 / 网络恢复后仍然什么都不发生，必须重启进程才会再试一次。
+const RETRY_AT_KEY = 'runtime.offline_retry_at';
+const DEFERRED_RETRY_DELAY_MS = 10 * 60 * 1000;   // 延期后 10 分钟再试
+const MIN_GAP_MS = 3 * 3600_000;      // 3 小时以内当作连续，不补
+const CHUNK_MS = 6 * 3600_000;        // 每片 6 小时
+const MAX_CHUNKS = 4;                 // 最多精细补 24 小时
+const HEARTBEAT_THROTTLE_MS = 10 * 60_000;
+const MAX_CHARACTERS = 6;
+
+let lastWriteAt = 0;
+let running = false;
+
+/* ── 心跳 ── */
+
+/** 任意 API 请求调用；10 分钟节流写一次 */
+export function touchLastSeen(force = false) {
+  const now = Date.now();
+  if (!force && now - lastWriteAt < HEARTBEAT_THROTTLE_MS) return;
+  lastWriteAt = now;
+  try {
+    setSetting(HEARTBEAT_KEY, new Date(now).toISOString());
+  } catch (err) {
+    console.warn('[offline] heartbeat write failed:', err?.message || err);
+  }
+}
+
+/** 读补算断点（上次补到哪一刻）；没有则 null */
+function readCursor() {
+  try {
+    const raw = getSetting(CURSOR_KEY);
+    const parsed = raw ? new Date(raw) : null;
+    return parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCursor(date) {
+  try { setSetting(CURSOR_KEY, new Date(date).toISOString()); }
+  catch (err) { console.debug('[offlineChronicle] 断点游标写入失败:', err.message); }
+}
+
+function clearCursor() {
+  try { setSetting(CURSOR_KEY, ''); }
+  catch (err) { console.debug('[offlineChronicle] 断点游标清理失败:', err.message); }
+}
+
+/** 记下延期的下一次重试时刻（ISO 串）；跑完/清游标时一并清掉 */
+function writeRetryAt(date) {
+  try { setSetting(RETRY_AT_KEY, new Date(date).toISOString()); }
+  catch (err) { console.debug('[offlineChronicle] 延期时间写入失败:', err.message); }
+}
+
+function clearRetryAt() {
+  try { setSetting(RETRY_AT_KEY, ''); }
+  catch (err) { console.debug('[offlineChronicle] 延期时间清理失败:', err.message); }
+}
+
+/** 现在是否到了该重试的时刻（没有记录 ⇒ 可以跑） */
+export function isOfflineRetryDue(now = new Date()) {
+  try {
+    const raw = getSetting(RETRY_AT_KEY);
+    if (!raw) return true;
+    const at = new Date(raw);
+    if (!Number.isFinite(at.getTime())) return true;
+    return at.getTime() <= now.getTime();
+  } catch {
+    return true;
+  }
+}
+
+function readPendingTail() {
+  try {
+    const raw = getSetting(PENDING_TAIL_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    const from = new Date(value.from);
+    const to = new Date(value.to);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null;
+    return { from, to, days: Number(value.days) || 0, summary: String(value.summary || '') };
+  } catch { return null; }
+}
+
+function writePendingTail(tail, summary) {
+  setSetting(PENDING_TAIL_KEY, JSON.stringify({
+    from: tail.from.toISOString(),
+    to: tail.to.toISOString(),
+    days: tail.days,
+    summary,
+  }));
+}
+
+function writePendingChunk(chunk, data, characters) {
+  setSetting(PENDING_CHUNK_KEY, JSON.stringify({
+    sourceId: `offline:${chunk.from.toISOString()}`,
+    chunk: { index: chunk.index, from: chunk.from.toISOString(), to: chunk.to.toISOString() },
+    data,
+    characters,
+  }));
+}
+
+function readPendingChunk(sourceId) {
+  try {
+    const value = JSON.parse(getSetting(PENDING_CHUNK_KEY) || 'null');
+    if (value?.sourceId !== sourceId || !value.data || !Array.isArray(value.characters)) return null;
+    const from = new Date(value.chunk.from);
+    const to = new Date(value.chunk.to);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null;
+    return { ...value, chunk: { index: value.chunk.index, from, to } };
+  } catch { return null; }
+}
+
+/** 补算起点：有断点就从断点继续（崩溃后不整段重算），否则用上次在线时间 */
+function resolveResumePoint(explicitLastSeen) {
+  const cursor = readCursor();
+  if (cursor) return cursor;
+  return explicitLastSeen === undefined ? readLastSeen() : explicitLastSeen;
+}
+
+/** 读上次在线时间，带兜底：心跳缺失/异常时取最后一条消息或时间轴 */
+export function readLastSeen() {
+  try {
+    const raw = getSetting(HEARTBEAT_KEY);
+    const parsed = raw ? new Date(raw) : null;
+    if (parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() <= Date.now()) return parsed;
+  } catch { /* 继续走兜底 */ }
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT MAX(t) AS t FROM (
+        SELECT MAX(created_at) AS t FROM messages
+        UNION ALL SELECT MAX(at) FROM world_timeline
+      )
+    `).get();
+    const parsed = row?.t ? new Date(row.t) : null;
+    if (parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() <= Date.now()) return parsed;
+  } catch (err) { console.debug('[offlineChronicle] 历史时间读取失败，改走首次启动兜底:', err.message); }
+  return null;
+}
+
+/* ── 分片 ── */
+
+/**
+ * 把离线区间切成若干片。
+ * @returns {{shouldRun:boolean, chunks:Array<{index:number,from:Date,to:Date}>, tail:{from:Date,to:Date,days:number}|null, gapHours:number}}
+ */
+export function planOfflineChunks(now = new Date(), lastSeen = null, opts = {}) {
+  const minGap = opts.minGapMs ?? MIN_GAP_MS;
+  const chunkMs = opts.chunkMs ?? CHUNK_MS;
+  const maxChunks = opts.maxChunks ?? MAX_CHUNKS;
+  const empty = { shouldRun: false, chunks: [], tail: null, gapHours: 0 };
+  if (!(lastSeen instanceof Date) || !Number.isFinite(lastSeen.getTime())) return empty;
+  const gapMs = now.getTime() - lastSeen.getTime();
+  if (gapMs < minGap) return { ...empty, gapHours: +(gapMs / 3600_000).toFixed(1) };
+
+  const chunks = [];
+  let cursor = lastSeen.getTime();
+  const hardEnd = lastSeen.getTime() + maxChunks * chunkMs;
+  const end = Math.min(now.getTime(), hardEnd);
+  while (cursor < end) {
+    const to = Math.min(cursor + chunkMs, end);
+    chunks.push({ index: chunks.length + 1, from: new Date(cursor), to: new Date(to) });
+    cursor = to;
+  }
+  // 超过 24 小时：剩余部分合成一条概况
+  const tail = cursor < now.getTime()
+    ? { from: new Date(cursor), to: now, days: +((now.getTime() - cursor) / 86400_000).toFixed(1) }
+    : null;
+  return { shouldRun: true, chunks, tail, gapHours: +(gapMs / 3600_000).toFixed(1) };
+}
+
+/* ── 上下文 ── */
+
+function loadCharacters(limit = MAX_CHARACTERS, characterIds = null) {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id, display_name, name, short_prompt, base_prompt
+      FROM characters
+      WHERE COALESCE(is_system, 0) = 0 AND COALESCE(moments_disabled, 0) = 0
+      ORDER BY id ASC
+    `).all() || [];
+    const wanted = Array.isArray(characterIds) ? new Set(characterIds.map(Number)) : null;
+    const allowed = [];
+    for (const row of rows) {
+      if (wanted && !wanted.has(Number(row.id))) continue;
+      if (!checkCharacterPublishable(db, row.id, { flag: 'moments_disabled' }).allowed) continue;
+      allowed.push(row);
+      if (allowed.length >= limit) break;
+    }
+    return allowed;
+  } catch { return []; }
+}
+
+function buildTimelineDigest(limit = 10) {
+  const rows = recentWorldTimeline(limit, { hours: 24 * 30 });
+  if (!rows.length) return '（这段时间世界很安静，没有记录在案的大事）';
+  return rows.map(row => `- ${String(row.at || '').slice(0, 16).replace('T', ' ')}｜${row.title}：${row.summary}`).join('\n');
+}
+
+function fmt(date) {
+  return new Date(date).toISOString().replace('T', ' ').slice(0, 16);
+}
+
+/* ── 提示词 ── */
+
+function buildChunkPrompt({ from, to, prevSummary, digest, characters, worldSetting, recentRows = [], prevLead = '' }) {
+  const roster = characters.map(c => `- ${c.display_name}`).join('\n');
+  // 反同质化（2026-11-06）：片间只传摘要会让每一片都长成"她一个人深夜做点什么"。
+  // 最近几次的题材明确列出来，并且用关键词统计做一次确定性推动。
+  const guardLines = [];
+  if (prevLead) guardLines.push(`上一段的主角的「${prevLead}」，本片第一件事必须换一个人来做（不要还是她）。`);
+  if (recentRows.length) {
+    guardLines.push(`最近几次已经写过这些题材（不要再用同类结构、同类开场）：${recentRows.map(r => `「${r.title}」`).join('、')}`);
+    const lonely = recentRows.filter(r => /独自|一个人|独处|孤独|单独|没人/.test(`${r.title}${r.summary || ''}`)).length;
+    if (lonely >= 2) {
+      guardLines.push('最近几段都是角色一个人待着做事：本片【必须】至少有一件事是两个人一起做的（可以是偶遇、帮忙、争执），并且换一个场所、换一个时间段。');
+    }
+  }
+  const system = [
+    '你在为一个架空世界补写「玩家不在时发生过什么」。这是事后编年：只补世界与角色自己的经历，不补玩家在场的事。',
+    worldSetting ? `<world_setting>\n${worldSetting}\n</world_setting>` : '',
+    `主要角色：\n${roster}`,
+    '<已发生的事实（不得改写）>\n' + digest,
+    prevSummary ? '<上一段的结尾>\n' + prevSummary : '',
+    guardLines.length ? '<反重复要求>\n' + guardLines.join('\n') : '',
+    '硬性约束：',
+    '1. 只写这一段时间区间内发生的事；不写玩家出现或参与的情节；',
+    '2. 不得与「已发生的事实」冲突，也不要重复已被记录的事件；',
+    '3. 事件要具体、有场景、有结果（谁、在哪、发生了什么、后来怎样），不要写总结式空话；',
+    '4. 角色心境要贴着该角色的性格与处境写，一句话，不要写成旁白。',
+  ].filter(Boolean).join('\n\n');
+
+  const user = [
+    `时间区间：${fmt(from)} ～ ${fmt(to)}（当地时间，共 ${Math.round((to - from) / 3600_000)} 小时）`,
+    '请按下面的 JSON 格式严格输出，不要任何解释或 JSON 以外的文字：',
+    `{
+  "period": "${fmt(from)} ～ ${fmt(to)}",
+  "events": [
+    { "title": "事件标题，15 字以内", "summary": "发生了什么：谁/在哪/做了什么/结果如何，60~120 字" },
+    { "title": "第二件事的标题", "summary": "第二件事的具体经过，60~120 字" }
+  ],
+  "moods": [
+    { "character": "角色显示名，必须是上面名单里的名字", "mood": "这段时间她的心境，一句话 30 字以内", "note": "具体缘由，40 字以内" }
+  ]
+}`,
+    '要求：events 1~3 条；moods 只给这段区间里真的有经历的角色，0~3 条；没有角色经历就返回空数组。',
+  ].join('\n');
+
+  return [{ role: 'system', content: system }, { role: 'user', content: user }];
+}
+
+/* ── 生成一片 ── */
+
+async function generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows = [], prevLead = '' }) {
+  const messages = buildChunkPrompt({ from: chunk.from, to: chunk.to, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
+  const raw = await chatSync(messages, { temperature: 0.95, max_tokens: 900, label: '离线编年', retries: 1 });
+  // 注意：extractFirstJson 返回的是**字符串**（括号配平后的片段），还需要再 parse 一次
+  const jsonText = extractFirstJson(raw || '');
+  let data = null;
+  if (jsonText) {
+    try { data = JSON.parse(jsonText); } catch { data = null; }
+  }
+  if (!data) return null;
+  const events = Array.isArray(data.events) ? data.events.filter(e => e && e.title).slice(0, 3) : [];
+  const moods = Array.isArray(data.moods) ? data.moods.filter(m => m && m.character && m.mood).slice(0, 3) : [];
+  if (!events.length && !moods.length) return null;
+  // 本片主角（第一件事里出现的那位）：下一片要求换人，避免整晚都是同一个人的独处
+  const firstText = `${events[0]?.title || ''}${events[0]?.summary || ''}`;
+  const lead = characters.find(c => c.display_name && firstText.includes(c.display_name))?.display_name || '';
+  return { events, moods, lead };
+}
+
+/* ── 记忆与落库 ── */
+
+function writeCharacterMemory(character, { from, to, mood, note, events }) {
+  try {
+    const gate = checkCharacterPublishable(getDb(), character.id, { flag: 'moments_disabled' });
+    if (!gate.allowed) return false;
+    const label = fmt(from) + '～' + fmt(to).slice(11);
+    const eventText = events.map(e => `「${e.title}」${e.summary}`).join('；');
+    const judgment = `那段时间（${label}，用户不在）${mood}${note ? `：${note}` : ''}${eventText ? `。当时发生的事：${eventText.slice(0, 120)}` : ''}`;
+    applyMemoryActions({
+      conversationId: `char_${character.id}`,
+      sourceRawStartId: null,
+      sourceRawEndId: null,
+      sourceMessageId: null,
+      dedupeKey: `offline:${character.id}:${fmt(from)}`,
+      actions: [{
+        action: 'create',
+        memory: {
+          memoryType: 'event',
+          subject: 'character',
+          judgment: judgment.slice(0, 300),
+          reasoning: '关机期间由离线编年补记',
+          tags: ['离线', '补记'],
+        },
+      }],
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[offline] memory write failed for ${character.display_name}:`, err?.message || err);
+    return false;
+  }
+}
+
+/**
+ * 补记发一条朋友圈（2026-11-06）：内容直接取补算结果，不再调模型、不配图。
+ * - created_at 用本片结束时刻，让它在朋友圈时间线上落在正确的过去位置；
+ * - god_delivery_key 做幂等（同一片重复补算不会多一条）；
+ * - style='离线补记' 是给"缺图补印"逻辑的排除标记（这种帖子本来就没有图）。
+ */
+function publishOfflineMoment(character, { chunk, events = [], mood = null }) {
+  try {
+    const db = getDb();
+    const key = `offline:${chunk.from.toISOString()}`;
+    const existing = db.prepare('SELECT id FROM moment_posts WHERE god_delivery_key = ?').get(key);
+    if (existing) return Number(existing.id);
+    const gate = checkCharacterPublishable(db, character.id, { flag: 'moments_disabled' });
+    if (!gate.allowed) {
+      console.log(`[offline] moment ${gate.retryAt || gate.reason === GATE_REASON.FLAG_OFF ? 'deferred' : 'dropped'}: ${gate.reason}`);
+      return null;
+    }
+    // 心境与事件之间要有句读，否则会读成"怀念，又觉得现在也还行 林晚在租住的公寓里…"
+    const moodText = mood?.mood ? (/[。！？…」]$/.test(mood.mood) ? mood.mood : `${mood.mood}。`) : '';
+    const text = [moodText, events[0]?.summary].filter(Boolean).join(' ').trim().slice(0, 120);
+    if (!text) return 0;
+    const resolution = `${config.comfyui?.momentsWidth || 768}x${config.comfyui?.momentsHeight || 512}`;
+    // style 是"画师串"字段，不能被标记占用 —— 补记帖子靠 god_delivery_key 的 offline: 前缀识别
+    const id = db.prepare(`
+      INSERT INTO moment_posts (character_id, content, prompt, style, resolution, status, god_delivery_key, created_at)
+      VALUES (?, ?, '', '', ?, 'done', ?, ?)
+    `).run(
+      Number(character.id),
+      text,
+      resolution,
+      key,
+      // ⚠️ 必须是 SQLite 的无时区 UTC 串（YYYY-MM-DD HH:MM:SS）：朋友圈前端按这个格式解析，
+      // 写成 ISO（带 T 和 Z）会渲染成「NaNaN月NaN日」——真机截图实测发现。
+      toSqlUtc(chunk.to),
+    ).lastInsertRowid;
+    console.log(`[offline] moment published: ${character.display_name}「${text.slice(0, 20)}」`);
+    return Number(id);
+  } catch (err) {
+    console.warn('[offline] moment publish failed:', err?.message || err);
+    return null;
+  }
+}
+
+function persistChunk(chunk, data, characters) {
+  const title = data.events[0]?.title || '那段时间';
+  const summary = data.events.map(e => `「${e.title}」${e.summary}`).join('；').slice(0, 200);
+  const sourceId = `offline:${chunk.from.toISOString()}`;
+  recordWorldTimeline({
+    kind: 'offline',
+    title,
+    summary,
+    characterIds: characters.map(c => c.id),
+    sourceId,
+    at: chunk.to.toISOString(),
+  });
+  if (!getDb().prepare('SELECT 1 FROM world_timeline WHERE source_id = ?').get(sourceId)) return false;
+  let complete = true;
+  const byName = new Map(characters.map(c => [c.display_name, c]));
+  for (const mood of data.moods) {
+    const character = byName.get(mood.character);
+    if (!character) continue;
+    if (!writeCharacterMemory(character, { from: chunk.from, to: chunk.to, mood: mood.mood, note: mood.note, events: data.events })) complete = false;
+  }
+  // 发帖人必须和内容同一个人：title 点明主角，先认 title；没有再看正文里谁被提得最多。
+  // （按数组顺序 find 会踩坑：正文里"周焰挂断林晚那通电话"会先命中林晚，判定错人。）
+  const firstEvent = data.events[0] || {};
+  const titleText = String(firstEvent.title || '');
+  const summaryText = String(firstEvent.summary || '');
+  const inTitle = characters.find(c => c.display_name && titleText.includes(c.display_name)) || null;
+  const byCount = characters
+    .map(c => ({ c, n: c.display_name ? Math.max(0, summaryText.split(c.display_name).length - 1) : 0 }))
+    .filter(item => item.n > 0)
+    .sort((a, b) => b.n - a.n)[0]?.c || null;
+  const moodCharacters = data.moods.map(m => byName.get(m.character)).filter(Boolean);
+  const rotated = characters[(Math.max(1, chunk.index) - 1) % characters.length];
+  const moodOwner = inTitle || byCount || moodCharacters[0] || rotated;
+  if (moodOwner) {
+    // 心境只在确实属于她时才带上，避免"周焰的心里话配林晚的事"
+    const ownerMood = data.moods.find(m => m.character === moodOwner.display_name) || null;
+    if (publishOfflineMoment(moodOwner, { chunk, events: data.events, mood: ownerMood }) === null) complete = false;
+  }
+  return complete;
+}
+
+function recoverChunkData(existing) {
+  const events = [];
+  const text = String(existing.summary || '');
+  for (const match of text.matchAll(/「([^」]+)」([^；]*)/g)) {
+    events.push({ title: match[1], summary: match[2] });
+  }
+  if (!events.length) events.push({ title: existing.title, summary: text });
+  // 旧时间轴没有 moods 快照，只补偿可确定的事件与朋友圈；新分片从 pending 恢复完整 moods。
+  return { events, moods: [], lead: existing.title || '' };
+}
+
+/* ── 主流程 ── */
+
+/**
+ * 补算离线期间。启动后延迟调用，失败只 warn。
+ * @returns {Promise<{ran:boolean, chunks:number, reason?:string}>}
+ */
+export async function runOfflineBackfill({ now = new Date(), lastSeen = undefined } = {}) {
+  if (running) return { ran: false, chunks: 0, reason: 'already_running' };
+  let plan;
+  try {
+    const pendingTail = readPendingTail();
+    // 概况延期后只重试概况；重新分片会把 tail 变成普通 chunk，重复烧 LLM。
+    plan = pendingTail
+      ? { shouldRun: true, chunks: [], tail: pendingTail, gapHours: +(pendingTail.days * 24).toFixed(1) }
+      : planOfflineChunks(now, resolveResumePoint(lastSeen));
+  } catch (err) {
+    console.warn('[offline] plan failed:', err?.message || err);
+    return { ran: false, chunks: 0, reason: 'plan_failed' };
+  }
+  if (!plan.shouldRun) {
+    touchLastSeen(true);
+    return { ran: false, chunks: 0, reason: 'below_threshold' };
+  }
+
+  running = true;
+  try {
+    let characters = loadCharacters();
+    if (!characters.length) {
+      console.warn('[offline] 没有可编年的角色，跳过');
+      return { ran: false, chunks: 0, reason: plan.tail && !plan.chunks.length ? 'deferred' : 'no_characters' };
+    }
+    const worldSetting = (() => { try { return getWorldSetting() || ''; } catch { return ''; } })();
+    const digest = buildTimelineDigest();
+    // 最近 3 条用于反同质化（第一片之前就有历史时同样生效）
+    const recentRows = recentWorldTimeline(3, { hours: 24 * 30 });
+    console.log(`[offline] 开始补算：离线 ${plan.gapHours}h，${plan.chunks.length} 片${plan.tail ? ' + 1 条概况' : ''}`);
+
+    let prevSummary = plan.tail?.summary || '';
+    let prevLead = '';
+    let written = 0;
+    let deferred = null;
+    for (const chunk of plan.chunks) {
+      try {
+        const sourceId = `offline:${chunk.from.toISOString()}`;
+        const existing = getDb().prepare('SELECT title, summary, character_ids FROM world_timeline WHERE source_id = ?').get(sourceId);
+        const pending = readPendingChunk(sourceId);
+        if (existing || pending) {
+          const data = pending?.data || recoverChunkData(existing);
+          const requiredIds = pending
+            ? pending.characters.map(character => Number(character.id))
+            : JSON.parse(existing.character_ids || '[]').map(Number);
+          if (requiredIds.length) {
+            const blocked = requiredIds
+              .map(id => ({ id, ...checkCharacterPublishable(getDb(), id, { flag: 'moments_disabled' }) }))
+              .filter(item => !item.allowed);
+            if (blocked.length) {
+              if (blocked.some(item => item.reason === GATE_REASON.SLEEPING || item.reason === GATE_REASON.FLAG_OFF)) {
+                deferred = blocked.map(item => `${item.id}:${item.reason}`).join(',');
+                break;
+              }
+              setSetting(PENDING_CHUNK_KEY, '');
+              writeCursor(chunk.to);
+              continue;
+            }
+            characters = pending?.characters || loadCharacters(requiredIds.length, requiredIds);
+          } else {
+            characters = loadCharacters();
+          }
+          if (!characters.length) {
+            deferred = 'no_publishable_characters';
+            break;
+          }
+
+          writePendingChunk(chunk, data, characters);
+          if (!persistChunk(chunk, data, characters)) {
+            deferred = 'side_effect_incomplete';
+            break;
+          }
+          setSetting(PENDING_CHUNK_KEY, '');
+          prevSummary = existing?.summary || data.events.map(e => `${e.title}：${e.summary}`).join('；').slice(0, 300);
+          prevLead = data.lead || prevLead;
+          recentRows.unshift(existing || { title: data.events[0]?.title || '', summary: data.events.map(e => e.summary).join('；') });
+          writeCursor(chunk.to);
+          continue;
+        }
+
+        characters = loadCharacters();
+        if (!characters.length) {
+          deferred = 'no_publishable_characters';
+          break;
+        }
+        const data = await generateChunk({ chunk, prevSummary, digest, characters, worldSetting, recentRows, prevLead });
+        if (!data) {
+          // P1-08：单片没有可用输出不能「跳过继续」。
+          // 原来这里 continue，而循环末尾照样推进游标 —— 一个失败的分片会被越过，
+          // 那段离线时间永久丢失，整轮还报告「完成」。现在按延期处理：
+          // 游标停在这一片之前，由低频 tick 在 retry_at 之后重跑。
+          deferred = `chunk_${chunk.index}_no_output`;
+          console.warn(`[offline] 第 ${chunk.index} 片没有可用输出，停在游标前等重试`);
+          break;
+        }
+
+        const { blocked } = filterPublishable(getDb(), characters.map(c => c.id), { flag: 'moments_disabled' });
+        if (blocked.length) {
+          if (blocked.some(item => item.reason === GATE_REASON.SLEEPING || item.reason === GATE_REASON.FLAG_OFF)) {
+            deferred = blocked.map(item => `${item.id}:${item.reason}`).join(',');
+            break;
+          }
+          console.warn(`[offline] 第 ${chunk.index} 片参与角色已终止，丢弃本次公开`);
+          writeCursor(chunk.to);
+          continue;
+        }
+
+        writePendingChunk(chunk, data, characters);
+        if (!persistChunk(chunk, data, characters)) {
+          deferred = 'side_effect_incomplete';
+          break;
+        }
+        setSetting(PENDING_CHUNK_KEY, '');
+        writeCursor(chunk.to);   // 断点：下一片之前崩溃，下次从这里继续
+        written += 1;
+        prevSummary = data.events.map(e => `${e.title}：${e.summary}`).join('；').slice(0, 300);
+        prevLead = data.lead || prevLead;
+        // 本片也进反重复名单：否则同一次补算的 4 片之间会互相重复
+        recentRows.unshift({ title: data.events[0]?.title || '', summary: data.events.map(e => e.summary).join('；') });
+        if (recentRows.length > 5) recentRows.length = 5;
+      } catch (err) {
+        // P1-08：异常同样不能「继续下一片」——那会让游标越过这一片。
+        // 保留游标停在这里，交给低频 tick 在 retry_at 之后重跑。
+        deferred = `chunk_${chunk.index}_error:${String(err?.message || err).slice(0, 80)}`;
+        console.warn(`[offline] 第 ${chunk.index} 片生成失败，停在游标前等重试:`, err?.message || err);
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1200));   // 片间留间隔，别打满
+    }
+
+    if (deferred) {
+      // P1-08：延期必须有驱动。写 retry_at，由低频 tick 到点后重跑；
+      // 只 return 而不留时间戳，等于「延期」永远不会被兑现。
+      writeRetryAt(new Date(Date.now() + DEFERRED_RETRY_DELAY_MS));
+      console.log(`[offline] 补算延期，保留游标：${deferred}（${Math.round(DEFERRED_RETRY_DELAY_MS / 60000)} 分钟后重试）`);
+      return { ran: written > 0, chunks: written, reason: 'deferred' };
+    }
+
+    if (plan.tail) {
+      characters = loadCharacters();
+      if (!characters.length) {
+        writePendingTail(plan.tail, prevSummary);
+        return { ran: written > 0, chunks: written, reason: 'deferred' };
+      }
+      try {
+        const summary = `你不在的这段时间（约 ${plan.tail.days} 天）：${prevSummary || '世界照常运转，没什么特别的事'}`;
+        const sourceId = `offline:summary:${plan.tail.from.toISOString().slice(0, 10)}`;
+        recordWorldTimeline({
+          kind: 'offline_summary',
+          title: '这段时间的概况',
+          summary,
+          characterIds: characters.map(c => c.id),
+          sourceId,
+          at: plan.tail.to.toISOString(),
+        });
+        if (!getDb().prepare('SELECT 1 FROM world_timeline WHERE source_id = ?').get(sourceId)) {
+          writePendingTail(plan.tail, prevSummary);
+          return { ran: written > 0, chunks: written, reason: 'failed' };
+        }
+        written += 1;
+      } catch (err) {
+        console.warn('[offline] 概况写入失败:', err?.message || err);
+        writePendingTail(plan.tail, prevSummary);
+        return { ran: written > 0, chunks: written, reason: 'failed' };
+      }
+    }
+
+    touchLastSeen(true);
+    clearCursor();   // 跑完了：清断点，下次从心跳开始算
+    clearRetryAt();  // 成功完成：清掉延期标记，下次不再额外重试
+    setSetting(PENDING_TAIL_KEY, '');
+    setSetting('runtime.offline_backfilled_at', now.toISOString());
+    console.log(`[offline] 补算完成：写入 ${written} 条`);
+    return { ran: true, chunks: written };
+  } catch (err) {
+    console.warn('[offline] backfill failed:', err?.message || err);
+    return { ran: false, chunks: 0, reason: 'failed' };
+  } finally {
+    running = false;
+  }
+}
+
+/* ── 给聊天的提示块 ── */
+
+const NOTICED_KEY = 'runtime.offline_notice_id';
+
+/** 取一条还没被提过的离线记录（默认全局；传 scopeKey 可让私聊/各群各自提一次） */
+export function takeOfflineNoticeFor(scopeKey = 'global') {
+  try {
+    const key = `${NOTICED_KEY}:${String(scopeKey || 'global')}`;
+    const since = new Date(Date.now() - 7 * 86400_000).toISOString();
+    const noticedId = Number(getSetting(key) || 0);
+    const row = getDb().prepare(`
+      SELECT id, title, summary, at FROM world_timeline
+      WHERE kind IN ('offline','offline_summary') AND id > ? AND at >= ?
+      ORDER BY id ASC LIMIT 1
+    `).get(noticedId, since);
+    if (!row) return '';
+    setSetting(key, row.id);
+    return `<offline_notice>\n用户离开过一段时间，这期间发生过：${row.title}——${row.summary}\n可以自然提起这件事（只说一次，不要复述整段，也不要说成用户在场时发生的）。\n</offline_notice>`;
+  } catch {
+    return '';
+  }
+}
+
+/** 兼容旧调用：全局只提一次 */
+export function takeOfflineNotice() {
+  return takeOfflineNoticeFor('global');
+}
+
+/** 测试用：清掉锁与节流（仅供手动脚本） */
+export function __resetOfflineStateForTest() {
+  running = false;
+  lastWriteAt = 0;
+}
+
+export const OFFLINE_HEARTBEAT_KEY = HEARTBEAT_KEY;
+export const OFFLINE_NOTICED_KEY = NOTICED_KEY;

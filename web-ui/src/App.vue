@@ -1,0 +1,575 @@
+<template>
+  <!-- API Key 未配置横幅 -->
+  <div v-if="!settings.hasApiKey && route.path !== '/settings'" class="api-key-banner">
+    <span class="banner-icon">⚠️</span>
+    <span class="banner-text">尚未配置 API Key，请前往设置页面填写 DeepSeek（或其他兼容）API Key</span>
+    <router-link to="/settings" class="banner-link">前往设置 →</router-link>
+  </div>
+  <div class="app-layout" :class="{ 'is-mobile': isMobile, 'sidebar-collapsed': !isMobile && (sidebarCollapsed || route.path === '/god-says' || route.path === '/photo-studio' || route.path.startsWith('/games')), 'immersive-chat': route.path.startsWith('/chat') && route.query.mode === 'galgame' }">
+    <!-- 移动端遮罩层：Sidebar 拉出时覆盖聊天区域 -->
+    <Transition name="scrim-fade">
+      <div v-if="isMobile && mobileSidebarOpen" class="mobile-scrim" @click="closeMobileSidebar"></div>
+    </Transition>
+    <NavBar />
+    <div class="sidebar-viewport">
+      <div class="sidebar-track">
+        <Sidebar
+          :is-mobile="isMobile"
+          :mobile-open="mobileSidebarOpen"
+          :collapsed="sidebarCollapsed"
+          @char-selected="closeMobileSidebar"
+        />
+        <!-- 桌面端：贴侧栏右缘的收纳手柄，点一下把侧栏向左收起（移动端用抽屉，不显示） -->
+        <div
+          v-if="!isMobile && route.path !== '/god-says' && route.path !== '/photo-studio' && !route.path.startsWith('/games')"
+          class="sidebar-handle"
+          role="button"
+          tabindex="0"
+          :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :aria-expanded="!sidebarCollapsed"
+          @click="toggleSidebar"
+          @keydown.enter.prevent="toggleSidebar"
+          @keydown.space.prevent="toggleSidebar"
+        >
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15,6 9,12 15,18" />
+          </svg>
+        </div>
+      </div>
+    </div>
+    <div class="page-host">
+      <router-view v-slot="{ Component }">
+        <Transition name="page">
+          <component v-if="Component" :is="Component" :key="route.path" />
+        </Transition>
+      </router-view>
+      <!-- 常驻页面弹窗层（上游 v3.9.0 合并）：声明在 router-view 之外，
+           切页不重建；小镇的动态弹窗等 anchored modal 的 anchor 指到这里，
+           面板因此相对内容区居中，而不是相对整个视口。 -->
+      <div class="page-modal-host"></div>
+    </div>
+  </div>
+  <ConfirmDialog ref="confirmDialog" />
+  <Toast ref="toastEl" />
+  <!-- 角色操作反馈宿主：右下角轻通知，不依赖立绘小窗是否打开（内部自带 Toast 角色变体） -->
+  <CharacterReactionHost />
+  <InstallGuideDialog ref="guideDialog" />
+  <ChangelogDialog ref="changelogDialog" @close="onChangelogClose" />
+  <ImageEditTaskFloater />
+  <!-- 角色日记本（上游 v3.9.0 合并）：全局宿主，日程页卡片 / 详情抽屉 / 右下角生成提示的「翻开看看」都打开它 -->
+  <DiaryBookOverlay />
+
+  <!-- 手机端访问提示 Toast -->
+  <Transition name="toast-slide">
+    <div v-if="mobileToast.visible" class="mobile-toast">
+      <span class="toast-text">手机网页访问 <b>{{ mobileToast.url }}</b>打开邻舍</span>
+    </div>
+  </Transition>
+</template>
+
+<script setup>
+import { ref, onMounted, onUnmounted, provide, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { createMobileSidebarBackHandler } from './utils/mobileSidebarBack.js'
+import { observePageZoomHint } from './utils/pageZoomHint.js'
+import { useChatStore } from './stores/chat.js'
+import { useSettingsStore } from './stores/settings.js'
+import { useProactiveStore } from './stores/notifications.js'
+import { forceProactive } from './api/index.js'
+import { loadUserConfig } from './userConfig.js'
+import { playEncounterSound, playNotificationSound } from './utils/sound.js'
+import { useMailboxStore } from './stores/mailbox.js'
+import { useUpdateStore } from './stores/updateInfo.js'
+import { onEvent as onStreamEvent } from './stores/unifiedStream.js'
+import { getProgramTime } from './api/timeControl.js'
+import { programTimeViewModel } from './components/timeControlLogic.js'
+import NavBar from './components/NavBar.vue'
+import Sidebar from './components/Sidebar.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import Toast from './components/Toast.vue'
+import InstallGuideDialog from './components/InstallGuideDialog.vue'
+import ChangelogDialog from './components/ChangelogDialog.vue'
+import ImageEditTaskFloater from './components/ImageEditTaskFloater.vue'
+import DiaryBookOverlay from './components/DiaryBookOverlay.vue'
+import CharacterReactionHost from './components/CharacterReactionHost.vue'
+import { MAIBOT_AFTER_START_STEPS, MAIBOT_INSTALL_STEPS, MAIBOT_INTRO_TEXT } from './data/maibotTutorial.js'
+import { CHANGELOG_FLAG } from './data/changelog.js'
+
+const chat = useChatStore()
+const settings = useSettingsStore()
+const proactive = useProactiveStore()
+const mailbox = useMailboxStore()
+const update = useUpdateStore()
+const route = useRoute()
+const confirmDialog = ref(null)
+const toastEl = ref(null)
+const guideDialog = ref(null)
+const changelogDialog = ref(null)
+const themeAutoTimer = ref(null)
+let stopPageZoomHint
+let stopSpeechPreparationHint
+let _stopThemeSync = null
+
+// App 级 SSE 订阅的退订函数（P0-06）。
+//
+// 背景：进入手机独立立绘页（StandingDisplayView）会卸载整个 App 组件，
+// 返回时重新挂载。原来三个 onStreamEvent 没保存退订函数，卸载只断开了 proactive 连接，
+// 于是每往返一次就多注册一套 handler：延迟回复、图片更新、日程 Toast/提示音
+// 会随往返次数成倍重复处理。
+//
+// 现在所有 App 级订阅统一 push 进这个数组，onUnmounted 里全部调用。
+// 订阅注册也集中到 onMounted 的同一段里，避免以后新增时又漏掉。
+const _appStreamUnsubs = []
+
+// 独立于数据加载，首屏及窗口缩放稳定后检查；复用全局暖纸 Toast。
+onMounted(() => {
+  stopPageZoomHint = observePageZoomHint(window, toast)
+  // Global subscription: private/group bubbles and voice previews share one
+  // service. Never multiply notices by the number of mounted speech buttons.
+  stopSpeechPreparationHint = onStreamEvent('speech_preparing', data => {
+    if (data?.phase === 'service_start') toast('正在启动 TTS 语音服务，请稍候…', 'info', 6000)
+    if (data?.phase === 'model_load') toast('正在加载 TTS 语音模型，加载后将自动朗读，请稍候…', 'info', 8000)
+  })
+})
+onUnmounted(() => { stopPageZoomHint?.(); stopSpeechPreparationHint?.() })
+
+// ── 手机端访问 Toast（启动器打开时通过 ?mobile_ip= 传入）──
+const mobileToast = ref({ visible: false, url: '' })
+
+// ── 临时调试：强制主动聊天 ──
+const forceLoading = ref(false)
+const forceResult = ref('')
+async function onForceProactive() {
+  if (forceLoading.value) return
+  forceLoading.value = true
+  forceResult.value = ''
+  try {
+    const r = await forceProactive()
+    if (r.ok) {
+      forceResult.value = `${r.character}: ${r.motive} — "${r.greeting}"`
+      setTimeout(() => { forceResult.value = '' }, 5000)
+    } else {
+      forceResult.value = r.error || '失败'
+    }
+  } catch (e) {
+    forceResult.value = e.message || '请求失败'
+  } finally {
+    forceLoading.value = false
+  }
+}
+
+function confirm(opts) {
+  return confirmDialog.value?.show(opts) ?? Promise.resolve(false)
+}
+function toast(message, type = 'info', duration) {
+  toastEl.value?.show(message, type, duration)
+}
+
+/**
+ * 程序世界的「今天」（日期键 YYYY-MM-DD）。
+ *
+ * 2026-10-02 修：日程的 `target_date` 与 `daily_schedules.schedule_date` 都是**程序日期键**，
+ * 原来这里拿 `new Date()`（真实今天）去比，世界钟被拨过之后「明天 / 后天」会指错天。
+ * 前端**不自己算偏移**：只读后端 `GET /api/time` 的 `date`；读不到给空串（那时不做相对日期判断）。
+ */
+async function programDateKeyNow() {
+  try {
+    const view = programTimeViewModel(await getProgramTime())
+    return view.date || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 目标日期的口语化描述：明天 / 后天 / 大后天，再往后（或判断不了）显示 M月D日。
+ * 基准 `todayKey` 是**程序世界的今天**；拿不到时不做"明天/后天"的相对判断，宁可少说也不说错。
+ */
+function describeTargetDate(dateKey, todayKey = '') {
+  const target = new Date(`${dateKey}T00:00:00`)
+  if (Number.isNaN(target.getTime())) return dateKey
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(String(todayKey)) ? new Date(`${todayKey}T00:00:00`) : null
+  const diffDays = base ? Math.round((target - base) / 86400000) : null
+  if (diffDays === 1) return '明天'
+  if (diffDays === 2) return '后天'
+  if (diffDays === 3) return '大后天'
+  return `${target.getMonth() + 1}月${target.getDate()}日`
+}
+function showGuide(opts) {
+  return guideDialog.value?.show(opts) ?? Promise.resolve()
+}
+function showInstallGuide() {
+  return showGuide({
+    title: 'MaiBot 安装教程',
+    intro: MAIBOT_INTRO_TEXT,
+    steps: MAIBOT_INSTALL_STEPS,
+    afterStartSteps: MAIBOT_AFTER_START_STEPS,
+  })
+}
+provide('confirm', confirm)
+provide('toast', toast)
+provide('showGuide', showGuide)
+provide('showInstallGuide', showInstallGuide)
+
+// ══════════════════════════════════════════════════
+// 更新说明 — 「内容变了就弹一次」
+//
+// CHANGELOG_FLAG 由 `npm run tag` 从 src/data/changelog.js 的内容哈希生成，
+// 用户浏览器里存着上次看过的值。两者不一致 = 首次启动，或更新说明被改过 → 弹一次；
+// 关闭时把当前标志位写回去，于是同一个版本只会弹一次。
+// ══════════════════════════════════════════════════
+const CHANGELOG_SEEN_KEY = 'linshe_changelog_seen'
+
+function readChangelogSeen() {
+  try {
+    return localStorage.getItem(CHANGELOG_SEEN_KEY)
+  } catch {
+    return null // 隐私模式等场景下 localStorage 不可用：退化为每次启动都弹
+  }
+}
+
+function markChangelogSeen() {
+  try {
+    if (CHANGELOG_FLAG) localStorage.setItem(CHANGELOG_SEEN_KEY, CHANGELOG_FLAG)
+  } catch {}
+}
+
+/** 关闭即视为已读（Esc / 点遮罩 / 「我知道了」都走这里） */
+function onChangelogClose() {
+  markChangelogSeen()
+}
+
+/** 供设置页手动重新打开 */
+function showChangelog() {
+  changelogDialog.value?.open()
+}
+
+provide('showChangelog', showChangelog)
+
+// ══════════════════════════════════════════════════
+// 移动端响应式 — Sidebar 抽屉状态
+// ══════════════════════════════════════════════════
+const MOBILE_MAX = 767
+const isMobile = ref(false)
+// 桌面端侧边栏收纳（上游 v3.10.0；移动端走抽屉，这套不参与）
+const SIDEBAR_COLLAPSED_KEY = 'linshe.sidebar.collapsed'
+const sidebarCollapsed = ref((() => {
+  try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1' } catch { return false }
+})())
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed.value ? '1' : '0') } catch {}
+}
+const mobileSidebarOpen = ref(false)
+
+function checkMobile() {
+  isMobile.value = window.innerWidth <= MOBILE_MAX
+  if (!isMobile.value) mobileSidebarOpen.value = false
+}
+
+function toggleMobileSidebar() {
+  mobileSidebarOpen.value = !mobileSidebarOpen.value
+}
+
+function closeMobileSidebar() {
+  mobileSidebarOpen.value = false
+}
+
+const handleAndroidBack = createMobileSidebarBackHandler({
+  isMobile: () => isMobile.value,
+  isOpen: () => mobileSidebarOpen.value,
+  open: () => { mobileSidebarOpen.value = true },
+})
+
+provide('isMobile', isMobile)
+provide('toggleMobileSidebar', toggleMobileSidebar)
+
+onMounted(async () => {
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
+  window.addEventListener('linshe:notification-opened', closeMobileSidebar)
+  window.__linsheHandleAndroidBack = handleAndroidBack
+
+  settings.loadComfyConfig()
+  // 按时间主题：打开期间每分钟 + 回到前台时刷新
+  themeAutoTimer.value = window.setInterval(() => settings.refreshTheme(), 60_000)
+  window.addEventListener('focus', settings.refreshTheme)
+  // P2-03：跟随其它标签页的主题变更（storage 事件只在别的标签页写入时触发）
+  _stopThemeSync = settings.followThemeAcrossTabs()
+  loadUserConfig()  // 应用启动即加载，不阻塞渲染
+  update.check()  // 版本更新检查：设置页「有更新噢」标签与侧边栏红点共用；失败静默
+  await chat.loadCharacters()
+
+  // 连接主动聊天 SSE 通知流
+  proactive.connectSSE()
+  proactive.setOnMessage((data) => {
+    // 更新聊天 store
+    chat.handleProactiveMessage(data)
+
+    // 非当前活跃角色 → 播放提示音
+    if (data.character_id !== chat.activeCharId) {
+      if (data.event_id != null) playEncounterSound()
+      else playNotificationSound()
+    }
+  })
+
+  // 私聊两段式反应的**后半段**（专题 §八 8.2）：她的文字反应先上屏，图好了再补到那条气泡上。
+  // payload（后端定，未落地前按此写）：{ msg_id, raw_id, images }；找不到 msg_id 会安全忽略。
+  _appStreamUnsubs.push(onStreamEvent('proactive_message_update', (data) => {
+    chat.handleProactiveMessageUpdate(data)
+  }))
+
+  // 订阅日程延迟回复 SSE 事件
+  _appStreamUnsubs.push(onStreamEvent('delayed_reply', (data) => {
+    chat.handleDelayedReply(data)
+    // 非当前活跃角色 → 播放提示音 + 红点（延迟回复也应有通知）
+    if (data.character_id !== chat.activeCharId) {
+      playNotificationSound()
+      proactive.addProactive(data)
+    }
+  }))
+
+  // 日程更改成功（手动编辑 / 聊天约定 / 跨天约定应用）→ 右上角提示
+  _appStreamUnsubs.push(onStreamEvent('schedule_changed', async (data) => {
+    const name = data.display_name || '角色'
+    // 基准是**程序世界的今天**（日程日期键属于世界钟；不拿现实日期冒充，也不在前端算偏移）
+    const todayKey = await programDateKeyNow()
+    if (data.target_date && data.target_date !== todayKey) {
+      toast(`「${name}」的约定已排入${describeTargetDate(data.target_date, todayKey)}的日程`, 'success')
+    } else {
+      toast(`「${name}」日程已更新`, 'success')
+    }
+  }))
+
+  // 信箱新回信 → 播放提示音
+  watch(() => mailbox.unreadCount, (newVal, oldVal) => {
+    if (newVal > oldVal) playNotificationSound()
+  })
+
+  if (isMobile.value) {
+    // 移动端：角色列表默认藏在屏幕左侧，用户点击按钮才拉出
+  } else if (chat.characters.length > 0 && !chat.activeCharId && !route.params.id) {
+    // 仅在无路由角色参数时自动选第一个（有路由时 ChatView 会根据路由自行 selectChar）
+    chat.selectChar(chat.characters[0].id)
+  }
+
+  // ── 手机端访问 Toast：启动器通过 ?mobile_ip= 传入本机 IP，底部浮窗 2s ──
+  const TOAST_KEY = 'mobile_toast_shown'
+  const params = new URLSearchParams(window.location.search)
+  const mobileIp = params.get('mobile_ip')
+  if (mobileIp && !sessionStorage.getItem(TOAST_KEY)) {
+    sessionStorage.setItem(TOAST_KEY, '1')
+    const mobileUrl = new URL(window.location.origin)
+    mobileUrl.hostname = mobileIp
+    mobileToast.value = { visible: true, url: mobileUrl.origin }
+    setTimeout(() => { mobileToast.value.visible = false }, 5000)
+  }
+  // 清理 URL 中的 mobile_ip 参数（无论是否弹 toast）
+  if (mobileIp) {
+    params.delete('mobile_ip')
+    const newSearch = params.toString()
+    const newUrl = window.location.pathname + (newSearch ? '?' + newSearch : '') + window.location.hash
+    window.history.replaceState(null, '', newUrl)
+  }
+})
+
+// ── 更新说明弹窗：首次启动 / 更新说明内容有变化时弹一次 ──
+// 刻意独立成一个 onMounted：它不依赖角色加载、SSE 等任何启动流程，
+// 上面那段万一中途出错，更新说明也照样能弹出来。
+onMounted(() => {
+  if (!CHANGELOG_FLAG) return
+  if (readChangelogSeen() === CHANGELOG_FLAG) return
+  // 稍作延迟，避免和首屏 page 过渡动画抢注意力
+  window.setTimeout(() => changelogDialog.value?.open(), 400)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', checkMobile)
+  window.removeEventListener('linshe:notification-opened', closeMobileSidebar)
+  if (themeAutoTimer.value) window.clearInterval(themeAutoTimer.value)
+  window.removeEventListener('focus', settings.refreshTheme)
+  // P2-03：退订跨标签主题同步，否则往返立绘页会累积监听器
+  _stopThemeSync?.()
+  _stopThemeSync = null
+  if (window.__linsheHandleAndroidBack === handleAndroidBack) {
+    delete window.__linsheHandleAndroidBack
+  }
+  // 先退订 App 级 SSE handler，再断开主动聊天连接。
+  // 漏掉这一步的后果见 _appStreamUnsubs 的注释：往返一次立绘页就多一套 handler。
+  for (const unsub of _appStreamUnsubs.splice(0)) {
+    try { unsub?.() } catch { /* 单个退订失败不影响其余清理 */ }
+  }
+  proactive.disconnectSSE()
+})
+</script>
+
+<style>
+.app-layout {
+  display: flex; flex: 1; min-height: 0; position: relative; z-index: 1;
+  /* 侧栏始终保持固定宽度，收纳仅改变位移，避免内部内容被挤压。（上游 v3.10.0） */
+  --sidebar-width: 300px;
+  --nav-width: 75px;
+}
+/* ── 桌面端侧栏收纳（上游 v3.10.0）──────────────────────────────
+   侧栏改成绝对定位的视口 + 可位移轨道：收纳只改 transform，不改宽度，
+   内部内容不会被挤压。page-host 用 margin-left 让出侧栏宽度。
+*/
+.sidebar-viewport, .sidebar-track { display: contents; }
+@media (min-width: 768px) {
+  .sidebar-viewport {
+    display: block;
+    position: absolute;
+    inset: 0 0 0 var(--nav-width);
+    overflow: clip;
+    pointer-events: none;
+    z-index: 20;
+  }
+  .sidebar-track {
+    display: block;
+    position: relative;
+    width: var(--sidebar-width);
+    height: 100%;
+    transform: translateX(0);
+    transition: transform var(--dur-interaction) var(--ease-spring);
+  }
+  .sidebar-collapsed .sidebar-track {
+    transform: translateX(-100%);
+    /* 收起不越过左边界，避免手柄随弹性过冲暂时消失。 */
+    transition-timing-function: var(--ease-standard);
+  }
+  .sidebar-track > .sidebar { height: 100%; pointer-events: auto; }
+  .sidebar-collapsed .sidebar-track > .sidebar { pointer-events: none; }
+  .app-layout > .page-host { margin-left: var(--sidebar-width); }
+  .app-layout.sidebar-collapsed > .page-host { margin-left: 0; }
+}
+
+/* ── 侧边栏收纳手柄（桌面端，贴在侧栏右缘） ── */
+.sidebar-handle {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translateY(-50%);
+  width: 15px; height: 58px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 0 9px 9px 0;
+  border: 1px solid var(--glass-border);
+  border-left: none;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--text-secondary);
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 30;
+  user-select: none;
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.sidebar-handle:hover { color: var(--accent); }
+.sidebar-handle svg { transition: transform var(--dur-interaction) var(--ease-spring); }
+/* 折叠后箭头翻向另一边，提示可以再点开 */
+.app-layout.sidebar-collapsed .sidebar-handle svg { transform: rotate(180deg); }
+
+/* ── galgame 沉浸模式：隐藏导航/侧栏/遮罩，内容区铺满（上游 v3.10.0） ── */
+.app-layout.immersive-chat > .nav-bar,
+.app-layout.immersive-chat > .sidebar-viewport,
+.app-layout.immersive-chat > .mobile-scrim { display: none; }
+.app-layout.immersive-chat > .page-host { margin-left: 0; padding-bottom: 0; }
+
+.page-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+/* 常驻页面弹窗层：铺满内容区、不参与排版，只给 anchored modal 当插入宿主与定位基准 */
+.page-modal-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.page-modal-host > * { pointer-events: auto; }
+
+#app { position: relative; z-index: 1; }
+
+/* ── 移动端 Sidebar 遮罩 ── */
+.mobile-scrim {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 99;
+}
+.scrim-fade-enter-active { transition: opacity 0.28s cubic-bezier(0.4, 0, 0.2, 1); }
+.scrim-fade-leave-active { transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+.scrim-fade-enter-from,
+.scrim-fade-leave-to { opacity: 0; }
+
+/* ── API Key 未配置横幅 ── */
+.api-key-banner {
+  width: 100%;
+  background: #e04444;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 16px;
+  font-size: 14px;
+  z-index: 1000;
+  position: relative;
+  flex-shrink: 0;
+}
+.banner-icon { font-size: 16px; flex-shrink: 0; }
+.banner-text { font-weight: 500; }
+.banner-link {
+  color: #fff;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+  margin-left: 4px;
+  transition: opacity 0.15s;
+}
+.banner-link:hover { opacity: 0.8; }
+
+/* ── 手机端访问 Toast（底部浮窗，2s 自动消失）── */
+.mobile-toast {
+  position: fixed;
+  bottom: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(46, 42, 39, 0.92);
+  color: #FCFAF8;
+  font-size: 14px;
+  padding: 14px 26px;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(12px);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.mobile-toast b {
+  color: var(--accent-light);
+  font-weight: 600;
+}
+.toast-icon { font-size: 18px; flex-shrink: 0; }
+.toast-text { line-height: 1.4; }
+
+/* Toast 动画：底部滑入 + 淡入 */
+.toast-slide-enter-active {
+  transition: all 0.35s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.toast-slide-leave-active {
+  transition: all 0.3s cubic-bezier(0.55, 0.06, 0.68, 0.19);
+}
+.toast-slide-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(20px);
+}
+.toast-slide-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(12px);
+}
+</style>

@@ -1,0 +1,32 @@
+{
+  "name": "generate-image-agent",
+  "version": "1.0.0",
+  "description": "喂？在吗在吗在吗",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node dev-nodemon.mjs",
+    "test": "node --require ./test/force-memory-db.cjs --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "1.1.1",
+    "@zip.js/zip.js": "^2.25.0",
+    "better-sqlite3": "^12.10.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "fflate": "^0.8.3",
+    "jose": "^6.2.3",
+    "js-yaml": "^5.2.2",
+    "openai": "^4.85.0",
+    "rubberband-wasm": "3.3.0",
+    "sharp": "^0.35.3",
+    "undici": "^6.29.1",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

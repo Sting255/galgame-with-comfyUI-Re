@@ -1,0 +1,1037 @@
+/**
+ * build-release.mjs — 一键打包完整 Release
+ *
+ *   $ node scripts/build-release.mjs
+ *
+ * 流程:
+ *   1. 下载便携 Node.js / Python / Git
+ *   2. 预装 npm 依赖 + vite build
+ *   3. 预装 pip 依赖 + 下载嵌入模型
+ *   4. PyInstaller 打包启动器
+ *   5. （已移除）安卓 APK：自 2026-11-16 起不再维护，发布链只产桌面包
+ *   6. shallow clone 保留 .git → 覆盖预构建产物 → 压缩 zip
+ *
+ * ── 打包排除（审查缺口 4：交付包里的非产品内容，本机实测合计 ≈127 MB）──
+ *   这三项是开发 / 运行期产物，**不属于交付内容**，打包时必须排除：
+ *     · .mimosa/          —— 代码扫描缓存（本机实测 ≈110 MB，最大头）
+ *     · e2e/node_modules/ —— e2e 的依赖（≈17 MB）
+ *     · logs/             —— 运行日志（≈0.1 MB）
+ *
+ *   正常路径走 git clone：这三个目录都在 .gitignore 里（.gitignore:48/1/63），
+ *   **0 个 tracked 文件** ⇒ clone 天然带不进来（.gitignore 只对 untracked 生效，而它们正是 untracked）。
+ *   只有 **clone 失败走 robocopy 兜底** 时才有风险 ⇒ 两条防线：
+ *     ① robocopyExclude 显式加 .mimosa / logs（node_modules 这个目录名已被整体排除，覆盖 e2e 那份）；
+ *     ② 压缩 zip 之前再清一次（见下面「打包前清掉非产品内容」那一段；双保险，也防将来复制口径被改）。
+ *
+ *   **.git 不进排除** —— 交付包保留 .git（审查 §六 第 1 条，Lead 已采纳）。
+ *
+ *   若改用 **7z 手工打包**（本脚本用的是 Windows 内置 .NET ZipFile，不是 7z），等价参数是：
+ *     -xr'!*.mimosa' -xr'!e2e\node_modules' -xr'!logs'
+ *   ⚠️ 别动 -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -mqs=on -ms=on -mmt=on -mf=off，
+ *     尤其 -mf=off 丢了会破坏「方法集合只有 LZMA2」这条历史验收口径。
+ */
+
+import { spawn, execSync } from "node:child_process";
+import { downloadGithubFile, isGithubDownload } from "./lib/github-download.mjs";
+import { existsSync, mkdirSync, rmSync, createWriteStream, createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import https from "node:https";
+import http from "node:http";
+// 使用说明.txt 的正文正源（2026-10-17 从本文件抽出，见 scripts/usage-guide.mjs 的文件头说明）
+import { buildUsageGuideText } from "./usage-guide.mjs";
+import { BACKEND_PROBE_SCRIPT, findSensitiveArchiveMembers, findSensitiveGitObjects, splitHistoryFindings } from "./lib/releaseSafety.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(__dirname, "..");
+
+// ── 配置 ──
+const NODE_VERSION = "22.18.0";
+const PYTHON_VERSION = "3.12.10";
+const GIT_TAG = "2.47.1.windows.1";        // GitHub release tag
+const GIT_VER = "2.47.1";                  // 文件名中的版本号（无 .windows.1）
+
+// 版本号：唯一事实源是 VERSION 文件（main() 开头会强制校验 tag 与它一致）。
+// 这里先按 VERSION 读取，避免 RELEASE_DIR 在预检之前就用 tag 后缀算出另一个目录名。
+let VERSION = "dev";
+// 精确 tag（含本地迭代后缀，如 4.3.1-j）：VERSION 只能是 x.y.z，
+// 但「装的是哪一次迭代」要靠后缀才分得清，所以包内另写一份 BUILD_TAG。
+let EXACT_TAG = "";
+try {
+  const { readFileSync: readVersion } = await import("node:fs");
+  const fromFile = readVersion(resolve(ROOT, "VERSION"), "utf-8").trim();
+  if (/^\d+\.\d+\.\d+$/.test(fromFile)) VERSION = fromFile;
+} catch { /* 没有 VERSION 文件时下面会 fail */ }
+if (VERSION === "dev") {
+  try {
+    const tag = execSync("git describe --tags --abbrev=0", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe","pipe","pipe"]
+    }).trim();
+    VERSION = tag.replace(/^v/, "");
+  } catch {
+    console.log(`  ${C.yellow}[WARN] 未找到 VERSION 文件与 git tag，使用版本号: dev${C.reset}`);
+  }
+}
+const PROJECT_NAME = "邻舍.EXE";
+let RELEASE_NAME = `${PROJECT_NAME}-v${VERSION}`;
+
+const CACHE_DIR = resolve(ROOT, "launcher", "build_cache");
+const RUNTIME_DIR = resolve(ROOT, "runtime");
+let RELEASE_DIR = resolve(ROOT, "release", RELEASE_NAME);
+
+const NODE_DIR = resolve(RUNTIME_DIR, "nodejs");
+const PY_DIR = resolve(RUNTIME_DIR, "python");
+const GIT_DIR = resolve(RUNTIME_DIR, "git");
+
+const AGENT_CORE = resolve(ROOT, "agent-core");
+const WEB_UI = resolve(ROOT, "web-ui");
+const VECTOR_SVC = resolve(ROOT, "vector-service");
+
+// 用真实装裱 worker 验证 JS 包、平台原生绑定、滤镜与 Path2D 绘制均可用。
+// 两个阶段都使用对应目录及捆绑 Node.js，不启动服务、不写入照片或数据库。
+const STUDIO_FINISH_CHECK = `
+import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import { renderAutomaticStudioFinish } from './src/services/photoStudioFinishRender.js';
+import { defaultFinishRecipe } from './src/shared/photoStudioFinishRenderer.js';
+const original = await sharp({ create: { width: 128, height: 160, channels: 3, background: '#cda48a' } }).png().toBuffer();
+const png = await renderAutomaticStudioFinish(original, { ...defaultFinishRecipe(), frame: 'polaroid', filter: 'clear', caption: 'Studio' });
+const result = await sharp(png).metadata();
+assert.equal(result.format, 'png');
+assert.ok(result.width > 128 && result.height > 160, '装裱成品尺寸异常');
+`;
+
+// 镜像源
+const MIRRORS = {
+  node: `https://npmmirror.com/mirrors/node/v${NODE_VERSION}/node-v${NODE_VERSION}-win-x64.zip`,
+  nodeOfficial: `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-win-x64.zip`,
+  python: `https://npmmirror.com/mirrors/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`,
+  pythonOfficial: `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`,
+  git: `https://npmmirror.com/mirrors/git-for-windows/v${GIT_TAG}/PortableGit-${GIT_VER}-64-bit.7z.exe`,
+  gitOfficial: `https://github.com/git-for-windows/git/releases/download/v${GIT_TAG}/PortableGit-${GIT_VER}-64-bit.7z.exe`,
+  pipBootstrap: "https://bootstrap.pypa.io/get-pip.py",
+};
+
+// ── 终端颜色 ──
+const C = {
+  reset: "\x1b[0m",
+  dim:   "\x1b[2m",
+  green: "\x1b[32m",
+  yellow:"\x1b[33m",
+  cyan:  "\x1b[36m",
+  red:   "\x1b[31m",
+  bold:  "\x1b[1m",
+};
+
+const LOG_PREFIX = `  `;
+
+// ── 辅助函数 ──
+
+function log(msg) {
+  console.log(`${LOG_PREFIX}${msg}`);
+}
+
+function ok(msg) {
+  console.log(`${LOG_PREFIX}${C.green}✓ ${msg}${C.reset}`);
+}
+
+function warn(msg) {
+  console.log(`${LOG_PREFIX}${C.yellow}[WARN] ${msg}${C.reset}`);
+}
+
+function fail(msg) {
+  console.error(`${LOG_PREFIX}${C.red}[ERROR] ${msg}${C.reset}`);
+}
+
+function ensureDir(dir) {
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * 下载文件，失败返回 false
+ */
+function downloadFile(url, dest, timeoutSec = 300) {
+  if (isGithubDownload(url)) return downloadGithubFile(url, dest, timeoutSec);
+  return new Promise((resolvePromise) => {
+    const proto = url.startsWith("https") ? https : http;
+    const req = proto.get(url, { timeout: timeoutSec * 1000 }, (res) => {
+      // 跟随重定向
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return resolvePromise(downloadFile(res.headers.location, dest, timeoutSec));
+      }
+      if (res.statusCode !== 200) {
+        req.destroy();
+        return resolvePromise(false);
+      }
+      const file = createWriteStream(dest);
+      res.pipe(file);
+      file.on("finish", () => { file.close(); resolvePromise(true); });
+      file.on("error", () => resolvePromise(false));
+    });
+    req.on("error", () => resolvePromise(false));
+    req.on("timeout", () => { req.destroy(); resolvePromise(false); });
+  });
+}
+
+/**
+ * 执行命令并等待完成，返回 { ok, stdout, stderr, code }
+ */
+function exec(cmd, args, opts = {}) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd || ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      shell: process.platform === "win32",
+      ...opts,
+      // 确保打包的 Node.js 在 PATH 最前面，否则 npm postinstall 脚本
+      // （esbuild 的 node install.js 等）会因为 cmd.exe 找不到 node 而失败
+      env: {
+        ...process.env,
+        PATH: existsSync(NODE_DIR) ? `${NODE_DIR};${process.env.PATH}` : process.env.PATH,
+        PYTHONUNBUFFERED: "1",
+        FORCE_COLOR: "0",
+        ...(opts.env || {}),
+      },
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    // timeout
+    let timeoutId = null;
+    if (opts.timeout) {
+      timeoutId = setTimeout(() => {
+        child.kill();
+        resolvePromise({ ok: false, stdout, stderr, code: -1, killed: true });
+      }, opts.timeout);
+    }
+
+    child.stdout.on("data", (d) => {
+      const text = d.toString();
+      stdout += text;
+      if (opts.print) process.stdout.write(text);
+    });
+    child.stderr.on("data", (d) => {
+      const text = d.toString();
+      stderr += text;
+      if (opts.print) process.stderr.write(text);
+    });
+
+    child.on("exit", (code) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      resolvePromise({ ok: code === 0, stdout, stderr, code });
+    });
+
+    child.on("error", (err) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      resolvePromise({ ok: false, stdout, stderr: err.message, code: -1 });
+    });
+  });
+}
+
+/**
+ * 解压 zip 文件到目标目录
+ */
+function extractZip(zipPath, destDir) {
+  // 使用 PowerShell 解压（Windows 内置）
+  return exec("powershell", [
+    "-NoProfile", "-Command",
+    `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`
+  ]);
+}
+
+/**
+ * robocopy 复制目录
+ */
+async function robocopy(src, dest, excludeDirs = [], excludeFiles = []) {
+  const args = [src, dest, "/E", "/NFL", "/NDL", "/NJH", "/NJS"];
+  for (const d of excludeDirs) {
+    args.push("/XD", d);
+  }
+  for (const f of excludeFiles) {
+    args.push("/XF", f);
+  }
+  const result = await exec("robocopy", args);
+  return result.code < 8;
+}
+
+// ── 使用说明.txt 正文 ──
+//
+// 2026-10-17：正文已抽到 `scripts/usage-guide.mjs`（**唯一正源**），见文件顶部的 import。
+// 抽出的原因：这份正文原来只住在本文件里，而本文件是「整包发布」脚本（下载 runtime /
+// PyInstaller / APK / zip），跑一次成本极高；真正的交付链 `scripts/发布-校验并打包.mjs`
+// 过去完全没有生成这一步 ⇒ 生成源改了以后没人再生成，交付包一路带着 2026-10-01 旧手册。
+// 现在两份脚本共用同一份正文，发布链每次打包前重新生成 + 关键词断言。
+//
+// 单独生成：`node scripts/build-release.mjs --usage-guide-only [输出路径]`
+
+
+// ── 主流程 ──
+
+async function main() {
+  console.clear();
+  console.log();
+  console.log(`  ${C.bold}邻舍.EXE — 完整 Release 打包${C.reset}`);
+  console.log(`  ${C.dim}${"=".repeat(50)}${C.reset}`);
+  console.log();
+
+  // ── 发布前预检（P0-07）──
+  // 1) 工作树必须干净：发布脚本会在打包过程中覆盖前端产物、注入版本号，
+  //    dirty tree 意味着「提交的源码」与「工作区实际产物」不是同一份，
+  //    包里的 commit 说明不了包里的内容。
+  // 2) 版本必须单一事实源：VERSION 文件、git tag、启动器 __version__ 三者一致。
+  //    此前 VERSION 是 4.3.1 而最近的 tag 是 v4.3.1-i，两个数字各自为政。
+  {
+    const dirty = execSync("git status --porcelain", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    if (dirty) {
+      fail("工作区不干净，拒绝打包。发布物必须能对应到一个确定的提交。");
+      for (const line of dirty.split("\n").slice(0, 15)) fail(`  ${line}`);
+      fail("请先提交或 stash，然后重试。");
+      process.exit(1);
+    }
+    ok("工作区干净");
+
+    const { readFileSync: readVersionFile } = await import("node:fs");
+    const versionFile = readVersionFile(resolve(ROOT, "VERSION"), "utf-8").trim();
+    if (!/^\d+\.\d+\.\d+$/.test(versionFile)) {
+      fail(`VERSION 文件内容不合法: ${JSON.stringify(versionFile)}（期望 x.y.z）`);
+      process.exit(1);
+    }
+    // 版本一致性：tag 允许带本地迭代后缀（本仓历史用 v4.3.1-i 这类），
+    // 但 base 版本必须与 VERSION 文件相同——否则包内 VERSION、启动器版本
+    // 与前端 hash 各自说不同的版本号，出问题无法定位到底是哪一次构建。
+    if (VERSION !== "dev" && VERSION !== versionFile && !VERSION.startsWith(`${versionFile}-`)) {
+      fail(`版本来源不一致：VERSION=${versionFile}，git tag=${VERSION}`);
+      fail("  tag 只能是 VERSION 本身或 VERSION-<本地后缀>（如 4.3.1 / 4.3.1-i）");
+      process.exit(1);
+    }
+    VERSION = versionFile;
+    ok(`版本 ${versionFile}（VERSION 文件与 tag 一致）`);
+
+    // 3) tag 必须**精确指向 HEAD**：只校验「版本号字符串相同」不够——
+    //    同一个 4.3.1 可以在很多个提交上重复打 tag，包里的 commit 依然说明不了包里的内容。
+    //    这条是「源码、产物、版本来自同一提交」的最后一环。
+    const tagAtHead = execSync("git tag --points-at HEAD", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    }).trim().split("\n").filter(Boolean);
+    const headCommit = execSync("git rev-parse HEAD", {
+      cwd: ROOT, encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    const matchingTag = tagAtHead.find(tag => tag.replace(/^v/, "").startsWith(versionFile));
+    if (!matchingTag) {
+      fail(`当前提交没有对应版本 ${versionFile} 的 tag（HEAD ${headCommit.slice(0, 8)}）。`);
+      fail("  发布物必须能由一个精确 tag 复现：先提交，再 `npm run tag:local`，然后在 tag 上打包。");
+      fail(`  HEAD 上的 tag：${tagAtHead.length ? tagAtHead.join(", ") : "无"}`);
+      process.exit(1);
+    }
+    ok(`tag ${matchingTag} 精确指向 HEAD（${headCommit.slice(0, 8)}）`);
+    EXACT_TAG = matchingTag.replace(/^v/, "");
+    RELEASE_NAME = `${PROJECT_NAME}-v${EXACT_TAG}`;
+    RELEASE_DIR = resolve(ROOT, "release", RELEASE_NAME);
+  }
+
+  // 创建目录
+  ensureDir(CACHE_DIR);
+  if (existsSync(RELEASE_DIR)) {
+    log("清理旧的 release 目录...");
+    rmSync(RELEASE_DIR, { recursive: true, force: true });
+  }
+  ensureDir(RUNTIME_DIR);
+
+  // ═══════════════════════════════════════════
+  // [1/8] 便携 Node.js
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[1/8]${C.reset} 准备便携 Node.js v${NODE_VERSION}...`);
+
+  const nodeZip = resolve(CACHE_DIR, `node-v${NODE_VERSION}-win-x64.zip`);
+
+  if (!existsSync(resolve(NODE_DIR, "node.exe"))) {
+    if (!existsSync(nodeZip)) {
+      log("下载 Node.js (~30MB)...");
+      let dlOk = await downloadFile(MIRRORS.node, nodeZip);
+      if (!dlOk) {
+        warn("npmmirror 下载失败，尝试官方源...");
+        dlOk = await downloadFile(MIRRORS.nodeOfficial, nodeZip);
+        if (!dlOk) { fail("Node.js 下载失败!"); process.exit(1); }
+      }
+    }
+
+    log("解压 Node.js...");
+    if (existsSync(NODE_DIR)) rmSync(NODE_DIR, { recursive: true, force: true });
+    await extractZip(nodeZip, RUNTIME_DIR);
+    // 重命名 node-v* → nodejs
+    const { readdirSync, renameSync } = await import("node:fs");
+    const entries = readdirSync(RUNTIME_DIR);
+    const nodeDirEntry = entries.find(e => e.startsWith("node-v"));
+    if (nodeDirEntry) {
+      renameSync(resolve(RUNTIME_DIR, nodeDirEntry), NODE_DIR);
+    }
+    ok("Node.js 就绪");
+  } else {
+    ok("已有捆绑 Node.js，跳过");
+  }
+
+  // ═══════════════════════════════════════════
+  // [2/8] 便携 Python
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[2/8]${C.reset} 准备便携 Python ${PYTHON_VERSION}...`);
+
+  const pyZip = resolve(CACHE_DIR, `python-${PYTHON_VERSION}-embed-amd64.zip`);
+  const getPip = resolve(CACHE_DIR, "get-pip.py");
+
+  if (!existsSync(resolve(PY_DIR, "python.exe"))) {
+    if (!existsSync(pyZip)) {
+      log("下载 Python embeddable (~11MB)...");
+      let dlOk = await downloadFile(MIRRORS.python, pyZip, 120);
+      if (!dlOk) {
+        warn("npmmirror 下载失败，尝试官方源...");
+        dlOk = await downloadFile(MIRRORS.pythonOfficial, pyZip, 120);
+        if (!dlOk) { fail("Python 下载失败!"); process.exit(1); }
+      }
+    }
+
+    log("解压 Python...");
+    if (existsSync(PY_DIR)) rmSync(PY_DIR, { recursive: true, force: true });
+    ensureDir(PY_DIR);
+    await extractZip(pyZip, PY_DIR);
+
+    // 修改 python3XX._pth 启用 site-packages + pip
+    const { readdirSync, writeFileSync } = await import("node:fs");
+    const pthFiles = readdirSync(PY_DIR).filter(f => f.startsWith("python") && f.endsWith("._pth"));
+    if (pthFiles.length > 0) {
+      const pthFile = resolve(PY_DIR, pthFiles[0]);
+      log(`配置 ${pthFiles[0]}...`);
+      writeFileSync(pthFile, "python312.zip\n.\nLib\\site-packages\nimport site\n", "ascii");
+    }
+
+    const sitePkgs = resolve(PY_DIR, "Lib", "site-packages");
+    ensureDir(sitePkgs);
+
+    if (!existsSync(getPip)) {
+      log("下载 get-pip.py...");
+      await downloadFile(MIRRORS.pipBootstrap, getPip, 60);
+    }
+
+    log("安装 pip...");
+    const pipResult = await exec(resolve(PY_DIR, "python.exe"), [getPip, "--no-warn-script-location"]);
+    if (!pipResult.ok) { fail("pip 安装失败!"); process.exit(1); }
+    ok("Python 就绪");
+  } else {
+    ok("已有捆绑 Python，跳过");
+  }
+
+  // ═══════════════════════════════════════════
+  // [3/8] 便携 Git
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[3/8]${C.reset} 准备便携 Git v${GIT_TAG}...`);
+
+  const gitExe = resolve(CACHE_DIR, `PortableGit-${GIT_VER}-64-bit.7z.exe`);
+  const gitCmd = resolve(GIT_DIR, "cmd", "git.exe");
+  const gitBin = resolve(GIT_DIR, "bin", "git.exe");
+
+  if (existsSync(gitCmd) || existsSync(gitBin)) {
+    ok("已有捆绑 Git，跳过");
+  } else {
+    if (!existsSync(gitExe)) {
+      log("下载 Portable Git (~50MB)...");
+      let dlOk = await downloadFile(MIRRORS.git, gitExe);
+      if (!dlOk) {
+        warn("npmmirror 下载失败，尝试官方源...");
+        dlOk = await downloadFile(MIRRORS.gitOfficial, gitExe);
+        if (!dlOk) {
+          warn("Git 下载失败，版本更新功能将不可用");
+        }
+      }
+    }
+
+    if (existsSync(gitExe)) {
+      log("解压 Git（自解压，静默）...");
+      if (existsSync(GIT_DIR)) rmSync(GIT_DIR, { recursive: true, force: true });
+      await exec(gitExe, [`-o"${GIT_DIR}"`, "-y"]);
+      if (existsSync(gitCmd) || existsSync(gitBin)) {
+        ok("Git 就绪");
+      } else {
+        warn("Git 解压后未找到 git.exe，版本更新功能将不可用");
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  // [4/8] 预装 Node.js 依赖
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[4/8]${C.reset} 预装 Node.js 依赖...`);
+
+  const npmCmd = resolve(NODE_DIR, "npm.cmd");
+
+  // agent-core — 始终安装，确保依赖与 package.json 一致。
+  // 不要预先删除或无条件重建原生模块：开发服务运行时 Windows 会锁住 .node 文件。
+  log("agent-core npm install (~3-8min)...");
+  {
+    // --no-save：不要改写 package-lock.json。打包起点要求工作树干净，
+    // 而本机 npm 版本与写锁文件时的版本不同，install 会把 libc 这类字段
+    // 批量删掉（本次实测 -48 行），于是「打包成功」却留下一个不该提交的锁文件改动，
+    // 下一次 release 预检直接因为工作树不干净被拒。
+    // --include=optional：canvas 的平台绑定属于 optionalDependencies，不能受本机 omit=optional 配置影响。
+    const r = await exec(npmCmd, ["install", "--no-save", "--include=optional", "--no-audit", "--no-fund"], { cwd: AGENT_CORE, print: true });
+    if (!r.ok) { fail("agent-core npm install 失败!"); process.exit(1); }
+
+    // 先验证现有绑定。大多数情况下 npm install 已经准备好依赖，且正在运行的
+    // agent-core 可能持有这个文件；验证通过就不要碰它。
+    const bundledNode = resolve(NODE_DIR, "node.exe");
+    const sqliteTestArgs = [
+      "-e",
+      "const Database=require('better-sqlite3');const db=new Database(':memory:');db.prepare('SELECT 1').get();db.close();",
+    ];
+    let sqliteSmokeTest = await exec(bundledNode, sqliteTestArgs, { cwd: AGENT_CORE, shell: false });
+
+    // 只有缺失或 ABI 不兼容时才重建。
+    if (!sqliteSmokeTest.ok) {
+      log("  现有 better-sqlite3 绑定不可用，尝试重建...");
+      const rebuild = await exec(npmCmd, ["rebuild", "better-sqlite3"], {
+        cwd: AGENT_CORE,
+        print: true,
+      });
+      if (!rebuild.ok) {
+        fail("better-sqlite3 原生绑定重建失败；请先关闭正在运行的 agent-core 后重试。");
+        process.exit(1);
+      }
+      sqliteSmokeTest = await exec(bundledNode, sqliteTestArgs, { cwd: AGENT_CORE, shell: false });
+    }
+
+    if (!sqliteSmokeTest.ok) {
+      fail("better-sqlite3 发布环境验证失败!");
+      if (sqliteSmokeTest.stderr) log(`  ${sqliteSmokeTest.stderr.slice(-1000)}`);
+      process.exit(1);
+    }
+    const studioSmokeTest = await exec(bundledNode, ["--input-type=module", "-e", STUDIO_FINISH_CHECK], {
+      cwd: AGENT_CORE, shell: false, timeout: 30000,
+    });
+    if (!studioSmokeTest.ok) {
+      fail("照相馆装裱验证失败（含 @napi-rs/canvas 平台原生绑定），终止打包!");
+      if (studioSmokeTest.stderr) log(`  ${studioSmokeTest.stderr.slice(-1000)}`);
+      process.exit(1);
+    }
+    ok("agent-core 完成（SQLite 与照相馆装裱已通过捆绑 Node.js 验证）");
+  }
+
+  // web-ui — 同样始终安装，确保依赖与 package.json 一致
+  log("web-ui npm install (~2-5min)...");
+  if (existsSync(resolve(WEB_UI, "node_modules"))) {
+    const { rmSync } = await import("node:fs");
+    try { rmSync(resolve(WEB_UI, "node_modules", ".cache"), { recursive: true, force: true }); } catch {}
+  }
+  {
+    // 同上：--no-save 保住 package-lock.json，避免打包把工作树弄脏
+    const r = await exec(npmCmd, ["install", "--no-save", "--no-audit", "--no-fund"], { cwd: WEB_UI, print: true });
+    if (!r.ok) { fail("web-ui npm install 失败!"); process.exit(1); }
+    ok("web-ui 完成");
+  }
+
+  // vite build —— 始终重新构建，确保 public/ 与源码一致
+  log("vite build (~1min)...");
+  const buildResult = await exec(npmCmd, ["run", "build"], { cwd: WEB_UI, print: true });
+  if (!buildResult.ok) {
+    fail("vite build 失败!");
+    process.exit(1);
+  }
+  ok("vite build 完成");
+
+  // ═══════════════════════════════════════════
+  // [5/8] 预装 Python 依赖
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[5/8]${C.reset} 预装 Python 依赖...`);
+
+  const pyExe = resolve(PY_DIR, "python.exe");
+  // pip 通用环境变量：跳过版本检查 + 信任镜像源（embeddable Python 可能缺 SSL 证书）
+  const pipEnv = {
+    PIP_DISABLE_PIP_VERSION_CHECK: "1",
+    PIP_NO_CACHE_DIR: "1",
+  };
+  const pipMirror = "https://pypi.tuna.tsinghua.edu.cn/simple";
+  const pipTrusted = ["--trusted-host", "pypi.tuna.tsinghua.edu.cn"];
+
+  {
+    const check = await exec(pyExe, [
+      "-c", "import fastapi, uvicorn, chromadb, onnxruntime, numpy"
+    ], { shell: false });
+    if (check.ok) {
+      ok("Python 依赖已预装，跳过");
+    } else {
+      log("pip install (~1-3min)...");
+
+      // 先确保 pip 本身是最新的
+      log("  升级 pip...");
+      await exec(pyExe, ["-m", "pip", "install", "--upgrade", "pip", ...pipTrusted],
+        { print: true, env: pipEnv });
+
+      // 逐个安装关键包以便定位失败点
+      const pkgs = [
+        "numpy",
+        "fastapi",
+        "uvicorn[standard]",
+        "pydantic",
+        "httpx",
+        "requests",
+        "onnxruntime",
+        "huggingface-hub",
+        "transformers",
+        "chromadb",
+        "cloudscraper",
+        "beautifulsoup4",
+        "lxml",
+      ];
+
+      let allOk = true;
+      for (const pkg of pkgs) {
+        log(`  pip install ${pkg}...`);
+        // 先试清华源 + trusted-host
+        let r = await exec(pyExe, [
+          "-m", "pip", "install", pkg,
+          "-i", pipMirror,
+          ...pipTrusted,
+        ], { print: true, env: pipEnv, timeout: 120000 });
+        // 清华源失败则用默认源
+        if (!r.ok) {
+          r = await exec(pyExe, [
+            "-m", "pip", "install", pkg,
+          ], { print: true, env: pipEnv, timeout: 120000 });
+        }
+        if (!r.ok) {
+          fail(`${pkg} 安装失败 (exit: ${r.code})`);
+          log(`  stderr: ${r.stderr.slice(-500)}`);
+          allOk = false;
+          break;
+        }
+      }
+
+      if (!allOk) {
+        fail("Python 依赖安装失败!");
+        log(`  请检查网络连接或手动执行:`);
+        log(`  cd ${VECTOR_SVC}`);
+        log(`  ${pyExe} -m pip install -r requirements.txt`);
+        process.exit(1);
+      }
+      ok("Python 依赖完成");
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  // [6/8] 预下载嵌入模型
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[6/8]${C.reset} 预下载嵌入模型...`);
+
+  const modelFile = resolve(VECTOR_SVC, "models", "jina-embeddings-v2-base-zh", "onnx", "model_int8.onnx");
+
+  if (existsSync(modelFile)) {
+    ok("模型已存在，跳过");
+  } else {
+    log("下载嵌入模型 (~155MB)...");
+    const r = await exec(pyExe, ["download_model.py"], { cwd: VECTOR_SVC, print: true });
+    if (!r.ok || !existsSync(modelFile)) {
+      fail("模型下载失败，完整 Release 必须自带向量模型，终止打包!");
+      process.exit(1);
+    }
+    ok("模型下载完成");
+  }
+
+  // ═══════════════════════════════════════════
+  // [7/8] PyInstaller 打包启动器
+  // ═══════════════════════════════════════════
+  console.log(`  ${C.bold}[7/8]${C.reset} PyInstaller 打包启动器...`);
+
+  const launcherDir = resolve(ROOT, "launcher");
+
+  // 烘焙版本号到 __init__.py（打包进 exe，运行后恢复）
+  let _initPyOrig = null;
+  if (VERSION !== "dev") {
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const initPy = resolve(launcherDir, "launcher", "__init__.py");
+    _initPyOrig = readFileSync(initPy, "utf-8");
+    let modified = _initPyOrig.replace(
+      /__version__\s*=\s*"[^"]*"/,
+      `__version__ = "${VERSION}"`
+    );
+    writeFileSync(initPy, modified, "utf-8");
+    log(`版本已写入 __init__.py: ${VERSION}`);
+  }
+
+  {
+    // 删除旧 .spec 文件，避免缓存导致 --add-data 不生效
+    const specFile = resolve(launcherDir, "邻舍.EXE.spec");
+    if (existsSync(specFile)) {
+      const { unlinkSync } = await import("node:fs");
+      unlinkSync(specFile);
+      log("已删除旧的 .spec 文件");
+    }
+
+    const BUILD_VENV = resolve(launcherDir, "build_cache", "pyinstaller-venv");
+    const BUILD_VENV_PY = resolve(BUILD_VENV, "Scripts", "python.exe");
+    if (!existsSync(BUILD_VENV_PY)) {
+      log("创建 PyInstaller 构建 venv（不污染 runtime）...");
+      const venvOk = await exec("python", ["-m", "venv", BUILD_VENV], { print: true });
+      if (!venvOk.ok) {
+        warn("系统 python 创建 venv 失败，尝试 py -3...");
+        const venvOk2 = await exec("py", ["-3", "-m", "venv", BUILD_VENV], { print: true });
+        if (!venvOk2.ok) { fail("无法创建 PyInstaller 构建 venv!"); process.exit(1); }
+      }
+    }
+
+    const buildDepsCheck = await exec(BUILD_VENV_PY, ["-m", "pip", "show", "PySide6"]);
+    if (!buildDepsCheck.ok) {
+      log("安装 PyInstaller 依赖到构建 venv...");
+      const r = await exec(BUILD_VENV_PY, ["-m", "pip", "install", "PySide6", "psutil", "pyinstaller",
+        "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
+        "--trusted-host", "pypi.tuna.tsinghua.edu.cn"], { print: true, timeout: 300000 });
+      if (!r.ok) {
+        fail("构建 venv 依赖安装失败，请修复该环境后重试；不回退系统 pip。");
+        process.exit(1);
+      }
+    }
+
+    // 所有入口共用隔离 DLL 搜索路径与实际窗口自检，禁止回退到污染的系统环境。
+    const r = await exec(BUILD_VENV_PY, ["build_launcher.py"], {
+      cwd: launcherDir, print: true, timeout: 300000,
+    });
+    if (!r.ok) { fail("PyInstaller 打包失败!"); process.exit(1); }
+    ok("PyInstaller 打包完成");
+  }
+
+  // 恢复 __init__.py（避免本地工作区被污染）
+  if (_initPyOrig !== null) {
+    const { writeFileSync } = await import("node:fs");
+    const initPy = resolve(launcherDir, "launcher", "__init__.py");
+    writeFileSync(initPy, _initPyOrig, "utf-8");
+    log("__init__.py 已恢复");
+  }
+
+  // ═══════════════════════════════════════════
+  // [8/8] 组装 Release 包（桌面）
+  // ═══════════════════════════════════════════
+  // 安卓 APK 自 2026-11-16 起不再维护：本链只产出桌面包，APK 需单独
+  // `npm run apk`（脚本仍在，供自用/回溯），但不再进入发布门禁与交付承诺。
+  console.log(`  ${C.bold}[8/8]${C.reset} 组装 Release 包（桌面）...`);
+
+  // shallow clone 保留 .git/
+  log("创建 shallow clone (保留 .git 用于版本更新)...");
+  const GITHUB_REPO_URL = "https://github.com/Sting255/galgame-with-comfyUI-Re.git";
+  // depth=50 覆盖足够历史，确保用户端 git describe / checkout tag 不出问题。
+  // ⚠️ 2026-11-20：必须用 file:// URL。对本机路径直接 clone 时 git 会忽略 --depth（"--depth is ignored
+  //    in local clones"），v4.5.0-c/-d 两个候选包因此带了完整的 958 个提交、所有本地归档 tag，
+  //    .git 约 444 MB；改为 file:// 后才是真正的 shallow（实测约 85 MB），启动器 fetch --update-shallow 与切 tag 正常。
+  const cloneSource = pathToFileURL(ROOT).href;
+  const cloneResult = await exec("git", ["clone", "--depth", "50", cloneSource, RELEASE_DIR]);
+  let hasGit = cloneResult.ok;
+
+  if (!hasGit) {
+    warn("git clone 失败，回退到文件复制（版本更新功能不可用）");
+    warn(`  错误: ${cloneResult.stderr.slice(0, 200)}`);
+    ensureDir(RELEASE_DIR);
+
+    // robocopy 排除目录
+    // （.mimosa / logs 见文件头「打包排除」：兜底路径是唯一会把它们带进包的地方；
+    //   e2e\node_modules 由 node_modules 这个目录名整体覆盖）
+    const robocopyExclude = [
+      ".git", "node_modules", "release", "__pycache__", ".cache", ".mimosa", "logs",
+      ".claude", ".pai", ".playwright-cli",
+      resolve(AGENT_CORE, "data"),
+      resolve(VECTOR_SVC, "chroma_data"),
+      resolve(ROOT, "android-shell", "keystores"),
+    ];
+    // 密钥、配对凭证、本机配置和本地备份一律不进入候选目录。
+    const robocopyExcludeFiles = [
+      "*.tmp.json", ".access-token", ".env", ".env.*", "local.properties", "launcher_config.json",
+      "settings.local.json", "*.tar.gz", "*.jks", "*.keystore", "*.p12", "*.pfx",
+      "github-proxy*.json", "github-proxy*.json.*.tmp",
+    ];
+    const rcOk = await robocopy(ROOT, RELEASE_DIR, robocopyExclude, robocopyExcludeFiles);
+    if (!rcOk) { fail("文件复制失败!"); process.exit(1); }
+    // .env.* 必须全排除；只把明确模板补回来，其它 production/local 变体不得搭便车。
+    const envExample = resolve(AGENT_CORE, ".env.example");
+    if (existsSync(envExample)) {
+      const { copyFileSync } = await import("node:fs");
+      ensureDir(resolve(RELEASE_DIR, "agent-core"));
+      copyFileSync(envExample, resolve(RELEASE_DIR, "agent-core", ".env.example"));
+    }
+  } else {
+    // 修正 remote URL：clone 会把 origin 设为本机路径，客户电脑上不存在
+    const remoteResult = await exec("git", ["remote", "set-url", "origin", GITHUB_REPO_URL], { cwd: RELEASE_DIR });
+    if (remoteResult.ok) {
+      ok("shallow clone 完成，remote 已指向 GitHub");
+    } else {
+      warn(`修正 remote URL 失败: ${remoteResult.stderr.slice(0, 200)}，版本更新可能不可用`);
+    }
+  }
+
+  // ── 覆盖预构建产物 ──
+
+  // runtime
+  log("复制 runtime...");
+  {
+    const rcOk = await robocopy(RUNTIME_DIR, resolve(RELEASE_DIR, "runtime"));
+    if (!rcOk) { fail("runtime 复制失败!"); process.exit(1); }
+    ok("runtime (Node.js + Python + Git)");
+  }
+
+  // agent-core/node_modules
+  log("复制 agent-core\\node_modules...");
+  ensureDir(resolve(RELEASE_DIR, "agent-core"));
+  {
+    const rcOk = await robocopy(
+      resolve(AGENT_CORE, "node_modules"),
+      resolve(RELEASE_DIR, "agent-core", "node_modules"),
+      [".cache"]
+    );
+    if (!rcOk) { fail("node_modules 复制失败!"); process.exit(1); }
+
+    // 对最终复制结果再验证一次，防止复制规则或文件锁导致原生绑定遗漏。
+    const releaseNode = resolve(RELEASE_DIR, "runtime", "nodejs", "node.exe");
+    const releaseCore = resolve(RELEASE_DIR, "agent-core");
+    const releaseSqliteTest = await exec(releaseNode, [
+      "-e", BACKEND_PROBE_SCRIPT,
+    ], { cwd: releaseCore, shell: false, env: { DB_PATH: ":memory:", LOG_TO_FILE: "false" } });
+    if (!releaseSqliteTest.ok) {
+      fail("release 中的 Express / better-sqlite3 验证失败，终止打包!");
+      if (releaseSqliteTest.stderr) log(`  ${releaseSqliteTest.stderr.slice(-1000)}`);
+      process.exit(1);
+    }
+    const releaseStudioTest = await exec(releaseNode, ["--input-type=module", "-e", STUDIO_FINISH_CHECK], {
+      cwd: releaseCore, shell: false, timeout: 30000,
+    });
+    if (!releaseStudioTest.ok) {
+      fail("release 中的照相馆装裱验证失败，终止打包!");
+      if (releaseStudioTest.stderr) log(`  ${releaseStudioTest.stderr.slice(-1000)}`);
+      process.exit(1);
+    }
+    ok("agent-core\\node_modules（发布目录验证通过）");
+  }
+
+  // agent-core/public
+  log("复制 agent-core\\public...");
+  if (existsSync(resolve(AGENT_CORE, "public"))) {
+    await robocopy(
+      resolve(AGENT_CORE, "public"),
+      resolve(RELEASE_DIR, "agent-core", "public")
+    );
+  }
+  ok("agent-core\\public");
+
+  // vector-service/models
+  if (existsSync(modelFile)) {
+    log("复制嵌入模型...");
+    const modelDst = resolve(RELEASE_DIR, "vector-service", "models");
+    ensureDir(modelDst);
+    const rcOk = await robocopy(
+      resolve(VECTOR_SVC, "models"),
+      modelDst,
+      [".mimosa"]
+    );
+    if (!rcOk) { fail("向量模型复制失败，终止打包!"); process.exit(1); }
+    ok("vector-service\\models");
+  }
+
+  // 邻舍.EXE.exe
+  const launcherExe = resolve(launcherDir, "dist", "邻舍.EXE.exe");
+  if (existsSync(launcherExe)) {
+    const { copyFileSync } = await import("node:fs");
+    const releaseLauncherExe = resolve(RELEASE_DIR, "邻舍.EXE.exe");
+    copyFileSync(launcherExe, releaseLauncherExe);
+    // 用打包时那个 venv 的 Python：系统 PATH 上不一定有 python，
+    // 而 venv 是这一步之前刚确认可用的。
+    const venvPython = resolve(launcherDir, "build_cache", "pyinstaller-venv", "Scripts", "python.exe");
+    const integrityPython = existsSync(venvPython) ? venvPython : "python";
+    const integrityResult = await exec(integrityPython, [
+      "build_launcher.py", "--normalize-integrity", releaseLauncherExe,
+    ], { cwd: launcherDir, print: true });
+    if (!integrityResult.ok) { fail("启动器完整性标记修复失败!"); process.exit(1); }
+    ok("邻舍.EXE.exe");
+  } else {
+    warn("未找到 邻舍.EXE.exe，PyInstaller 可能未成功");
+  }
+
+  // 使用说明（桌面交付：不再附带 APK，正文里也不列安卓段）
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(resolve(RELEASE_DIR, "使用说明.txt"), buildUsageGuideText({ includeAndroid: false }), "utf-8");
+  ok("使用说明.txt");
+
+  // VERSION 文件（供启动器运行时读取版本号）
+  writeFileSync(resolve(RELEASE_DIR, "VERSION"), VERSION + "\n", "utf-8");
+  ok("VERSION");
+
+  // BUILD_TAG：本次打包的精确 tag（含 -j 这类本地迭代后缀）。
+  // 前端「有更新噢」拿 /api/version 比 GitHub tag，只读 VERSION 的话
+  // 4.3.1-j 的包会被判成 4.3.1，永远提示「已是最新」；反过来又会给
+  // 自己已经装上的版本弹更新。后端优先读这个文件（见 agent-core/app.js）。
+  if (EXACT_TAG) {
+    writeFileSync(resolve(RELEASE_DIR, "BUILD_TAG"), EXACT_TAG + "\n", "utf-8");
+    ok(`BUILD_TAG (${EXACT_TAG})`);
+  }
+
+  // 默认头像：从 assets 源复制到 avatars 目录
+  const defaultAvatar = resolve(AGENT_CORE, "assets", "default_assistant_header.png");
+  if (existsSync(defaultAvatar)) {
+    const avatarDst = resolve(RELEASE_DIR, "agent-core", "data", "avatars");
+    ensureDir(avatarDst);
+    const { copyFileSync } = await import("node:fs");
+    copyFileSync(defaultAvatar, resolve(avatarDst, "default_assistant_header.png"));
+    ok("默认头像 → agent-core\\data\\avatars\\");
+  } else {
+    warn("默认头像不存在: agent-core/assets/default_assistant_header.png");
+  }
+
+  // ── 打包前清掉非产品内容（审查缺口 4，≈127 MB）──
+  // 正常路径（git clone）本就带不上它们（.gitignore 覆盖、0 tracked 文件）；
+  // 这里再清一次，是为了守住 **clone 失败时的 robocopy 兜底路径**，也防将来复制口径被改。
+  // 三项分别对应 7z 的 -xr'!*.mimosa' / -xr'!e2e\node_modules' / -xr'!logs'。
+  // **不含 .git** —— 交付包要保留 .git（审查 §六 第 1 条）。
+  for (const stray of [
+    resolve(RELEASE_DIR, "agent-core", "data", ".access-token"),
+    resolve(RELEASE_DIR, ".mimosa"),
+    resolve(RELEASE_DIR, "logs"),
+    resolve(RELEASE_DIR, "e2e", "node_modules"),
+  ]) {
+    if (!existsSync(stray)) continue;
+    rmSync(stray, { recursive: true, force: true });
+    ok(`打包前剔除非产品内容: ${stray.slice(RELEASE_DIR.length + 1)}`);
+  }
+
+  // ═══════════════════════════════════════════
+  // 打包 zip
+  // ═══════════════════════════════════════════
+  console.log();
+  log("创建 release zip...");
+
+  const zipFile = resolve(ROOT, "release", `${RELEASE_NAME}.zip`);
+  if (existsSync(zipFile)) {
+    const { unlinkSync } = await import("node:fs");
+    unlinkSync(zipFile);
+  }
+
+  // Compress-Archive 会跳过带 Hidden 属性的 .git；直接使用内置 .NET，保留更新所需仓库。
+  const zipResult = await exec("powershell", [
+    "-NoProfile", "-Command",
+    `$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory('${RELEASE_DIR.replace(/'/g, "''")}', '${zipFile.replace(/'/g, "''")}', [System.IO.Compression.CompressionLevel]::Optimal, $false)`
+  ], { shell: false });
+  if (!zipResult.ok) { fail("zip 创建失败!"); process.exit(1); }
+
+  // 直接读取最终 zip 的成员名，不读文件内容；默认头像之外不允许任何玩家数据。
+  const zipMembersResult = await exec(resolve(PY_DIR, "python.exe"), [
+    "-c",
+    "import json,sys,zipfile;print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist(),ensure_ascii=False))",
+    zipFile,
+  ], { shell: false });
+  if (!zipMembersResult.ok) { fail("无法读取最终 zip 成员清单，终止交付!"); process.exit(1); }
+  let zipMembers;
+  try { zipMembers = JSON.parse(zipMembersResult.stdout); }
+  catch { fail("最终 zip 成员清单不是合法 JSON，终止交付!"); process.exit(1); }
+  const normalizedMembers = zipMembers.map(member => member.replace(/\\/g, "/"));
+  if (!normalizedMembers.includes(".git/HEAD") || !normalizedMembers.includes(".git/config") ||
+      !normalizedMembers.some(member => member.startsWith(".git/objects/") && !member.endsWith("/"))) {
+    fail("最终 zip 缺少完整 Git 更新元数据（HEAD / config / objects），终止交付!");
+    process.exit(1);
+  }
+  ok("最终 zip Git 更新元数据检查通过");
+  const cacheMembers = normalizedMembers.filter(member => member.split("/").some(part => part.toLowerCase() === ".mimosa"));
+  if (cacheMembers.length) {
+    for (const member of cacheMembers.slice(0, 20)) fail(`禁止交付开发缓存: ${member}`);
+    fail(`最终 zip 含 ${cacheMembers.length} 个 .mimosa 成员，终止交付!`);
+    process.exit(1);
+  }
+  ok("最终 zip 开发缓存检查通过");
+  const sensitiveMembers = findSensitiveArchiveMembers(zipMembers, {
+    allowedDataFiles: ["agent-core/data/avatars/default_assistant_header.png"],
+  });
+  if (sensitiveMembers.length) {
+    for (const item of sensitiveMembers.slice(0, 20)) fail(`禁止交付: ${item.path}（${item.reason}）`);
+    fail(`最终 zip 含 ${sensitiveMembers.length} 个敏感文件，终止交付!`);
+    process.exit(1);
+  }
+  ok("最终 zip 敏感路径检查通过");
+
+  // 敏感历史对象检查（P0-08）：交付包保留 .git 供客户端更新，而 zip 成员名只有
+  // `.git/objects/ab/cdef…` 这种哈希路径，上面的路径规则永远查不到旧签名私钥。
+  // 这里在**发布目录**上还原历史路径——浅克隆的深度决定了包里实际带着多少历史。
+  //
+  // 口径（2026-11-16 收紧）：扫描本身失败 = 无法证明干净 ⇒ 阻断，不再「warn 后继续」。
+  // 已轮换且不再维护的旧安卓签名走 KNOWN_HISTORY_EXCEPTIONS 显式放行并打印理由；
+  // 其余任何命中仍然终止交付。
+  log("扫描发布目录的 Git 历史对象...");
+  const historyScan = findSensitiveGitObjects(RELEASE_DIR);
+  if (!historyScan.scanned) {
+    fail(`Git 历史扫描失败，无法证明交付包干净：${historyScan.error || '未知原因'}`);
+    fail("  桌面交付包保留 .git，必须能完成历史扫描才能签发。");
+    process.exit(1);
+  }
+  const historyFindings = splitHistoryFindings(historyScan.sensitive);
+  for (const item of historyFindings.allowed) {
+    warn(`历史例外放行: ${item.path}（${item.blobs} 个 blob）—— ${item.reason}`);
+  }
+  if (historyFindings.blocking.length) {
+    for (const item of historyFindings.blocking.slice(0, 20)) {
+      fail(`历史对象含敏感路径: ${item.path}（${item.blobs} 个 blob）`);
+    }
+    fail(`发布目录的 Git 历史含 ${historyFindings.blocking.length} 个敏感路径，终止交付!`);
+    fail("  处理方式：换用不含敏感历史的发布仓库/净化基线，或确认它确实已失效后在 releaseSafety 里显式登记");
+    process.exit(1);
+  }
+  ok(`Git 历史扫描通过（${historyScan.commits} 个提交，${historyFindings.allowed.length} 条已登记例外）`);
+
+  const { statSync } = await import("node:fs");
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(zipFile)) hash.update(chunk);
+  const sha256 = hash.digest("hex");
+  writeFileSync(`${zipFile}.sha256`, `${sha256}  ${RELEASE_NAME}.zip\n`, "utf8");
+  const zipSizeMB = Math.round(statSync(zipFile).size / (1024 * 1024));
+
+  console.log();
+  console.log(`  ${C.bold}${"=".repeat(50)}${C.reset}`);
+  console.log(`  ${C.bold}✨ Release 打包完成!${C.reset}`);
+  console.log(`  ${C.dim}${"=".repeat(50)}${C.reset}`);
+  console.log();
+  console.log(`  版本: v${EXACT_TAG || VERSION}`);
+  console.log(`  输出: release\\${RELEASE_NAME}.zip`);
+  console.log(`  体积: ~${zipSizeMB} MB`);
+  console.log(`  SHA256: ${sha256}`);
+  console.log(`  校验文件: release\\${RELEASE_NAME}.zip.sha256`);
+  console.log();
+  console.log(`  包含内容:`);
+  console.log(`  - Node.js v${NODE_VERSION} 便携版`);
+  console.log(`  - Python ${PYTHON_VERSION} + 全部依赖`);
+  console.log(`  - Portable Git (版本更新)`);
+  console.log(`  - .git/ (shallow depth 50，约 80-100MB)`);
+  console.log(`  - agent-core (预装依赖)`);
+  console.log(`  - vector-service (含嵌入模型)`);
+  console.log(`  - 邻舍.EXE 启动器`);
+  console.log();
+  console.log(`  用户解压后:`);
+  console.log(`  - 零构建，解压即用`);
+  console.log(`  - 版本管理功能完整可用`);
+  console.log();
+
+  // 提示清理
+  log(`${C.dim}提示: runtime/ 和 launcher/build_cache/ 为缓存，可保留用于下次打包加速${C.reset}`);
+}
+
+// ── 单独生成「使用说明.txt」 ──
+//
+//   $ node scripts/build-release.mjs --usage-guide-only [输出路径]
+//
+// 不碰 clone / robocopy / PyInstaller / APK，只把同一个函数生成的正文写盘，
+// 因此单独跑出来的内容与正式发布包里那份逐字节一致。默认写到仓库根目录（gitignored）。
+if (process.argv.includes("--usage-guide-only")) {
+  const outArg = process.argv.slice(2).find(arg => arg !== "--usage-guide-only");
+  const outPath = outArg ? resolve(process.cwd(), outArg) : resolve(ROOT, "使用说明.txt");
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(outPath, buildUsageGuideText({ version: VERSION }), "utf-8");
+  console.log(`  ${C.green}[OK]${C.reset} 使用说明.txt -> ${outPath}`);
+  process.exit(0);
+}
+
+main().catch((err) => {
+  console.error(`${C.red}Fatal: ${err.message}${C.reset}`);
+  console.error(err.stack);
+  process.exit(1);
+});

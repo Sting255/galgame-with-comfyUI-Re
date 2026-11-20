@@ -1,0 +1,465 @@
+import fs from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import sharp from 'sharp';
+import { getDb, getSystemRules, getSystemRulesWithWorld, getWorldSetting } from '../db/index.js';
+import { config } from '../config.js';
+import { chatSync } from './lorebook/runtime.js';
+import { buildStandingPersona, normalizeStandingOutfitScene, hasStandingOutfit, inspectStandingOutfits, validateMissingOutfitPolicy, completeStandingOutfit } from './expressionStandingAppearance.js';
+import { buildStandingPromptRequest } from './expressionStandingPrompt.js';
+import { buildUserImageCrossRefInfo } from './characterPersona.js';
+import { charArtistOverride } from './characterImageOpts.js';
+import { parseCharacterLoras } from './emojiService.js';
+import { generateImageRaw, captureImageGenerationConfig } from './imageSkill.js';
+import { refineImage } from './imageRefine.js';
+import { getImageDir, buildImageUrl, deleteImageFileByUrl, imageUrlExists, USER_AVATAR_FILE } from './imagePaths.js';
+import { invalidateGalleryCache } from './galleryCache.js';
+import { decodeImage, prepareStandingImage, standingSlots as listSlots } from './expressionStandingAssets.js';
+import { broadcast } from './unifiedStreamBus.js';
+import { getStandingDisplay } from './standingDisplay.js';
+import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
+import { buildTouchLineMessages, readTouchLines, startTouchLines, hasTouchLines } from './standingTouchLines.js';
+import { getWorldIntegrationRule } from '../builtinRules.js';
+import { readStandingTouchLines } from './standingTouchSpeechRuntime.js';
+import { currentWorldSignature, isStandingStale } from './worldSignature.js';
+
+const CATEGORY = 'expression_standing';
+export const PLAYER_STANDING_SUBJECT = 'player';
+const busyCharacters = new Set();
+const batchControls = new Map();
+const PAUSED = Symbol('standing task paused');
+let queue = Promise.resolve();
+const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+
+export const standingSlots = (db = getDb()) => listSlots(db);
+const subjectId = value => value === PLAYER_STANDING_SUBJECT ? value : Number(value);
+const isPlayer = id => id === PLAYER_STANDING_SUBJECT;
+
+function standingStore(id) {
+  const db = getDb(), player = isPlayer(id);
+  const jobs = player ? 'player_expression_standing_jobs' : 'expression_standing_jobs';
+  const args = player ? [] : [id];
+  const slotOwner = player ? 'character_id IS NULL' : 'character_id=?';
+  const jobOwner = player ? '' : 'character_id=? AND ';
+  const jobScope = player ? '' : 'WHERE character_id=?';
+  return {
+    db,
+    slots: () => db.prepare(`SELECT * FROM expression_standings WHERE ${slotOwner}`).all(...args),
+    ensure(slot) {
+      db.prepare('INSERT OR IGNORE INTO expression_standings(character_id,slot_id) VALUES(?,?)')
+        .run(player ? null : id, slot);
+      return db.prepare(`SELECT * FROM expression_standings WHERE ${slotOwner} AND slot_id=?`).get(...args, slot);
+    },
+    update(slot, fields, values = [], version) {
+      const guard = version === undefined ? [] : [version];
+      return db.prepare(`UPDATE expression_standings SET ${fields} WHERE ${slotOwner} AND slot_id=?${guard.length ? ' AND version=?' : ''}`)
+        .run(...values, ...args, slot, ...guard);
+    },
+    jobs: () => db.prepare(`SELECT * FROM ${jobs} ${jobScope} ORDER BY created_at DESC,rowid DESC LIMIT 10`).all(...args),
+    job: jobId => db.prepare(`SELECT * FROM ${jobs} WHERE ${jobOwner}id=?`).get(...args, jobId),
+    createJob(jobId, slotIds, request) {
+      const columns = player ? '' : 'character_id,';
+      const bindings = player ? '' : '?,';
+      db.prepare(`INSERT INTO ${jobs}(id,${columns}slots_json,status,request_json) VALUES(?,${bindings}?,'queued',?)`)
+        .run(jobId, ...args, JSON.stringify(slotIds), request);
+    },
+    updateJob: (jobId, fields, values = []) => db.prepare(`UPDATE ${jobs} SET ${fields} WHERE ${jobOwner}id=?`).run(...values, ...args, jobId),
+  };
+}
+
+function playerReference() {
+  return { avatar: fs.existsSync(USER_AVATAR_FILE), appearance: !!config.user?.appearance?.trim() };
+}
+
+async function readPlayerAvatar() {
+  let buffer;
+  try { buffer = await fs.promises.readFile(USER_AVATAR_FILE); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw new Error('读取酒馆头像失败，请重新上传头像'); }
+  try {
+    const image = await sharp(buffer, { limitInputPixels: 40000000 }).rotate()
+      .resize(768, 768, { fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+    return `data:image/png;base64,${image.toString('base64')}`;
+  } catch { throw new Error('酒馆头像图片无法识别，请重新上传头像'); }
+}
+
+function character(id) {
+  const row = getDb().prepare('SELECT * FROM characters WHERE id=?').get(id);
+  if (!row) throw fail('角色不存在', 404);
+  return row;
+}
+function ensureSlot(id, slot) {
+  if (!isPlayer(id)) character(id);
+  if (!standingSlots().some(s => s.id === slot)) throw fail('立绘槽位不存在', 404);
+  return standingStore(id).ensure(slot);
+}
+function assertIdle(id) {
+  if (busyCharacters.has(id)) throw fail('立绘任务正在进行，请完成后再编辑', 409);
+}
+function notify(id) {
+  broadcast('expression_standings_updated', isPlayer(id) ? { subject: PLAYER_STANDING_SUBJECT } : { characterId: id });
+  if (!isPlayer(id)) getStandingDisplay().refresh();
+}
+export function listExpressionStandings(id) {
+  id = subjectId(id);
+  const player = isPlayer(id), store = standingStore(id);
+  if (!player) character(id);
+  const rows = store.slots();
+  return {
+    ...(player ? { reference: playerReference() } : { touchLines: readStandingTouchLines(store.db, id) }),
+    slots: standingSlots().map(s => {
+      const row = rows.find(r => r.slot_id === s.id);
+      const imageUrl = row?.image_url && (!player || imageUrlExists(row.image_url)) ? row.image_url : null;
+      const status = player && row?.status === 'done' && !imageUrl ? 'empty' : row?.status;
+      const slot = { ...s, ...row, image_url: imageUrl, status, generation: JSON.parse(row?.config_json || '{}'), bounds: JSON.parse(row?.bounds_json || 'null') };
+      const info = isStandingStale({ standing_url: slot.image_url, standing_world_sig: slot.world_sig });
+      return { ...slot, world_stale: info.stale, world_stale_reason: info.reason };
+    }),
+    jobs: store.jobs().map(job => ({ ...job, resumable: job.status === 'failed' && job.error === '服务重启导致生成中断，请重试' })),
+    busy: busyCharacters.has(id),
+  };
+}
+
+function snapshotConfig(char) {
+  return structuredClone({ ...captureImageGenerationConfig('portrait'), artist: charArtistOverride(char) ?? config.comfyui.momentsArtist,
+    loras: char ? parseCharacterLoras(char) : [], ...(char?.custom_workflow ? { customWorkflow: char.custom_workflow } : {}), width: 768, height: 1536 });
+}
+/** One snapshot for the tavern manager, including characters with no saved slots. */
+export function listStandingOverview() {
+  const db = getDb();
+  const slots = standingSlots();
+  const images = new Map();
+  for (const row of db.prepare('SELECT character_id,slot_id FROM expression_standings WHERE character_id IS NOT NULL AND image_url IS NOT NULL AND image_url != ?').all('')) {
+    if (!images.has(row.character_id)) images.set(row.character_id, new Set());
+    images.get(row.character_id).add(row.slot_id);
+  }
+  return db.prepare(`SELECT c.id, j.status AS jobStatus, j.error AS error FROM characters c
+    LEFT JOIN expression_standing_jobs j ON j.id = (
+      SELECT id FROM expression_standing_jobs WHERE character_id=c.id ORDER BY created_at DESC,rowid DESC LIMIT 1
+    ) WHERE COALESCE(c.is_system, 0) = 0 ORDER BY c.id`).all().map(row => {
+    const missingSlotIds = slots.filter(s => !images.get(row.id)?.has(s.id)).map(s => s.id);
+    const touch = readStandingTouchLines(db,row.id);
+    const speechLines = Object.values(touch.speech.lines).flat();
+    const touchSpeech = { enabled: touch.speech.enabled, configured: touch.speech.configured, reason: touch.speech.reason,
+      total: speechLines.length, ready: speechLines.filter(line => line.audio_url).length,
+      pending: speechLines.filter(line => ['queued', 'generating'].includes(line.status)).length,
+      failed: speechLines.filter(line => ['failed', 'cancelled'].includes(line.status)).length };
+    return { ...row, touchSpeech, hasTouchLines:hasTouchLines(touch), touchStatus:touch.status, count: slots.length - missingSlotIds.length, total: slots.length, missingSlotIds, busy: busyCharacters.has(row.id) };
+  });
+}
+
+export function previewStandingBatches({ mode, outfitScene = 'work' } = {}) {
+  if (!['all', 'missing'].includes(mode)) throw fail('请选择全部重新生成或补齐缺失立绘');
+  const targets = listStandingOverview().filter(row => !row.busy && (mode === 'all' || row.missingSlotIds.length));
+  return inspectStandingOutfits(targets.map(row => character(row.id)), outfitScene);
+}
+
+export function previewCharacterStandingBatch(id, { outfitScene = 'work', reusePrompts = false } = {}) {
+  const char = character(id);
+  const running = busyCharacters.has(Number(id)) && !batchControls.get(Number(id))?.paused;
+  return inspectStandingOutfits(reusePrompts || running ? [] : [char], outfitScene);
+}
+
+export function startAllStandingBatches({ mode, requirement = '', outfitScene = 'work', missingOutfitPolicy } = {}, dependencies) {
+  const preview = previewStandingBatches({ mode, outfitScene });
+  validateMissingOutfitPolicy(missingOutfitPolicy);
+  if (preview.missingCharacters.length && !missingOutfitPolicy) throw fail('部分角色缺少所选服装，请重新点击生成并确认补全或使用默认外观', 409);
+  normalizeStandingOutfitScene(outfitScene);
+  const result = { started: [], skippedBusy: [], skippedComplete: [], failed: [] };
+  for (const row of listStandingOverview()) {
+    if (row.busy) { result.skippedBusy.push(row.id); continue; }
+    if (mode === 'missing' && !row.missingSlotIds.length) { result.skippedComplete.push(row.id); continue; }
+    try {
+      const task = startStandingBatch(row.id, {
+        ...(mode === 'missing' ? { slotIds: row.missingSlotIds } : {}),
+        requirement, outfitScene, missingOutfitPolicy, reusePrompts: false,
+      }, dependencies);
+      result.started.push({ characterId: row.id, ...task });
+    } catch (error) { result.failed.push({ characterId: row.id, error: error.message }); }
+  }
+  return result;
+}
+
+export async function generateStandingPrompts(char, slots, requirement, persona, outfitScene = 'work', { player = false, readAvatar = readPlayerAvatar, chat = chatSync } = {}) {
+  const avatarImage = player ? await readAvatar() : null;
+  const { messages, lorebook } = buildStandingPromptRequest({
+    systemRules: getWorldSetting() ? getSystemRulesWithWorld({ roleplay: false }) : getSystemRules({ roleplay: false }),
+    worldRule: getWorldSetting() ? getWorldIntegrationRule('interaction') : '',
+    slots, persona: persona ?? (player ? buildUserImageCrossRefInfo() : buildStandingPersona(char, outfitScene)),
+    requirement, outfitScene, player, avatarImage,
+  });
+  const raw = await chat(messages, { temperature: 0.7, max_tokens: Math.min(8192, Math.max(2048, slots.length * 512 + 512)), response_format: { type: 'json_object' }, label: '批量立绘提示词', ...(lorebook && { lorebook }) });
+  return parseStandingPrompts(raw, slots);
+}
+
+async function commitImage(id, slot, buffer, { removeBg = true, source = true } = {}) {
+  const previous = ensureSlot(id, slot); // Deleted characters must never be resurrected by a late job.
+  const sourceBuffer = buffer;
+  const { output, bounds } = await prepareStandingImage(buffer, removeBg);
+  if (isPlayer(id) && !bounds) throw fail('图片没有可见内容');
+  const prefix = isPlayer(id) ? 'player' : `char_${id}`;
+  const filename = `${prefix}_${slot.replace(':', '_')}_${randomUUID()}.png`;
+  const dir = getImageDir(CATEGORY);
+  fs.mkdirSync(dir, { recursive: true });
+  const url = buildImageUrl(CATEGORY, filename);
+  const sourceName = `source_${filename}`;
+  try {
+    fs.writeFileSync(path.join(dir, filename), output);
+    if (source) fs.writeFileSync(path.join(dir, sourceName), await sharp(sourceBuffer, { limitInputPixels: 67108864 }).png().toBuffer());
+    const result = standingStore(id).update(slot, `image_url=?,source_url=CASE WHEN ? IS NULL THEN source_url ELSE ? END,
+      bounds_json=?,world_sig=?,status='done',error=NULL,version=version+1`,
+    [url, source ? sourceName : null, source ? buildImageUrl(CATEGORY, sourceName) : null, JSON.stringify(bounds), currentWorldSignature()], previous.version);
+    if (!result.changes) throw fail('立绘已被修改或角色已删除，请刷新', 409);
+  } catch (error) {
+    for (const file of [filename, sourceName]) { try { fs.unlinkSync(path.join(dir, file)); } catch {} }
+    throw error;
+  }
+  for (const old of [previous.image_url, source ? previous.source_url : null]) {
+    if (old) { try { deleteImageFileByUrl(old); } catch { /* A stale file must not invalidate the committed image. */ } }
+  }
+  if (isPlayer(id)) invalidateGalleryCache();
+  notify(id);
+}
+
+export function generateStandingTouchLines(char) {
+  const relationship=getDb().prepare('SELECT relationship_text, affinity, is_oath FROM user_relationships WHERE character_id=?').get(char.id);
+  const messages=buildTouchLineMessages(char, {
+    relationship,userName:config.user.nickname || '用户',
+    systemRules:getSystemRulesWithWorld({roleplay:false}),
+    worldRule:getWorldSetting()?getWorldIntegrationRule('interaction'):'当前未启用世界观，按角色资料与本次任务创作，不补造世界设定。',
+  });
+  return chatSync(messages, { temperature: 0.8, max_tokens: 3000, response_format: { type: 'json_object' }, label: '立绘触摸台词', signal: AbortSignal.timeout(90000), timeout: 90000, retries: 0, maxRetries: 0, freeEggFailover: false });
+}
+
+export function regenerateStandingTouchLines(id, expectedVersion) {
+  const char=character(id),db=getDb(),current=readTouchLines(db,char.id);
+  if(current.status==='generating')throw fail('台词正在生成，请稍候',409);
+  if(expectedVersion!==current.version)throw fail('台词已更新，请重新读取',409);
+  startTouchLines({db,character:char,generate:generateStandingTouchLines,emit:broadcast})
+    ?.catch(error=>console.warn('[standing-touch] 台词保存失败:',error.message));
+  return readTouchLines(db,char.id);
+}
+
+export function startStandingBatch(id, { slotIds, requirement = '', outfitScene = 'work', missingOutfitPolicy, reusePrompts = false, missingOnly = false } = {}, { promptGenerator = generateStandingPrompts, imageGenerator = generateImageRaw, touchLinesGenerator = generateStandingTouchLines, outfitGenerator, personaSnapshot } = {}) {
+  id = subjectId(id); assertIdle(id);
+  const player = isPlayer(id), store = standingStore(id), { db } = store;
+  normalizeStandingOutfitScene(outfitScene);
+  validateMissingOutfitPolicy(missingOutfitPolicy);
+  if (player && !reusePrompts && personaSnapshot == null) {
+    const reference = playerReference();
+    if (!reference.avatar && !reference.appearance) throw fail('请先在酒馆上传头像或填写你的外观');
+  }
+  const char = player ? null : character(id);
+  const missingOutfit = !player && !reusePrompts && personaSnapshot == null && !hasStandingOutfit(id, outfitScene);
+  if (missingOutfit && !missingOutfitPolicy) throw fail('角色缺少所选服装，请重新点击生成并确认补全或使用默认外观', 409);
+  if (missingOutfit && missingOutfitPolicy === 'fallback') outfitScene = 'work';
+  const all = standingSlots();
+  const selected = slotIds === undefined ? all.map(s => s.id) : slotIds;
+  if (!Array.isArray(selected) || !selected.length || selected.some(s => !all.some(a => a.id === s))) throw fail('请选择有效立绘槽位');
+  const saved = missingOnly ? new Set(store.slots().filter(r => r.image_url && imageUrlExists(r.image_url)).map(r => r.slot_id)) : new Set();
+  const slots = all.filter(s => selected.includes(s.id) && !saved.has(s.id));
+  if (!slots.length) throw fail('所选表情立绘已齐全');
+  const rows = slots.map(s => ensureSlot(id, s.id));
+  if (reusePrompts && rows.some(r => !r.prompt.trim())) throw fail('请先生成或保存提示词');
+  requirement = String(requirement).trim().slice(0, 2000);
+  const generation = snapshotConfig(char);
+  let persona = personaSnapshot ?? (player ? buildUserImageCrossRefInfo() : missingOutfit && missingOutfitPolicy === 'generate' ? null : buildStandingPersona(char, outfitScene));
+  const jobId = randomUUID();
+  const requestSnapshot = promptsReady => JSON.stringify({ requirement, outfitScene, missingOutfitPolicy, persona, promptsReady });
+  store.createJob(jobId, slots.map(s => s.id), requestSnapshot(reusePrompts));
+  busyCharacters.add(id);
+  const control = { jobId, pauseRequested: false, paused: false, cursor: 0, failures: 0, prompts: null, run: null };
+  batchControls.set(id, control);
+  notify(id);
+  const run = async () => {
+    try {
+      if (control.pauseRequested) throw PAUSED;
+      if (persona === null) {
+        store.updateJob(jobId, "status='outfits'");
+        notify(id);
+        try {
+          await completeStandingOutfit(char, outfitScene, outfitGenerator);
+          character(id); // A character deleted during design must not be regenerated.
+          persona = buildStandingPersona(char, outfitScene);
+          store.updateJob(jobId, 'request_json=?', [requestSnapshot(false)]);
+        } catch (error) { throw new Error(`自动补全服装失败：${error.message}`); }
+        if (control.pauseRequested) throw PAUSED;
+      }
+      store.updateJob(jobId, 'status=?', [control.prompts || reusePrompts ? 'generating' : 'prompts']);
+      notify(id);
+      await runStandingBatch({
+        slots: slots.slice(control.cursor),
+        generatePrompts: () => control.prompts || (reusePrompts ? new Map(rows.map(r => [r.slot_id, r.prompt])) : promptGenerator(char, slots, requirement, persona, outfitScene, { player })),
+        savePrompts: prompts => {
+          if (control.prompts) return;
+          db.transaction(() => {
+            for (const slot of slots) {
+              const old = rows.find(r => r.slot_id === slot.id);
+              store.update(slot.id, "prompt=?,requirement=?,config_json=?,status='queued',error=NULL",
+                [prompts.get(slot.id), reusePrompts ? old.requirement : requirement, reusePrompts && old.config_json !== '{}' ? old.config_json : JSON.stringify(generation)]);
+            }
+            store.updateJob(jobId, "status='generating',request_json=?", [requestSnapshot(true)]);
+          })();
+          control.prompts = prompts;
+          notify(id);
+        },
+        beforeRender: () => { if (control.pauseRequested) throw PAUSED; },
+        render: async (slot, prompt) => {
+          const row = ensureSlot(id, slot.id);
+          store.update(slot.id, "status='generating'");
+          notify(id);
+          const opts = JSON.parse(row.config_json);
+          // 最终阀门：不论提示词来自本次生成、库里复用还是用户手改，进 ComfyUI 前一律补上固定前置（solo 开头）。
+          const framedPrompt = frameStandingPrompt(prompt);
+          const result = await imageGenerator(framedPrompt, { ...opts, scene: 'portrait', workflowScene: null, promptScene: 'avatar', priority: 'high', disableRAG: true, alreadyPrepared: true, persistPreparation: false, ...(!player && { identity: char }) });
+          if (!result.success || !result.images?.length) throw new Error(result.error || '未返回立绘图片');
+          await commitImage(id, slot.id, decodeImage(result.images[0].base64));
+        },
+        failed: (slot, error) => {
+          control.failures++;
+          store.update(slot.id, "status='failed',error=?", [error.message]);
+          notify(id);
+        },
+        complete: () => { control.cursor++; store.updateJob(jobId, 'completed=completed+1'); notify(id); },
+      });
+      store.updateJob(jobId, 'status=?', [control.failures ? 'partial_failed' : 'done']);
+    } catch (error) {
+      if (error === PAUSED) {
+        control.paused = true;
+        store.updateJob(jobId, "status='paused'");
+      } else store.updateJob(jobId, "status='failed',error=?", [error.message]);
+    } finally {
+      if (!control.paused) { busyCharacters.delete(id); batchControls.delete(id); }
+      notify(id);
+    }
+  };
+  control.run = run;
+  control.restart = (options = {}) => {
+    let nextScene = normalizeStandingOutfitScene(options.outfitScene ?? outfitScene);
+    const nextPolicy = options.missingOutfitPolicy !== undefined ? options.missingOutfitPolicy : missingOutfitPolicy;
+    validateMissingOutfitPolicy(nextPolicy);
+    const changedDirection = options.outfitScene !== undefined || options.requirement !== undefined || options.missingOutfitPolicy !== undefined;
+    let nextPersona = persona;
+    if (player) nextPersona = buildUserImageCrossRefInfo();
+    else if (changedDirection) {
+      const missing = !hasStandingOutfit(id, nextScene);
+      if (missing && !nextPolicy) throw fail('角色缺少所选服装，请重新点击生成并确认补全或使用默认外观', 409);
+      if (missing && nextPolicy === 'fallback') nextScene = 'work';
+      nextPersona = missing && nextPolicy === 'generate' ? null : buildStandingPersona(character(id), nextScene);
+    }
+    requirement = String(options.requirement ?? requirement).trim().slice(0, 2000);
+    outfitScene = nextScene;
+    if (changedDirection) missingOutfitPolicy = nextPolicy;
+    persona = nextPersona;
+    // Restart the whole batch, including slots already rendered before the pause.
+    // Keep existing images until their replacements have been committed.
+    db.transaction(() => {
+      store.updateJob(jobId, 'completed=0,error=NULL,request_json=?', [requestSnapshot(false)]);
+      for (const slot of slots) {
+        store.update(slot.id, "status='queued',error=NULL");
+      }
+    })();
+    reusePrompts = false;
+    control.prompts = null;
+    control.cursor = 0;
+    control.failures = 0;
+  };
+  queue = queue.then(run, run);
+  if (!player && slots.length === all.length && !reusePrompts && !hasTouchLines(readTouchLines(db,id))) {
+    // A text-task startup/storage failure must not strand the queued image job.
+    try {
+      startTouchLines({ db, character: char, generate: touchLinesGenerator, emit: broadcast })
+        ?.catch(error => console.warn('[standing-touch] 后台台词任务保存失败:', error.message));
+    } catch (error) { console.warn('[standing-touch] 后台台词任务启动失败:', error.message); }
+  }
+  return { jobId };
+}
+
+export function controlStandingBatch(id, jobId, action, dependencies, options = {}) {
+  id = subjectId(id);
+  const store = standingStore(id);
+  const control = batchControls.get(id);
+  if (!control && action === 'resume') {
+    assertIdle(id);
+    const job = store.job(jobId);
+    const [latest] = store.jobs();
+    if (!job || latest?.id !== jobId || job.status !== 'failed' || job.error !== '服务重启导致生成中断，请重试') throw fail('该任务已结束或已有更新任务', 409);
+    const request = JSON.parse(job.request_json || '{}');
+    const valid = new Set(standingSlots().map(s => s.id));
+    const ids = JSON.parse(job.slots_json).filter(key => valid.has(key));
+    const allRows = ids.map(key => ensureSlot(id, key));
+    const ready = request.promptsReady ?? allRows.every(r => r.prompt.trim() && ['failed', 'queued', 'generating', 'done'].includes(r.status));
+    const remaining = ids.filter((key, index) => {
+      const row = allRows[index];
+      if (!ready) return true;
+      // Include failed attempts before the cursor, but never regenerate a committed image.
+      return row.status === 'failed' || (index >= job.completed && row.status !== 'done');
+    });
+    if (!remaining.length) {
+      store.updateJob(jobId, "status='done',error=NULL");
+      notify(id); return { ok: true, jobId };
+    }
+    const result = startStandingBatch(id, { slotIds: remaining, requirement: request.requirement ?? allRows[0]?.requirement ?? '', outfitScene: request.outfitScene ?? 'work', missingOutfitPolicy: request.missingOutfitPolicy, reusePrompts: ready }, { ...dependencies, personaSnapshot: request.persona });
+    store.updateJob(jobId, "status='resumed',error=NULL");
+    return { ok: true, ...result };
+  }
+  if (!control || control.jobId !== jobId) throw fail('任务已结束或服务已重启，请重新生成', 409);
+  if (action === 'stop') {
+    control.pauseRequested = true;
+    if (!control.paused) store.updateJob(jobId, "status='stopping'");
+  } else if (action === 'resume' || action === 'restart') {
+    if (!control.paused) throw fail('请等待当前步骤完成后继续任务', 409);
+    if (action === 'restart') control.restart(options);
+    control.pauseRequested = false;
+    control.paused = false;
+    store.updateJob(jobId, "status='queued'");
+    queue = queue.then(control.run, control.run);
+  } else throw fail('无效的任务操作');
+  notify(id);
+  return { ok: true };
+}
+
+export { decodeImage };
+export function updateStandingPrompt(id, slot, prompt, generation) {
+  id = subjectId(id);
+  assertIdle(id); ensureSlot(id, slot);
+  if (typeof prompt !== 'string' || prompt.trim().length < 10 || prompt.length > 4000) throw fail('提示词需为 10–4000 字符');
+  const row = ensureSlot(id, slot);
+  const old = { ...snapshotConfig(isPlayer(id) ? null : character(id)), ...JSON.parse(row.config_json) };
+  const next = generation ? { ...old, artist: String(generation.artist ?? old.artist ?? ''), loras: Array.isArray(generation.loras) ? generation.loras : old.loras } : old;
+  standingStore(id).update(slot, 'prompt=?,config_json=?', [prompt.trim(), JSON.stringify(next)]);
+  notify(id);
+}
+export async function editStandingImage(id, slot, action, payload = {}) {
+  id = subjectId(id); assertIdle(id);
+  const row = ensureSlot(id, slot);
+  busyCharacters.add(id);
+  try {
+    if (action === 'upload' || action === 'image') {
+      const buffer = decodeImage(payload.image);
+      if (isPlayer(id) && action === 'upload' && (!buffer.length || buffer.length > 6 * 1024 * 1024)) throw fail('请上传不超过 6 MB 的图片');
+      await commitImage(id, slot, buffer, { removeBg: action === 'upload', source: action === 'upload' });
+    } else {
+      if (!row.image_url) throw fail('立绘尚未生成');
+      let filePath = path.join(getImageDir(CATEGORY), path.basename(row.image_url));
+      if (!fs.existsSync(filePath)) filePath = filePath.replace(/\.png$/i, '.avif');
+      const buffer = fs.readFileSync(filePath);
+      if (action === 'crop') {
+        const { x, y, w, h } = payload;
+        if (![x, y, w, h].every(Number.isInteger) || x < 0 || y < 0 || w < 1 || h < 1) throw fail('裁剪范围无效');
+        await commitImage(id, slot, await sharp(buffer).extract({ left: x, top: y, width: w, height: h }).png().toBuffer(), { removeBg: false, source: false });
+      } else if (action === 'hires') {
+        if (!row.prompt) throw fail('请先保存提示词');
+        const result = await refineImage({ ...JSON.parse(row.config_json), buffer, ext: path.extname(filePath), promptText: row.prompt, scene: 'portrait', workflowScene: null, output: 'buffer' });
+        await commitImage(id, slot, decodeImage(result.base64));
+      } else throw fail('未知图片操作');
+    }
+  } finally { busyCharacters.delete(id); notify(id); }
+}
+export function deleteStanding(id, slot) {
+  id = subjectId(id);
+  assertIdle(id); const row = ensureSlot(id, slot);
+  standingStore(id).update(slot, "image_url=NULL,source_url=NULL,bounds_json=NULL,status='empty',error=NULL,version=version+1");
+  for (const url of [row.image_url, row.source_url]) if (url) { try { deleteImageFileByUrl(url); } catch {} }
+  if (isPlayer(id)) invalidateGalleryCache();
+  notify(id);
+}

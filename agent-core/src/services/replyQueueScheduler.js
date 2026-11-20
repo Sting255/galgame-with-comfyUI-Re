@@ -1,0 +1,479 @@
+import { registerScheduler, unregisterScheduler, noteSchedulerFailure } from './schedulerRegistry.js';
+/**
+ * 回复队列调度器
+ *
+ * 每 5 分钟扫描一次，处理两件事：
+ *   1. 整轮日程刷新：到期后启动共同生活规划和日程生成后台任务
+ *   2. 回复队列处理：取出到期 waiting 条目，同一角色所有 waiting 消息合并为一条回复
+ *
+ * 合并逻辑对所有延迟类型通用（exam/shopping/sleeping 等），不仅限于睡觉。
+ * sleeping 唯一特殊之处：回复后更新 is_sleeping=0，恢复朋友圈/奇遇系统。
+ */
+
+import { getDb, getSystemRules, getWorldSetting } from '../db/index.js';
+import { chatSync } from '../llm/llm-client.js';
+import { prepareNarrativePrompt } from './presets/narrative.js';
+import { buildConversationLorebookContext } from './lorebook/conversationContext.js';
+import { config } from '../config.js';
+import { parseSqlUtc } from './programTime.js';
+import { getCurrentActivity, syncSleepingState } from './scheduleManager.js';
+// P1-12：生成完成后、落库前的统一公开闸门（睡眠 / 主动聊天开关 / 存在性 / 系统角色）
+import { checkCharacterPublishable } from './publishGate.js';
+import { getTimeLight } from './timeLight.js';
+import { maybeStartScheduledBatch, maybeInitializeSchedule } from './scheduleBatch.js';
+import { splitText } from '../utils/sentenceSplitter.js';
+import {
+  loadEmotionState, getCompositeEmotion,
+  stateToPrompt, affinityToPrompt, loadAffinity,
+} from './emotionEngine.js';
+import { broadcast } from './unifiedStreamBus.js';
+import { processDeferredCommentReplies } from './momentCommentService.js';
+import { getStandingDisplay } from './standingDisplay.js';
+import { getFreshUnsharedDream, markDreamShared } from './dreamService.js';
+// 用户信息块的唯一构造器：与"叫醒"链共用，避免两处各写一份再漂移（persona 曾被丢掉，见该函数注释）
+import { buildUserInfoBlock } from './wakeService.js';
+import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
+import { createTownActorRegistry } from './town/townActorRegistry.js';
+import { runProgramDayRollover } from './programDayRollover.js';
+// 上游 v3.9.0 合并：朋友圈回填自己会刷新到期日程，补发进行中时本调度器的日程刷新让位
+import { isMomentBackfillRunning } from './momentBackfill.js';
+// 上游 v4.0.0 合并：媒体内容页到点补帖与状态自愈
+import { maybeAutoGenerate as maybeAutoGenerateMedia, resetStaleMediaGenerating, initializeMediaAutoSchedule } from './mediaService.js';
+
+const CHECK_INTERVAL = 1 * 60 * 1000; // 1 分钟
+
+let timer = null;
+let processing = false;
+// 日报模块按需加载（会拉起 LLM / 生图依赖，与 programDayRollover 同样用动态 import）
+let newspaperModule = null;
+
+/**
+ * 日报重试驱动（2026-11-20，规划 N5）。
+ *
+ * 世界翻篇只在程序日期变化时敲一次门；那一次没出成（零点全员在睡、网关抖动、配图缺）时，
+ * newspaperService 里的延期 / 失败冷却 / 补图冷却原本没有任何人再调用 —— 11-19 就整天没出刊。
+ * 这里每个 tick 调一次，节奏完全由 newspaperService 自己的冷却决定：
+ * 当天已出且配图齐全、处于延期或冷却期、已在生成中，都是零开销返回。
+ */
+function maybeRetryNewspaper() {
+  (newspaperModule ||= import('./newspaperService.js'))
+    .then(mod => mod.maybeGenerateDailyNewspaper())
+    .catch(err => console.warn('[replyQueue] 日报重试驱动失败（已忽略）:', err?.message || err));
+}
+
+// ── 公开 API ──
+
+export function startReplyQueueScheduler() {
+  if (timer) return;
+  console.log('[replyQueue] Scheduler started (interval: 1min)');
+
+  // 启动自愈：把上次进程中断时遗留的「正在生成」放回可重试。
+  // 生图队列在内存里，重启即丢，DB 状态却会停在 generating —— 不重置的话那几条
+  // 既不会被重新排队，也会被 repairMissingImages 跳过，等于永久坏掉。
+  try { resetStaleMediaGenerating(); } catch (e) { console.error('[replyQueue] media 状态自愈失败:', e.message); }
+  initializeMediaAutoSchedule();
+
+  // 首次延迟 10 秒启动（等待 DB 就绪）
+  timer = setTimeout(() => {
+    tick();
+    timer = registerScheduler('reply-queue', CHECK_INTERVAL, tick);
+    timer.unref?.();
+  }, 10_000);
+}
+
+/** ⚠️ 死导出（2026-10-15 标注，只标注不删）：无调用点；与另外六个 `stop*Scheduler` 同批处理。 */
+export function stopReplyQueueScheduler() {
+  if (timer) {
+    unregisterScheduler(timer);
+    clearTimeout(timer);
+    timer = null;
+    console.log('[replyQueue] Scheduler stopped');
+  }
+}
+
+// ── 主 tick ──
+
+async function tick() {
+  if (processing) return;
+  processing = true;
+
+  try {
+    // 0. 世界翻篇检查（2026-10-01）：程序日期变了就跑一遍日常任务（日报 / 记忆整理…）。
+    //    这里覆盖"程序时间自然流过午夜"；手动调时走 timeControl 的立即触发。
+    //    同一天重复调用是空操作（处理过的日期落库），所以放在 tick 里没有额外开销。
+    //    fire-and-forget：内部任务含 LLM 与逐张配图，绝不能阻塞下面的调度。
+    runProgramDayRollover({ reason: 'tick' }).catch(err => {
+      console.warn('[rollover] tick 触发失败（已忽略）:', err?.message || err);
+    });
+
+    // 0.1 日报重试：翻篇那一次没出成时按日报自己的冷却节奏补出（fire-and-forget）
+    maybeRetryNewspaper();
+
+    // 0.5 媒体内容页：仅到点补一批新帖（fire-and-forget，内部节流与并发守卫）。
+    // dev 启动时已初始化等待间隔；配图只由新批次或前端按需触发。
+    maybeAutoGenerateMedia();
+
+    // 1. 仅启动到期的整轮后台任务，不等待 LLM，继续处理回复
+    await maybeRefreshSchedules();
+
+    // 2. 回复队列处理（每次 tick 最多 1 个角色）
+    await processReplyQueue();
+
+    // 3. 朋友圈评论「等醒再回」（2026-11-08）：她睡觉时被评论的帖子，醒来后补上回复。
+    //    独立 try：这条链路的失败绝不能影响私聊回复队列。
+    try {
+      await processDeferredCommentReplies({ limit: 3 });
+    } catch (err) {
+      console.warn('[replyQueue] deferred moment comment failed:', err?.message || err);
+    }
+  } catch (err) {
+    noteSchedulerFailure(err);
+    console.error('[replyQueue] tick error:', err.message);
+  } finally {
+    processing = false;
+  }
+}
+
+// ── 日程刷新 ──
+
+function maybeRefreshSchedules() {
+  if (isMomentBackfillRunning()) return;
+  if (!maybeStartScheduledBatch()) maybeInitializeSchedule();
+}
+
+// ── 回复队列处理 ──
+
+export async function processReplyQueue() {
+  const db = getDb();
+
+  // 取最早到期的一个角色（只取第一条来确定角色，然后拉该角色所有 waiting）
+  const entry = db.prepare(`
+    SELECT rq.*, c.name, c.display_name, c.base_prompt, c.short_prompt, c.emotion_baseline
+    FROM reply_queue rq
+    JOIN characters c ON c.id = rq.character_id
+    WHERE rq.status = 'waiting'
+      AND rq.scheduled_reply_at <= datetime('now')
+    ORDER BY rq.scheduled_reply_at ASC
+    LIMIT 1
+  `).get();
+
+  if (!entry) return;
+
+  // P1-12：认领也要带到期条件。
+  //
+  // 原来第一句查询有 `scheduled_reply_at <= now`，但真正认领的这句只按
+  // `character_id + status='waiting'` 全量拉 —— 于是一条已到期的消息会把该角色
+  // 所有**尚未到期**的消息一起带走，提前回复。现在两句用同一个时间条件。
+  const allPending = db.prepare(`
+    UPDATE reply_queue SET status = 'processing'
+    WHERE character_id = ? AND status = 'waiting'
+      AND scheduled_reply_at <= datetime('now')
+    RETURNING *
+  `).all(entry.character_id).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
+
+  if (allPending.length === 0) return;
+
+  const ids = allPending.map(e => e.id);
+
+  const placeholders = ids.map(() => '?').join(',');
+
+  const isSleepWakeup = entry.delay_minutes === -1;
+
+  // 梦境系统：睡醒合并回复时注入未分享的梦（出口③）
+  const dream = isSleepWakeup ? getFreshUnsharedDream(entry.character_id) : null;
+
+  console.log(`[replyQueue] Processing ${allPending.length} queued message(s) for ${entry.display_name}${isSleepWakeup ? ' (sleep wakeup)' : ''}`);
+
+  try {
+    const conversationId = entry.conversation_id;
+    const characterId = entry.character_id;
+    const standingTurn = getStandingDisplay().begin(characterId, `delayed:${entry.id}`);
+
+    // 构建 LLM 上下文（模拟 chat.js 的关键消息层）
+    const msgs = buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream);
+
+    // 调用 LLM 生成回复
+    const lorebookTurn = await prepareNarrativePrompt(msgs, {
+      ...buildConversationLorebookContext(db, {conversationId, character:entry, kind:'delayed', userName:config.user.nickname || '用户'}), maxOutputTokens:512,
+    });
+    const fullReply = await chatSync(lorebookTurn.messages, {
+      temperature: 0.72,
+      label: `delayed-reply:${entry.display_name}`,
+    });
+
+    if (!fullReply || fullReply.trim().length === 0) {
+      throw new Error('Empty reply from LLM');
+    }
+
+    // P1-12：生成完成后、落库前复查她此刻是否还能说话。
+    // LLM 调用可能几十秒，期间她可能又睡了（临时唤醒到期 / 日程重算）、
+    // 被关掉主动聊天开关、或被删除。此前只在入口判过一次，生成中再次入睡的回复照样公开。
+    // 不能发时退回 waiting 顺延，不扣当日额度。
+    if (!isSleepWakeup) {
+      const gate = checkCharacterPublishable(db, entry.character_id, { flag: 'proactive_disabled' });
+      if (!gate.allowed) {
+        db.prepare(
+          `UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+5 minutes') WHERE id IN (${placeholders})`
+        ).run(...ids);
+        console.log(`[replyQueue] ${entry.display_name} 生成后已不可发布（${gate.reason}），顺延 5 分钟`);
+        // lorebookTurn 还没 commit，直接放弃这一轮（commit 只在真正落库的事务里调用）
+        return;
+      }
+    }
+
+    // 分句
+    const segments = splitText(fullReply);
+
+    const msgIds = [];
+    db.transaction(() => {
+    // 写入 raw_messages
+    const rawResult = db.prepare(`
+      INSERT INTO raw_messages (conversation_id, role, content)
+      VALUES (?, 'assistant', ?)
+    `).run(conversationId, fullReply);
+    lorebookTurn.commit();
+
+    // 写入 messages（分句展示）
+    for (let i = 0; i < segments.length; i++) {
+      const seq = i; // 使用递增序号
+      const msgResult = db.prepare(`
+        INSERT INTO messages (conversation_id, raw_id, role, content, seq)
+        VALUES (?, ?, 'assistant', ?, ?)
+      `).run(conversationId, rawResult.lastInsertRowid, segments[i], seq);
+      msgIds.push(msgResult.lastInsertRowid);
+    }
+
+    db.prepare(`DELETE FROM reply_queue WHERE id IN (${placeholders}) AND status = 'processing'`).run(...ids);
+
+    // 睡觉醒来（P1-12）：不再手工清 is_sleeping 那一组列。
+    // 睡眠状态的真源判定只在 scheduleManager 里，手工改会让库与日程重新算出来的值不一致
+    // （下次 refreshAllSleepStates 又把它改回去，界面看到「醒了又睡」的抖动）。
+    // 这里只负责「到点该醒了」这个事件，实际状态由统一入口重算并广播。
+    if (isSleepWakeup) {
+      try {
+        syncSleepingState(characterId);
+        console.log(`[replyQueue] ${entry.display_name} wake-up requested, sleep state resynced`);
+      } catch (err) {
+        console.warn(`[replyQueue] syncSleepingState failed for ${entry.display_name}:`, err?.message || err);
+      }
+    }
+    })();
+
+    // 清除所有 waiting 状态的其他消息（同一批次已合并处理）
+    // 不需要——它们已经在 allPending 里并标记为 processing→done
+
+    // 通过统一 SSE 推送到前端
+    getStandingDisplay().complete(standingTurn);
+    broadcast('delayed_reply', {
+      character_id: characterId,
+      display_name: entry.display_name,
+      conversation_id: conversationId,
+      messages: segments.map((content, i) => ({
+        id: msgIds[i],
+        role: 'assistant',
+        content,
+        seq: i,
+      })),
+      is_sleep_wakeup: isSleepWakeup,
+      merged_count: allPending.length,
+      created_at: new Date().toISOString(),
+    });
+
+    console.log(`[replyQueue] Reply sent for ${entry.display_name}: ${segments.length} bubble(s), ${allPending.length} message(s) merged`);
+
+    // 梦境系统：睡醒回复已生成 → 标记梦为已分享（出口③）
+    if (dream?.id) {
+      try { markDreamShared(dream.id, 'wake_reply'); }
+      catch (err) { console.debug('[replyQueue] 梦境分享标记未写入:', err.message); }
+    }
+  } catch (err) {
+    noteSchedulerFailure(err);
+    console.error(`[replyQueue] Failed for ${entry.display_name}:`, err.message);
+    // 失败：第一条重置为 waiting，3 分钟后重试
+    db.prepare("UPDATE reply_queue SET status = 'waiting', scheduled_reply_at = datetime('now', '+3 minutes') WHERE id = ?")
+      .run(entry.id);
+    // 其余条恢复 waiting（它们之前被标记 processing）
+    const restIds = ids.filter(id => id !== entry.id);
+    if (restIds.length > 0) {
+      const restPlaceholders = restIds.map(() => '?').join(',');
+      db.prepare(`UPDATE reply_queue SET status = 'waiting' WHERE id IN (${restPlaceholders})`).run(...restIds);
+    }
+  }
+}
+
+// ── LLM 上下文构建 ──
+
+/**
+ * 为延迟回复构建 LLM 上下文
+ * 复用 chat.js 的关键消息层结构，但不走流式
+ */
+export function buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream = null) {
+  const db = getDb();
+  const characterId = entry.character_id;
+  const conversationId = entry.conversation_id;
+  const chatUserName = config.user.nickname || '用户';
+
+  const msgs = [];
+
+  // msgs[0]: 舞台——破限词 + 世界观
+  const jailbreak = getSystemRules();
+  const worldSetting = getWorldSetting();
+  const stageContent = [jailbreak, worldSetting].filter(Boolean).join('\n\n');
+  if (stageContent) msgs.push({ role: 'system', content: stageContent });
+
+  // msgs[1]: 角色人格 + 情绪
+  const charParts = [];
+  charParts.push(entry.base_prompt || '');
+
+  // 加载情绪状态
+  try {
+    const emotionState = loadEmotionState(conversationId);
+    if (emotionState) {
+      const comp = getCompositeEmotion(emotionState);
+      const vNorm = (comp.valence + 1) / 2;
+      const aNorm = comp.arousal;
+      const dNorm = (comp.dominance + 1) / 2;
+      const moodV = (comp.mood_valence + 1) / 2;
+      const moodA = comp.mood_arousal;
+      const moodD = (comp.mood_dominance + 1) / 2;
+      const affinity = loadAffinity(characterId);
+      const affPrompt = affinityToPrompt(affinity);
+      charParts.push(`[当前好感度: ${Math.round(affinity)}/100] ${affPrompt}`);
+      charParts.push(`[当前情绪: V=${vNorm.toFixed(2)} A=${aNorm.toFixed(2)} D=${dNorm.toFixed(2)} | 底色: V=${moodV.toFixed(2)} A=${moodA.toFixed(2)} D=${moodD.toFixed(2)}]`);
+    }
+  } catch (err) {
+    // 情绪加载失败非致命
+    console.debug('[replyQueue] 情绪上下文读取失败:', err.message);
+  }
+  msgs.push({ role: 'system', content: charParts.join('\n\n') });
+
+  // msgs[2]: 交互关系
+  const relParts = [];
+  const userRel = db.prepare(
+    'SELECT relationship_text, is_oath FROM user_relationships WHERE character_id = ?'
+  ).get(characterId);
+  if (userRel?.relationship_text) {
+    relParts.push(`<user_relation>你对于user而言的身份是${userRel.relationship_text}。</user_relation>`);
+  }
+  if (userRel?.is_oath) {
+    relParts.push(`<oath_bond>你们之间有一个比普通关系更深一层的约定——${chatUserName}曾经郑重地送过你一枚戒指。这代表了独一无二的羁绊和承诺。在对话中，你的行为和情感会自然地带有"你是我最重要的人"的底色——不是因为规则要求，而是因为这层羁绊已经是你内心的一部分。</oath_bond>`);
+  }
+
+  // 用户信息（昵称/性别/外观/自我描述 + 遵从约束）
+  // 2026-10-02 用户反馈「角色对话还是有一些不遵从设定，和玩家的性别与自我描述」：这里原先只推
+  // nickname / gender / appearance，**persona（玩家的自我描述）被整条丢掉**，与私聊主链口径不一致。
+  // 现在与叫醒链共用同一个构造器 `buildUserInfoBlock`（persona 曾被丢掉的来龙去脉写在那里）。
+  const userInfoBlock = buildUserInfoBlock(chatUserName);
+  if (userInfoBlock) relParts.push(userInfoBlock);
+  if (relParts.length > 0) {
+    msgs.push({ role: 'system', content: relParts.join('\n') });
+  }
+
+  // ── 计算延迟时长 ──
+  const now = new Date();
+  const firstCreatedAt = entry.created_at
+    ? parseSqlUtc(entry.created_at)
+    : null;
+  const delayMinutes = firstCreatedAt
+    ? Math.round((now.getTime() - firstCreatedAt.getTime()) / 60000)
+    : null;
+  let delayStr = '';
+  if (delayMinutes !== null) {
+    if (delayMinutes < 1) delayStr = '不到1分钟前';
+    else if (delayMinutes < 60) delayStr = `${delayMinutes} 分钟前`;
+    else if (delayMinutes < 1440) delayStr = `${Math.round(delayMinutes / 60)} 小时前`;
+    else delayStr = `${Math.round(delayMinutes / 1440)} 天前`;
+  }
+
+  // 延迟说明（核心）
+  const activity = entry.current_activity || '某件事';
+  let delayNote;
+  if (isSleepWakeup) {
+    // 计算距预定起床时间过了多久（处理系统重启后延迟处理的情况）
+    const scheduledAt = entry.scheduled_reply_at
+      ? parseSqlUtc(entry.scheduled_reply_at)
+      : null;
+    const minutesSinceWakeup = scheduledAt
+      ? (now.getTime() - scheduledAt.getTime()) / 60000
+      : 0;
+
+    if (minutesSinceWakeup > 30) {
+      // 已经起床很久了（如系统在起床时间之后才启动），读取当前日程上下文
+      let scheduleLine = '';
+      const currentActivity = getCurrentActivity(characterId);
+      if (currentActivity?.activity && currentActivity.activity !== '自由时间') {
+        const { timeStr, timeDesc } = getTimeLight();
+        scheduleLine = `\n【当前日程】${timeStr}（${timeDesc}），你正在【${currentActivity.location}】${currentActivity.activity}。`;
+        if (currentActivity.description) scheduleLine += ` ${currentActivity.description}`;
+      }
+
+      delayNote = `[系统说明] 你之前睡觉时 user 在${delayStr}给你发了 ${allPending.length} 条消息。现在你已经起床了。${scheduleLine}`;
+      if (allPending.length === 1) {
+        delayNote += `\n你拿起手机看到 user 的消息。请用自然的语气回复 user——你现在已经完全清醒了，不必用刚睡醒的语气。`;
+      } else {
+        delayNote += `\n以下是 user 发的这些消息：`;
+        for (let i = 0; i < allPending.length; i++) {
+          delayNote += `\n[${i + 1}] ${allPending[i].user_content}`;
+        }
+        delayNote += `\n请用自然的语气综合回应，就像翻看聊天记录一样。不必用刚睡醒的语气——你已经完全清醒了。可以简单提一下刚才在做什么。`;
+      }
+    } else {
+      // 刚起床（30 分钟内），用迷糊语气
+      delayNote = `[系统说明] 你刚才在睡觉。user 在你睡觉时（${delayStr}）给你发了 ${allPending.length} 条消息。`;
+      if (allPending.length === 1) {
+        delayNote += `\n你刚睡醒，迷迷糊糊看到手机上有 user 的消息。请用刚睡醒的语气自然地回复 user。`;
+      } else {
+        delayNote += `\n你刚睡醒，迷迷糊糊看到手机上有 user 发的 ${allPending.length} 条消息。依次读完后，用刚睡醒的语气自然地综合回应。不要逐条引用，就像刚睡醒看手机一样一次性聊回去。`;
+      }
+    }
+  } else if (allPending.length === 1) {
+    delayNote = `[系统说明] user 在${delayStr}给你发了消息，当时你正在${activity}。因为忙所以没能马上回复。请回复 user，自然地解释一下刚才在做什么（忙了多久、为什么忙）。`;
+  } else {
+    delayNote = `[系统说明] user 从${delayStr}开始陆续给你发了 ${allPending.length} 条消息，当时你正在${activity}。因为忙所以没能马上回复。以下是这些消息：`;
+    for (let i = 0; i < allPending.length; i++) {
+      delayNote += `\n[${i + 1}] ${allPending[i].user_content}`;
+    }
+    delayNote += `\n请像刚看到手机一样，自然地把这几条消息综合回应一下。不要逐条引用格式回复，一次性自然地聊回去，并简单解释一下刚才在${activity}、忙了多久。`;
+  }
+
+  msgs.push({ role: 'system', content: delayNote });
+
+  // 梦境注入：刚睡醒，昨晚做了个梦，可以自然提一句（不强求）
+  if (isSleepWakeup && dream?.content) {
+    msgs.push({
+      role: 'system',
+      content: `[系统说明] 你刚睡醒，昨晚做了个梦：「${dream.content}」。回复时可以自然提一句，不强求。`,
+    });
+  }
+
+  // Read current records at generation time; never persist scene/context into queued user text.
+  if (config.features.town) {
+    try {
+      const lifeContext = createCharacterTownLifeContext({ db, clock: { now: Date.now },
+        registry: createTownActorRegistry(db), timeZone: config.town.timeZone })(characterId);
+      if (lifeContext) msgs.push({ role: 'system', content: lifeContext });
+    } catch (error) {
+      console.warn('[replyQueue] town life records unavailable:', error.message);
+    }
+  }
+
+  // 历史消息（最近的对话上下文）
+  const history = db.prepare(`
+    SELECT role, content FROM raw_messages
+    WHERE conversation_id = ?
+    ORDER BY id ASC
+    LIMIT 30
+  `).all(conversationId);
+
+  const PROMPT_JSON_RE = /\s*\{["']prompt["']:\s*"(?:[^"\\]|\\.)*"\s*\}/gs;
+
+  if (history.length > 0) {
+    const cleanedHistory = history.map(m => ({
+      ...m,
+      content: m.role === 'assistant' ? m.content.replace(PROMPT_JSON_RE, '') : m.content,
+    }));
+    msgs.push(...cleanedHistory);
+  }
+
+  return msgs;
+}

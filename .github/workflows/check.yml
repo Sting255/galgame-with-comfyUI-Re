@@ -1,0 +1,107 @@
+name: Project checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: |
+            agent-core/package-lock.json
+            web-ui/package-lock.json
+      # 2026-11-08：`npm ci --prefix agent-core` 在 windows-latest 上编 better-sqlite3 时失败
+      # （runner 镜像升到 VS 18，node-gyp 解析其版本号失败 → "unknown version \"undefined\" found at
+      #  C:\Program Files\Microsoft Visual Studio\18\Enterprise" → "Could not find any Visual Studio"）。
+      # 2026-11-08 06:44 那次还是绿的：同一份 lockfile，纯粹是 runner 镜像在当天变了。
+      # 这一步只跑静态检查（文档清单 / 未定义符号 / lint / 构建），用不到原生绑定，
+      # 所以跳过 install scripts —— 别让 runner 镜像波动把检查卡红。
+      - run: npm ci --prefix agent-core --ignore-scripts
+      - run: npm ci --prefix web-ui
+      - name: Documentation and source inventory
+        run: npm run check
+      # 2026-11-09（方案 A12）：CI 原来只跑文档清单，而 check.yml 自己的注释写着
+      # 「未定义符号检查」——实际从没调用过 scripts/check-imports.mjs。
+      # 这项检查在发布脚本里是有的，于是出现「本地打包会拦、CI 一路绿」的落差。
+      - name: Undefined symbol check
+        run: node scripts/check-imports.mjs
+      # P0-10：依赖审计门禁。
+      #
+      # 只对**生产依赖**设门槛（--omit=dev）：开发链的告警（eslint 插件等）
+      # 不会进交付包，把它们也算失败会让门禁长期红着、失去信噪比。
+      # 用官方 registry：npmmirror 不支持 audit bulk endpoint，会返回 NOT_IMPLEMENTED，
+      # 那种"通过"是假通过。
+      - name: Backend production dependency audit
+        run: npm --prefix agent-core audit --package-lock-only --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+      - name: Frontend production dependency audit
+        run: npm --prefix web-ui audit --package-lock-only --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+      # P2-05：用 lint:budget（--max-warnings 49）而不是普通 lint。
+      # 普通 lint 只报不拦，687 条 warning 的常态等于没有门禁；设上限后
+      # 新增告警会让 CI 红，而存量 49 条（props 变异 / v-html / 保留常量）有明确记录。
+      # 修掉一批就把这个数字往下调（2026-11-20 由 52 收紧到 49）。
+      - name: Frontend lint (warning budget)
+        run: npm --prefix web-ui run lint:budget
+      - name: Production build
+        run: npm --prefix web-ui run build
+
+  # P1-22：后端保留测试单独一个 job。
+  #
+  # 为什么拆开：上面那个 job 用 `--ignore-scripts` 装后端依赖（为了绕开 runner 镜像
+  # 的 node-gyp 波动），代价是 better-sqlite3 的 .node 根本不存在 ⇒ 后端测试跑不了。
+  # 而「CI 绿灯」必须包含真实测试，否则 lint + build 全绿也说明不了任何业务正确性。
+  #
+  # 这里改为正常安装（允许编译原生模块），装不上就是明确失败——比「跳过测试但显示绿」
+  # 诚实得多。测试本身强制 DB_PATH=:memory:（test/force-memory-db.cjs），不碰玩家库。
+  backend-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: agent-core/package-lock.json
+      - name: Install backend dependencies (native build enabled)
+        run: npm ci --prefix agent-core
+      - name: Backend regression tests (in-memory DB)
+        run: npm --prefix agent-core test
+
+  launcher-test:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install psutil
+      - name: Launcher data migration tests (synthetic installs)
+        run: python -I -B -m unittest discover -s launcher/tests
+
+  # 2026-11-20（规划 N3 / A3）：TTS 服务的纯 Python 测试。
+  #
+  # 只用标准库就能跑：需要 Hub / 原生音频 / 已部署离线包的用例按条件自动跳过，
+  # 不装 torch、不下模型、不用 GPU。目的不是验收合成，而是让下载重试、离线包部署、
+  # 服务协议这些纯逻辑改坏时 CI 能红。Python 版本与 tts-service/setup.ps1 的 3.11 对齐。
+  tts-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: TTS service tests (stdlib only)
+        run: python -I -m unittest discover -s tts-service/test

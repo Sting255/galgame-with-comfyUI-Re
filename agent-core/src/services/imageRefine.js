@@ -1,0 +1,385 @@
+/**
+ * 放大细化（HiresFix）服务
+ *
+ * 流程:
+ *   1. 读取原图文件 → 透明背景（抠过图的人像）先垫白成不透明图 → 上传到 ComfyUI input 目录
+ *   2. 按 hiresWorkflowMode 选择基础/进阶文件（默认基础）:
+ *      基础：Lanczos → VAEEncode → KSampler → VAEDecode，全官方节点。
+ *      进阶（放大细化工作流-进阶.json）：
+ *      LoadImage → 可替换超分模型 → Lanczos 目标尺寸
+ *      → UltimateSDUpscaleNoUpscale(分块低重绘) → 可选原图融合（默认 0）→ PreviewImage
+ *   3. 继承原图的模型加载器(UNET/CLIP/VAE)、负面提示词（系统参数非空时改为覆盖）、提示词链(画面描述/质量提示词/画师串/lora触发词)，
+ *      以及 LoRA 链（全局画风 LoRA 按场景过滤并应用用户配置的倍率 + 角色 LoRA），
+ *      再追加 HiresFix 细化专用 LoRA（设置页单独配置）到链尾
+ *   4. 提交 ComfyUI → 下载结果 → 原子覆盖原文件（细化产物是不透明图，透明背景由调用方按常规流程抠白）
+ *
+ * ComfyUI 的 LoadImage 会丢掉 alpha：透明像素只剩 RGB，而抠过图的素材透明区 RGB 往往是 0
+ * （浏览器 canvas 导出的 PNG 尤其如此），不垫白就会被当成黑底一起重绘。所以上传前统一垫白，
+ * 细化产物是不透明图；透明背景不在这一层还原，交给调用方的常规后处理去重新抠（小镇素材走素材管线）。
+ *
+ * v3/v4/v5 默认跟随源工作流唯一 KSampler 的步数/CFG/采样器/调度器；重绘仍独立配置。
+ * 多采样器或缺失源参数时回退到 HiresFix 设置，不根据模型名或 LoRA 名猜测。
+ * 无 v3/v4/v5 标记的旧工作流继续使用原采样设置；权重倍率始终为显式用户配置。
+ */
+
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { submitWorkflow, uploadImage, apiToGui } from './comfyClient.js';
+import sharp from 'sharp';
+import { config, normalizeHiresQuality } from '../config.js';
+import {
+  HIRES_WORKFLOW, HIRES_ADVANCED_WORKFLOW, ACTIVE_WORKFLOW, PRO_WORKFLOW, autoRestoreMissing,
+  resolveCustomWorkflowPath,
+} from './workflowTemplates.js';
+import { injectLoraNodes, NODE_TITLES, findNegativeEncodeNode } from './imageSkill.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const WORKFLOW_DIR = path.join(__dirname, '..', '..', '..', 'workflow');
+
+const PROMPT_PLACEHOLDER = '请输入画面描述';
+
+/** HiresFix 细化精度三档 → 步数（D1 实测：high 12 / medium 10 / low 8；CFG 恒 1.0） */
+export const HIRES_QUALITY_STEPS = { high: 12, medium: 10, low: 8 };
+
+/** `config.comfyui.hiresTurboSteps` 的内置默认值（config.js 写死 12）；变成别的值 = 用户显式覆盖 */
+const DEFAULT_TURBO_STEPS = 12;
+
+/**
+ * 决定这次 HiresFix 细化的步数。优先级（高 → 低）：
+ *
+ *   1. **`config.comfyui.hiresTurboSteps` 被显式改成非内置默认（12）的值** ⇒ 完全以它为准（底层逃生门，
+ *      给将来想手调的人留的；这样 `hiresQuality` 与它不会两处打架）；
+ *   2. `config.features.hiresQuality` 三档 ⇒ high 12 / medium 10 / **low 8（默认）**；非法值回落 low。
+ *
+ * CFG 不走这里：turbo 恒 1.0（`hiresTurboCfg`）；turbo 开关关掉时整体回到 `hiresSteps`/`hiresCfg`（旧口径）。
+ * @returns {number} 步数（1~100 之外不合法值已被上游 clamp，这里只保证是正整数）
+ */
+export function resolveTurboSteps() {
+  const override = Number(config.comfyui.hiresTurboSteps);
+  if (Number.isFinite(override) && override > 0 && override !== DEFAULT_TURBO_STEPS) return override;
+  const quality = normalizeHiresQuality(config.features?.hiresQuality);
+  return HIRES_QUALITY_STEPS[quality] ?? HIRES_QUALITY_STEPS.low;
+}
+
+function hiresPath() { return path.join(WORKFLOW_DIR, config.comfyui.hiresWorkflowMode === 'advanced' ? HIRES_ADVANCED_WORKFLOW : HIRES_WORKFLOW); }
+
+/** 与 imageSkill.resolveWorkflowPath 一致的模式兜底：无记录时按全局模式 + 场景映射 */
+function fallbackModeForScene(scene) {
+  const mode = config.workflow?.mode || 'turbo';
+  if (mode === 'turbo' || mode === 'base') return mode;
+  // 自定义工作流：全局选了 custom 就按 custom 继承（模板缺失时 loadSourceWorkflow 会回退内置）
+  if (mode === 'custom') return 'custom';
+  const scenePref = config.workflow?.scene?.[scene] || 'turbo';
+  return scenePref === 'base' ? 'base' : 'turbo';
+}
+
+/** 加载生成原图时使用的源工作流模板（自定义 > 显式模式 > 按场景兜底），用于继承参数 */
+function loadSourceWorkflow({ sourceMode, customWorkflow, scene } = {}) {
+  let p = null;
+  let resolvedMode = null;
+  if (customWorkflow && fs.existsSync(path.join(WORKFLOW_DIR, customWorkflow))) {
+    p = path.join(WORKFLOW_DIR, customWorkflow);
+  } else {
+    // 记录的「模式」也可能是自定义工作流的文件名（image_tasks.workflow_template 原样记录）
+    resolvedMode = (sourceMode === 'base' || sourceMode === 'turbo' || resolveCustomWorkflowPath(sourceMode))
+      ? sourceMode
+      : fallbackModeForScene(scene);
+    if (resolvedMode === 'custom') {
+      p = resolveCustomWorkflowPath(config.workflow?.customTemplate) || path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+      resolvedMode = 'custom';
+    } else if (typeof resolvedMode === 'string' && resolvedMode.endsWith('.json')) {
+      p = resolveCustomWorkflowPath(resolvedMode) || path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+      resolvedMode = 'custom';
+    } else {
+      p = resolvedMode === 'base' ? path.join(WORKFLOW_DIR, PRO_WORKFLOW) : path.join(WORKFLOW_DIR, ACTIVE_WORKFLOW);
+    }
+  }
+  if (!fs.existsSync(p)) return { wf: null, resolvedMode };
+  try {
+    const wf = apiToGui(JSON.parse(fs.readFileSync(p, 'utf8')));
+    return { wf: Array.isArray(wf?.nodes) ? wf : null, resolvedMode };
+  } catch {
+    return { wf: null, resolvedMode };
+  }
+}
+
+/**
+ * 构建注入参数后的放大细化工作流
+ *
+ * @param {string} promptText - 原图的最终提示词（prompt_refined）
+ * @param {object} [overrides]
+ * @param {string} [overrides.uploadFilename] - 已上传到 ComfyUI input 的原图文件名
+ * @param {string} [overrides.artist]         - 画师串
+ * @param {Array}  [overrides.loras]          - 角色 LoRA [{path, weight, triggerWord}]
+ * @param {string} [overrides.customWorkflow] - 原图使用的自定义工作流文件名
+ * @param {string} [overrides.sourceMode]     - 原图工作流模式 'turbo' | 'base'（image_tasks.workflow_template）
+ * @param {string} [overrides.scene]          - 全局 LoRA 场景过滤 + 无模式记录时的工作流兜底
+ * @param {string|null} [overrides.workflowScene] - hybrid 模式下单独用于选择源工作流；
+ *        显式传 null 表示不按场景兜底，与 scene 解耦
+ * @returns {{wf: object, wfPath: string}}
+ */
+export function buildHiresWorkflow(promptText, overrides = {}) {
+  if (!fs.existsSync(hiresPath())) autoRestoreMissing();
+  const wf = JSON.parse(fs.readFileSync(hiresPath(), 'utf8'));
+  const workflowScene = overrides.workflowScene !== undefined ? overrides.workflowScene : overrides.scene;
+  const srcResult = loadSourceWorkflow({
+    sourceMode: overrides.sourceMode,
+    customWorkflow: overrides.customWorkflow,
+    scene: workflowScene,
+  });
+  const src = srcResult.wf;
+  const profile = [3, 4, 5].includes(wf.extra?.linsheHires?.version) ? wf.extra.linsheHires : null;
+  if (profile?.version >= 4) {
+    const upscaleModel = config.comfyui.hiresUpscaleModel;
+    if (typeof upscaleModel === 'string' && !upscaleModel.trim()) {
+      // 显式选择普通插值：移除超分支路，避免未安装模型仍被校验/执行。
+      const removed = new Set([profile.upscaleModelNodeId, profile.upscaleImageNodeId, profile.upscaleResizeNodeId]);
+      const encodeLink = wf.links.find(l => l[3] === profile.encodeNodeId && l[4] === (profile.encodeInputSlot ?? 0));
+      encodeLink[1] = profile.sourceResizeNodeId;
+      wf.nodes = wf.nodes.filter(n => !removed.has(n.id));
+      wf.links = wf.links.filter(l => !removed.has(l[1]) && !removed.has(l[3]));
+      for (const node of wf.nodes) for (const [slot, output] of (node.outputs || []).entries()) {
+        output.links = wf.links.filter(l => l[1] === node.id && l[2] === slot).map(l => l[0]);
+      }
+    } else if (typeof upscaleModel === 'string') {
+      wf.nodes.find(n => n.id === profile.upscaleModelNodeId).widgets_values[0] = upscaleModel.trim();
+    }
+  }
+  const finite = (value, fallback) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  const globalLoraScale = Math.max(0, Math.min(2, finite(config.comfyui.hiresGlobalLoraScale, 1)));
+  const sourceSamplers = (src?.nodes || []).filter(n => n.type === 'KSampler');
+  const sourceSampling = sourceSamplers.length === 1 ? sourceSamplers[0].widgets_values : null;
+  const followSource = profile && config.comfyui.hiresSamplingMode !== 'custom'
+    && Array.isArray(sourceSampling) && Number.isFinite(sourceSampling[2])
+    && Number.isFinite(sourceSampling[3]) && typeof sourceSampling[4] === 'string'
+    && typeof sourceSampling[5] === 'string';
+
+  const srcLoader = (type) => {
+    if (!src) return null;
+    const node = src.nodes.find(n => n.type === type);
+    return Array.isArray(node?.widgets_values) ? node.widgets_values : null;
+  };
+  const srcNegative = (() => {
+    if (!src) return null;
+    const node = findNegativeEncodeNode(src);
+    const text = Array.isArray(node?.widgets_values) ? node.widgets_values[0] : null;
+    return typeof text === 'string' ? text : null;
+  })();
+
+  // 全局 LoRA 应用显式倍率；角色和细化专用配置保持原权重及覆盖优先级。
+  //   全局画风 LoRA(按场景过滤) → 角色 LoRA → HiresFix细化LoRA(追加在链尾)
+  //   同 path 后者覆盖前者（细化配置的权重优先，并移至链尾位置）
+  const currentScene = overrides.scene;
+  const globalLoras = (config.comfyui.globalLora || []).filter(l => {
+    if (!l.path || typeof l.path !== 'string') return false;
+    if (l.enabled === false) return false;
+    if (!currentScene) return true;
+    if (!Array.isArray(l.scenes) || l.scenes.length === 0) return true;
+    return l.scenes.includes(currentScene);
+  });
+  const charLoras = (overrides.loras || []).filter(l => l.path && typeof l.path === 'string');
+  const hiresLoras = (config.comfyui.hiresLora || []).filter(
+    l => l.path && typeof l.path === 'string' && l.enabled !== false
+  );
+  const loraChain = new Map();
+  for (const l of [...globalLoras.map(l => ({ ...l, weight: (l.weight ?? 0.6) * globalLoraScale })), ...charLoras, ...hiresLoras]) {
+    loraChain.delete(l.path);
+    loraChain.set(l.path, l);
+  }
+  const loras = [...loraChain.values()];
+  // 零权重在合并后移除：同时移除独立触发词，也允许专用配置覆盖全局禁用。
+  const activeLoras = loras.filter(l => (l.weight ?? 0.6) !== 0);
+  const hasLoras = activeLoras.length > 0;
+  if (globalLoras.length || charLoras.length || hiresLoras.length) {
+    console.log(`[imageRefine] LoRA chain: ${globalLoras.length} global + ${charLoras.length} char + ${hiresLoras.length} hires → ${loras.length} after dedup`);
+  }
+  // 画师串三模式：inherit 沿用原图/empty 留空/specified 使用 HiresFix 指定的画师串
+  const baseArtist = overrides.artist ?? config.comfyui.artist;
+  const artistMode = config.comfyui.hiresArtistMode || 'empty';
+  const artist = artistMode === 'empty' ? '' : artistMode === 'specified' ? (config.comfyui.hiresArtist || '') : baseArtist;
+  // 质量提示词覆盖（与生图工作流共用一份系统参数）
+  const qualityPrompt = typeof config.comfyui.qualityPrompt === 'string' ? config.comfyui.qualityPrompt.trim() : '';
+  // 负面提示词覆盖（与生图工作流共用一份系统参数；留空时继承原图工作流的负面提示词）
+  const negativePrompt = typeof config.comfyui.negativePrompt === 'string' ? config.comfyui.negativePrompt.trim() : '';
+
+  const loaderCopies = {
+    UNETLoader: srcLoader('UNETLoader'),
+    CLIPLoader: srcLoader('CLIPLoader'),
+    VAELoader: srcLoader('VAELoader'),
+  };
+
+  for (const node of wf.nodes || []) {
+    if (!Array.isArray(node.widgets_values)) continue;
+
+    // 原图文件名注入 LoadImage
+    if (node.type === 'LoadImage' && overrides.uploadFilename) {
+      node.widgets_values[0] = overrides.uploadFilename;
+      continue;
+    }
+
+    // 放大最长边使用 HiresFix 设置（不固定倍数，按最长边像素缩放）
+    if (node.type === 'ImageScaleToMaxDimension') {
+      node.widgets_values[1] = config.comfyui.hiresMaxSize ?? 2000;
+      continue;
+    }
+
+    // denoise 独立设置；其余采样参数按用户选择跟随源工作流或使用细化配置。
+    if (node.type === 'KSampler' || node.type === 'UltimateSDUpscaleNoUpscale') {
+      if (node.widgets_values[1] === 'randomize') {
+        node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+      }
+      // 细化参数（2026-09-29 起带开关；2026-10-01 并入上游进阶版）：
+      // 「放大细化工作流.json」的主模型是 anima_turboV10，旧口径固定注入 CFG 5.0 / 35 步 ——
+      // CFG>1 会让 turbo 每步多跑一条无条件分支（双倍算力），蒸馏模型在 CFG>1 下画面也会退化。
+      const hiresTurbo = config.comfyui.hiresTurbo !== false;
+      node.widgets_values[2] = hiresTurbo ? resolveTurboSteps() : (config.comfyui.hiresSteps ?? 35);
+      node.widgets_values[3] = hiresTurbo ? (config.comfyui.hiresTurboCfg ?? 1.0) : (config.comfyui.hiresCfg ?? 5.0);
+      node.widgets_values[6] = config.comfyui.hiresDenoise ?? 0.2;
+      if (followSource) {
+        // 进阶版「采样跟随原图」：turbo 开关打开时只跟随采样器/调度器（step 2、3 已由 turbo 决定，
+        // 否则 UI 上「设置里的步数与 CFG 不生效」就成了假话）；关掉开关时整段跟随（上游原语义）。
+        if (hiresTurbo) {
+          node.widgets_values[4] = sourceSampling[4];
+          node.widgets_values[5] = sourceSampling[5];
+        } else {
+          node.widgets_values.splice(2, 4, ...sourceSampling.slice(2, 6));
+        }
+      }
+      continue;
+    }
+
+    if (profile && node.id === profile.sourceBlendNodeId && node.type === 'ImageBlend') {
+      node.widgets_values[0] = Math.max(0, Math.min(1, finite(config.comfyui.hiresSourceBlend, 0)));
+      continue;
+    }
+
+    // 模型加载器整体继承（模型名/数据类型与原图完全一致）
+    const copied = loaderCopies[node.type];
+    if (copied && copied.length > 0) {
+      node.widgets_values = [...copied];
+      continue;
+    }
+
+    // 负面提示词：系统参数非空时覆盖；留空则继承原图工作流的负面提示词（无源工作流时沿用细化模板默认）
+    if (node.type === 'CLIPTextEncode' && node === findNegativeEncodeNode(wf)) {
+      if (negativePrompt) node.widgets_values[0] = negativePrompt;
+      else if (srcNegative !== null) node.widgets_values[0] = srcNegative;
+      continue;
+    }
+
+    // lora触发词节点：注入所有 lora 的 triggerWord 拼接
+    if (node.title === NODE_TITLES.loraTrigger) {
+      const triggerWords = activeLoras.map(l => l.triggerWord || '').filter(Boolean).join(', ');
+      node.widgets_values[0] = triggerWords;
+      continue;
+    }
+
+    // 画面描述节点：替换占位符，无占位符则写入第一个 widget
+    if (node.title === NODE_TITLES.prompt) {
+      const idx = node.widgets_values.findIndex(v => typeof v === 'string' && v.includes(PROMPT_PLACEHOLDER));
+      if (idx >= 0) node.widgets_values[idx] = promptText;
+      else if (node.widgets_values.length > 0) node.widgets_values[0] = promptText;
+      continue;
+    }
+
+    // 画师串：替换第一个 widget
+    if (node.title === NODE_TITLES.artist && node.widgets_values.length > 0) {
+      node.widgets_values[0] = artist;
+    }
+
+    // 质量提示词：系统参数非空才覆盖，留空沿用细化工作流默认
+    if (node.title === NODE_TITLES.quality && qualityPrompt && node.widgets_values.length > 0) {
+      node.widgets_values[0] = qualityPrompt;
+    }
+  }
+
+  // 与原图一致的 LoRA 链: UNETLoader → Lora1 → ... → KSampler
+  if (hasLoras) injectLoraNodes(wf, activeLoras);
+
+  const srcLabel = overrides.customWorkflow
+    || (srcResult.resolvedMode === 'base' ? PRO_WORKFLOW : ACTIVE_WORKFLOW);
+  console.log(`[imageRefine] Hires workflow built: ${path.basename(hiresPath())}${src ? ` (params inherited from ${srcLabel})` : ' (source workflow unavailable, template defaults)'}`);
+  return { wf, wfPath: hiresPath() };
+}
+
+/** 垫白背景色：抠过图的素材在 ComfyUI 里会因丢失 alpha 变黑底，送细化前先把透明区垫成它 */
+const WHITE_BG = { r: 255, g: 255, b: 255 };
+
+/**
+ * 上传前的透明背景归一：把透明像素垫成白色。
+ *
+ * 抠过图的人像透明区 RGB 往往是 0（浏览器 canvas 导出的 PNG 尤其如此），ComfyUI 的 LoadImage
+ * 丢掉 alpha 后只剩一片黑，细化结果连带变黑底。垫白后细化产物是干净的不透明图，背景由调用方
+ * 按各自常规流程重新抠（小镇素材走素材后处理管线，用户再在素材库里微调）。
+ * 全不透明的图原样返回，不做多余重编码。
+ *
+ * @param {Buffer} buffer - 原图
+ * @returns {Promise<Buffer>} 可直接上传的图（需要垫白时是 PNG 字节）
+ */
+export async function flattenTransparentOnWhite(buffer) {
+  const meta = await sharp(buffer).metadata();
+  if (!meta.hasAlpha) return buffer;
+  const stats = await sharp(buffer).ensureAlpha().extractChannel(3).stats();
+  if ((stats.channels?.[0]?.min ?? 255) >= 255) return buffer; // 有 alpha 通道但全不透明
+  console.log('[imageRefine] Source has transparent pixels: flattened onto white before HiresFix');
+  return sharp(buffer).flatten({ background: WHITE_BG }).png().toBuffer();
+}
+
+/**
+ * 执行放大细化（默认覆盖保存，测试模式可仅返回内存结果）
+ *
+ * @param {object} opts
+ * @param {string} opts.filePath      - 原图绝对路径（细化结果将覆盖此文件）
+ * @param {string} [opts.outPath]     - 输出路径覆盖（默认 filePath；图片编辑任务传入暂存路径，确认后才覆盖原图）
+ * @param {Buffer} [opts.buffer]       - 原图 Buffer（与 filePath 二选一，测试细化不落盘时用）
+ * @param {string} opts.promptText    - 原图最终提示词
+ * @param {string} [opts.artist]
+ * @param {Array}  [opts.loras]       - 角色 LoRA（全局画风 LoRA 与 HiresFix 细化 LoRA 由配置自动合并）
+ * @param {string} [opts.customWorkflow]
+ * @param {string} [opts.sourceMode]
+ * @param {string} [opts.scene]         - 全局 LoRA 场景过滤 + 无模式记录时的场景兜底
+ * @param {string|null} [opts.workflowScene] - hybrid 模式下单独用于选择源工作流，可与 scene 解耦
+ * @param {function} [opts.onProgress]
+ * @param {string} [opts.ext]          - 上传文件扩展名（buffer 模式且无 filePath 时使用）
+ * @param {string} [opts.output]       - 'file' 写文件（默认）| 'buffer' 仅返回 base64
+ * @returns {Promise<{success: boolean, wfPath: string, filename: string}>}
+ */
+export async function refineImage({
+  filePath, outPath, promptText, artist, loras, customWorkflow, sourceMode, scene, workflowScene, onProgress,
+  buffer, ext, output = 'file',
+}) {
+  const sourceBuf = buffer || (filePath ? fs.readFileSync(filePath) : null);
+  if (!sourceBuf) throw new Error('filePath or buffer is required');
+  const fileExt = (ext || (filePath ? path.extname(filePath) : '') || '.png').toLowerCase();
+  const uploadBuf = await flattenTransparentOnWhite(sourceBuf);
+  const uploadExt = uploadBuf === sourceBuf ? fileExt : '.png'; // 垫白后是 PNG 字节，扩展名跟着换
+  const uploadFilename = await uploadImage(uploadBuf, `linshe-hires-${Date.now()}-${Math.random().toString(36).slice(2, 6)}${uploadExt}`);
+  console.log(`[imageRefine] Uploaded source image to ComfyUI: ${uploadFilename} (${(uploadBuf.length / 1024).toFixed(0)}KB)`);
+
+  const { wf } = buildHiresWorkflow(promptText, {
+    uploadFilename, artist, loras, customWorkflow, sourceMode, scene, workflowScene,
+  });
+
+  if (onProgress) onProgress({ stage: 'submitting' });
+  const result = await submitWorkflow(wf, onProgress);
+  if (!result.images || result.images.length === 0) {
+    throw new Error('ComfyUI 未返回细化结果');
+  }
+
+  const img = result.images[0];
+  const rawBase64 = img.base64.replace(/^data:image\/\w+;base64,/, '');
+  const refinedBuf = Buffer.from(rawBase64, 'base64');
+
+  if (output === 'buffer') {
+    console.log('[imageRefine] Refined image returned in memory (not saved)');
+    return { success: true, wfPath: hiresPath(), filename: img.filename, base64: img.base64 };
+  }
+  const target = outPath || filePath;
+  const tmpPath = target + '.refining';
+  fs.writeFileSync(tmpPath, refinedBuf);
+  fs.renameSync(tmpPath, target);
+
+  console.log(`[imageRefine] Refined image saved (overwrote): ${target}`);
+  return { success: true, wfPath: hiresPath(), filename: img.filename };
+}

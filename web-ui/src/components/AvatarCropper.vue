@@ -1,0 +1,692 @@
+<template>
+  <linshe-modal
+    :visible="modalVisible"
+    :title="cropImage ? '裁剪头像 — 拖拽移动图片、滚轮缩放' : title"
+    :close-disabled="isGenerating || cropSaving"
+    :close-on-backdrop="!cropImage"
+    :before-close="beforeClose"
+    :z-index="11002"
+    :transition-ms="300"
+    wide
+    @close="tryClose"
+    @after-leave="emit('close')"
+  >
+  <Transition name="av-content" mode="out-in" :duration="300">
+    <div v-if="!cropImage" key="picker" class="avpicker-panel">
+        <linshe-tabs
+          v-if="showRecentTab || showGenerateTab"
+          :model-value="avTab"
+          :options="tabOptions"
+          :disabled="isGenerating"
+          size="md"
+          aria-label="头像来源"
+          @update:model-value="switchTab"
+        />
+
+      <p v-if="selectionError" class="crop-save-error" role="alert">{{ selectionError }}</p>
+
+        <div class="avtab-stage">
+          <Transition name="av-tab" :duration="300">
+      <!-- 上传 tab -->
+            <div v-if="avTab === 'upload'" key="upload" class="avtab-body" role="tabpanel" aria-label="上传图片">
+        <label class="av-upload-zone">
+          <input type="file" accept="image/*" @change="onFilePicked" hidden ref="fileInput" />
+          <div class="av-upload-inner">
+            <div class="av-upload-icon">📁</div>
+            <div class="av-upload-text">点击选择图片文件</div>
+          </div>
+        </label>
+        <!-- 粘贴入口与上传并列，避免藏在角落没人发现 -->
+        <div class="av-paste-tip">
+          <span class="av-paste-label">或直接粘贴图片</span>
+          <span class="av-paste-keys" aria-hidden="true">
+            <kbd>Ctrl</kbd><span class="av-paste-sep">+</span><kbd>V</kbd>
+          </span>
+        </div>
+      </div>
+
+      <!-- 最近图片 tab -->
+            <div v-else-if="showRecentTab && avTab === 'recent'" key="recent" class="avtab-body av-gallery" role="tabpanel" aria-label="最近图片">
+        <div v-if="recentLoading" class="av-loading">加载中...</div>
+        <div v-else-if="recentImages.length === 0" class="av-empty">暂无生成的图片</div>
+        <img
+          v-for="(url, i) in recentImages"
+          :key="'rec'+i"
+          :src="url"
+          class="av-thumb"
+          alt=""
+          loading="lazy"
+          decoding="async"
+          @click="selectRecentImage(url)"
+          @error="onRecentImgErr(i)"
+          :class="{ 'av-thumb-err': recentImgErr.has(i) }"
+        />
+      </div>
+
+      <!-- 生成头像 tab -->
+            <div v-else-if="showGenerateTab && avTab === 'generate'" key="generate" class="avtab-body" role="tabpanel" aria-label="生成头像">
+        <div v-if="genError" class="gen-error">
+          <div class="gen-error-icon">⚠️</div>
+          <div class="gen-error-text">{{ genError }}</div>
+          <linshe-button variant="secondary" class="gen-retry-btn" @click="startGenerate">重新生成</linshe-button>
+        </div>
+
+        <div v-else-if="genStatus === 'idle'" class="gen-idle">
+          <div class="gen-label">生成角色头像</div>
+          <div class="gen-desc">给角色拍个大头贴⭐~</div>
+          <div class="gen-meta">尺寸 1024×1024 · 约需等待30秒</div>
+          <linshe-button variant="primary" class="gen-start-btn" @click="startGenerate" :disabled="!characterId">
+            {{ characterId ? '开始生成' : '缺少角色数据' }}
+          </linshe-button>
+        </div>
+
+        <div v-else-if="genStatus === 'generating'" class="gen-running">
+          <div class="gen-spinner">
+            <div class="gen-spinner-ring"></div>
+            <div class="gen-spinner-icon">🎨</div>
+          </div>
+          <div class="gen-phase">{{ genPhaseText }}</div>
+          <div class="gen-progress-hint">正在超速思考，请耐心等待...</div>
+        </div>
+      </div>
+          </Transition>
+        </div>
+    </div>
+    <!-- 头像裁剪编辑器 -->
+    <div v-else key="crop" class="crop-panel">
+      <div class="crop-body">
+        <canvas
+ref="cropCanvas" class="crop-canvas"
+          @mousedown.prevent="cropMouseDown"
+          @mousemove.prevent="cropMouseMove"
+          @mouseup="cropMouseUp"
+          @mouseleave="cropMouseUp"
+          @wheel.prevent="cropWheel"
+          @touchstart.prevent="cropTouchStart"
+          @touchmove.prevent="cropTouchMove"
+          @touchend="cropTouchEnd"
+        ></canvas>
+        <div class="crop-preview-container">
+          <div class="crop-preview-label">预览</div>
+          <canvas ref="previewCanvas" class="crop-preview"></canvas>
+          <div class="crop-zoom-info">{{ Math.round(cropVars.imgScale * 100) }}%</div>
+        </div>
+      </div>
+      <p v-if="saveError" class="crop-save-error" role="alert">{{ saveError }}</p>
+      </div>
+    </Transition>
+    <template v-if="cropImage" #footer>
+      <div class="crop-actions">
+        <!-- 无角色（群头像 / 用户头像）时没有可重新生成的对象，不摆这个死按钮 -->
+        <linshe-button
+          v-if="characterId"
+          variant="secondary"
+          :disabled="isGenerating || cropSaving"
+          @click="regenerateAvatar"
+        >
+重新生成
+</linshe-button>
+        <div v-else></div>
+        <linshe-button variant="primary" @click="saveCrop" :disabled="cropSaving">{{ cropSaving ? '保存中...' : '保存头像' }}</linshe-button>
+      </div>
+    </template>
+  </linshe-modal>
+</template>
+
+<script setup>
+import LinsheModal from './ui/LinsheModal.vue'
+import LinsheTabs from './ui/LinsheTabs.vue'
+
+import { ref, shallowRef, reactive, computed, nextTick, watch, onMounted, onBeforeUnmount, onUnmounted } from 'vue'
+import { generateAvatar } from '../api/index.js'
+import LinsheButton from './ui/LinsheButton.vue'
+
+const props = defineProps({
+  title: { type: String, default: '选择头像' },
+  showRecentTab: { type: Boolean, default: true },
+  showGenerateTab: { type: Boolean, default: false },
+  characterId: { type: [Number, String], default: null },
+  characterBasePrompt: { type: String, default: '' },
+  recentImages: { type: Array, default: () => [] },
+  recentLoading: { type: Boolean, default: false },
+  generateHandler: { type: Function, default: null },
+  saveHandler: { type: Function, default: null },
+})
+
+const emit = defineEmits(['close', 'save', 'switchToRecent'])
+
+const modalVisible = ref(false)
+const avTab = ref('upload')
+const tabOptions = computed(() => [
+  { label: '上传图片', value: 'upload' },
+  ...(props.showRecentTab ? [{ label: '最近图片', value: 'recent' }] : []),
+  ...(props.showGenerateTab ? [{ label: '生成头像', value: 'generate' }] : []),
+])
+const fileInput = ref(null)
+const recentImgErr = ref(new Set())
+
+// 裁剪状态
+const cropImage = shallowRef(null)
+const cropCanvas = ref(null)
+const previewCanvas = ref(null)
+const cropSaving = ref(false)
+const saveError = ref('')
+const selectionError = ref('')
+let disposed = false, imageRequest = 0, pendingImage = null
+
+function cancelImageLoad() {
+  ++imageRequest
+  if (pendingImage) { pendingImage.onload = null; pendingImage.onerror = null; pendingImage = null }
+}
+
+function loadCropImage(src, request = ++imageRequest, crossOrigin = false) {
+  if (disposed || request !== imageRequest) return
+  const img = new Image()
+  pendingImage = img
+  if (crossOrigin) img.crossOrigin = 'anonymous'
+  img.onload = () => {
+    if (disposed || request !== imageRequest) return
+    pendingImage = null
+    genStatus.value = 'idle'
+    startCrop(img)
+  }
+  img.onerror = () => {
+    if (disposed || request !== imageRequest) return
+    pendingImage = null
+    genStatus.value = 'idle'
+    selectionError.value = '图片加载失败，请重新选择或上传图片。'
+  }
+  img.src = src
+}
+
+// ── 生成头像状态 ──
+const genStatus = ref('idle') // idle | generating | error
+const genError = ref('')
+const genPhaseText = ref('准备中...')
+let _genPhaseTimer = null
+
+const isGenerating = computed(() => genStatus.value === 'generating')
+
+function tryClose() {
+  if (isGenerating.value || cropSaving.value) return
+  cancelImageLoad()
+  modalVisible.value = false
+}
+
+function beforeClose() {
+  if (cropImage.value) { cancelCrop(); return false }
+  return true
+}
+
+const genPhaseMessages = [
+  '正在分析角色人格...',
+  '构思画面构图...',
+  '生成画面描述...',
+  '提交绘图引擎...',
+  '引擎正在绘制中...',
+  '即将完成...',
+]
+
+function cycleGenPhase(startIdx = 0) {
+  let idx = startIdx
+  genPhaseText.value = genPhaseMessages[idx]
+  _genPhaseTimer = setInterval(() => {
+    idx = (idx + 1) % genPhaseMessages.length
+    genPhaseText.value = genPhaseMessages[idx]
+  }, 6000)
+}
+
+function stopPhaseCycle() {
+  if (_genPhaseTimer) { clearInterval(_genPhaseTimer); _genPhaseTimer = null }
+}
+
+// 选择器打开期间支持直接粘贴图片（上传 / 最近图片 / 裁剪阶段都可用）
+function onPaste(e) {
+  const item = Array.from(e.clipboardData?.items || []).find(it => it.type?.startsWith('image/'))
+  if (!item) return
+  const file = item.getAsFile()
+  if (!file) return
+  e.preventDefault()
+  loadImageFromFile(file)
+}
+
+onMounted(() => { modalVisible.value = true; document.addEventListener('paste', onPaste) })
+onBeforeUnmount(() => { disposed = true; cancelImageLoad() })
+onUnmounted(() => {
+  document.removeEventListener('paste', onPaste)
+  stopPhaseCycle()
+})
+
+async function startGenerate() {
+  if (!props.characterId || genStatus.value === 'generating') return
+  genStatus.value = 'generating'
+  genError.value = ''
+  cycleGenPhase(0)
+
+  try {
+    const result = await (props.generateHandler ? props.generateHandler() : generateAvatar(props.characterId))
+    stopPhaseCycle()
+
+    if (result.success && result.images?.length > 0) {
+      if (disposed) return
+      const imgData = result.images[0]
+      cancelImageLoad()
+      selectionError.value = ''
+      loadCropImage(imgData.base64 || imgData.url, imageRequest, !imgData.base64)
+    } else {
+      genStatus.value = 'idle'
+      genError.value = result.error || '图像生成失败，请重试'
+    }
+  } catch (err) {
+    stopPhaseCycle()
+    genStatus.value = 'idle'
+    genError.value = err.message || '生成失败，请检查后端服务'
+    console.error('[avatar] generate failed:', err)
+  }
+}
+
+function switchTab(value) {
+  if (isGenerating.value || value === avTab.value) return
+  avTab.value = value
+  if (value === 'recent') emit('switchToRecent')
+}
+
+function onRecentImgErr(i) {
+  if (recentImgErr.value.has(i)) return
+  const s = new Set(recentImgErr.value)
+  s.add(i)
+  recentImgErr.value = s
+}
+
+// ── 上传 ──
+function onFilePicked(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  loadImageFromFile(file)
+}
+
+function selectRecentImage(url) {
+  if (!modalVisible.value || cropSaving.value || isGenerating.value) return
+  cancelImageLoad()
+  selectionError.value = ''
+  loadCropImage(url, imageRequest, true)
+}
+
+function loadImageFromFile(file) {
+  if (!modalVisible.value || cropSaving.value || isGenerating.value) return
+  cancelImageLoad()
+  selectionError.value = ''
+  const request = imageRequest
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (disposed || request !== imageRequest) return
+    loadCropImage(reader.result, request)
+  }
+  reader.onerror = () => { if (!disposed && request === imageRequest) selectionError.value = '图片读取失败，请重新选择。' }
+  reader.readAsDataURL(file)
+}
+
+// ── 裁剪引擎 ──
+// 行业标准做法：裁剪圆固定在画布中心不动，用户拖拽/缩放底图来调整选取区域
+// 图片始终以原分辨率渲染到 canvas（借助 ctx.drawImage 的目标缩放），保存时直接裁原图，无精度损失
+
+const CROP_CANVAS = 520
+const CROP_CX = CROP_CANVAS / 2
+const CROP_CY = CROP_CANVAS / 2
+const CROP_R = 208
+
+const cropVars = reactive({
+  imgScale: 1,
+  imgX: 0,
+  imgY: 0,
+})
+
+let cropDragging = false
+let cropDragStart = { x: 0, y: 0, imgX: 0, imgY: 0 }
+let cropPinchDist = 0
+let cropPinchScale = 1
+
+function startCrop(img) {
+  const minDim = Math.min(img.naturalWidth, img.naturalHeight)
+  if (![img.naturalWidth, img.naturalHeight].every(size => Number.isFinite(size) && size > 0)) {
+    genStatus.value = 'idle'
+    selectionError.value = '图片尺寸无效，请重新选择或上传图片。'
+    return
+  }
+  selectionError.value = ''; saveError.value = ''
+  const initScale = (CROP_R * 2) / minDim
+
+  cropVars.imgScale = initScale
+  cropVars.imgX = CROP_CX - (img.naturalWidth * initScale) / 2
+  cropVars.imgY = CROP_CY - (img.naturalHeight * initScale) / 2
+
+  cropDragging = false
+  cropImage.value = img
+  // 内容过渡结束后画布才挂载，选图当下的 nextTick 无法保证拿到画布。
+  if (cropCanvas.value) drawCrop()
+}
+
+watch([cropCanvas, previewCanvas], () => drawCrop(), { flush: 'post' })
+
+function drawCrop() {
+  try { renderCrop() }
+  catch (err) {
+    selectionError.value = '图片绘制失败，请重新选择或上传图片。'
+    cropImage.value = null
+    console.error('[avatar] draw crop failed:', err)
+  }
+}
+
+function renderCrop() {
+  const canvas = cropCanvas.value
+  if (!canvas || !cropImage.value) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) { selectionError.value = '暂时无法打开图片画布，请重新选择图片。'; cropImage.value = null; return }
+  canvas.width = CROP_CANVAS
+  canvas.height = CROP_CANVAS
+
+  const img = cropImage.value
+  const sw = img.naturalWidth, sh = img.naturalHeight
+  const dw = sw * cropVars.imgScale, dh = sh * cropVars.imgScale
+  const dx = cropVars.imgX, dy = cropVars.imgY
+
+  ctx.fillStyle = '#1a1a1a'
+  ctx.fillRect(0, 0, CROP_CANVAS, CROP_CANVAS)
+
+  ctx.save()
+  ctx.drawImage(img, 0, 0, sw, sh, dx, dy, dw, dh)
+
+  ctx.beginPath()
+  ctx.rect(0, 0, CROP_CANVAS, CROP_CANVAS)
+  ctx.arc(CROP_CX, CROP_CY, CROP_R, 0, Math.PI * 2, true)
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'
+  ctx.fill()
+
+  ctx.beginPath()
+  ctx.arc(CROP_CX, CROP_CY, CROP_R, 0, Math.PI * 2)
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+  ctx.restore()
+
+  const preview = previewCanvas.value
+  if (preview) {
+    const ps = 104
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const bufSize = Math.round(ps * dpr)
+    preview.width = bufSize
+    preview.height = bufSize
+    const pctx = preview.getContext('2d')
+    if (!pctx) return
+    pctx.imageSmoothingQuality = 'high'
+    pctx.clearRect(0, 0, bufSize, bufSize)
+    pctx.save()
+    pctx.beginPath()
+    pctx.arc(bufSize / 2, bufSize / 2, bufSize / 2, 0, Math.PI * 2)
+    pctx.clip()
+    pctx.drawImage(img,
+      (CROP_CX - CROP_R - cropVars.imgX) / cropVars.imgScale,
+      (CROP_CY - CROP_R - cropVars.imgY) / cropVars.imgScale,
+      (CROP_R * 2) / cropVars.imgScale,
+      (CROP_R * 2) / cropVars.imgScale,
+      0, 0, bufSize, bufSize)
+    pctx.restore()
+  }
+}
+
+// ── 鼠标拖拽 ──
+
+/**
+ * 画布 CSS 显示尺寸 ÷ 逻辑尺寸：移动端画布被 CSS 缩放（max-width），
+ * 指针位移/坐标必须先换算回画布坐标，否则拖拽与缩放会随缩放比例失真。
+ * 桌面端不被 CSS 缩放，比值恒为 1。
+ */
+function pointerScale() {
+  const canvas = cropCanvas.value
+  if (!canvas) return 1
+  const rect = canvas.getBoundingClientRect()
+  return rect.width > 0 ? CROP_CANVAS / rect.width : 1
+}
+
+function cropMouseDown(e) {
+  cropDragging = true
+  cropDragStart = { x: e.clientX, y: e.clientY, imgX: cropVars.imgX, imgY: cropVars.imgY }
+}
+
+function cropMouseMove(e) {
+  if (!cropDragging) return
+  const scale = pointerScale()
+  const dx = (e.clientX - cropDragStart.x) * scale
+  const dy = (e.clientY - cropDragStart.y) * scale
+  cropVars.imgX = cropDragStart.imgX + dx
+  cropVars.imgY = cropDragStart.imgY + dy
+  drawCrop()
+}
+
+function cropMouseUp() { cropDragging = false }
+
+// ── 滚轮缩放（以鼠标/手指位置为中心） ──
+function cropWheel(e) {
+  const rect = cropCanvas.value.getBoundingClientRect()
+  const scale = pointerScale()
+  const mx = (e.clientX - rect.left) * scale
+  const my = (e.clientY - rect.top) * scale
+  const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08
+  zoomAt(mx, my, factor)
+}
+
+function zoomAt(mx, my, factor) {
+  const oldS = cropVars.imgScale
+  const newS = Math.max(0.1, Math.min(5, oldS * factor))
+  cropVars.imgX = mx - (mx - cropVars.imgX) * (newS / oldS)
+  cropVars.imgY = my - (my - cropVars.imgY) * (newS / oldS)
+  cropVars.imgScale = newS
+  drawCrop()
+}
+
+// ── 触摸（单指拖拽 + 双指缩放） ──
+function cropTouchStart(e) {
+  if (e.touches.length === 1) {
+    cropDragging = true
+    cropDragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, imgX: cropVars.imgX, imgY: cropVars.imgY }
+  } else if (e.touches.length === 2) {
+    cropDragging = false
+    cropPinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY)
+    cropPinchScale = cropVars.imgScale
+  }
+}
+
+function cropTouchMove(e) {
+  const scale = pointerScale()
+  if (e.touches.length === 2) {
+    const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY)
+    const factor = dist / cropPinchDist
+    const newS = Math.max(0.1, Math.min(5, cropPinchScale * factor))
+    const rect = cropCanvas.value.getBoundingClientRect()
+    const cx = ((e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left) * scale
+    const cy = ((e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top) * scale
+    cropVars.imgX = cx - (cx - cropVars.imgX) * (newS / cropVars.imgScale)
+    cropVars.imgY = cy - (cy - cropVars.imgY) * (newS / cropVars.imgScale)
+    cropVars.imgScale = newS
+    drawCrop()
+  } else if (e.touches.length === 1 && cropDragging) {
+    const dx = (e.touches[0].clientX - cropDragStart.x) * scale
+    const dy = (e.touches[0].clientY - cropDragStart.y) * scale
+    cropVars.imgX = cropDragStart.imgX + dx
+    cropVars.imgY = cropDragStart.imgY + dy
+    drawCrop()
+  }
+}
+
+function cropTouchEnd(e) {
+  if (e.touches.length === 0) cropDragging = false
+}
+
+function cancelCrop() { if (!cropSaving.value) { cancelImageLoad(); cropImage.value = null } }
+
+function regenerateAvatar() {
+  cropImage.value = null
+  avTab.value = 'generate'
+  nextTick(() => startGenerate())
+}
+
+// ── 保存：从原图裁剪，输出方形高清头像 ──
+async function saveCrop() {
+  if (cropSaving.value || !cropImage.value) return
+  cropSaving.value = true
+  saveError.value = ''
+  try {
+    const img = cropImage.value
+    const s = cropVars.imgScale
+    const srcX = (CROP_CX - CROP_R - cropVars.imgX) / s
+    const srcY = (CROP_CY - CROP_R - cropVars.imgY) / s
+    const srcLen = (CROP_R * 2) / s
+    const outSize = 512
+
+    const tmpCanvas = document.createElement('canvas')
+    tmpCanvas.width = outSize
+    tmpCanvas.height = outSize
+    const ctx = tmpCanvas.getContext('2d')
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(img, srcX, srcY, srcLen, srcLen, 0, 0, outSize, outSize)
+    const base64 = tmpCanvas.toDataURL('image/png')
+    if (props.saveHandler) {
+      await props.saveHandler(base64)
+      cancelImageLoad()
+      modalVisible.value = false
+    } else emit('save', base64)
+  } catch (err) {
+    saveError.value = err.message || '头像保存失败，请重试'
+    console.error('[avatar] save crop failed:', err)
+  } finally { cropSaving.value = false }
+}
+</script>
+
+<style scoped>
+.av-content-enter-active,.av-content-leave-active { transition:opacity .3s,transform .3s; }
+.av-content-enter-from,.av-content-leave-to { opacity:0; transform:scale(.95); }
+/* 窗体皮肤与移动端边距由 LinsheModal 统一维护。 */
+.crop-save-error { margin:0; padding:10px 20px; color:var(--danger); font-size:var(--fs-sm); line-height:1.7; }
+
+.avtab-stage { display:grid; margin-top:16px; }
+.avtab-stage > .avtab-body { grid-area:1 / 1; min-width:0; align-self:start; }
+.av-tab-enter-active,.av-tab-leave-active { transition:opacity .3s var(--ease-standard),transform .3s var(--ease-standard); }
+.av-tab-enter-from { opacity:0; transform:translateY(8px); }
+.av-tab-leave-to { opacity:0; transform:translateY(-8px); }
+.av-tab-leave-active { pointer-events:none; }
+@media (prefers-reduced-motion: reduce) {
+  .av-tab-enter-active,.av-tab-leave-active,.av-content-enter-active,.av-content-leave-active { transition:none; transform:none; }
+}
+
+.avtab-body { padding:21px; overflow-y:auto; max-height:494px; }
+.av-upload-zone { display:block; border:2px dashed var(--border-strong); border-radius:13px; cursor:pointer; transition:border-color 0.15s; }
+.av-upload-zone:hover { border-color:var(--accent); }
+.av-upload-inner { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:62px 21px; gap:13px; }
+.av-upload-icon { font-size:52px; }
+.av-upload-text { font-size:18px; color:var(--text-secondary); }
+
+/* 粘贴入口：与虚线上传框并列的醒目提示条 */
+.av-paste-tip {
+  margin-top:14px; padding:12px 16px;
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  border:2px solid var(--accent); border-radius:14px;
+  background:rgb(var(--accent-rgb) / 14%);
+  box-shadow:var(--shadow-glow);
+  color:var(--accent); font-size:16px; font-weight:700;
+}
+.av-paste-tip strong { font-weight:800; }
+.av-paste-icon {
+  width:34px; height:34px; flex-shrink:0; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--accent); color:var(--on-accent); font-size:18px;
+  box-shadow:0 2px 0 var(--btn-lip);
+}
+.av-paste-label { flex:1; min-width:0; }
+.av-paste-keys { display:flex; align-items:center; gap:5px; }
+.av-paste-sep { font-size:13px; opacity:0.7; }
+.av-paste-keys kbd {
+  font-family:inherit; font-size:13px; font-weight:700;
+  padding:3px 9px; border-radius:8px;
+  background:var(--accent); border:1px solid var(--accent-hover);
+  color:var(--on-accent); box-shadow:0 2px 0 var(--btn-lip);
+}
+
+.av-gallery { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
+.av-loading, .av-empty { font-size:17px; color:var(--text-secondary); text-align:center; padding:52px 0; grid-column:1/-1; }
+.av-thumb { width:100%; aspect-ratio:1; object-fit:cover; border-radius:10px; cursor:pointer; border:2px solid transparent; transition:border-color 0.15s; }
+.av-thumb:hover { border-color:var(--accent); }
+.av-thumb-err { opacity:0.3; cursor:default; }
+
+/* ── 裁剪编辑器 ── */
+
+.crop-body { display:flex; gap:26px; align-items:flex-start; }
+.crop-canvas { display:block; width:100%; max-width:520px; min-width:0; height:auto; aspect-ratio:1; flex:1; border-radius:10px; cursor:grab; touch-action:none; }
+.crop-canvas:active { cursor:grabbing; }
+.crop-preview-container { flex-shrink:0; display:flex; flex-direction:column; align-items:center; gap:10px; }
+.crop-preview-label { font-size:16px; color:var(--text-secondary); }
+.crop-preview { width:104px; height:104px; border-radius:50%; border:2px solid var(--border); }
+.crop-zoom-info { font-size:16px; color:var(--text-secondary); }
+
+.crop-actions { display:flex; justify-content:space-between; align-items:center; gap:12px; width:100%; }
+
+/* ── 生成头像 Tab ── */
+.gen-idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 31px 21px 42px;
+  gap: 13px;
+}
+.gen-icon { font-size: 57px; }
+.gen-label { font-size: 19px; font-weight: 600; color: var(--text-bright); }
+.gen-desc { font-size: 17px; color: var(--text-secondary); text-align: center; line-height: 1.5; }
+.gen-meta { font-size: 16px; color: var(--text-muted, #999); }
+.gen-start-btn { margin-top: 16px; }
+
+/* 生成中动画 */
+.gen-running {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 42px 21px 52px;
+  gap: 21px;
+}
+.gen-spinner {
+  position: relative;
+  width: 104px; height: 104px;
+  display: flex; align-items: center; justify-content: center;
+}
+.gen-spinner-ring {
+  position: absolute; inset: 0;
+  border: 4px solid rgba(255,255,255,0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: genSpin 1s linear infinite;
+}
+@keyframes genSpin { to { transform: rotate(360deg); } }
+.gen-spinner-icon { font-size: 36px; z-index: 1; }
+.gen-phase { font-size: 19px; font-weight: 600; color: var(--text-bright); }
+.gen-progress-hint { font-size: 16px; color: var(--text-secondary); }
+
+/* 生成失败 */
+.gen-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 31px 21px 42px;
+  gap: 13px;
+}
+.gen-error-icon { font-size: 47px; }
+.gen-error-text { font-size: 17px; color: var(--accent); text-align: center; }
+.gen-retry-btn { margin-top: 10px; }
+
+/* ── 移动端：裁剪台竖排，画布按视口宽度缩放（指针换算见 pointerScale） ── */
+@media (max-width: 767px) {
+  .avtab-body { padding: 14px; max-height: 60vh; }
+  .av-upload-inner { padding: 40px 14px; }
+  .crop-body { flex-direction: column; gap: 14px; align-items: center; }
+  .crop-canvas { flex:none; max-width:100%; }
+  .crop-preview-container { flex-direction: row; gap: 12px; }
+}
+</style>

@@ -1,0 +1,725 @@
+/**
+ * 角色日记 —— 后台生成一篇「今天」的日记（文字 + 三张配图）。
+ *
+ * 输入：角色本人 + 角色当天的完整日程（daily_schedules 当日快照）。
+ * 输出：一篇以角色口吻写的第一人称日记，配三张今日场景插图。
+ *
+ * 一天一篇：character_diaries 以 (character_id, diary_date) 唯一，同日多次生成覆盖当日那一篇，
+ * 历史日期不动，供日记本往前翻阅。
+ *
+ * LLM 请求分层（AGENTS.md「LLM 请求分层」，稳定前缀优先，user 最后）：
+ *   system0 = 破甲词 + 世界观           （getSystemRulesWithWorld，静态）
+ *   system1 = 世界观强化（有世界观才有）  （getWorldIntegrationRule('moments')，静态）
+ *   system2 = 日记任务身份 + 口吻要求 + 输出 JSON 结构 + 生图提示词规范（静态）
+ *   system3 = 角色完整人格               （buildCharacterPersona full，随角色变化）
+ *   system4 = 今天的日期 + 今天的完整日程 （随日期变化）
+ *   user    = 本次执行强调
+ * 静态层逐字节稳定（无日期 / 用户名内插），同一角色跨天的请求共享 system0~3 前缀缓存。
+ *
+ * 生图参数与朋友圈一致（scene='moments' → 朋友圈画师串 / 全局 LoRA / 工作流），
+ * 分辨率取朋友圈宽高并随机横竖，逐图独立随机，priority 固定 high。
+ *
+ * 【上游合并口径】本文件从上游 v3.9.0 原样合并。依赖清单已逐条核对本地仓：
+ *   getDb / getSystemRulesWithWorld / getGlobalRule / getWorldSetting → 本地 db/index.js（worldRepository 再导出）
+ *   getWorldIntegrationRule / chatSync / generateImage / charArtistOverride / buildCharacterPersona /
+ *   recordCompletedImageTask / broadcast / saveBase64Image / ensureFontForCharacter / getTodaySchedule /
+ *   getLocalDateKey / config.comfyui.moments* / characters 相关列 → 本地均已有
+ *   startBackgroundTask → 本地 imageEditTasks.js **原本没有**这个导出（那是「被动型后台任务」入口），
+ *     已由本次合并在 imageEditTasks.js 里补上（只增不改，见该文件的 startBackgroundTask 注释）。
+ */
+
+import { getDb, getSystemRulesWithWorld, getGlobalRule, getWorldSetting } from '../db/index.js';
+import { getWorldIntegrationRule } from '../builtinRules.js';
+import { chatWithPreset } from './presets/narrative.js';
+import { generateImage } from './imageSkill.js';
+import { charArtistOverride } from './characterImageOpts.js';
+import { buildCharacterPersona } from './characterPersona.js';
+import { recordCompletedImageTask } from './imageTaskRecorder.js';
+import { broadcast } from './unifiedStreamBus.js';
+import { saveBase64Image } from './imagePaths.js';
+import { ensureFontForCharacter } from './handwritingFontService.js';
+import { getTodaySchedule } from './scheduleManager.js';
+import { startBackgroundTask } from './imageEditTasks.js';
+import { config } from '../config.js';
+import { getLocalDateKey } from '../utils/localDate.js';
+import { checkCharacterPublishable, GATE_REASON } from './publishGate.js';
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+const DIARY_IMAGE_COUNT = 3;
+
+/** 同一角色同一天正在生成中的任务：`${charId}:${date}` → task */
+const inflight = new Map();
+
+function diaryGateError(gate) {
+  const terminal = gate.reason === GATE_REASON.NOT_FOUND || gate.reason === GATE_REASON.SYSTEM;
+  const reason = gate.reason === GATE_REASON.SLEEPING ? '角色正在睡眠'
+    : gate.reason === GATE_REASON.FLAG_OFF ? '日程功能已关闭'
+      : terminal ? '角色已删除或为系统角色' : '角色当前不可发布';
+  return Object.assign(new Error(`日记${terminal ? '取消' : '延期'}：${reason}`), {
+    code: terminal ? 'DIARY_CANCELLED' : 'DIARY_DEFERRED',
+    gate,
+  });
+}
+
+function checkDiaryGate(db, characterId) {
+  return checkCharacterPublishable(db, characterId, { flag: 'schedule_enabled' });
+}
+
+/**
+ * 把一篇日记标记成「延期，等待自动续跑」（P1-11）。
+ *
+ * 延期 = status='pending' + retry_at 非空：它不是失败，也不该占用 generating。
+ * 用 pending 而不是新增 deferred 状态，是为了复用首次生成那条完全一样的路径
+ * （status CHECK 里也没有 deferred，改它要重建表）。
+ *
+ * @param {object} db
+ * @param {number} characterId
+ * @param {string} dateKey
+ * @param {string} message 写进 error_message 的可见原因
+ * @param {Date|string|null} retryAt 闸门给出的醒来时刻；没有就给 30 分钟后
+ */
+export function markDiaryDeferred(db, characterId, dateKey, message, retryAt = null) {
+  const at = retryAt ? new Date(retryAt) : new Date(Date.now() + 30 * 60 * 1000);
+  const iso = Number.isFinite(at.getTime())
+    ? at.toISOString().slice(0, 19).replace('T', ' ')
+    : new Date(Date.now() + 30 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare(`
+    UPDATE character_diaries
+    SET status = 'pending', error_message = ?, retry_at = ?, updated_at = datetime('now')
+    WHERE character_id = ? AND diary_date = ?
+  `).run(String(message || '延期').slice(0, 200), iso, characterId, dateKey);
+  return iso;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  静态 prompt 层（逐字节稳定，禁止内插日期 / 用户名等每次变化的内容）
+// ══════════════════════════════════════════════════════════════
+
+const DIARY_TASK_REQUIREMENTS = `【任务身份】
+你是一个日记执笔人。你会拿到一个角色的人设，以及这个角色今天的完整日程。你要以「这个角色本人」的第一人称口吻，把今天的一天写成一篇日记。
+
+【日记口吻要求】
+1. 这是角色在一天结束时写给自己看的私人日记。以第一人称写，但不必句句以「我」开头，也不招呼读者、介绍自己的身份或解释熟人的背景。写下的是此刻还惦记着的事，不是给旁人展示的一篇好文章。
+2. 让人设决定「注意什么、怎么想、怎么说」：同一件小事，不同的人会介意不同的地方。用角色自己的词汇、句子长短、幽默感和表达分寸；寡言的人可以简短，讲究的人可以措辞认真，直率的人可以直接抱怨。不要把所有人都写成温柔文艺、俏皮话多或伤感敏锐的同一种声音，也不要反复用性格标签介绍自己。
+3. 从今天里挑一两件仍有余味的小事展开，其他事情可以一笔带过或不写。篇幅跟着在意程度走：一件不起眼的事可能念叨很久，一件大事也可能暂时不想多提。不要照抄日程表、逐项报时或平均分配篇幅；正文不提「日程表」等任务来源，但可以自然地说自己的打算。
+4. 细节要和在意的事情连在一起：一个反复做的小动作、一件不顺手的东西、一句听后还在琢磨的话，都可以让感受落地。只挑当时真会注意到的细节，不必把气味、光线、声音、触感逐项写齐，也不要每段都用景物烘托情绪。比起泛泛写「有点烦」，更可以写烦的时候做了什么、忍住了什么。
+5. 可以留下没对别人说的小心思：嘴上不在乎却又记着，想偷懒又有点心虚，得到一点好处就暗自高兴，或者还没想明白自己为什么不舒服。是否出现这些反应由人设和当天经历决定，不必每篇都安排反转、矛盾或秘密；不用急着把情绪分析清楚，更不用替自己作出正确、成熟的总结。
+6. 叙述可以有轻重和停顿，顺着一个念头想起另一件事，也可以临时改口、补一句或就此打住。长短句和段落自然交替，不追求每段一样整齐。口语词、括号、省略号、感叹号只是偶尔需要时才用，不靠满篇「嗯」「唉」「算了」、故意写错字或硬塞网络梗制造随手感。上述写法都是可选的，不要逐项表演。
+7. 以给定的人设、世界观和当天活动为事实边界，可以补充合理的日常动作与感受，不为增加戏剧性擅自编造重要人物关系、重大遭遇或他人的承诺。角色只能写自己知道的事，对别人的心思可以猜，但不能当成事实。平淡的一天也值得记，不必硬添波折，更不必把每件事都牵到恋爱或某个人身上。
+8. 从最想记的地方直接写起，不必固定用「今天是……的一天」开场。写到没什么想说的地方就停，可以停在一件小事、一个未解决的念头或接下来想做的事上，不强行升华、感恩、励志或期待明天。少用套话和漂亮比喻，不要把日记写成散文、心理咨询记录或每日成长报告。
+9. 日记正文只保留角色实际写下的文字，不写任务说明、写作分析或自我评价；整体仍按下方 JSON 结构输出。`;
+
+const DIARY_OUTPUT_STRUCTURE = `【输出格式】
+严格按下面这个 JSON 结构输出（字段名固定，值按注释里的要求填）：
+
+{
+  "title": "被雨淋了一路（标题：6~14 个字，像随手写在页首的一句话，口语、有画面感，能看出今天的心情）",
+  "mood": "又累又饿（心情：2~6 个字，直接写此刻的心境）",
+  "weather": "阴了一整天（天气：2~6 个字，写你感知到的天气或光线）",
+  "content": "第一段（正文：300~400 字，第一人称，分 3~5 段，段与段之间用 \\n\\n 分隔，段落长短可以不同。从今天最惦记的小事直接写起，不复述日程表，不为凑字数重复感想）\\n\\n第二段（按角色自己的口吻展开，用少量与事情相关的动作或物件带出当时的反应、此刻还在意的地方；不堆砌感官描写，不解释人设）\\n\\n第三段（顺着念头自然停笔，不必解决情绪或总结道理，不刻意用断句、口头禅或抒情句收尾）",
+  "imagePrompts": [
+    "第一张配图的英文画面描述：从正文里挑一个具体的场景或瞬间，写清人物状态、表情、姿势、动作、所处环境、光线氛围与镜头感；若画面中有『我』，必须使用你的人设里的外貌特征，眼睛不看镜头。只写英文关键词与短句，不要写中文。",
+    "第二张配图的英文画面描述：取正文里另一处不同的场景、物件特写或情绪画面，与第一张的场面明显区分。只写英文。",
+    "第三张配图的英文画面描述：再取正文里第三处不同的画面（可以是空镜、静物、远景），与前面两张都不重复。只写英文。"
+  ]
+}
+
+【硬性约束】
+- imagePrompts 必须是 3 个元素，三张图对应今天里三个不同的场面，不要重复同一处场景。
+- imagePrompts 里至少两张画面上要有「我」本人（用你人设里的外貌、发型、发色、服饰特征，不要被其他内容干扰），姿势与表情符合当时的处境。
+- 必须严格按示例格式输出，只输出 JSON，不要输出任何解释或 JSON 以外的文字。`;
+
+// ══════════════════════════════════════════════════════════════
+//  prompt 组装
+// ══════════════════════════════════════════════════════════════
+
+/** 把当日日程快照格式化成给 LLM 看的文本（不含日期，日期在单独一层） */
+export function formatScheduleForDiary(activities = []) {
+  if (!Array.isArray(activities) || activities.length === 0) return '（今天没有安排，一整天都是自己支配的时间。）';
+  const lines = [];
+  for (const act of activities) {
+    const range = act.startTime || act.endTime ? `${act.startTime || '??:??'}-${act.endTime || '??:??'} ` : '';
+    const loc = act.location ? `在【${act.location}】` : '';
+    const desc = act.description ? ` —— ${String(act.description).trim()}` : '';
+    lines.push(`${range}${loc}${act.activity || ''}${desc}`.trim());
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 按「稳定前缀优先」组装日记请求的分层消息。
+ * @param {object} p
+ * @param {object} p.character  - characters 表行（含 id / base_prompt / short_prompt）
+ * @param {string} p.dateKey    - 本地日期键 YYYY-MM-DD
+ * @param {string} p.scheduleText - formatScheduleForDiary 的结果
+ * @returns {Array<{role:string, content:string}>}
+ */
+export function buildDiaryMessages({ character, dateKey, scheduleText }) {
+  const msgs = [];
+
+  // system0：破甲词 + 世界观
+  const stage0 = getSystemRulesWithWorld({ roleplay: false });
+  if (stage0) msgs.push({ role: 'system', content: stage0 });
+
+  // system1：世界观强化（没有世界观就不要这一层）
+  if (getWorldSetting()) {
+    msgs.push({ role: 'system', content: getWorldIntegrationRule('moments') });
+  }
+
+  // system2：静态任务层（身份 + 口吻要求 + 输出结构 + 生图提示词规范）
+  const imageGuide = getGlobalRule('image_prompt')?.rule_content || '';
+  const imageGuideBlock = imageGuide ? `\n\n【生图提示词编写规范】\n${imageGuide}` : '';
+  msgs.push({
+    role: 'system',
+    content: `${DIARY_TASK_REQUIREMENTS}\n\n${DIARY_OUTPUT_STRUCTURE}${imageGuideBlock}`,
+  });
+
+  // system3：角色完整人格（随角色变化）
+  msgs.push({
+    role: 'system',
+    content: buildCharacterPersona(
+      { id: character.id, base_prompt: character.base_prompt, short_prompt: character.short_prompt },
+      { variant: 'full' }
+    ),
+  });
+
+  // system4：今天的日期 + 今天的完整日程（随日期变化）
+  const weekday = WEEKDAYS[new Date(`${dateKey}T12:00:00`).getDay()] || '';
+  msgs.push({
+    role: 'system',
+    content: `【今天】${dateKey}${weekday ? `（${weekday}）` : ''}\n\n【今天的日程】\n${scheduleText}`,
+  });
+
+  // user：只强调本次执行与输出格式
+  msgs.push({
+    role: 'user',
+    content: '请从今天的日程里挑出值得记录的部分，以你自己的口吻写一篇今天的日记，严格按上面的 JSON 结构只返回 JSON。',
+  });
+
+  return msgs;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  输出解析
+// ══════════════════════════════════════════════════════════════
+
+/** 兜底的生图 prompt：LLM 没给够 3 条时按位置补，保证日记始终有 3 张配图 */
+const FALLBACK_IMAGE_PROMPTS = [
+  'anime illustration, the character in a quiet everyday scene from the day, warm ambient light, soft focus, looking away from the camera, detailed background',
+  'anime illustration, a still-life detail from the day, close-up of objects and light, gentle color palette, calm atmosphere',
+  'anime illustration, evening mood, the character alone in a dim room after a long day, soft rim light through the window, contemplative expression, looking away from the camera',
+];
+
+function asText(value, maxLen = 0) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return maxLen > 0 ? text.slice(0, maxLen) : text;
+}
+
+/**
+ * 校验并规整 LLM 的日记 JSON：字段缺失只做降级，不抛错（保证日记主体能落地）。
+ * imagePrompts 一律补齐/裁剪到 3 条。
+ */
+export function normalizeDiaryPayload(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const content = asText(parsed.content);
+  if (!content) return null;
+
+  let prompts = Array.isArray(parsed.imagePrompts) ? parsed.imagePrompts : [];
+  prompts = prompts.map(p => asText(p)).filter(Boolean);
+  while (prompts.length < DIARY_IMAGE_COUNT) {
+    prompts.push(FALLBACK_IMAGE_PROMPTS[prompts.length] || FALLBACK_IMAGE_PROMPTS[0]);
+  }
+  prompts = prompts.slice(0, DIARY_IMAGE_COUNT);
+
+  return {
+    title: asText(parsed.title, 40) || '无题',
+    mood: asText(parsed.mood, 20),
+    weather: asText(parsed.weather, 20),
+    content,
+    imagePrompts: prompts,
+  };
+}
+
+/** 容错解析：直接 parse → ```json 代码块 → 首个 {...} 块；都失败返回 null（由调用方决定失败语义） */
+export function parseDiaryJSON(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const clean = raw.trim();
+  const attempts = [clean];
+  const block = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (block) attempts.push(block[1]);
+  const obj = clean.match(/\{[\s\S]*\}/);
+  if (obj) attempts.push(obj[0]);
+
+  for (const text of attempts) {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { continue; }
+    const normalized = normalizeDiaryPayload(parsed);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  查询
+// ══════════════════════════════════════════════════════════════
+
+function safeJSON(raw, fallback) {
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
+/** 行 → 前端使用的日记对象 */
+export function toDiaryDTO(row) {
+  if (!row) return null;
+  const images = safeJSON(row.images, []);
+  return {
+    id: row.id,
+    character_id: row.character_id,
+    character_name: row.character_name || row.display_name || '',
+    character_avatar: row.avatar_path || '',
+    date: row.diary_date,
+    title: row.title || '',
+    mood: row.mood || '',
+    weather: row.weather || '',
+    content: row.content || '',
+    images: Array.isArray(images) ? images : [],
+    resolutions: safeJSON(row.resolutions, []),
+    handwriting_font: row.handwriting_font || '',
+    status: row.status,
+    error: row.error_message || '',
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+const DIARY_ROW_SELECT = `
+  SELECT cd.*, c.display_name, c.avatar_path
+  FROM character_diaries cd
+  LEFT JOIN characters c ON cd.character_id = c.id
+`;
+
+export function getDiary(characterId, dateKey) {
+  const row = getDb().prepare(`${DIARY_ROW_SELECT} WHERE cd.character_id = ? AND cd.diary_date = ?`).get(characterId, dateKey);
+  return toDiaryDTO(row);
+}
+
+/** 历史日记简目（最新在前），不含正文，供翻阅导航 */
+export function listDiaries(characterId, limit = 60) {
+  const rows = getDb().prepare(`
+    SELECT cd.id, cd.character_id, cd.diary_date, cd.title, cd.mood, cd.weather, cd.images, cd.status, cd.updated_at,
+           c.display_name, c.avatar_path
+    FROM character_diaries cd
+    LEFT JOIN characters c ON cd.character_id = c.id
+    WHERE cd.character_id = ? AND cd.status IN ('completed', 'failed')
+    ORDER BY cd.diary_date DESC
+    LIMIT ?
+  `).all(characterId, limit);
+  return rows.map(r => {
+    const images = safeJSON(r.images, []);
+    return {
+      id: r.id,
+      character_id: r.character_id,
+      date: r.diary_date,
+      status: r.status,
+      title: r.title || '',
+      mood: r.mood || '',
+      weather: r.weather || '',
+      cover: Array.isArray(images) ? (images[0] || '') : '',
+      updated_at: r.updated_at,
+    };
+  });
+}
+
+export function isDiaryGenerating(characterId, dateKey) {
+  return inflight.has(`${characterId}:${dateKey}`);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  生图（朋友圈参数 + 横竖随机 + 高优先级）
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 朋友圈参数下的随机横竖分辨率：宽高互换，二者等概率。
+ * 逐图独立随机，所以同一篇日记的三张图可能横竖混排。
+ */
+export function pickDiaryResolution(random = Math.random) {
+  const w = Number(config.comfyui.momentsWidth) || 1600;
+  const h = Number(config.comfyui.momentsHeight) || 1200;
+  return random() < 0.5 ? { width: w, height: h } : { width: h, height: w };
+}
+
+async function generateDiaryImages({ character, content, prompts, onProgress }) {
+  const charLoras = safeJSON(character.loras, []);
+  const customWorkflow = character.custom_workflow || null;
+  const charArtist = charArtistOverride(character);
+  const artist = charArtist !== null ? charArtist : config.comfyui.momentsArtist;
+  const ragQuery = String(content || '').slice(0, 300);
+
+  let finished = 0;
+  const settled = await Promise.allSettled(prompts.map((prompt, index) => (async () => {
+    const { width, height } = pickDiaryResolution();
+    const result = await generateImage(prompt, {
+      ragQuery,
+      artist,
+      width,
+      height,
+      scene: 'moments',
+      priority: 'high',
+      // 日记配图画的就是这个角色本人
+      identity: character,
+      loras: charLoras,
+      customWorkflow,
+      onProgress: (p) => {
+        const cur = typeof p?.progress === 'number' ? Math.min(1, Math.max(0, p.progress)) : 0;
+        onProgress?.({ stage: 'image', imageIndex: index, progress: Math.min(1, (finished + cur) / prompts.length) });
+      },
+    });
+    finished++;
+    onProgress?.({ stage: 'image', imageIndex: index, progress: Math.min(1, finished / prompts.length) });
+    if (!result?.success || !result.images?.length) {
+      throw new Error(result?.error || `第 ${index + 1} 张配图生成失败`);
+    }
+    return {
+      index,
+      width,
+      height,
+      image: result.images[0],
+      promptRefined: result.promptRefined || prompt,
+      wfMode: result.wfMode,
+      provenance: result.provenance,
+    };
+  })()));
+
+  const ok = settled.filter(s => s.status === 'fulfilled').map(s => s.value)
+    .sort((a, b) => a.index - b.index);
+  const failed = settled.filter(s => s.status === 'rejected');
+  for (const f of failed) console.warn('[diaryGenerator] 配图失败:', f.reason?.message || f.reason);
+  return { ok, failedCount: failed.length };
+}
+
+// ══════════════════════════════════════════════════════════════
+//  生成主流程
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 为角色生成某一天的日记（后台执行，立刻返回）。
+ * 同角色同日期已有任务在跑时不重复启动。
+ *
+ * @param {number} characterId
+ * @param {{ date?: string }} [opts] - date 缺省为今天
+ * @returns {{ started: boolean, date: string, generating: boolean, diary: object|null }}
+ */
+function diaryActivities(characterId,dateKey,readOnly=false) {
+  if (dateKey===getLocalDateKey() && !readOnly) return getTodaySchedule(characterId)||[];
+  const db=getDb();
+  const row=db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id=? AND schedule_date=?').get(characterId,dateKey)
+    || (dateKey===getLocalDateKey()?db.prepare('SELECT schedule_json FROM schedule_templates WHERE character_id=?').get(characterId):null);
+  try { const parsed=JSON.parse(row?.schedule_json||'[]'); return Array.isArray(parsed)?parsed:parsed.activities||[]; } catch {return [];}
+}
+export async function generateDiaryDraft(characterId, {date} = {}) {
+  const db = getDb();
+  const character=db.prepare('SELECT * FROM characters WHERE id=?').get(characterId);
+  if (!character) throw Object.assign(new Error('角色不存在'),{status:404});
+  const gate = checkDiaryGate(db, characterId);
+  if (!gate.allowed) throw Object.assign(diaryGateError(gate), { status: 409 });
+  const dateKey=date || getLocalDateKey();
+  const scheduleText=formatScheduleForDiary(diaryActivities(characterId,dateKey,true));
+  const messages=buildDiaryMessages({character,dateKey,scheduleText});
+  const raw=await chatWithPreset(messages,{temperature:0.9,response_format:{type:'json_object'},label:'日记草稿',
+    lorebook:{personaTexts:[messages.at(-3).content],staticTexts:messages.slice(0,-3).map(message=>message.content),
+      cacheBoundary:{index:messages.length-4,offset:messages.at(-4).content.length},history:messages.slice(-2),
+      characterName:character.display_name,characterDescription:messages.at(-3).content,scenario:scheduleText}});
+  const draft=parseDiaryJSON(raw);
+  if (!draft) throw new Error('日记草稿无法解析');
+  return {date:dateKey,draft};
+}
+
+export function startDiaryGeneration(characterId, opts = {}) {
+  const db = getDb();
+  const dateKey = opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date) ? opts.date : getLocalDateKey();
+  const key = `${characterId}:${dateKey}`;
+
+  const character = db.prepare(`
+    SELECT id, name, display_name, avatar_path, base_prompt, short_prompt,
+           handwriting_font, loras, custom_workflow, artist_override
+    FROM characters WHERE id = ?
+  `).get(characterId);
+
+  if (!character) {
+    const err = new Error('角色不存在');
+    err.status = 404;
+    throw err;
+  }
+
+  if (inflight.has(key)) {
+    return { started: false, date: dateKey, generating: true, diary: getDiary(characterId, dateKey) };
+  }
+
+  const gate = checkDiaryGate(db, characterId);
+  if (!gate.allowed) {
+    const error = diaryGateError(gate);
+    const deferred = error.code === 'DIARY_DEFERRED';
+    const cancelled = error.code === 'DIARY_CANCELLED';
+    // P1-11：延期落成 pending + retry_at，让续跑调度能接上；
+    // 取消则维持 failed（目标已经不在了，重试没有意义）。
+    if (deferred) {
+      markDiaryDeferred(db, characterId, dateKey, error.message, gate.retryAt);
+    } else {
+      db.prepare("UPDATE character_diaries SET status = 'failed', error_message = ?, updated_at = datetime('now') WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
+        .run(error.message, characterId, dateKey);
+    }
+    broadcast('diary_error', {
+      character_id: characterId,
+      character_name: character.display_name || character.name || '',
+      date: dateKey,
+      error: error.message,
+      hasText: false,
+      deferred,
+      cancelled,
+      reason: gate.reason,
+      retry_at: gate.retryAt,
+    });
+    return {
+      started: false,
+      date: dateKey,
+      generating: false,
+      deferred,
+      cancelled,
+      reason: gate.reason,
+      retryAt: gate.retryAt,
+      error: error.message,
+      diary: getDiary(characterId, dateKey),
+    };
+  }
+
+  const snapshot = db.prepare('SELECT * FROM character_diaries WHERE character_id = ? AND diary_date = ?').get(characterId, dateKey) || null;
+
+  // 先占位：今天那篇标成 generating（已有正文的保留正文，前端可继续显示旧内容）
+  db.prepare(`
+    INSERT INTO character_diaries (character_id, diary_date, status, updated_at)
+    VALUES (?, ?, 'generating', datetime('now'))
+    ON CONFLICT(character_id, diary_date)
+    DO UPDATE SET status = 'generating', error_message = NULL, updated_at = datetime('now')
+  `).run(characterId, dateKey);
+
+  const name = character.display_name || character.name || '';
+  broadcast('diary_start', { character_id: characterId, character_name: name, date: dateKey });
+
+  // 右下角生成提示：复用图片后台任务通道（image_edit_task_* 事件）
+  const task = startBackgroundTask({
+    action: 'diary',
+    meta: { characterId, characterName: name, characterAvatar: character.avatar_path || '', date: dateKey },
+  });
+  task.onProgress({ stage: 'text', progress: 0 });
+
+  const readContent=()=>db.prepare('SELECT title,mood,weather,content,image_prompts,images FROM character_diaries WHERE character_id=? AND diary_date=?').get(characterId,dateKey);
+  const promise = runDiaryGeneration({ db, character, dateKey, name, task, snapshot, approvedDraft: opts.draft, readContent, expectedContent: JSON.stringify(readContent()), dependencies:opts.dependencies||{} })
+    .finally(() => { inflight.delete(key); });
+  inflight.set(key, promise);
+
+  return { started: true, date: dateKey, generating: true, diary: getDiary(characterId, dateKey) };
+}
+
+async function runDiaryGeneration({ db, character, dateKey, name, task, snapshot, approvedDraft, readContent, expectedContent, dependencies }) {
+  const characterId = character.id;
+  let lastText = null;
+  const assertCurrent=()=>{
+    if (approvedDraft && (JSON.stringify(readContent())!==expectedContent || db.prepare('SELECT base_prompt FROM characters WHERE id=?').get(characterId)?.base_prompt!==character.base_prompt)) {
+      throw Object.assign(new Error('生成期间角色或日记已改变，未覆盖新内容'),{code:'DIARY_CONFLICT'});
+    }
+  };
+  const assertPublishable = () => {
+    const gate = checkDiaryGate(db, characterId);
+    if (!gate.allowed) throw diaryGateError(gate);
+  };
+  try {
+    // ── 步骤1：角色当日日程 ──
+    let activities = [];
+    try { activities = diaryActivities(characterId,dateKey); } catch (err) {
+      console.warn(`[diaryGenerator] schedule unavailable for char #${characterId}:`, err.message);
+    }
+    const scheduleText = formatScheduleForDiary(activities);
+
+    // ── 步骤2：确保角色有手写字体（日记正文用信件那套字体渲染）──
+    let handwritingFont = character.handwriting_font || '';
+    try {
+      handwritingFont = await ensureFontForCharacter(characterId);
+    } catch (err) {
+      console.warn(`[diaryGenerator] font ensure failed for char #${characterId}:`, err.message);
+    }
+
+    // ── 步骤3：LLM 生成日记文字 + 3 段生图 prompt ──
+    const messages = buildDiaryMessages({ character, dateKey, scheduleText });
+    const raw = approvedDraft ? JSON.stringify(approvedDraft) : await (dependencies.chat||chatWithPreset)(messages, {
+      temperature: 0.9,
+      response_format: { type: 'json_object' },
+      label: '日记助手',
+      lorebook:{personaTexts:[messages.at(-3).content],staticTexts:[messages.at(-4).content],characterName:character.display_name,scenario:scheduleText},
+    });
+    const diary = parseDiaryJSON(raw);
+    if (!diary) throw new Error('日记生成返回内容无法解析');
+    lastText = diary;
+
+    assertCurrent();
+    assertPublishable();
+    db.prepare(`
+      UPDATE character_diaries
+      SET title = ?, mood = ?, weather = ?, content = ?, image_prompts = ?,
+          handwriting_font = ?, status = 'generating', error_message = NULL, updated_at = datetime('now')
+      WHERE character_id = ? AND diary_date = ?
+    `).run(diary.title, diary.mood, diary.weather, diary.content,
+      JSON.stringify(diary.imagePrompts), handwritingFont || '', characterId, dateKey);
+    expectedContent=JSON.stringify(readContent());
+
+    broadcast('diary_text_ready', {
+      character_id: characterId,
+      character_name: name,
+      date: dateKey,
+      diary: getDiary(characterId, dateKey),
+    });
+    task.onProgress({ stage: 'image', imageIndex: 0, progress: 0 });
+
+    // ── 步骤4：并发生成 3 张配图（朋友圈参数 + 横竖随机 + 高优先级）──
+    const { ok, failedCount } = await (dependencies.generateImages||generateDiaryImages)({
+      character,
+      content: diary.content,
+      prompts: diary.imagePrompts,
+      onProgress: (p) => task.onProgress(p),
+    });
+    if (ok.length === 0) throw new Error('三张配图全部生成失败');
+    assertCurrent();
+    assertPublishable();
+
+    // ── 步骤5：落盘 + 记录 image_tasks ──
+    const ts = Date.now();
+    const images = [];
+    const resolutions = [];
+    for (const item of ok) {
+      const imageUrl = saveBase64Image('diary', `diary_${characterId}_${dateKey}_${item.index}_${ts}.png`, item.image.base64);
+      images.push(imageUrl);
+      resolutions.push(`${item.width}x${item.height}`);
+      recordCompletedImageTask({
+        conversationId: `char_${characterId}_diary`,
+        promptOriginal: diary.imagePrompts[item.index] || item.promptRefined,
+        promptRefined: item.promptRefined,
+        outputPaths: [imageUrl],
+        style: config.comfyui.momentsArtist,
+        resolution: `${item.width}x${item.height}`,
+        workflowTemplate: item.wfMode,
+        provenance: item.provenance,
+        db,
+      });
+    }
+
+    assertCurrent();
+    assertPublishable();
+    db.prepare(`
+      UPDATE character_diaries
+      SET images = ?, resolutions = ?, status = 'completed', error_message = NULL, updated_at = datetime('now')
+      WHERE character_id = ? AND diary_date = ?
+    `).run(JSON.stringify(images), JSON.stringify(resolutions), characterId, dateKey);
+
+    const saved = getDiary(characterId, dateKey);
+    if (failedCount > 0) {
+      console.warn(`[diaryGenerator] char #${characterId} ${dateKey} 完成但缺 ${failedCount} 张配图`);
+    }
+    console.log(`[diaryGenerator] char #${characterId} ${dateKey} 日记完成（${images.length} 张配图）`);
+    broadcast('diary_done', { character_id: characterId, character_name: name, date: dateKey, diary: saved });
+    task.succeed({ diaryId: saved?.id || null, date: dateKey, characterId });
+  } catch (err) {
+    const deferred = err.code === 'DIARY_DEFERRED';
+    const cancelled = err.code === 'DIARY_CANCELLED';
+    const log = deferred ? console.log : console.error;
+    log(`[diaryGenerator] char #${characterId} ${dateKey} ${deferred ? 'deferred' : cancelled ? 'cancelled' : 'failed'}:`, err.message);
+    const message = (err?.message || '日记生成失败').slice(0, 200);
+    if (deferred || cancelled) {
+      if (snapshot) {
+        db.prepare(`
+          UPDATE character_diaries
+          SET title = ?, mood = ?, weather = ?, content = ?, images = ?, image_prompts = ?, resolutions = ?,
+              handwriting_font = ?, status = ?, error_message = ?, created_at = ?, updated_at = ?
+          WHERE character_id = ? AND diary_date = ?
+        `).run(snapshot.title, snapshot.mood, snapshot.weather, snapshot.content, snapshot.images,
+          snapshot.image_prompts, snapshot.resolutions, snapshot.handwriting_font, snapshot.status,
+          snapshot.error_message, snapshot.created_at, snapshot.updated_at, characterId, dateKey);
+      } else {
+        db.prepare("DELETE FROM character_diaries WHERE character_id = ? AND diary_date = ? AND status = 'generating'")
+          .run(characterId, dateKey);
+      }
+      // P1-11：延期要能自己续跑。
+      //
+      // 以前这里只回滚 + 广播 retry_at，之后没有任何东西会再触发一次——
+      // 角色醒来、日程开关重新打开，那篇日记就一直缺席，必须手动点重试。
+      // 现在把「延期」持久化成 status='pending' + retry_at，由 diaryRetryScheduler 到点续跑。
+      // 取消（角色被删 / 系统角色）不写 retry_at，避免对已经不存在的目标反复调度。
+      if (deferred) {
+        const iso = markDiaryDeferred(db, characterId, dateKey, message, err.gate?.retryAt);
+        console.log(`[diaryGenerator] char #${characterId} ${dateKey} 延期到 ${iso} 自动续跑`);
+      }
+    } else if (err.code!=='DIARY_CONFLICT' || JSON.stringify(readContent())===expectedContent) {
+      // 普通失败保留本轮正文，用户可原地重试；只有 gate 拒绝回滚未公开内容。
+      db.prepare(`
+        UPDATE character_diaries
+        SET status = 'failed', error_message = ?, updated_at = datetime('now')
+        WHERE character_id = ? AND diary_date = ?
+      `).run(message, characterId, dateKey);
+    }
+    broadcast('diary_error', {
+      character_id: characterId,
+      character_name: name,
+      date: dateKey,
+      error: message,
+      hasText: deferred || cancelled ? Boolean(snapshot?.content) : Boolean(lastText),
+      deferred,
+      cancelled,
+      reason: err.gate?.reason || null,
+      retry_at: err.gate?.retryAt || null,
+    });
+    task.fail(err);
+  }
+}
+
+/**
+ * 延期日记的自动续跑（P1-11）。
+ *
+ * 由 app.js 的低频 tick 调用。只捡 `status='pending' AND retry_at <= now` 的行——
+ * 这些正是 gate 判定「角色在睡 / 日程关闭」时留下的。
+ *
+ * 与手动重试共用 startDiaryGeneration：任务所有权、inflight 锁、快照回滚都在那里，
+ * 这里不另造一套。已确认的稿子（status='completed'）永远不会被本函数碰到。
+ *
+ * @param {{limit?: number}} [opts]
+ * @returns {Promise<number>} 本轮实际发起生成的条数
+ */
+export async function processDeferredDiaries({ limit = 2 } = {}) {
+  const db = getDb();
+  let due = [];
+  try {
+    due = db.prepare(`
+      SELECT character_id, diary_date FROM character_diaries
+      WHERE status = 'pending' AND retry_at IS NOT NULL AND retry_at <= datetime('now')
+      ORDER BY retry_at ASC LIMIT ?
+    `).all(limit);
+  } catch (err) {
+    console.warn('[diaryGenerator] deferred scan failed:', err?.message || err);
+    return 0;
+  }
+  let started = 0;
+  for (const row of due) {
+    try {
+      // 先把 retry_at 清掉再发起：即使这一轮又延期，markDiaryDeferred 会写入新的时刻，
+      // 不会因为残留旧时间戳被下一 tick 立刻重复捡起。
+      db.prepare(`UPDATE character_diaries SET retry_at = NULL WHERE character_id = ? AND diary_date = ?`)
+        .run(row.character_id, row.diary_date);
+      const result = startDiaryGeneration(row.character_id, { date: row.diary_date });
+      if (result?.started) {
+        started += 1;
+        console.log(`[diaryGenerator] 延期续跑：char #${row.character_id} ${row.diary_date}`);
+      }
+    } catch (err) {
+      console.warn(`[diaryGenerator] deferred retry failed for char #${row.character_id} ${row.diary_date}:`, err?.message || err);
+    }
+  }
+  return started;
+}

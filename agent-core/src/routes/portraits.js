@@ -1,0 +1,159 @@
+import { Router } from 'express';
+import { getDb } from '../db/index.js';
+
+const router = Router();
+
+// GET /api/portraits/:characterId — 获取指定角色视角下的用户画像 + VAD 情绪 + 好感度
+router.get('/:characterId', (req, res) => {
+  const db = getDb();
+  const { characterId } = req.params;
+
+  const portraits = db.prepare(`
+    SELECT id, trait_type, content, confidence, created_at
+    FROM user_portraits
+    WHERE character_id = ?
+    ORDER BY trait_type, confidence DESC
+  `).all(characterId);
+
+  // 按类型分组
+  const grouped = { personality: [], preference: [] };
+  for (const p of portraits) {
+    grouped[p.trait_type] = grouped[p.trait_type] || [];
+    grouped[p.trait_type].push(p);
+  }
+
+  // 追加 VAD 情绪状态 + 好感度 + 最近变化
+  const conversationId = `char_${characterId}`;
+  const lastSnapshot = db.prepare(`
+    SELECT valence, arousal, dominance, mood_valence, mood_arousal, mood_dominance,
+           dominant_emotion, affinity, affinity_delta, reason
+    FROM emotion_snapshots
+    WHERE conversation_id = ?
+    ORDER BY id DESC LIMIT 1
+  `).get(conversationId);
+
+  const affinity = db.prepare(
+    'SELECT affinity FROM user_relationships WHERE character_id = ?'
+  ).get(characterId)?.affinity ?? 50;
+
+  res.json({
+    portraits,
+    grouped,
+    vad: lastSnapshot ? {
+      instant: { valence: lastSnapshot.valence, arousal: lastSnapshot.arousal, dominance: lastSnapshot.dominance },
+      mood: { valence: lastSnapshot.mood_valence, arousal: lastSnapshot.mood_arousal, dominance: lastSnapshot.mood_dominance },
+      dominantEmotion: lastSnapshot.dominant_emotion,
+    } : null,
+    affinity,
+    lastAffinityDelta: lastSnapshot?.affinity_delta ?? null,
+    lastReason: lastSnapshot?.reason || null,
+  });
+});
+
+// POST /api/portraits — 手动添加一条画像
+router.post('/', (req, res) => {
+  const db = getDb();
+  const { characterId, traitType, content } = req.body;
+  if (!characterId) return res.status(400).json({ error: 'characterId is required' });
+  if (!['personality', 'preference'].includes(traitType)) {
+    return res.status(400).json({ error: 'traitType must be personality/preference' });
+  }
+  if (!content || typeof content !== 'string' || content.trim().length < 2) {
+    return res.status(400).json({ error: 'content must be a string with at least 2 characters' });
+  }
+  const trimmed = content.trim();
+  try {
+    const result = db.prepare(`
+      INSERT OR IGNORE INTO user_portraits (character_id, trait_type, content, confidence)
+      VALUES (?, ?, ?, 1.0)
+    `).run(characterId, traitType, trimmed);
+    if (result.changes === 0) {
+      return res.status(409).json({ error: '该特征已存在' });
+    }
+    const row = db.prepare(`SELECT id, trait_type, content, confidence, created_at FROM user_portraits WHERE id = ?`).get(result.lastInsertRowid);
+    res.status(201).json(row);
+  } catch (err) {
+    console.error('[portraits] POST error:', err.message);
+    res.status(500).json({ error: '添加失败' });
+  }
+});
+
+// PUT /api/portraits/:id — 编辑单条画像内容
+router.put('/:id', (req, res) => {
+  const db = getDb();
+  const { content } = req.body;
+  if (!content || typeof content !== 'string' || content.trim().length < 2) {
+    return res.status(400).json({ error: 'content must be a string with at least 2 characters' });
+  }
+  const trimmed = content.trim();
+  const existing = db.prepare(`SELECT id FROM user_portraits WHERE id = ?`).get(req.params.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Portrait entry not found' });
+  }
+  db.prepare(`UPDATE user_portraits SET content = ? WHERE id = ?`).run(trimmed, req.params.id);
+  res.json({ ok: true, id: Number(req.params.id), content: trimmed });
+});
+
+// DELETE /api/portraits/:id — 删除单条画像
+router.delete('/:id', (req, res) => {
+  const db = getDb();
+  const result = db.prepare(`DELETE FROM user_portraits WHERE id = ?`).run(req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Portrait entry not found' });
+  }
+  res.json({ ok: true });
+});
+
+// DELETE /api/portraits/character/:characterId — 清空某角色的全部用户画像
+router.delete('/character/:characterId/all', (req, res) => {
+  const db = getDb();
+  db.prepare(`DELETE FROM user_portraits WHERE character_id = ?`).run(req.params.characterId);
+  res.json({ ok: true });
+});
+
+// ── 阶段三 T4：核心记忆升华的半自动通道 ──
+// daemon 只往 portrait_suggestions 写 pending 建议；这里提供人工确认/忽略。
+
+// GET /api/portraits/:characterId/suggestions — 待确认建议列表
+router.get('/:characterId/suggestions', (req, res) => {
+  const db = getDb();
+  const suggestions = db.prepare(`
+    SELECT * FROM portrait_suggestions
+    WHERE character_id = ? AND status = 'pending'
+    ORDER BY id DESC LIMIT 20
+  `).all(req.params.characterId).map(row => ({
+    ...row,
+    source_memory_ids: JSON.parse(row.source_memory_ids || '[]'),
+  }));
+  res.json({ suggestions });
+});
+
+// POST /api/portraits/suggestions/:id/confirm — 采纳建议 → 写入 user_portraits
+router.post('/suggestions/:id/confirm', (req, res) => {
+  const db = getDb();
+  const suggestion = db.prepare(`SELECT * FROM portrait_suggestions WHERE id = ? AND status = 'pending'`).get(req.params.id);
+  if (!suggestion) return res.status(404).json({ error: 'suggestion not found or already handled' });
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO user_portraits (character_id, trait_type, content, confidence)
+    VALUES (?, ?, ?, 1.0)
+  `).run(suggestion.character_id, suggestion.field, suggestion.suggestion);
+  if (result.changes === 0) {
+    db.prepare(`UPDATE portrait_suggestions SET status = 'duplicate', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(suggestion.id);
+    return res.status(409).json({ error: '该特征已存在' });
+  }
+  db.prepare(`UPDATE portrait_suggestions SET status = 'applied', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(suggestion.id);
+  res.json({ ok: true });
+});
+
+// POST /api/portraits/suggestions/:id/reject — 忽略建议（不写画像）
+router.post('/suggestions/:id/reject', (req, res) => {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE portrait_suggestions SET status = 'rejected', updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'pending'
+  `).run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'suggestion not found or already handled' });
+  res.json({ ok: true });
+});
+
+export default router;

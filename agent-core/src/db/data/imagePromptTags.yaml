@@ -1,0 +1,3572 @@
+- name: 服饰
+  groups:
+    - name: 正装
+      color: rgba(230, 84, 128, .4)
+      tags:
+        suit: 西装
+        tuxedo: 燕尾服
+        formal dress: 礼服
+        evening gown: 礼服
+        canonicals: 晚会礼服
+        cocktail dress: 鸡尾酒连衣裙
+        gown: 女长服
+        japanese clothes: 和服
+        kimono: 和服
+        sleeveless kimono: 无袖和服
+        short kimono: 短和服
+        print kimono: 印花和服
+        furisode: 振袖(和服的一部份)
+        obi: 衣带(和服用)
+        sash: 饰带
+        cheongsam: 旗袍
+        china dress: 旗袍
+        print cheongsam: 印花旗袍
+        pelvic curtain: 旗袍类衣物的前摆
+        wedding dress: 婚纱
+        uchikake: 白无垢(日式嫁衣)
+        school uniform: 校服
+        sailor: 水手服
+        serafuku: 水手服
+        summer uniform: 夏季制服
+        kindergarten uniform: 幼儿园制服
+        police uniform: 警服
+        naval uniform: 海军制服
+        military uniform: 陆军制服
+        ss uniform/nazi uniform: 纳粹制服
+        maid: 女仆装
+        stile uniform: 女侍从的制服
+        miko: 巫女服
+        overalls: 工作服
+        business suit: 职场制服
+        nurse: 护士
+        chef uniform: 厨师工装
+        labcoat: 白大褂
+        cheerleader: 啦啦队服
+        band uniform: 乐队制服
+        space suit: 宇航服
+        leotard: 连衣裤
+        domineering: 修女服
+
+    - name: 风格
+      color: rgba(230, 84, 128, .4)
+      tags:
+        alternate costume: 与原设不同衣服
+        costume switch: 换衣play
+        meme attire: 模因服装
+
+    - name: 少女套装
+      color: rgba(230, 84, 128, .4)
+      tags:
+        white blouse,lace,puffy long sleeves,collared shirt,shirt tucked in,lace-trimmed skirt,neck ribbon,black ribbon,bubble skirt: 泡泡裙套装
+        cleavage,jirai kei,black skirt,ribbon,socks,hair ribbon,black headwear,choker,belt,hat,long sleeves,clothing cutout,(white shirt:1.1),shadow,white socks,shoes,black bow,cleavage cutout,black choker,beret,open clothes,black footwear,black belt,pleated skirt,bare shoulders,bowtie,braid,high-waist skirt,frilled shirt,pink oversized sweater: 地雷系套装
+        oversized hoodie,denim shorts,sneakers,baseball cap,backpack,white socks,simple background,casual: 运动休闲（卫衣+短裤）
+        turtleneck sweater,trench coat,skinny jeans,ankle boots,handbag,jewelry,belt,long hair,winter clothes: 都市干练（风衣+牛仔裤）
+        floral sundress,puff sleeves,straw hat,sandals,ribbon,crossbody bag,bare legs,summer clothes: 夏日清新（碎花裙+草帽）
+        cardigan,camisole,denim skirt,beret,tote bag,mary janes,jewelry,soft lighting: 温柔淑女（针织衫+牛仔裙）
+        blazer,collared shirt,knit vest,plaid skirt,loafers,knee high socks,shoulder bag,glasses: 英伦学院（西装外搭+格子裙）
+        off shoulder top,high-waist pants,heels,clutch bag,necklace,sunglasses,earrings,slender: 气质名媛（露肩上衣+阔腿裤）
+        t-shirt,overall shorts,canvas shoes,scrunchie,yellow theme,denim overalls,short sleeves: 活泼元气（背带裤+T恤）
+        camisole dress,denim jacket,platform shoes,choker,messenger bag,street fashion,sunglasses on head: 街头混搭（吊带裙+牛仔外套）
+        pink ribbon,white blouse,frills,lace,pink skirt,heart jewelry,mary janes,white socks,twin tails,curly hair,handbag,classic lolita elements: 量产型套装
+        oversized shirt,wide leg pants,leather belt,minimalist,canvas tote,loafers,silver watch,ponytail,neutral colors: 极简都市套装
+        tweed jacket,gold buttons,pearl necklace,white frilled shirt,ribbon tie,high-waist shorts,black pantyhose,beret,quilted handbag,jewelry,earrings,frilled cuffs,layered clothing,classic style,refined: 法式小香风套装
+        off-shoulder sweater,ribbon lace-up,pink bow,lace trim,white camisole,mini pleated skirt,leg warmers,ballet flats,sheer socks,hair ribbon,see-through sleeves,delicate lace,soft shading,frills,girly: 芭蕾丝带少女套装
+        varsity jacket,letterman jacket,striped trim,white polo shirt,pleated skirt,loose socks,sneakers,hair scrunchie,backpack,necktie,oversized sleeves,midriff,short skirt,youthful,sporty retrospective: 复古棒球衫套装
+        sheer blouse,puffy sleeves,spaghetti strap dress,black dress,inner white shirt,choker,platform boots,crossbody bag,layered skirt,frilled hem,waist cincher,transparent fabric,modern fashion,elegant silhouette: 都市透感吊带裙套装
+
+    - name: 泳装
+      color: rgba(230, 84, 128, .4)
+      tags:
+        tied shirt,micro bikini,plaid skirt,pleated micro skirt,midriff,loose belt,belt buckle: 系带衬衣里漏比基尼
+        school swimsuit: 学校泳装（死库水）
+        new school swimsuit: 新式死库水
+        old school swimsuit: 旧式死库水
+        competition school swimsuit: 竞泳死库水
+        competition swimsuit: 赛用泳衣
+        casual one-piece swimsuit: 连体泳衣
+        front zipper swimsuit: 拉链在正面的泳衣
+        highleg swimsuit: 高开衩的泳衣
+        one-piece swimsuit: 一体式泳衣
+        swimsuit of perpetual summer: 常夏的泳衣(fgo学妹灵衣)
+        highleg bikini: 高腰比基尼
+        lowleg bikini: 低腰比基尼
+        slingshot swimsuit: V字泳衣
+        sailor bikini: 水手服款比基尼
+        shell bikini: 贝壳比基尼
+        sports bikini: 运动比基尼
+        string bikini: 系绳比基尼
+        strapless bikini: 无肩带比基尼
+        side-tie bikini: 细带款比基尼
+        front-tie bikini top: 前系带比基尼上衣
+        multi-strapped bikini: 多绑带比基尼
+        thong bikini: 丁字裤比基尼
+        front-tie bikini: 从正面打结的比基尼
+        frilled bikini: 花边比基尼
+        o-ring bikini: 带O型环的比基尼
+        eyepatch bikini: 眼罩比基尼
+        layered bikini: 分层比基尼
+        bow bikini: 带蝴蝶结的比基尼
+        frilled swimsuit: 花边泳衣
+        polka dot swimsuit: 圆斑泳衣
+        striped swimsuit: 条纹泳衣
+        striped bikini: 条纹比基尼
+        plaid bikini: 格子比基尼
+        polka dot bikini: 圆斑比基尼
+        print bikini: 印花比基尼
+        american flag bikini: 美国国旗比基尼
+        german flag bikini: 德国国旗比基尼
+        impossible swimsuit: 人体彩绘般的泳衣
+        bikini top: 只穿着比基尼上衣
+        bikini top only: 仅比基尼上衣
+        bikini top removed: 脱下了比基尼上衣
+        bikini bottom only: 仅比基尼下装
+        bikini bottom: 比基尼泳裤
+        untied bikini: 解开的比基尼
+        bikini aside: 从三点剥开的比基尼
+        swimsuit aside: 把泳衣的裆部挪到一边
+        swimsuit under clothes: 衣服里面穿着泳衣
+        torn swimsuit: 破损的泳衣
+        bikini skirt: 比基尼裙
+
+    - name: 色气衣服
+      color: rgba(230, 84, 128, .4)
+      tags:
+        Sling Microkini: 背心式微型比基尼
+        see-through shirt: 透视衬衫（湿身或薄纱超透）
+        see-through clothes: 透视衣服（整体薄透）
+        see-through cleavage: 乳沟透视（重点透胸）
+        wet clothes: 湿身衣服（贴身+透视极强）
+        revealing clothes: 暴露到极限的衣服（不遮啥）
+        micro cropped top: 极短截短上衣（几乎只盖乳头）
+        sideless shirt: 无侧边衬衫（侧乳全露）
+        sideboob: 侧乳露出（衣服故意设计）
+        underboob: 下乳露出
+        underboob cutout: 下乳镂空设计
+        breast curtains: 胸部帘布式（只用布条勉强遮）
+        bikini only: 只穿比基尼上半部（极小覆盖）
+        micro bikini: 微型比基尼（细绳式）
+        pasties: 乳贴（只贴乳头）
+        no bra: 无胸罩（衬衫下直接真空）
+        erect nipples visible through clothes: 乳头透衣可见（勃起状态）
+        taut shirt,bursting breasts: 衬衫绷到快爆（胸部撑开）
+        button gap,cleavage: 纽扣缝隙大露乳沟
+        open shirt,no bra: 敞开衬衫+无bra（真空诱惑）
+        partially unbuttoned,deep cleavage: 半解纽扣+深乳沟
+        strapless top: 无肩带上衣（随时滑落）
+        tube top: 抹胸式上衣（极易走光）
+        bandeau: 裹胸布（最小布料覆盖）
+        reverse outfit: 反穿衣服（前后颠倒更暴露）
+        clothing lift: 衣服被掀起（持续露出状态）
+        clothes pull: 衣服被拉扯（故意拉低露胸）
+        torn clothes,cleavage: 撕裂衣服+乳沟全开
+        sheer shirt: 超薄纱衬衫（几乎全透）
+        transparent top: 完全透明上衣
+        nipple slip through clothes: 乳头从衣服滑出/透出
+        silver micro bikini,cupless bikini,crotchless bikini,chain harness,body chains,gold chains,thigh chains,navel piercing,pussy chains,areola slip,side-tie bikini bottom,thighhighs,high heels,bare shoulders,cleavage,collarbone,navel: 银色微型比基尼+链条束身（真空+链饰全覆盖诱惑）
+        black see-through dress,see-through clothes,naked dress,backless dress,deep cleavage,side slit,dress lift,thong visible,garter belt,black thighhighs,high heels,gloves,veil,bridal lingerie vibe: 黑色透视裸装裙（婚纱式极透+开叉走光）
+        reverse bunnysuit,reverse outfit,frontless outfit,sideless outfit,cupless bra,heart pasties,maebari,thigh straps,black thighhighs,rabbit ears,high heels,gloves,collar,leash: 反转兔女郎（前后全开+心形乳贴+前卫暴露）
+        gold chain lingerie,chain bra,chain panties,chain garter,chain harness,body jewellery,bikini top only,pelvic curtain,belly chains,thigh chains,pussy jewellery,highleg,navel piercing,gold accessories: 金色链条情趣内衣（链子勉强遮+珠宝装饰）
+        wet silver dress,see-through dress,wet clothes,clinging dress,deep v-neck,backless,sideboob,underboob,navel,outdoor poolside,high heels,long gloves,pearl necklace: 湿身银色礼服（贴身全透+水光诱惑）
+        micro plaid skirt,pleated micro skirt,tied crop top,crop top,no bra,underboob,cleavage cutout,navel piercing,loose belt,thong,garter straps,thighhighs,platform heels: 超短格子裙+系带露脐上衣（真空+下乳全露）
+        red string bikini,micro bikini,string bikini,side-tie,cupless top,crotchless bottom,body chains,thigh straps,high heels,collared choker,arm cuffs,navel piercing,areola peek: 红色细绳微比基尼+链饰（极细绳+链子点缀）
+        sheer black bodystocking,bodystocking,see-through bodysuit,highleg leotard,crotchless,open crotch,navel cutout,cleavage,thighhighs attached,high heels,gloves: 黑色透视连体袜（开档+高衩一体诱惑）
+        white naked apron,naked apron,apron only,front apron,no bra,no panties,sideboob,underboob,cleavage,navel,garter belt,high heels,kitchen setting: 纯裸体围裙（只围前面+随时走光）
+        platinum chainmail bikini,chain bikini,cupless chain bikini,metal links,thong chain,belly chain,thigh chains,armlet,high heels,gloves,collarbone,navel piercing: 铂金链甲比基尼（金属链+几乎无布料）
+        modified china dress,highleg china dress,side slit,deep v neck,cupless china dress,pelvic curtain,thighhighs,high heels,gold chains,navel piercing,areola slip,backless,cleavage,collarbone,no bra: 中国旗袍极色改（高开叉+真空+链饰+侧乳全露）
+        revealing hanfu,transparent hanfu,open hanfu,hanfu lift,pelvic curtain,wide sleeves,belly chains,thigh straps,gold jewellery,navel piercing,underboob,sideboob,long hair ornament,high heels: 汉服透视诱惑版（传统宽袖+开档帘布+珠宝链条）
+        harem outfit,arabian clothes,see-through veil,cupless top,belly dancer outfit,coin bra,coin panties,hip chains,armlet,thigh chains,navel piercing,gold jewellery,high heels,anklets: 阿拉伯肚皮舞后宫装（透明纱+金币链+全链饰暴露）
+        indian clothes,modified sari,transparent sari,micro choli,navel exposed,deep navel,belly chains,hip chains,thigh straps,maang tikka,bindi,jewellery overload,high heels,side slit: 印度纱丽色气融合（透视纱+微型上衣+肚脐全露+重金饰）
+        brazilian carnival,brazilian bikini,micro string bikini,feather accessories,thong,side-tie,cupless top,sequins,glitter,thigh chains,high heels,arm cuffs,navel piercing,backless: 巴西狂欢节桑巴微比基尼（羽毛+闪片+细绳+链饰狂野暴露）
+        korean clothes,modernized hanbok,revealing hanbok,short jeogori,crop jeogori,underboob,no chima or micro chima,thighhighs,garter belt,pearl chains,navel piercing,high heels: 韩服现代色气版（短上衣+下乳露出+珍珠链+高衩）
+        french lingerie fusion,babydoll,see-through chemise,garter belt,stockings,cupless bra,thong,ruffles,lace,pearl necklace,high heels,gloves,veil: 法式情趣内衣融合（透视娃娃装+蕾丝+吊袜带+优雅暴露）
+        italian renaissance fusion,low cut corset,detailed embroidery,revealing corset,off shoulder,deep cleavage,side slit skirt,thighhighs,gold jewellery,high heels,gloves: 意大利文艺复兴色气版（低胸紧身胸衣+刺绣+侧开叉+奢华珠宝）
+        reverse bunnysuit,reverse outfit,cupless bra,heart pasties,heart maebari,thigh straps,black thighhighs,rabbit ears,playboy bunny tail,collar,leash,high heels,gloves,arm cuffs,navel piercing,areola slip,sideboob,underboob: 反转兔女郎极致二次元（前后全开+心形乳贴+前卫兔耳链饰）
+        micro bikini,micro string bikini,cupless micro bikini,pelvic curtain,breast curtains,chain harness,body chains,gold chains,thigh chains,pussy chains,navel piercing,pasties,highleg,thighhighs,platform heels,glitter,sparkles: 超微型比基尼+帘布链条（动漫式最小布料+链子+闪光夸张暴露）
+        succubus costume,cupless succubus outfit,heart pasties,demon wings,demon tail,thigh straps,chain bra,chain panties,thigh chains,navel piercing,areola peek,high heels,gloves,collared choker,red thighhighs,horns: 魅魔二次元套装（心形贴+链条+恶魔翼尾+真空诱惑）
+        magical girl transformation gone wrong,revealing magical girl outfit,micro skirt lift,cupless top,star pasties,thighhighs attached,garter belt,navel cutout,cleavage cutout,heart chains,gloves,tiara,sparkles,magic aura: 魔法少女变身失败版（微裙+星形乳贴+链条+魔法闪光极暴露）
+        frontless outfit,sideless outfit,naked ribbon,ribbon bondage,ribbon pasties,ribbon pelvic curtain,thigh ribbons,arm ribbons,high heels,gloves,neck ribbon,choker,long gloves,navel piercing,collarbone: 全裸丝带捆绑（二次元经典裸体只用丝带+蝴蝶结遮挡）
+        chainmail bikini,metal chain bikini,cupless chain bikini,chain links only,belly chain,thigh chains,armlet,high heels,gloves,collar,navel piercing,sparkling chains,metal shine: 链甲比基尼二次元（金属链勉强连+闪耀金属感+极致动漫夸张）
+        see-through bodysuit,crotchless bodysuit,open crotch bodysuit,highleg leotard,cleavage cutout,navel cutout,thighhighs attached,gloves,high heels,cat ears,cat tail,whip,chain harness accent: 透视开档连体衣（猫娘式+高衩+镂空+链条点缀）
+        naked apron upgrade,frilled naked apron,apron only,underboob,sideboob,backless apron,thigh straps,garter,high heels,maid headdress,maid gloves,navel piercing,frills overload: 裸围裙二次元升级（褶边狂魔+下乳侧乳全露+女仆链饰）
+
+    - name: 上衣
+      color: rgba(230, 84, 128, .4)
+      tags:
+        loose collar: 超宽松衣领口
+        white shirt,collared shirt,no panties,barefoot,bare one shoulder: 露肩衬衫
+        naked apron: 裸体围裙
+        underwear,crotchless panties,crotchless: 情趣内衣
+        half-open shirt: 半开衬衫
+        blouse: 女式衬衫
+        white shirt: 白衬衫
+        collared shirt: 有领衬衫
+        dress shirt: 西服衬衫
+        sailor shirt: 水手服衬衫
+        cropped shirt: 短衬衫
+        casual T-shirts: 日常T恤
+        short sleeve T-shirts: 短袖T恤
+        off-shoulder shirt: 露肩衬衫(搭肩衫)
+        shrug (clothing): 包肩上衣
+        cardigan: 开襟毛衣衫
+        criss-cross halter: 交叉吊带衫
+        frilled shirt: 褶边衬衫
+        sweatshirt: 长袖运动卫衣
+        hawaiian shirt: 夏威夷衫
+        hoodie: 连帽衫
+        Impossible shirt: 贴合程度不合逻辑的衬衫
+        kappougi: (烹饪时穿的)罩衫
+        plaid shirt: 格子衬衫
+        polo shirt: 马球衫
+        print shirt: 印花衬衫
+        sleeveless hoodie: 无袖连帽衫
+        sleeveless shirt: 无袖衬衫
+        striped shirt: 条纹衬衫
+        tank top: 背心(居家)
+        vest: 背心(正式)
+        waistcoat: 背心(正式)
+        camisole: 吊帶背心(小可愛)
+        tied shirt: 系带衬衫(把衣角和下擺打结)
+        undershirt: 汗衫
+        tube top: 抹胸上衣
+        bandeau: 裹胸
+        crop top: 露脐上衣
+        halter top: 挂脖上衣
+        knit sweater: 针织毛衣
+        oversized sweater: 宽松毛衣
+        turtleneck sweater: 高领毛衣
+        sleeveless turtleneck: 无袖高领
+        ribbed sweater: 罗纹毛衣
+        sweater vest: 毛衣背心
+        bolero: 波莱罗小外套
+        denim jacket: 牛仔外套
+        leather jacket: 皮夹克
+        bomber jacket: 飞行员夹克
+        varsity jacket: 棒球夹克
+        windbreaker: 防风外套
+        trench coat: 风衣
+        long coat: 长外套
+        short jacket: 短外套
+        lab coat: 实验服
+        nurse uniform: 护士服上衣
+        maid bodice: 女仆装上衣
+        school uniform: 校服上衣
+        sailor uniform: 水手服上衣
+        gym shirt: 体操服上衣
+        track jacket: 运动外套
+        compression shirt: 紧身运动衣
+        rash guard: 防晒泳衣上衣
+        bikini top: 比基尼上衣
+        sports bra: 运动内衣
+        lace bra: 蕾丝胸罩
+        strapless bra: 无肩带胸罩
+        push-up bra: 聚拢文胸
+        sheer shirt: 透明衬衫
+        mesh top: 网纱上衣
+        lace top: 蕾丝上衣
+        off shoulder sweater: 露肩毛衣
+        asymmetric top: 不对称上衣
+        one sleeve top: 单袖上衣
+        cutout top: 镂空上衣
+        wrap top: 裹身上衣
+        highleg: 高开衩的衣物
+        clothing cutout: 衣服漏洞
+        back cutout: 露背上衣
+        cleavage cutout: 乳沟处开洞
+        navel cutout: 肚脐开洞
+        midriff: 露腰上衣
+        heart cutout: 心形开口
+        torn clothes: 撕裂的衣服
+        torn shirt: 撕裂的衬衫
+
+    - name: 和上衣互动
+      color: rgba(230, 84, 128, .4)
+      tags:
+        bra lift: 内衣被掀起
+        undressing: 脱衣服中
+        clothes down: 褪下衣物
+        shirt lift: 掀起衬衫
+        shirt pull: 衬衫拉下来
+        shirt tucked in: 衬衫塞进去
+        clothes tug: 拖拽衣服
+        shirt tug: 拖拽衬衫
+        untucked shirt: 解开的衬衫
+        lifted by self: 掀自己衣服
+        open clothes: 敞开的衣服
+        unbuttoned shirt: 解开纽扣的衬衫
+        button gap: 纽扣之间的缝隙(没解开
+        partially unbuttoned: 解开部分纽扣
+        partially unzipped: 拉开上部分拉链
+        clothes removed: 脱下的衣服
+        shirt removed: 脱下衬衫
+        wardrobe error: 衣服滑落
+        undersized clothes: 穿衣方式错了
+        wedgie: 嵌入(拉裆部衣物所致)
+        wardrobe malfunction: 衣服出了意外(如崩开)
+        taut shirt: 绷紧的衬衫
+        taut clothes: 绷紧的衣服
+        underbust: 勒出下胸围
+        oversized clothes: 过大号的衣服
+        oversized shirt: 过大号衬衫
+        borrowed garments: 男友的衣服
+        strap slip: 衣物吊带滑落(导致走光)
+        wet shirt: 湿衬衫
+        clothes theft: 偷衣服
+
+
+    - name: 其他
+      color: rgba(230, 84, 128, .4)
+      tags:
+        alternate costume: 与原设不同的衣服
+        revealing clothes: 暴露衣服
+        mummy costume: 木乃伊装
+        gold slave collar,gold armlets,gold anklets,gold bracelets,gold bangle,gold thigh bands,skimpy loincloth: 埃及皇室
+        (decorative jewellery, body chains, body jewellery:1.3),belly chains,pussy piercings,chain harness,chain bra,chain lingerie,chain panties,chain hosier,chain garter,chain harness,body straps,pussy chains,body decorations,leg chains,thigh chains,pussy jewellery,thigh chains,thigh straps: 身体链条衣
+        transparent: 透明的
+        burnt clothes: 烧焦的衣服
+        dissolving clothes: 溶解掉的衣服
+        dirty clothes: 弄脏的衣服
+        expressive clothes: 富有表现力的衣服
+        impossible clothes: 有不现实的包裹程度的衣服
+        living clothes: 活体衣服
+        leotard under clothes: 内层穿着连衣裤
+        multicolored clothes: 多色款衣服
+        ofuda on clothes: 衣服上贴着符纸
+        wringing clothes: 拧干衣服
+        clothesline: 晒衣服
+        shiny clothes: 有光泽的衣服
+        kariginu: 狩衣
+        front-tie top: 从正面打结的衣物
+        jacket on shoulders: 用夹克披肩
+        short jumpsuit: 短裤腿连体衣
+        harness: 背带；挽具
+        rigging: 舰装
+        aiguillette: 肩带
+
+    - name: 腰部
+      color: rgba(230, 84, 128, .4)
+      tags:
+        apron: 围裙
+        waist apron: 腰围裙
+        maid apron: 女仆围裙
+        bow tied at the waist: 系在前腰的蝴蝶结
+        waist cape: 穿在腰部的小披风
+        clothes around waist: 腰间衣服
+        jacket around waist: 腰围夹克
+        sweater around waist: 围腰毛衣
+        loincloth: 缠腰布
+        bustier: 胸衣
+        corset: 束腰(马甲)
+        girdle: 紧身褡
+
+    - name: 裙子
+      color: rgba(230, 84, 128, .4)
+      tags:
+        body-hugging skirt: 包臀裙
+        pleated skirt: 百褶裙
+        floating skirt: 飘起来的裙子
+        silver dress,bare shoulders,revealing clothes,navel,navel piercing,areola slip,collarbone: 圣姨裙子
+        # --- [连衣裙全长类 - Dresses] ---
+        dress: 连衣裙
+        minidress: 迷你连衣裙
+        microdress: 超短连衣裙
+        long dress: 长连衣裙
+        sundress: 夏日吊带裙
+        halter dress: 挂脖连衣裙
+        backless dress: 露背连衣裙
+        strapless dress: 无肩带连衣裙
+        off-shoulder dress: 露肩连衣裙
+        sleeveless dress: 无袖连衣裙
+        sweater dress: 针织连衣裙/毛衣裙
+        china dress: 旗袍/中式礼服
+        wedding dress: 婚纱
+        pinafore dress: 围裙裙 (通常套在衬衫外)
+        sailor dress: 水手服连衣裙
+        
+        # --- [半身裙类 - Skirts] ---
+        skirt: 半身裙/短裙
+        miniskirt: 迷你裙
+        microskirt: 超短裙 (极短)
+        long skirt: 长裙
+        high-waist skirt: 高腰裙
+        checkered skirt: 格子裙 (plaid skirt)
+        pencil skirt: 铅笔裙 (紧身窄裙)
+        denim skirt: 牛仔裙
+        suspender skirt: 吊带裙/背带裙
+        flare skirt: 伞裙 (A字扩摆)
+        bubble skirt: 蓬蓬裙/泡泡裙
+        tutu: 芭蕾舞裙
+        hakama skirt: 袴裙
+        
+        # --- [细节设计与剪裁 - Details & Cuts] ---
+        side slit: 侧开衩
+        front slit: 前开衩
+        back slit: 后开衩
+        high slit: 高开衩
+        frilled skirt: 荷叶边裙 (frilled dress)
+        layered skirt: 蛋糕裙/分层裙
+        lace-trimmed skirt: 蕾丝边裙
+        ribbon-trimmed skirt: 缎带饰边裙
+        see-through dress: 透视裙
+        impossible dress: 极其紧身的衣服 (勾勒身形)
+        taut dress: 绷紧的裙子 (表现张力)
+        
+        # --- [动态与穿着状态 - Dynamics & States] ---
+        skirt flip: 裙摆翻起 (露出内层)
+        skirt lift: 撩起裙子 (自主动作)
+        skirt tug: 拉拽裙子 (如害羞或提裙礼)
+        clutched skirt: 抓紧裙摆
+        windy: 逆风导致裙子贴身或飘扬
+        blown skirt: 被风吹起的裙子
+        adjusting skirt: 整理裙子
+        holding skirt: 提着裙摆 (如走路或行礼)
+        
+        # --- [套装与特殊用途 - Sets & Special] ---
+        skirt suit: 西装裙套装
+        skirt set: 裙子套装
+        bikini skirt: 比基尼泳裙
+        armored dress: 战甲裙
+        ballgown: 舞会大礼服裙
+        overskirt: 罩裙 (穿在裙子外的装饰裙)
+        
+        # --- [纹理与图案 - Patterns] ---
+        floral skirt: 碎花裙
+        polka dot dress: 波点裙
+        striped skirt: 条纹裙 (vertical-striped)
+        print skirt: 印花裙
+        # --- [露背与侧胸：露背毛衣/侧漏风格] ---
+        backless dress, sideboob, sleeveless, neckbound, halter neck: 露背侧露裙 (强调侧乳与完全裸露的背部)
+        virgin killer sweater, backless, sleeveless, high leg cut: 处男杀手服组合 (极致露背与高叉下摆)
+        
+        # --- [旗袍变体：中式性感剪裁] ---
+        china dress, sleeveless, high slit, cleavage, keyhole neckline: 镂空旗袍 (胸口开洞+极高侧开衩)
+        micro china dress, detached sleeves, thighs, panty reveal: 超短旗袍 (配合分体袖与露底动态)
+        
+        # --- [晚礼服变体：透明与贴身] ---
+        see-through dress, wet clothes, body-hugging dress, nipple relief: 透视贴身裙 (强调湿身或材质透明感)
+        
+        # --- [束缚与吊带：捆绑感裙装] ---
+        strappy dress, bandages, revealing clothes, chest harness: 束缚感裙装 (多系带设计，极具肉感)
+        lace-up dress, side lace-up, skin indentation: 侧面系带裙 (系带勒入肉感细节)
+        
+        # --- [短裙动态：危险角度组合] ---
+        microskirt, low waist skirt, pubic hair, bottomless: 极致低腰短裙 (濒临露出的危险边缘)
+        skirt lift, looking at viewer, adjust thigh high, pussy peek: 撩裙视角 (挑逗性动态组合)
+
+    - name: 与裙子互动
+      color: rgba(230, 84, 128, .4)
+      tags:
+        skirt hold: 优雅地提着裙子
+        skirt tug: 扯住裙摆|按住裙摆
+        dress tug: 压住裙摆
+        skirt lift: 掀起裙子
+        skirt around one leg: 一条腿上挂着短裙
+        skirt removed: 脱下的短裙
+        dress removed: 脱下裙子
+        open skirt: 敞开的裙子
+
+    - name: 裤子
+      color: rgba(230, 84, 128, .4)
+      tags:
+        side-tie panties: 系带内裤
+        highleg panties,cameltoe: 高叉内裤
+        white blue striped panties: 蓝白碗
+        dress bow: 连衣裙上的蝴蝶结
+        dressing another: 着装
+        shorts under skirt: 短裙里穿着短裤
+# --- [短裤类 - Shorts & Hotpants] ---
+        short shorts: 超短裤 (热裤)
+        micro shorts: 微型短裤 (极短)
+        hot pants: 热裤
+        cutoffs: 剪边牛仔短裤 (毛边效果)
+        denim shorts: 牛仔短裤
+        dolphin shorts: 海豚短裤 (真理裤)
+        puffy shorts: 蓬蓬短裤
+        suspender shorts: 吊带短裤
+        striped shorts: 条纹短裤
+        low waist shorts: 低腰短裤
+        high-waist shorts: 高腰短裤
+        
+        # --- [运动与紧身类 - Activewear & Tight] ---
+        gym shorts: 体操短裤 (竞技用)
+        buruma: 运动灯笼裤 (日式布鲁马)
+        bike shorts: 自行车短裤 (五分紧身裤)
+        yoga pants: 瑜伽裤
+        track pants: 运动长裤
+        tight pants: 紧身裤
+        leggings: 紧身打底裤
+        spats: 紧身运动短裤 (通常穿在裙下)
+        
+        # --- [长裤与特定款式 - Pants & Trousers] ---
+        jeans: 牛仔裤
+        cargo pants: 工装裤
+        camouflage pants: 迷彩裤
+        capri pants: 七分裤
+        trousers: 正装长裤/西裤
+        plaid pants: 格子裤
+        striped pants: 条纹裤
+        wide-leg pants: 阔腿裤
+        bell-bottoms: 喇叭裤
+        single pantsleg: 单边长裤 (一条腿长一条腿短)
+        
+        # --- [宽松与特殊结构 - Loose & Special] ---
+        puffy pants: 蓬松裤/灯笼长裤
+        bloomers: 灯笼裤 (南瓜裤原型)
+        pumpkin pants: 南瓜裤 (更蓬松、有褶边)
+        harem pants: 哈伦裤 (掉档裤)
+        hakama pants: 袴裤 (和装大跨裤)
+        jumpsuit: 连身裤/工装连体服
+        chaps: 皮套裤 (仅有裤腿，通常露裆或套在牛仔裤外)
+        crotchless pants: 无裆裤 (开裆设计)
+        
+        # --- [内衣与质感表现 - Underwear & Sensual Details] ---
+        highleg panties: 高叉内裤
+        cameltoe: 骆驼趾 (强调下身紧身勒痕)
+        striped panties: 条纹内裤 (shimapan)
+        frilled panties: 花边内裤
+        low waist panties: 低腰内裤
+        c-string: C字裤
+        t-back: T字裤
+        
+        # --- [装饰与动作状态 - Accessories & States] ---
+        waist bow: 腰部蝴蝶结
+        unzipping: 拉下拉链
+        pants down: 裤子褪下 (通常至膝盖或足踝)
+
+    - name: 内衣 
+      color: rgba(230, 84, 128, .4)
+      tags:
+        # --- [胸罩款式 - Bras & Tops] ---
+        sports bra: 运动内衣
+        front buckle bra: 前扣式胸罩
+        strapless bra: 无肩带胸罩
+        lace bra: 蕾丝胸罩
+        frilled bra: 花边胸罩
+        bandeau: 抹胸/裹胸
+        camisole: 吊带背心
+        cupless bra: 开口胸罩 (露乳尖)
+        underwired bra: 有钢圈胸罩 (强调托举感)
+        sheer bra: 半透明胸罩
+        
+        # --- [内裤款式 - Panties & Bottoms] ---
+        low waist panties: 低腰内裤
+        high leg panties: 高叉内裤
+        side-tie panties: 系带内裤 (绳子勒肉感)
+        striped panties: 条纹内裤 (shimapan)
+        frilled panties: 花边内裤
+        lace panties: 蕾丝内裤
+        string panties: 丁字裤/细带内裤
+        thong: 丁字裤
+        t-back: T字裤
+        c-string: C字裤 (无侧带)
+        crotchless panties: 开裆内裤
+        front cutout panties: 前方镂空内裤
+        cameltoe: 骆驼趾
+        
+        # --- [连体与套装 - Sets & Bodysuits] ---
+        lingerie: 精致内衣 (通常指成套蕾丝款)
+        lingerie set: 内衣套装 (上下一致)
+        bodysuit: 连体内衣
+        teddies: 蕾丝连体衬裙
+        babydoll: 娃娃装睡衣 (短款半透明)
+        slips: 衬裙 (丝滑质地)
+        corset: 束腹/塑身衣
+        bustier: 紧身胸衣
+        
+        # --- [细节与动态表现 - Details & Dynamics] ---
+        see-through: 透视 (材质完全透明)
+        transparent panties: 透明内裤
+        clothed under padded bra: 垫出来的胸部 (强调形状)
+        nipple relief: 乳头凸起 (隔着内衣可见)
+        areola slip: 露晕 (内衣没遮住边缘)
+        under-bra pinch: 腋下挤压 (内衣勒出的肉感)
+        cleavage: 乳沟
+        panty line: 内裤痕迹 (透过外裤可见)
+        pulled panties: 被拉扯的内裤 (动态感)
+        adjusting bra: 调整胸罩 (手部动态)
+        
+        # --- [极具设计感的组合标签 - Iconic Combos] ---
+        white lace, see-through, bridal lingerie: 纯白蕾丝透视婚纱内衣 (纯欲感)
+        black latex, open chest, high leg: 黑色乳胶开襟高叉 (紧身女王风)
+        bondage, strappy lingerie, chest harness: 束缚系带内衣 (多重绳带感)
+        micro bikini, impossibly small clothes, minimal fabric: 极致微型比基尼 (遮盖面积最小化)
+        open crotch, pearl thong, revealing: 珍珠开裆丁字裤 (极度露骨设计)
+
+    - name: 袜子
+      color: rgba(230, 84, 128, .4)
+      tags:
+        (garter:1.2),lace-trimmed legwear: 吊带袜
+        black pantyhose: 黑丝裤袜
+        white pantyhose: 白丝裤袜
+        white thighhighs: 白色长筒袜
+        black thighhighs: 黑色长筒袜
+        bodystocking: 全身袜
+        pantyhose: 连裤袜|裤袜
+        leggings: 裤袜
+        legwear: 裤袜(泛指裤袜或长筒袜)
+        crotch seam: 裆缝
+        # --- [长度与基本款式 - Lengths] ---
+        thighhighs: 过膝长筒袜 (过膝)
+        over-kneehighs: 过膝袜 (与 thighhighs 近义)
+        kneehighs: 及膝袜 (不过膝)
+        crew socks: 中筒袜 (到小腿中部)
+        bobby socks: 鲍比袜 (折边白短袜)
+        loose socks: 泡泡袜 (大象袜)
+        ankle socks: 踝袜
+        tabi: 足袋 (日式分趾袜)
+        leg warmers: 暖腿袜套
+        
+        # --- [材质与透明度 - Material & Transparency] ---
+        sheer legwear: 半透明袜 (低D数，透肤感)
+        opaque legwear: 不透明袜 (高D数)
+        fishnets: 渔网袜
+        lace legwear: 蕾丝袜
+        shiny legwear: 亮面/漆皮袜
+        ribbed legwear: 罗纹袜
+        seamed legwear: 有接缝的袜子 (复古感)
+        back-seamed legwear: 后接缝袜 (背后一条黑线)
+        toeless legwear: 露趾袜
+        stirrup leggings: 踩脚袜
+        
+        # --- [特殊设计与装饰 - Styles & Trims] ---
+        garter belt: 吊带袜腰带
+        garter straps: 吊带 (连接腰带与袜子的带子)
+        lace-trimmed legwear: 蕾丝边装饰袜
+        frilled legwear: 花边装饰袜
+        striped legwear: 条纹袜
+        checkered legwear: 格子袜
+        polka dot legwear: 圆点袜
+        mismatched legwear: 左右不对称袜
+        two-tone legwear: 双色拼接袜
+        thighband pantyhose: 假吊带袜 (自带腿环图案的裤袜)
+        
+        # --- [细节与动态表现 - Details & Dynamics] ---
+        # **这里的标签是提升画面质感的关键**
+        zettai ryouiki: 绝对领域 (过膝袜与短裙间的裸露大腿)
+        thigh high compression: 勒肉感 (过膝袜勒出的大腿肉)
+        skin indentation: 皮肤凹痕 (脱掉袜子后留下的勒痕)
+        pantylines: 裤袜透出的内裤痕迹
+        toe wiggles: 脚趾勾勒 (透出脚趾形状)
+        foot focus: 脚部特写
+        
+        # --- [穿着状态与破坏感 - States & Destruction] ---
+        torn pantyhose: 破损裤袜 (勾丝/破洞)
+        damaged legwear: 损毁的袜子
+        toe through sock: 大拇指顶破了袜子
+        pantyhose pulling: 拉扯裤袜 (整理或挑逗动态)
+        legwear at ankles: 褪至脚踝的袜子
+        one sock off: 脱掉了一只袜子
+        adjusting legwear: 调整袜子
+        putting on legwear: 正在穿袜子
+        
+        # --- [特定组合设计 - Iconic Combos] ---
+        black pantyhose, office lady, skirt suit: OL黑丝组合
+        white thighhighs, frilled skirt, mary janes: 经典萝莉白丝组合
+        torn fishnets, punk style, denim shorts: 朋克风破损网袜组合
+        pantyhose under swimsuit: 竞速泳衣+裤袜 (死库水裤袜组合)
+
+    - name: 与袜子互动
+      color: rgba(230, 84, 128, .4)
+      tags:
+        leg cutout: 袜子有开口
+        thighhighs under boots: 靴子穿在袜子外面
+        adjusting legwear: 整理裤袜
+        pantyhose pull: 褪下的裤袜
+        socks removed: 脱袜子
+        sock pull: 拉着袜子(短袜
+        thighhighs pull: 拉着袜子(长袜
+
+    - name: 其他小饰品
+      color: rgba(230, 84, 128, .4)
+      tags:
+        garters: 袜带
+        leg garter: 腿环|袜带
+        garter straps: 吊带袜的吊带
+        thigh strap: 大腿绑带
+        thigh ribbon: 大腿缎带
+        leg ribbon: 腿锻带
+        bandaid on leg: 腿上的绷带
+        bandaged leg: 包扎过的腿
+        ankle lace-up: 脚踝系带
+        thigh holster: 大腿皮套
+        bandaid on knee: 膝盖上的创可贴
+        argyle legwear: 含菱形花纹的裤袜
+        bow legwear: 带蝴蝶结的裤袜
+        arm garter: 手臂袜带
+
+    - name: 材质
+      color: rgba(230, 84, 128, .4)
+      tags:
+        erotic: 色情的
+        armored: 装甲的
+        canvas: 帆布的
+        denim: 牛仔布
+        fluffy: 毛茸茸
+        fur: 毛皮
+        latex: 乳胶
+        leather: 皮制
+        see-through: 透明
+        spandex: 弹性纤维
+        tight: 紧身
+
+    - name: 装饰
+      color: rgba(230, 84, 128, .4)
+      tags:
+        frilled: 褶边
+        center frills: 中心褶花边
+        crease: 起皱的(有褶的)
+        layered: 分层的
+        lace: 蕾丝
+        fur trim: 皮草饰边
+        fur-trimmed: 毛边的
+        fine fabric emphasis: 材质增强
+        latex thighhighs: 乳胶材质的长筒袜
+        see-through thighhighs: 透明的长筒袜
+        ass cutout: 露出屁股的服饰
+        asymmetrical clothes: 不对称的服饰
+        back bow: (服饰)打在背后的结
+        costume switch: 服饰互换
+        cross-laced clothes: 交叉花边服饰
+        double vertical stripe: 服饰上有两条平行条纹
+        halter top: 吊带式的上身的服饰
+        multicolored legwear: 多色款腿部服饰
+        navy blue legwear: 海军蓝腿部服饰
+        nontraditional miko: 改款过的日本服饰
+        side cutout: 侧边开口的服饰
+        side slit: 侧面有缝的服饰
+        sideless outfit: 侧面没有布料的服饰
+        single kneehigh: 单边穿着过膝服饰
+        single vertical stripe: 露出单边服饰上的垂直条纹
+        turtleneck: 高领服饰
+        two-sided fabric: 双层样式的服饰画法
+        o-ring: 带O型环的衣物
+        o-ring top: 带O型环的上衣
+        fringe trim: 须边(围巾末端
+        loose belt: 松散的带子(衣物)
+        pom pom (clothes): 小绒球(衣物挂件)
+        drawstring: 衣服的抽绳
+        full-length zipper: 有整件衣物长的拉链
+        gathers: 褶裥(衣物)
+        gusset: 缝在衣服上衬料
+        breast pocket: 胸口的袋子
+
+    - name: 鞋子
+      color: rgba(230, 84, 128, .4)
+      tags:
+# --- [高跟与礼服系列 - Heels & Pumps] ---
+        high heels: 高跟鞋
+        stiletto heels: 细高跟 (恨天高)
+        pumps: 浅口高跟鞋 (经典通勤款)
+        mary janes: 玛丽珍鞋 (带带子的小皮鞋)
+        strappy heels: 系带高跟鞋
+        platform footwear: 厚底鞋
+        platform heels: 厚底高跟鞋
+        pointy footwear: 尖头鞋
+        wedge heels: 坡跟鞋
+        
+        # --- [日常与校园系列 - Casual & School] ---
+        loafers: 乐福鞋 (学院风制服鞋)
+        black loafers: 黑色乐福鞋
+        sneakers: 运动鞋
+        uwabaki: 上履 (日式室内用鞋)
+        canvas shoes: 帆布鞋
+        ballet flats: 芭蕾平底鞋
+        slip-ons: 一脚蹬/懒人鞋
+        
+        # --- [靴子系列 - Boots] ---
+        boots: 靴子
+        thigh boots: 过膝大腿靴 (圣姨风格常配)
+        knee boots: 及膝靴
+        ankle boots: 踝靴 (短靴)
+        lace-up boots: 系带靴 (马丁靴类)
+        combat boots: 军靴/作战靴
+        doc martens: 马丁靴 (品牌特指)
+        high heel boots: 高跟靴
+        toeless boots: 露趾靴
+        leather boots: 皮靴
+        fur-trimmed boots: 毛边靴
+        snow boots: 雪地靴
+        rain boots: 雨靴 (rubber boots)
+        santa boots: 圣诞靴
+        
+        # --- [传统与凉鞋系列 - Sandals & Traditional] ---
+        sandals: 凉鞋
+        flip-flops: 人字拖
+        slippers: 拖鞋
+        animal slippers: 动物拖鞋
+        geta: 木屐
+        zouri: 草履
+        clog sandals: 木屐凉鞋
+        barefoot sandals: 装饰性裸足凉鞋 (无底，仅有装饰带)
+        
+        # --- [状态、动态与细节 - States & Details] ---
+        barefoot: 赤脚 (裸足)
+        no shoes: 未穿鞋 (强调失物状态)
+        shoes removed: 脱下的鞋子 (摆放在地上的鞋)
+        boots removed: 脱下的靴子
+        sandals removed: 脱下的凉鞋
+        single shoe: 只穿了一只鞋
+        single boot: 只穿了一只靴
+        dangling shoe: 勾在脚尖摇摇欲坠的鞋 (极具动感)
+        kicking off shoes: 踢掉鞋子的动作
+        holding shoes: 手提着鞋子
+        shoe soles: 鞋底 (构图重点)
+        shoelaces: 鞋带 (强调细节)
+        cross-laced footwear: 交叉系带细节
+        winged footwear: 带翅膀的鞋
+        rudder footwear: 舰装鞋 (舰娘专用)
+        
+        # --- [配饰与束缚 - Accessories & Shackles] ---
+        anklet: 脚踝链 (脚环)
+        shackles: 镣铐 (足枷)
+        toe ring: 脚趾环
+        thighhighs under boots: 靴下长筒袜 (层次感)
+        
+        # --- [非人类/特殊 - Non-human] ---
+        animal feet: 动物足 (兽足)
+        skates: 溜冰鞋
+        roller skates: 轮滑鞋
+
+    - name: 鞋底
+      color: rgba(230, 84, 128, .4)
+      tags:
+        shoe soles: 鞋底
+        arched soles: 拱形鞋底
+        paw print soles: 爪印鞋底
+        horseshoe: 马蹄铁
+        
+    - name: 眼镜
+      color: rgba(230, 84, 128, .4)
+      tags:
+        glasses: 眼镜
+        eyewear: 眼睛
+        monocle: 单片眼镜
+        under-rim eyewear: 带框眼镜
+        rimless eyewear: 无框眼镜
+        semi-rimless eyewear: 半无框眼镜
+        red-framed eyewear: 红框眼镜
+        round eyewear: 圆框眼镜
+        black-framed eyewear: 黑框眼镜
+        tinted eyewear: 有色眼镜
+        medical eyepatch: 医用眼罩
+        bandage over one eye: 用绷带包扎一只眼睛
+        crooked eyewear: 歪斜的眼镜
+        eyewear removed: 取下眼镜
+        sunglasses: 太阳镜
+        goggles: 风镜
+        Blindfold: 眼罩
+        eyepatch: 眼罩(独眼)
+        visor: 面罩|遮阳帽舌|遮阳板
+        bespectacled: 戴眼镜的
+        blue-framed eyewear: 蓝框眼镜
+        brown-framed eyewear: 棕色镜框眼镜
+        coke-bottle glasses: 厚如玻璃瓶底的圆眼镜
+        no eyewear: 去掉了(原设有的)眼镜
+        opaque glasses: 没透出眼睛的眼镜
+        over-rim eyewear: 下半无框眼镜
+
+    - name: 面具
+      color: rgba(230, 84, 128, .4)
+      tags:
+        mask: 面具
+        half mask: 半面罩
+        masked: 蒙面
+        mask lift: 抬起面罩
+        mask on head: 掀到头上的面具
+        mask removed: 摘下的面具
+        mouth mask: 口罩
+        surgical mask: 医用口罩
+        plague doctor mask: 瘟疫医生口罩
+        gas mask: 防毒面具
+        visor: 面甲
+        helmet: 头盔
+        fox mask: 狐狸面具
+        diving mask: 潜水面罩
+        diving mask on head: 头戴式潜水面罩
+        oni mask: 鬼面具
+        tengu mask: 天狗面具
+        ninja mask: 忍者面具
+        skull mask: 骷髅面具
+        hockey mask: 曲棍球面具
+        bird mask: 鸟面具
+        stone mask: 石鬼面
+        horse mask: 马面具
+        masquerade mask: 化妆舞会面具
+        domino mask: SM面具
+
+    - name: 手臂
+      color: rgba(230, 84, 128, .4)
+      tags:
+        long sleeves: 长袖
+        short sleeves: 短袖
+        wide sleeves: 宽袖
+        furisode: 振袖
+        detached sleeves: 分离式袖子
+        single sleeve: 单袖
+        sleeveless: 无袖
+        asymmetrical sleeves: 不对称袖子
+        puffy sleeves: 蓬松的袖子
+        puffy long sleeves: 蓬蓬长袖
+        puffy short sleeves: 蓬蓬短袖
+        frilled sleeves: 褶袖边
+        juliet sleeves: 朱丽叶袖
+        bandaged arm: 绷带手臂
+        raglan sleeves: 插肩袖
+        vambraces: 下臂护甲
+        layered sleeves: 分层袖子
+        fur-trimmed sleeves: 毛边袖子
+        see-through sleeves: 透明袖子
+        torn sleeves: 撕裂的袖子
+        sleeves past fingers: 袖子过指
+        sleeves past wrists: 袖子过腕
+        sleeves past elbows: 袖子过肘
+        sleeves pushed up: 袖子上推
+        arm out of sleeve: 袖子里的手臂
+        uneven sleeves: 不均匀的袖子
+        mismatched sleeves: 不匹配的袖子
+        sleeve rolled up: 袖子卷起
+        sleeves rolled up: 单只袖子卷起
+        feather-trimmed sleeves: 羽毛装饰的袖子
+        hands in opposite sleeves: 双手交叉伸进袖子里
+        lace-trimmed sleeves: 蕾丝边袖子
+        pinching sleeves: 掐袖子
+        puffy detached sleeves: 蓬蓬的袖子
+        ribbed sleeves: 棱纹袖子
+        single detached sleeve: 单边没脱掉的袖子
+        sleeves folded up: 叠起来的袖子
+        striped sleeves: 条纹袖子
+        wrist cuffs: 和袖子分开的手腕的袖口
+        armband: 袖章(臂带)
+        armlet: 臂镯
+
+    - name: 手
+      color: rgba(230, 84, 128, .4)
+      tags:
+        bandage: 绷带
+        leash: 皮带
+        arm tattoo: 手臂纹身
+        number tattoo: 数字文身
+        bead bracelet: 珠子手链
+        bracelet: 手镯
+        flower bracelet: 花手镯
+        spiked bracelet: 带钉手镯
+        wrist cuffs: 腕饰
+        wristband: 腕带
+        bracer: 护腕
+        cuffs: 袖口
+        bound wrists: 绑定手腕
+        wrist scrunchie: 手腕发圈
+        handcuffs: 手铐
+        shackles: 手铐
+        chains: 锁链
+        chain leash: 锁链带牵绳
+
+    - name: 手套
+      color: rgba(230, 84, 128, .4)
+      tags:
+        gloves: 手套
+        gloves removed: 脱下手套
+        no gloves: 去掉了(原设有的)手套
+        single glove: 单只手套
+        single elbow glove: 单手戴着过肘的手套
+        long gloves: 长手套
+        elbow gloves: 长袖手套（肘部手套）
+        bridal gauntlets: 新娘手套
+        half gloves: 很短的手套|半截手套
+        fingerless gloves: 露指手套
+        partially fingerless gloves: 部分露指手套
+        paw gloves: 爪子手套(分指手套)
+        mittens: 连指手套(两指手套)
+        baseball mitt: 棒球手套
+        fur-trimmed gloves: 毛边手套
+        latex gloves: 乳胶手套
+        lace-trimmed gloves: 蕾丝边手套
+        leather gloves: 皮手套
+        frilled gloves: 花边手套
+        mismatched gloves: 双色手套
+        multicolored gloves: 多色款手套
+        asymmetrical gloves: 不对称的手套
+        brown gloves: 棕色手套
+        oven mitts: 隔热手套
+        print gloves: 印花手套
+        striped gloves: 条纹手套
+        torn gloves: 破损的手套
+
+    - name: 耳饰
+      color: rgba(230, 84, 128, .4)
+      tags:
+        cross earrings: 十字耳环
+        crystal earrings: 水晶耳环
+        earrings: 耳环
+        flower earrings: 花耳环
+        heart earrings: 心形耳环
+        hoop earrings: 环状耳环
+        multiple earrings: 多个耳环
+        pill earrings: 药丸样式的耳环
+        single earring: 只一边戴着耳环
+        skull earrings: 骷髅耳环
+        star earrings: 星形耳环
+
+- name: 人物
+  groups:
+
+    - name: 嘴巴（纯嘴巴补充）
+      color: rgba(255, 123, 2, .4)
+      tags:
+        glutton: 馋嘴
+        pout: 嘟嘴
+        open mouth: 张嘴
+        wavy mouth: 波浪嘴
+        close mouth: 闭嘴
+        saliva: 唾液
+        drooling: 流口水
+        mouth drool: 嘴角画着口水滴形状的缺口
+        
+        # 特殊嘴巴形状/表情系（纯嘴巴相关）
+        cat mouth: 猫式小嘴（更泛用版）
+        '>:3': 坏坏小猫嘴
+        ':c': 难过小嘴
+        ':>' : 得意小嘴
+        ':o' : 微张小嘴
+        x mouth: X形闭嘴（拒绝/晕眩）
+        squiggly mouth: 波浪颤抖小嘴
+        
+        # 嘴巴内部可见细节
+        uvula: 小舌头（悬雍垂）
+        throat visible: 可见喉咙深处
+        tonsils: 扁桃体可见
+        
+        # 嘴巴痕迹/液体（纯嘴部）
+        saliva trail: 口水丝线
+        saliva string: 口水拉丝
+        drool on chin: 口水流到下巴
+        excessive drool: 超多口水
+        
+        # 极度冷门但存在的嘴巴tag
+        asymmetrical mouth: 不对称嘴巴
+        crooked mouth: 歪嘴
+        mouth droop: 嘴角下垂
+        full mouth: 嘴巴塞满东西（食物/液体）
+        cum in mouth,cum overflow,cumdrip,cum from mouth,cum in nose,cum from nose,excessive cum: 射满嘴巴
+
+    - name: 舌头
+      color: rgba(255, 123, 2, .4)
+      tags:
+        :q: 舌头放在上唇
+        :p: 舌头放在下唇
+        ;p: 眨眼舌头上伸
+        french kiss: 舌吻|法式湿吻
+        long tongue: 长舌头
+        oral invitation: 迎接射精而伸出舌头
+        tongue: 舌头
+        tongue out: 吐舌头
+        uvula: 小舌头|口盖垂|悬雍垂
+
+    - name: 胸部
+      color: rgba(255, 123, 2, .4)
+      tags:
+        one breast out: 一胸向外
+        erect nipples: 乳头直立
+        nipple slip: 乳头滑出
+        areola slip: 乳晕微露
+        inverted nipples: 内陷乳头
+        huge nipples: 大乳头
+        chest: 胸部
+        flat chest: 贫乳(A )
+        small breasts: 小胸部(B)
+        medium breasts: 中等胸部(C)
+        big breasts: 大胸部(D)
+        large saggy breasts : 大而下垂的胸部
+        huge breasts: 巨乳(E)
+        gigantic breasts: 超巨乳(F)
+        between breasts: 两胸之间
+        breasts apart: 胸部分开
+        hanging breasts: 下垂
+        bouncing breasts: 晃动
+        cleavage: 乳沟
+        areola: 乳晕
+        nipples: 乳头
+        huge nipples,thick nipples: 大乳头
+        puffy nipples,erect nipples: 乳头勃起
+        pectorals: 胸肌
+        large pectorals: 大胸肌
+        unbuttoned clothes: 半露前胸
+        underboob: 下胸部
+        skindentation: 皮肤凹痕
+
+        # 之前追加的部分（保持不变）
+        large breasts: 大胸部（常用）
+        perky breasts: 挺翘胸部（上翘型）
+        pointy breasts: 尖尖胸部（火箭型）
+        sagging breasts: 下垂胸部（自然下垂）
+        asymmetrical breasts: 不对称胸部（大小不一）
+        veiny breasts: 胸部青筋可见
+        mole on breast: 胸部痣
+        dark nipples: 深色乳头
+        pink nipples: 粉色乳头
+        puffy areola: 肿胀乳晕
+        large areola: 大乳晕
+        small areola: 小乳晕
+        covered nipples: 乳头被遮盖（但隐约可见）
+        nipple piercing: 乳头穿孔
+        long nipples: 长乳头
+        gaping nipples: 张开乳头（罕见）
+        sideboob: 侧乳（侧面可见）
+        backboob: 后乳（背后可见）
+        breasts out: 双胸完全露出
+        bursting breasts: 胸部快要爆出来（衣服紧绷）
+        cleavage cutout: 乳沟镂空设计
+        framed breasts: 胸部被衣服框住（突出感）
+        sweat on breasts: 胸部出汗
+        cum on breasts: 胸部沾精液（痕迹）
+        breast focus: 胸部特写焦点
+        floating breasts: 胸部漂浮感（无重力/夸张）
+        unaligned breasts: 胸部不对齐（自然晃动感）
+
+        # 新追加：更多形状/质感/特殊细分
+        torpedo breasts: 鱼雷型胸部（向前突出）
+        bell shaped breasts: 钟形胸部（下圆上窄）
+        round breasts: 圆润胸部
+        teardrop breasts: 水滴型胸部
+        full breasts: 饱满胸部
+        firm breasts: 紧实胸部
+        soft breasts: 柔软胸部（视觉暗示）
+        breast tanlines: 胸部晒痕
+        freckles on breasts: 胸部雀斑
+        mole under breast: 胸下痣
+        visible ribs: 胸部可见肋骨（极瘦）
+        collarbone visible: 锁骨突出（与胸部搭配常见）
+        areolae visible through clothes: 乳晕透衣可见
+        see through cleavage: 透视乳沟
+        underboob cutout: 下胸镂空设计
+        nippleless clothes: 无乳头衣服设计（但胸部可见）
+        bare shoulders: 露肩
+      
+    - name: 对象
+      color: rgba(255, 123, 2, .4)
+      tags:
+        phimosis,foreskin: 包茎
+        penis: 鸡巴
+        pussy: 小穴
+        onee-shota: 小孩开大车
+        futanari,testicles:1.2,penis,pussy: 扶她
+        huge testicles,futanari,massive erect penis,veiny penis,thick shaft: 粗牛子
+        huge penis:1.2,huge testicles:1.2: 大牛子
+
+    - name: 眼睛
+      color: rgba(255, 123, 2, .4)
+      tags:
+        ahegao: 阿黑颜
+
+    - name: 腹部
+      color: rgba(255, 123, 2, .4)
+      tags:
+        big clitoris,clitoral foreskin,cute pussy,enlarged labia,developed inner labia,vagina: 夸张的小穴
+
+
+
+- name: 表情动作
+  groups:
+    - name: 笑
+      color: rgba(241, 229, 140, .4)
+      tags:
+        yandere,laughing: 病娇笑
+        # --- [基础/温婉系 - Gentle & Soft] ---
+        smile: 微笑
+        light smile: 浅笑 (含蓄)
+        closed mouth smile: 闭嘴微笑
+        soft smile: 柔和的笑
+        gentle smile: 温柔的笑
+        kind smile: 开心的笑
+        shy smile: 害羞的微笑
+        warm smile: 温暖的笑容
+        beaming smile: 灿烂的笑容 (超级阳光)
+        
+        # --- [开怀/露齿系 - Open & Cheerful] ---
+        laughing: 大笑
+        giggling: 咯咯笑 (偷笑/傻笑)
+        grin: 露齿笑
+        open mouth smile: 张嘴微笑
+        toothy smile: 露牙大笑 (显露牙齿)
+        big smile: 大大的笑容
+        wide smile: 咧嘴大笑
+        laughing with eyes closed: 闭眼大笑
+        laughing tears: 笑到流泪
+        :d: 开心的笑 (:D)
+        ;d: 眨眼笑 (;D)
+        ^ ^: 眯眼笑
+        :3: 猫嘴笑
+        
+        # --- [得意/调皮/诱惑系 - Smug & Seductive] ---
+        smug: 洋洋得意 (标志性拽脸)
+        smug smile: 得意的笑
+        smirk: 假笑/自鸣得意的笑
+        doyagao: 嘚瑟脸 (极其臭屁的表情)
+        naughty face: 调皮的表情
+        teasing smile: 戏谑的笑 (挑逗)
+        seductive smile: 魅惑的微笑 (常配合勾魂眼)
+        knowing smile: 会心的微笑 (仿佛看穿一切)
+        mischievous smile: 恶作剧式的坏笑
+        
+        # --- [邪恶/嘲讽/负面系 - Evil & Mocking] ---
+        evil smile: 邪恶微笑
+        evil grin: 邪恶露齿大笑
+        sinister smile: 阴险的笑
+        sneer: 嗤之以鼻 (冷笑/蔑视)
+        mocking smile: 嘲讽的笑
+        condescending smile: 居高临下的笑
+        scoff: 嘲笑/轻蔑地笑
+        forced smile: 假笑/勉强的笑
+        nervous smile: 紧张地笑
+        awkward smile: 尴尬的笑
+        sweat smile: 汗颜笑 (尴尬+流汗)
+        sad smile: 苦笑 (忧郁感)
+        
+        # --- [病娇/扭曲/极端系 - Yandere & Mad] ---
+        yandere smile: 病娇笑 (空洞的眼神+笑容)
+        crazy smile: 疯狂的笑
+        maniacal laugh: 狂笑 (彻底崩坏)
+        laughing mad: 发疯般地笑
+        twisted smile: 扭曲的笑
+        creepy smile: 令人毛骨悚然的笑
+        gesugao: 极其崩坏的恶人脸 (颜艺)
+        ahegao: 阿黑颜 (翻白眼+吐舌头，带笑意)
+        blank eyes, smile: 崩坏笑 (空洞眼神+微笑)
+        scary smile: 恐怖的笑容
+        
+        # --- [动作配合系 - Action Accompaniment] ---
+        # **这里的标签能极大增强画面的表现力**
+        covered mouth: 捂嘴笑
+        hand over mouth: 手掩嘴笑 (淑女或害羞)
+        finger to mouth: 手指抵唇 (嘘/诱惑坏笑)
+        hand on cheek: 手托腮笑
+        head tilt, smile: 歪头微笑 (萌点)
+        looking at viewer, smile: 盯着观众笑 (互动感)
+        looking away, smile: 视线移开微笑 (傲娇或害羞)
+        hiding face, smile: 藏起半张脸笑
+
+    - name: 哭
+      color: rgba(241, 229, 140, .4)
+      tags:
+        sad: 伤心
+        tear: 啜泣
+        crying: 大哭
+        crying with eyes open: 睁着眼睛哭
+        streaming tears: 流泪
+        teardrop: 泪珠
+        tearing clothes: 撕破衣服
+        tearing up: 要哭的表情
+        tears: 眼泪
+        wiping tears: 擦眼泪
+        badmood: 心情不好
+
+        # 追加：基础/轻度哭泣（常见入门级）
+        single tear: 单颗泪珠（经典一滴泪）
+        tears from one eye: 单眼流泪（不对称哭）
+        fake tears: 假哭/鳄鱼眼泪
+        teary eyes: 泪眼汪汪
+        watery eyes: 水汪汪的眼睛（含泪未掉）
+        glistening eyes: 眼睛闪着泪光
+
+        # 追加：激烈/大量泪水系（高强度哭）
+        sobbing: 抽泣/号啕大哭（比crying更激烈）
+        crying with no tears: 干哭（表情哭但没泪）
+        excessive tears: 超级多眼泪（夸张动漫式）
+        flood of tears: 泪如雨下
+        tears on cheeks: 泪水流到脸颊
+        mascara tears: 睫毛膏泪痕（妆哭花）
+        blood tears: 血泪（恐怖/极端向）
+        colored tears: 彩色眼泪（幻想系）
+        glowing tears: 发光眼泪（魔法/神圣哭）
+        happy tears: 开心泪/喜极而泣
+        manly tears: 男人泪（硬汉哭）
+
+        # 追加：表情组合/哭+其他情绪
+        sad smile: 苦笑/含泪微笑
+        crying smile: 哭着笑（复杂情绪）
+        depressed: 抑郁/低落（常伴泪）
+        despair: 绝望哭（崩溃感）
+        traumatized: 创伤后哭（PTSD式）
+        horrified crying: 惊恐哭（恐惧+泪）
+        panicking tears: 慌张流泪
+        regretful tears: 后悔的泪
+        comforting: 被安慰哭（常用于温柔场景）
+
+        # 追加：动作/细节细分
+        wiping tears with hand: 用手擦泪
+        rubbing eyes: 揉眼睛（哭后擦）
+        covering face: 捂脸哭
+        crying on someone: 靠着别人哭
+        crying in rain: 雨中哭（泪雨混）
+        crying emoji: 哭脸表情符号（可爱/ meme 向）
+        :'( : 哭脸 :(
+        T T: T T哭脸（经典二次元）
+        ; ;: ; ;呜呜哭
+        q q: q q委屈哭
+
+        # 追加：极端/特殊哭（病娇/恐怖/搞笑）
+        yandere crying: 病娇哭（扭曲爱+泪）
+        creepy crying: 诡异哭
+        manic crying: 疯癫哭
+        silent tears: 无声落泪（安静悲伤）
+        dramatic tears: 戏剧性大哭
+
+    - name: 不开心
+      color: rgba(241, 229, 140, .4)
+      tags:
+        frustrated: 沮丧
+        frustrated brow: 沮丧的眉头
+        annoyed: 苦恼的
+        anguish: 苦闷
+        sigh: 叹气
+        gloom: 忧郁的
+        disappointed: 失望的
+        despair: 绝望
+
+    - name: 蔑视
+      color: rgba(241, 229, 140, .4)
+      tags:
+        disgust: 厌恶(看垃圾一样的眼神)
+        disdain: 轻蔑
+        contempt: 蔑视
+        shaded face: 脸上有阴影，配合蔑视
+        jitome: 鄙夷的眼神
+        frown: 皱眉/蹙额
+        wince: 皱眉蹙额(性交前)
+        furrowed brow: 眉头紧锁
+        fear kubrick: 害怕侧目
+        laughing: 在笑的
+
+    - name: 生气
+      color: rgba(241, 229, 140, .4)
+      tags:
+        angry: 生气的
+        glaring: 怒目而视
+        serious: 严肃的（和angry有点像）
+        kubrick stare: 侧头瞪着你
+        evil: 邪恶的
+        sulking: 生 闷气
+        screaming: 尖叫|大声喊
+        shouting: 喊叫
+
+    - name: 其他表情
+      color: rgba(241, 229, 140, .4)
+      tags:
+        sign: 叹气
+        in heat: 发情
+        fucked silly,after sex: 事后
+        frown,rolling eyes,open mouth,tongue out,teardrop,blush: 阿黑颜
+        surprised,wide-eyed: 震惊的
+        noise blush: 鼻子羞红
+        half-closed eyes: 半睁眼
+        pout: 撅嘴 (傲娇不满/卖萌)
+        sigh: 叹气
+        sleepy: 困倦的 (眯眼)
+        dazed: 恍惚/发呆 (空洞)
+        bored: 无聊的
+        thinking: 思考中
+        confused: 困惑/迷茫
+        drunk: 醉酒 (通常带重脸红)
+        
+        # --- [惊讶与反应 - Surprise & Reaction] ---
+        surprised: 惊讶的
+        wide-eyed: 瞪大眼睛
+        shocked: 震惊的
+        raised eyebrow: 挑眉 (怀疑/戏谑)
+        facepalm: 捂脸 (无奈/尴尬)
+        
+        # --- [羞涩与慌张 - Blush & Flustered] ---
+        light blush: 微红
+        blush: 脸红 (最常用)
+        heavy blush: 大面积脸红 (极度害羞/发情)
+        shy: 害羞的
+        embarrassed: 尴尬/窘迫的
+        flustered: 慌乱的 (手忙脚乱感)
+        nose blush: 鼻尖羞红 (可爱/寒冷/醉酒)
+        red faced: 全脸通红
+        
+        # --- [眼神细节 - Eye Focus] ---
+        blank stare: 空洞凝视 (失神)
+        sparkling eyes: 星星眼 (期待/兴奋)
+        heart eyes: 爱心眼 (痴女/热恋)
+        constricted pupils: 瞳孔收缩 (极度恐惧/震惊)
+        dilated pupils: 瞳孔放大 (兴奋/快感)
+        gradient eyes: 渐变色眼神 (二次元精致感)
+        
+        # --- [负面、黑化与病态 - Dark & Negative] ---
+        scowl: 嫌弃/愤怒的瞪视
+        frown: 皱眉 (不悦)
+        scared: 害怕的
+        trembling: 颤抖 (恐惧或隐忍)
+        lonely: 孤独的
+        dark persona: 黑化 (眼神失去光泽)
+        yandere: 病娇
+        crazy: 疯狂的
+        envy: 嫉妒
+        upset: 难过/心烦意乱
+        
+        # --- [极端、高潮与崩坏 - Extreme & Ecstasy] ---
+        aroused: 发情/被撩起欲望的
+        heavy breathing: 粗重呼吸 (喘息感)
+        moaning: 呻吟中
+        female orgasm: 绝顶 (快感顶点)
+        ahegao: 阿黑颜 (翻白眼+吐舌)
+        torogao: 融化脸 (迷离高潮脸)
+        ohogao: 斗鸡眼高潮脸 (极度崩坏)
+        fucked silly: 操傻了 (意识模糊)
+        afterglow: 事后余韵 (满足的虚脱感)
+        exhausted: 筋疲力尽 (累瘫)
+        tongue out: 吐舌头
+        tongue out drool: 吐舌流口水 (失神)
+        rolling eyes: 翻白眼 (高潮眼)
+        cross-eyed: 斗鸡眼
+        twitching: 抽搐/痉挛
+        
+        # --- [颜文字与特殊符号 - Symbols] ---
+        'o3o': 嘟嘴脸
+        '@ @': 晕乎乎/混乱
+        '> <': 紧闭双眼 (痛苦或害羞)
+        'o o': 呆滞
+        
+    - name: 表情符号
+      color: rgba(241, 229, 140, .4)
+      tags:
+        squiggle: 龙卷风波浪线
+        '+++': '+++'
+        anger vein: '#生气'
+        '^^^': '惊讶'
+        happy aura: 开心
+        emphasis line: 集中线
+        squeans: 迷糊泡泡
+# --- [情绪表达符号 - Emotional Symbols] ---
+        vein pop: 太阳穴/额头爆筋 (程度更深)
+        sweatdrop: 汗滴 (尴尬/无奈)
+        large sweatdrop: 大汗滴 (极度尴尬)
+        flying sweatdrops: 飞溅的汗水 (慌张/忙碌)
+        plewds: 多颗小汗珠 (漫画式紧张)
+        exclamation mark: 感叹号 (!)
+        question mark: 问号 (?)
+        interrobang: 感叹问号 (⁉️ 震惊且困惑)
+        ellipsis: 省略号 (... 无语)
+        
+        # --- [爱心与浪漫氛围 - Romance & Hearts] ---
+        heart: 爱心符号 (❤️ 单个)
+        multiple hearts: 满屏爱心 (极度迷恋/发情)
+        broken heart: 碎心 (失恋/受打击)
+        sparkle: 闪光 (单个星星)
+        sparkles: 亮晶晶 (开心/华丽/圣光感)
+        flower background: 背景开花 (愉悦/纯真感)
+        musical note: 音符 (♪ 哼歌/心情好)
+        
+        # --- [冲击与视觉引导 - Visual Impact] ---
+        emphasis lines: 集中线 (强调中心焦点)
+        concentration lines: 放射状集中线
+        speed lines: 速度线 (表现快速移动)
+        motion lines: 动作线 (身体挥动的残影线)
+        impact lines: 冲击线 (爆炸或重击瞬间)
+        notice lines: 注意线 (|/\ 惊觉/发现)
+        shaking: 画面震动感
+        
+        # --- [经典漫画拟声与环境 - Onomatopoeia] ---
+        # **注：这些标签常以日语罗马字或特定符号形式出现**
+        gogogo: 戈戈戈 (ゴゴゴ 压迫感/JOJO立背景)
+        zawa: ざわ (不安/骚动/内心挣扎)
+        sound effects: 泛用音效文字
+        speech bubble: 对话框 (无字或带符号)
+        thought bubble: 思考气泡 (云朵状)
+        
+        # --- [状态与特殊符号 - States & Others] ---
+        dizzy: 晕眩符号 (螺旋/星星圈)
+        sleep bubble: 鼻涕泡 (睡觉中)
+        steam from ears: 耳朵冒烟 (极度愤怒或害羞到过载)
+        shivering: 颤抖符 (波浪状细线)
+        cross popping veins: 交叉爆筋
+        popping vein: 突出的血管
+
+    - name: 姿势 & 身体位置
+      color: rgba(241, 229, 140, .4)
+      tags:
+        # --- [基础站立与重心 - Standing & Leaning] ---
+        standing: 站立
+        standing on one leg: 单腿站立
+        contrapposto: 均衡对立式 (重心偏向一腿，凸显胯部曲线)
+        leaning: 倚靠 (通用)
+        leaning forward: 身体前倾 (常配合 cleavage 视角)
+        leaning back: 身体后靠
+        leaning on object: 靠在物体上 (墙壁、桌子等)
+        leaning against wall: 靠墙
+        leaning to the side: 侧靠
+        fighting stance: 战斗姿态
+        
+        # --- [坐姿与跪姿 - Sitting & Kneeling] ---
+        sitting: 坐着
+        seiza: 正坐 (日式跪坐)
+        kneeling: 跪着
+        on knees: 双膝跪地
+        one knee up: 单膝跪起
+        squatting: 蹲下
+        crouching: 蹲伏 (警觉或受惊)
+        cross-legged: 盘腿坐
+        lotus position: 莲花坐 (冥想)
+        warrior pose: 英雄坐 (双腿岔开跪坐)
+        
+        # --- [横卧与趴卧 - Lying & Prone] ---
+        lying: 躺 (通用)
+        on back: 仰躺
+        on stomach: 趴着 (prone)
+        on side: 侧卧
+        reclining: 斜躺 (贵妃榻式，极具成熟美)
+        fetal position: 胎儿姿势 (蜷缩)
+        top-down bottom-up: 趴着翘臀 (Jack-O 挑战姿势原型)
+        the pose: 趴地翘脚 (少女感十足的动态)
+        bent over: 弯腰翘臀
+        all fours: 四肢着地 (犬式/狗爬)
+        arched back: 弓背 (强调腰臀曲线)
+        body bridge: 下腰/桥式
+        
+        # --- [运动与极端姿势 - Athletic & Extreme] ---
+        upsite-down: 倒挂 (如倒吊在树上)
+        handstand: 倒立 (手撑)
+        standing split: 站立一字马 (竖劈)
+        y-pose vertical split: Y字平衡 (手抓脚踝高抬腿)
+        leg up: 抬腿
+        legs up: 双腿朝上 (仰卧举腿)
+        spread legs: 开腿 (M字腿等前提)
+        legs together: 并腿
+        crossed legs: 翘二郎腿
+        
+        # --- [视角与特定构图 - View & Perspective] ---
+        from behind: 背面视角
+        from above: 俯视 (高机位)
+        from below: 仰视 (低机位)
+        looking back: 回头看 (扭身)
+        looking over shoulder: 越过肩膀回眸
+        profile: 侧影 (强调侧面曲线)
+        worm's eye view: 极低仰视 (虫视角)
+        bird's eye view: 极高俯视 (鸟瞰)
+        
+        # --- [特殊互动与状态 - Interaction & State] ---
+        presenting: 展示 (通常接 presenting butt/back/hindquarters)
+        afloat: 漂浮 (水中或空中)
+        lying on person: 躺在人身上 (膝枕等)
+        against glass: 紧贴玻璃 (身体挤压感)
+        shaking: 颤抖 (恐惧或兴奋)
+        back to back: 背对背
+        hugging own knees: 抱膝坐
+
+    - name: 日常 & 动态动作
+      color: rgba(241, 229, 140, .4)
+      tags:
+        # --- [生活与日常 - Daily Life] ---
+        walking: 走路
+        complete nude, showering: 洗澡
+        complete nude, bathing: 沐浴
+        complete nude, soaking: 泡澡
+        complete nude, taking a shower: 冲澡
+        running: 奔跑
+        jumping: 跳跃
+        sleeping: 睡觉
+        waking up: 醒来
+        yawning: 打哈欠
+        stretching: 伸懒腰
+        eating: 吃东西
+        drinking: 喝东西
+        drinking from straw: 用吸管喝 (萌点)
+        reading: 阅读
+        cooking: 烹饪
+        cleaning: 打扫 (常配合女仆装)
+        bathing: 洗澡
+        showering: 淋浴
+        hair brushing: 梳头
+        hair tucking: 撩头发 (极具女性魅力的动作)
+        applying makeup: 化妆 (涂口红等)
+        taking picture: 拍照/自拍
+        
+        # --- [社交与手势 - Social & Gestures] ---
+        talking: 说话/交谈
+        whispering: 窃窃私语
+        waving: 挥手
+        pointing: 指着 (某物或观众)
+        pointing at self: 指着自己
+        thumbs up: 竖大拇指
+        victory pose: 剪刀手/胜利姿势
+        salute: 敬礼
+        blowing kiss: 飞吻
+        winking: 眨眼
+        hugging: 拥抱
+        cuddling: 依偎/搂抱
+        carrying: 抱着 (物体)
+        princess carry: 公主抱
+        
+        # --- [诱惑与色气动态 - Seductive & Sensual] ---
+        # **这些标签在 yande.re 中权重极高**
+        licking: 舔 (通用)
+        licking lips: 舔嘴唇
+        lip biting: 咬嘴唇
+        biting: 咬 (咬手指、咬衣服等)
+        teasing: 戏弄/撩拨
+        flashing: 露出 (如 lift skirt 掀裙子)
+        unzipping: 拉下拉链
+        untying: 解开 (带子/绳子)
+        peeking: 偷看
+        looking through fingers: 从指缝中偷看 (害羞或色气)
+        covering mouth: 捂嘴 (惊讶或偷笑)
+        steepled fingers: 十指交叉抵住 (反派/思考大佬姿势)
+
+    - name: 手部姿势 & 手臂位置
+      color: rgba(241, 229, 140, .4)
+      tags:
+        groping,hetero,hand,multiple hands: 多个色狼手
+        pov hand: 观众视角的手
+        convenient arm: 手臂遮挡
+# --- [展示曲线与诱惑 - Curves & Sensual] ---
+        arm above head: 手举过头
+        arm behind head: 手放头后
+        arms behind head: 双手抱头
+        one arm up: 单臂高举
+        both arms up: 双臂高举
+        armpits: 露腋
+        arm support: 手臂支撑
+        hand on neck: 手摸脖子
+        hand on own chest: 手按胸口
+        hand on breast: 手抚胸部
+        hand to mouth: 手指抵唇
+        finger biting: 咬手指
+        arm around waist: 搂腰
+        
+        # --- [性格与日常姿态 - Personality & Daily] ---
+        arm at side: 单手垂放
+        arms at sides: 双手垂放
+        arms crossed: 双手抱胸
+        arms folded: 双臂交叉
+        hands on hips: 双手叉腰
+        hand on hip: 单手叉腰
+        double hip pose: 双手叉腰姿势
+        hands behind back: 双手背后
+        arm behind back: 单手背后
+        arms behind back: 双手背后
+        hands clasped behind back: 双手扣于背后
+        hand on cheek: 手托脸颊
+        hand on chin: 手托下巴
+        hand on forehead: 扶额
+        shou: 单手托脑后
+        salute: 敬礼
+        waving: 招手
+        
+        # --- [动态与伸展 - Dynamic & Stretching] ---
+        outstretched arms: 伸出双臂
+        outstretched arm: 伸出一只手
+        reaching: 伸手
+        reaching out: 向观众伸手
+        arms up: 抬起双臂
+        arms raised: 举起双臂
+        stretch: 伸懒腰
+        yawning stretch: 哈欠伸懒腰
+        hugging own legs: 抱膝/抱腿
+        v arms: V形手臂
+        w arms: W形手臂
+        caramelldansen: 伸手扭腰动作
+        
+        # --- [剧情、束缚与特殊视角 - POV & Restricted] ---
+        groping, multiple hands: 多个色狼手
+        hand on face: 手摸脸
+        arm grab: 抓紧手臂
+        arm held back: 手臂被反剪
+        bound arms: 被束缚的手臂
+        extra arms: 多条手臂
+        locked arms: 互挽手臂
+        arm hug: 挽手
+        bandaged arm: 绷带手臂
+
+    - name: 手指 & 手势动作
+      color: rgba(241, 229, 140, .4)
+      tags:
+        penetration gesture: 暗示做爱
+# --- [经典与可爱手势 - Classic & Cute] ---
+        v: 胜利手势
+        w: 手指比W
+        double v: 双手V手势
+        peace sign: 和平手势
+        double peace: 双和平手势
+        ok sign: OK手势
+        thumbs up: 竖大拇指
+        finger gun: 手指枪
+        cat pose: 猫爪手势
+        claw pose: 爪手势
+        paw pose: 招财猫手势
+        fox shadow puppet: 狐狸手势
+        heart hands: 双手比心
+        double heart: 双爱心手势
+        finger heart: 单手比心
+        rock on: 摇滚手势
+        victory pose: 胜利姿势
+        shading eyes: 遮阳手势
+        
+        # --- [手指精细动作 - Finger Details] ---
+        index finger raised: 抬起食指
+        index finger: 对手指
+        pointing: 用手指着
+        pointing at viewer: 指向观众
+        pointing at self: 指着自己
+        pointing up: 向上指
+        middle finger: 国际友好手势
+        finger to mouth: 手指抵嘴唇
+        finger to cheek: 手指抵脸颊
+        finger to lips: 手指抵唇
+        shushing: 嘘手势
+        poking: 戳
+        cheek poking: 戳脸颊
+        fingers together: 手指并拢
+        spread fingers: 张开手指
+        hands clasped: 双手手指交叉
+        finger snap: 打响指
+        clenched fist: 握紧拳头
+        
+        # --- [诱惑与色气手势 - Seductive & Sensual] ---
+        finger biting: 咬手指
+        finger in mouth: 吮吸手指
+        sucking finger: 吮吸手指变体
+        licking finger: 舔手指
+        spread pussy: 手撑阴道
+        fingering through clothes: 隔衣自慰
+        self fondle: 自我抚摸
+        crotch grab: 手抓裆部
+        covering chest by hand: 手遮胸部
+        hand on own thigh: 手放自己大腿
+        thigh squeeze: 手捏大腿
+        hand between legs: 手夹腿间
+        sheet grab: 抓床单
+        groping: 摸索
+        
+        # --- [衣物拨弄与整理 - Clothing Interaction] ---
+        skirt lift: 掀裙子
+        dress lift: 掀起长裙
+        shirt lift: 掀起衬衫
+        clothes lift: 掀起衣物
+        bikini lift: 剥开比基尼
+        strap lift: 掰开吊带
+        skirt pull: 拉开裙子
+        shirt pull: 拉开衬衫
+        pants pull: 拉着裤子
+        swimsuit pull: 扯下泳衣
+        leotard pull: 剥开连体衣
+        zipper pull tab: 拉链拉片
+        skirt basket: 裙子兜物
+        lifted by self: 自己掀起
+        lifted by another: 被他人掀起
+        adjusting clothes: 拨弄衣服
+        adjusting hair: 理头发
+        adjusting thighhigh: 调整过膝袜
+        adjusting swimsuit: 拨弄泳衣
+        adjusting eyewear: 扶眼镜
+        
+        # --- [脸部与头发互动 - Face & Hair] ---
+        grimace: 做鬼脸
+        eyelid pull: 翻下眼睑做鬼脸
+        fingersmile: 手指扯出笑脸
+        wiping tears: 擦眼泪
+        cheek pinching: 捏脸颊
+        cheek pull: 扯脸颊
+        chin stroking: 摸下巴
+        chin rest: 托脸
+        head rest: 托头
+        hair twirling: 手指卷头发
+        holding hair: 握着头发
+        hair pull: 拉头发
+        hair pulled back: 头发后扎
+        
+        # --- [其他功能手势 - Functional & Misc] ---
+        take: 拿着
+        hand gesture: 做手势
+        shippai: 失败手势
+        prayer hands: 祈祷合十
+        folded hands: 双手合掌
+        finger on trigger: 扣扳机动作
+        trigger discipline: 扳机护环安全手势
+        sleeves past fingers: 萌袖
+        sharp fingernails: 锐利指甲
+        wind lift: 起风掀起
+
+    - name: 手部动作(拿着某物)
+      color: rgba(241, 229, 140, .4)
+      tags:
+        hand on own breasts: 手托自己的胸部
+        holding: 拿着某物
+        holding animal: 抱着动物
+        holding arrow: 拉着弓
+        holding axe: 握着斧头
+        holding bag: 提着包
+        holding ball: 抱着球
+        holding basket: 提着篮子
+        holding book: 捧着书
+        holding bottle: 拿着瓶子
+        holding bouquet: 手捧花束
+        holding bow (weapon): 拿着弓(武器)
+        holding bowl: 端着碗
+        holding box: 端着箱子
+        holding breath: 憋气
+        holding broom: 手持扫帚
+        holding camera: 手持摄像机
+        holding can: 拿着易拉罐
+        holding candy: 手持糖果
+        holding card: 手持卡片
+        holding cat: 抱着猫
+        holding chopsticks: 拿着筷子
+        holding cigarette: 手叼香烟
+        holding clothes: 拿着衣服
+        holding condom: 拿着避孕套
+        holding cup: 手持杯子
+        holding dagger: 手持匕首
+        holding doll: 抱着玩偶
+        holding eyewear: 拿着眼镜|正在摘眼镜
+        holding fan: 拿着扇子
+        holding flag: 手持旗帜
+        holding flower: 拿着花
+        holding food: 拿着食物
+        holding fork: 拿着餐叉
+        holding fruit: 拿着水果
+        holding gift: 拿着礼物
+        holding gun: 拿着枪
+        holding hands: 牵手
+        holding hat: 拿着帽子
+        holding head: 手里捧着头
+        holding helmet: 拿着头盔
+        holding innertube: 拿着泳圈
+        holding instrument: 拿着乐器
+        holding knife: 拿着刀
+        holding leaf: 拿着叶子
+        holding lollipop: 拿着棒棒糖
+        holding mask: 拿着面具
+        holding microphone: 拿着麦克风
+        holding needle: 拿着缝衣针
+        holding own foot: 握着自己的脚
+        holding paintbrush: 手握画笔
+        holding paper: 拿着纸
+        holding pen: 握笔
+        holding pencil: 手持铅笔
+        holding phone: 拿着手机
+        holding pillow: 抱着枕头
+        holding pipe: 拿着烟斗
+        holding pizza: 拿着披萨
+        holding plate: 端着碟子
+        holding poke ball: 拿着精灵球
+        holding pokemon: 抱着宝可梦
+        holding polearm: 手持长柄武器
+        holding sack: 拎着包袱
+        holding scythe: 手持镰刀
+        holding sheath: 握着刀鞘
+        holding shield: 手持盾牌
+        holding shoes: 拿着鞋子
+        holding sign: 手持招牌
+        holding spear: 手持长矛
+        holding spoon: 拿着汤勺
+        holding staff: 手持法杖
+        holding strap: 手拉着吊带
+        holding stuffed animal: 抱着毛绒玩具
+        holding stylus: 手持手写笔
+        holding sword: 手持剑
+        holding syringe: 手持注射器
+        holding towel: 拿着毛巾
+        holding tray: 托着盘子
+        holding umbrella: 撑伞
+        holding wand: 握着棒子
+        holding whip: 握着鞭子
+        arm around neck: 单手搂着脖子
+        arms around neck: 双手搂着脖子
+
+    - name: 手部动作(放在某地)
+      color: rgba(241, 229, 140, .4)
+      tags:
+        covering: 遮盖的动作
+        covering face: 挡住脸
+        covering ass: 遮着臀部
+        covering crotch: 遮着裆部
+        covering eyes: 遮住眼睛
+        covering mouth: 挡住嘴巴
+        covering nipples: 挡住乳头
+        covering breasts: 挡住胸
+        hands on another's : 双手放在别人的脸上
+        hands on another's cheeks: 双手放在对方的脸颊上
+        hands on ass: 双手放在屁股上
+        hands on feet: 双手放在脚上
+        hands on headwear: 双手碰到头上的饰物
+        hands on hilt: 双手搭在刀柄上
+        hands on lap: 双手放在两腿之间
+        hands on own face: 双手放在自己的脸上
+        hands on own cheeks: 双手放在自己的脸颊上
+        hands on own chest: 双手放在自己的胸口
+        hands on own head: 双手放在自己的头上
+        hands on own knees: 双手放在自己的膝盖上
+        hands on own stomach: 双手放在自己的肚子上
+        hands on own thighs: 双手放在自己的大腿上
+        hands on another's shoulders: 双手放在别人的肩膀上
+        hands on hips: 双手叉腰|双手搁在腰上
+        hand on another's : 手接触到对方的脸
+        hand on another's cheek: 手摸着对方的脸颊
+        hand on another's chest: 手放在对方的胸前
+        hand on another's chin: 手托着对方的下巴
+        hand on another's head: 手放在对方的头上
+        hand on another's shoulder: 手放在对方的肩上
+        hand on another's stomach: 手放在对方的肚子上
+        hand on ass: 手放在屁股上
+        hand on head: 手放在头上
+        hand on headwear: 手触碰帽子
+        hand on hilt: 手搁在刀柄上
+        hand on hip: 手叉着腰|手搁在腰上
+        hand on own : 把手放在自己脸上
+        hand on own cheek: 把手放在自己的脸颊上
+        hand on own chest: 把手放在自己的胸口
+        hand on own chin: 手碰着自己的下巴
+        hand on own stomach: 把手放在自己的肚子上
+        hand on shoulder: 手放在肩上
+        hand in another's hair: 手放在对方的头发上
+        hand in hair: 手埋在头发里
+        hand in pocket: 手插在口袋里
+
+    - name: 手部动作(抓着某物)
+      color: rgba(241, 229, 140, .4)
+      tags:
+        grabbing another's breast through clothes,lifting one breast: 抓着乳房
+        ass grab: 抓着屁股
+        grabbing breasts: 抓着乳房
+        grabbing: 抓住|抓着
+        grabbing another's ass: 抓着对方屁股
+        grabbing another's hair: 抓着对方的头发
+        grabbing from behind: 从背后揉胸|从背后抓住胸部
+        grabbing own ass: 抓着自己的屁股
+        grabbing own leg: 抓着自己的大腿
+        guided penetration: 抓住男性器插入自己
+        hair grab: 抓着头发
+        leg grab: 抓着腿
+        necktie grab: 抓着领带
+        neckwear grab: 抓着颈部的衣服
+        penis grab: 抓着阴茎
+        pillow grab: 抓着枕头
+        sheet grab: 抓着床单
+        tail grab: 抓着尾巴
+        thigh grab: 抓着大腿
+        torso grab: 抓着躯干
+        wrist grab: 抓着手腕
+
+        # 追加：更多抓握/拉扯细分（色气/日常/战斗向，高使用率）
+        grabbing another's thigh: 抓着对方大腿
+        grabbing another's waist: 抓着对方腰部
+        grabbing another's arm: 抓着对方手臂
+        grabbing another's shoulder: 抓着对方肩膀
+        grabbing another's collar: 抓着对方衣领
+        grabbing own breast: 抓着自己的胸部
+        grabbing own thigh: 抓着自己的大腿（更涩变体）
+        grabbing own hair: 抓着自己的头发（紧张/痛苦）
+        grabbing crotch: 抓裆部（泛用/色气）
+        grabbing own crotch: 抓自己的裆部
+        grabbing pussy: 抓阴部（直接）
+        grabbing another's pussy: 抓对方阴部
+        grabbing another's penis: 抓对方阴茎
+        grabbing from behind breasts: 从背后抱胸抓乳
+        grabbing from behind thighs: 从背后抓大腿
+        grabbing another's tail: 抓对方尾巴（兽耳/龙尾）
+        grabbing another's ears: 抓对方耳朵（动物耳）
+        grabbing another's horns: 抓对方角（恶魔/龙角）
+        grabbing another's wings: 抓对方翅膀
+        grabbing another's chin: 抓下巴（强吻/支配）
+        grabbing another's face: 捧脸/抓脸
+        grabbing another's neck: 抓脖子（轻勒/支配）
+        grabbing another's cheek: 捏脸颊
+        grabbing hair pull: 抓头发往后拉（经典支配姿势）
+        grabbing arm pull: 抓手臂拉近
+        grabbing wrist pull: 抓手腕拉扯
+        grabbing collar pull: 抓领子拉近
+        grabbing tie pull: 抓领带拉近（经典色气）
+        grabbing sheet clench: 紧抓床单（高潮/紧张）
+        grabbing pillow clench: 紧抓枕头（事后/忍耐）
+        grabbing arm tightly: 紧紧抓住手臂（恐惧/依赖）
+        grabbing own arm: 抱住自己手臂（不安/冷）
+        grabbing another's hand: 抓对方手（牵手/强拉）
+        grabbing fabric: 抓衣服布料（紧张扯衣）
+        grabbing skirt: 抓裙摆（掀起/拉低）
+        grabbing dress: 抓裙子/连衣裙
+        grabbing sleeve: 抓袖子
+        grabbing gloves: 抓手套
+        grabbing another's clothes: 抓对方衣服（泛用）
+        grabbing weapon: 抓武器（刀/枪）
+        grabbing sword hilt: 抓剑柄（拔刀准备）
+        grabbing gun: 抓枪（持枪/抢夺）
+        grabbing broom: 抓扫帚柄
+        grabbing umbrella: 抓伞柄
+        grabbing phone: 抓手机
+        grabbing book: 抓书
+        grabbing cup: 抓杯子
+        grabbing bottle: 抓瓶子
+        grabbing food: 抓食物（抓零食/汉堡）
+        grabbing chopsticks: 抓筷子
+        grabbing fork: 抓叉子
+
+    - name: 基础腿部动作（包含腿与脚）
+      color: rgba(241, 229, 140, .4)
+      tags:
+# --- [坐姿系列 - Sitting Poses] ---
+        sitting: 坐
+        crossed legs: 二郎腿
+        leg crossing: 切换二郎腿动作
+        wariza: 鸭子坐 (M字坐)
+        yokozuwari: 侧身坐
+        indian style: 盘腿坐
+        lotus position: 莲花坐
+        butterfly sitting: 蝴蝶坐 (脚心相对)
+        sitting backwards: 跨坐 (反向坐)
+        sidesaddle: 侧坐
+        hugging own legs: 抱膝坐
+        legs dangling: 悬空晃荡腿
+        leg swing: 坐着晃腿
+        sitting on chair: 坐在椅子上
+        sitting on bed: 坐在床上
+        sitting on desk: 坐在桌子上
+        sitting on lap: 坐在大腿上
+        sitting on person: 坐在人身上
+        sitting on railing: 坐在栏杆上
+        sitting on stairs: 坐在楼梯上
+        sitting on water: 坐在水上
+        
+        # --- [跪、蹲与特殊姿态 - Kneeling & Squatting] ---
+        kneeling: 跪下
+        one knee: 单膝跪地
+        all fours: 四肢着地 (狗爬式)
+        squatting: 蹲下
+        horse stance: 马步
+        reclining: 斜倚/斜躺
+        curtsy: 屈膝礼
+        open stance: 稍息/开立步
+        
+        # --- [腿部动作与线条 - Leg Actions & Lines] ---
+        legs together: 两腿并拢
+        legs apart: 两腿分开
+        legs straight: 腿伸直
+        legs bent: 腿弯曲
+        leg extended forward: 腿向前伸直
+        leg behind: 腿向后伸
+        leg stretch: 腿部拉伸
+        leg up: 抬一只腿
+        legs up: 抬两只腿
+        knee up: 顶起膝盖
+        knees: 膝盖细节
+        kicking: 踢
+        high kick: 高踢
+        leg shake: 腿部抖动
+        leg twitch: 腿部抽动
+        
+        # --- [足部细节 - Feet & Toes] ---
+        barefoot: 裸足
+        feet: 脚
+        feet together: 双脚并拢
+        feet apart: 双脚分开
+        crossed ankles: 交叉脚踝
+        tiptoes: 踮起脚尖
+        toe-point: 趾尖指向
+        pointed toes: 脚尖绷直 (优雅感)
+        flexed feet: 脚背绷紧
+        heel raise: 抬起脚跟
+        foot tapping: 脚敲地面 (不耐烦)
+        soaking feet: 泡脚
+        footprints: 脚印
+        feet out of frame: 双脚不在画面内
+        foot out of frame: 单脚不在画面内
+
+    - name: 色气腿部动作
+      color: rgba(241, 229, 140, .4)
+      tags:
+# --- [大开腿与特殊体位 - Spreading & Poses] ---
+        spread legs: 张腿 (色气版)
+        legs spread wide: 极度张腿 (wide spread legs)
+        wide spread legs: 超宽开腿 (split 级暴露)
+        m legs: M字摆腿
+        lowleg: M字摆腿 (低腰强调)
+        v legs: V腿 (腿弯曲形成V形过上身)
+        leg open in V: V字开腿
+        standing split, leg up: 站立M字/高抬腿
+        folded: 折叠腿 (腿压胸极度暴露)
+        legs over head: 双腿抬过头 (灵活/传教士式)
+        knees to chest: 膝盖顶到胸 (抱膝大开)
+        straddling: 跨坐 (骑乘位暗示)
+        upright straddle: 对坐体位 (面对面骑乘)
+        leg lock: 用双腿夹住 (缠腰/挤压高潮)
+        leg wrap: 腿缠绕 (缠住腰/腿/对方身体)
+        leg hook: 腿勾住 (勾脖子/腰/色气缠绕)
+        leg press: 用腿压住 (压制/ mating press 暗示)
+        leg lift high: 高抬腿 (展示/芭蕾式色气)
+        one leg bent: 单腿弯曲 (侧卧大开腿)
+        legs raised: 双腿抬起 (躺时暴露阴部)
+        legs folded: 腿折叠 (跪坐/传教士变体)
+        
+        # --- [肉感与局部特写 - Flesh & Focus] ---
+        thick thighs: 肉腿 (大腿肉感挤压)
+        thigh gap: 腿间隙 (逆光/透光色气)
+        thigh squeeze: 大腿挤压 (紧张/发情夹紧)
+        leg rub: 腿摩擦 (不安/发情摩擦)
+        leg tremble: 腿颤抖 (高潮后/快感腿抖)
+        view between legs: 从腿间视角 (upskirt/下体特写)
+        crotch focus: 裆部焦点 (腿开+阴部强调)
+        cameltoe: 骆驼趾 (内裤轮廓极明显)
+        partially visible vulva: 阴部半露 (腿间若隐若现)
+        convenient leg: 腿挡住关键部位 (但故意露一点)
+        
+        # --- [体液与湿润效果 - Fluids & Wetness] ---
+        pussy juice: 爱液 (泛用)
+        pussy juice drip: 爱液滴落 (从阴部滴下)
+        pussy juice trail: 爱液拉丝 (连线痕迹)
+        pussy juice puddle: 爱液水洼 (积在下面)
+        pussy juice through clothes: 爱液透衣 (湿透内裤)
+        suggestive fluid: 暗示性液体 (爱液/汗等)
+        wet panties: 湿内裤 (透出轮廓+爱液)
+        wet thighhighs: 湿过膝袜 (爱液沾染大腿)
+        
+        # --- [足控与快感细节 - Feet & Ecstasy] ---
+        toe curl: 脚趾蜷曲 (快感/高潮 toe scrunch)
+        toe scrunch: 脚趾紧缩 (经典高潮脚)
+        curled toes: 卷曲脚趾 (足控神器)
+        arched feet: 脚弓起 (足底拱起色气)
+        wrinkled soles: 脚底皱纹 (足部特写/褶皱)
+        toe spread: 脚趾张开 (放松/展示足)
+        foot flex: 脚部弯曲 (足控动态)
+        foot on person: 脚踩人 (踩脸/胸/支配足)
+        foot between legs: 脚夹在腿间 (自慰/色气)
+        
+        # --- [装饰与姿势细节 - Misc & Details] ---
+        thigh holster: 腿上枪套/带子 (强调大腿曲线+涩)
+        leg belt: 腿部系带 (勒肉感)
+        ankle strap: 脚踝丝环 (色气装饰)
+        pigeon-toed: 萌向内八腿 (可爱+色气结合)
+        bowlegged pose: 外八蹲姿 (翘臀+大开腿)
+        tail between legs: 尾巴蜷到两腿之间 (兽耳羞耻+夹尾巴)
+        # 新增：高强度色气组合提示词（直接复制使用，一次触发多重涩元素）
+        m legs,spread legs wide,cameltoe,pussy juice drip,toe scrunch,thick thighs: M字大开+爱液滴+脚趾紧缩+肉腿组合（经典高潮大腿M）
+        wide spread legs,folded,legs over head,pussy juice trail,curled toes,arched feet: 折叠腿过头+爱液拉丝+卷曲脚趾+足底拱起（传教士极暴露足控）
+        straddling,leg wrap,leg lock,thigh squeeze,pussy juice puddle,toe curl: 跨坐缠腿+大腿挤压+爱液水洼+脚趾蜷曲（骑乘位高潮缠绕）
+        standing split,leg lift high,thigh gap,cameltoe visible through clothes,wrinkled soles,toe spread: 站立高抬腿+腿缝逆光+内裤透出骆驼趾+足底皱纹（芭蕾式展示足控）
+        legs spread wide,view between legs,crotch focus,partially visible vulva,pussy juice through clothes,leg tremble: 极宽开腿+腿间视角+阴部半露+爱液透衣+腿抖（下体特写颤抖）
+        m legs,thick thighs,thigh gap,pussy juice drip,toe scrunch,arched feet,wet panties: M字肉腿+腿缝+爱液滴+脚趾紧缩+湿内裤（大腿肉感+足部高潮）
+        leg press,legs folded,leg hook,pussy juice trail,curled toes,foot on person: 压腿折叠+腿勾+爱液拉丝+卷曲脚趾+脚踩人（压制支配足控）
+        upright straddle,leg wrap,thigh squeeze,suggestive fluid,toe curl,wrinkled soles: 对坐缠绕+大腿挤+暗示液体+脚趾蜷+足底皱（骑乘缠绕足部特写）
+        spread legs wide,between legs,cameltoe,toe spread,leg tremble,pussy juice puddle: 极宽开腿+腿间强调+骆驼趾+脚趾张+腿抖+爱液水洼（整体大开+足部放松高潮）
+        folded,legs over head,wide spread legs,pussy juice drip,arched feet,thick thighs: 腿过头折叠+超宽开+爱液滴+脚弓起+肉腿（极致灵活大开足控）
+
+    - name: 亲密 & 性爱互动
+      color: rgba(241, 229, 140, .4)
+      tags:
+        multiple penis,penis,disembodied penis,cum: 多根阴茎
+        nursing,handjob,lactating,breastfeeding: 喂奶手交
+        (vibrator under panties secure leg belt:1.2): 内裤里的跳蛋
+        hand to mouth,ok sign,tongue out,gasping,open mouth,drooling: 诱导口交
+        yuri,dildo,vaginal object insertion: 双头龙
+        cumdrip,dripping pussy juices: 滴出的精液
+        lactating: 喷奶
+        ejaculating: 射精
+        
+        # --- [特殊状态与高潮细节 - States & Climax] ---
+        ahegao: 阿黑颜 (高潮脸)
+        ahegao with creampie: 阿黑颜+内射
+        heart-shaped pupils: 爱心瞳 (迷恋/高潮)
+        mind break: 精神崩溃 (高潮过度)
+        aftersex: 事后 (疲惫/满足)
+        afterglow: 事后余韵 (脸红+喘息)
+        spanking: 打屁股
+        slapping: 掌掴
+        groping: 猥亵/揉捏
+        sucking breast: 吸乳头
+        nipple biting: 咬乳头
+        nipple lick: 舔乳头
+
+- name: 体位
+  groups:
+    - name: 组别1
+      color: rgba(255, 145, 147, .4)
+      tags:
+        girl on top,sex from behind: 女上位后入式
+        paizuri,penis,cleavage++,cum,breasts press: 乳交
+        gangbang,sex: 轮奸
+        leaning forward,ass,after anal,cum,sundress,white dress,gaping,spread anus,thighhighs,table,window,small breasts,frills,lace trim,layered dress: 裙装肛交余韵
+        asscum,cum in ass,after anal,from behind,full-face blush,huge ass,(standing:1.2),hands on ass,hand on own ass,spread ass,smug,naughty face: 站立露臀沾精
+        gaped after anal,gaping,anal,cum in anus,ass: 肛交后扩肛
+        pussy juice,cum in pussy,ahegao,rolling eyes,ultra high res,ultra-detailed,professional lighting,full body,facing front,(looking at viewer:1.2),1 girl,(curvy),narrow waist,(arms behind:1.3),nipples,(spread legs:1.3),(cameltoe:1.3,perfect pussy),cleavage,(perfect female body,narrow waist),uncensored,(spread pussy,spread ass:1.5): 高潮后展穴
+        after sex,cum,lying,cumdrip,ass,on stomach,on back,fucked silly,sweat,cum pool,bukkake,trembling,anus,ass gaping: 高潮后失神
+        after sex,lying,on back: 性爱后仰躺
+        wide spread legs,after sex,lying,on back,hetero,open mouth: 性爱后张腿
+        after sex,lying,on back,wide spread legs,cleaning fellatio,penis,hetero: 事后清理口交
+        after sex,lying,on back,on stomach,wide spread legs,empty eyes: 性爱后涣散
+        against wall,full body,pov,bangs,after sex,cum on body,spread legs,pussy,pubic hair,nude,AHEGAO,ROLLING EYES,BLUSH,TONGUE OUT,DROOLING,bukkake,cum,bukkake,excessive cum,facial,cum on body,cum on breasts,liquid,suggestive fluid,cumdrip,cum string,cum everywhere,cumshot,cum pool: 墙边全身沾精
+        after sex,cum on body,condom wrapper,used condom,pointless condom,(v sign,realistic): 事后套套展示
+        thumbs up,bangs,lying,on ground,from above,after sex,cum on body,spread legs,pussy,pubic hair,sleeping,AHEGAO,ROLLING EYES,BLUSH,TONGUE OUT,DROOLING,SALIVA,BLUSH: 性爱后昏睡
+        lying on back,used condom,after sex,nsfw,nude,cum on body,from above: 事后躺套沾精
+        breasts,blush,solo focus,expressionless,looking at viewer,solo focus,breasts,cleavage,closed mouth and very tired,collarbone,green eyes,hetero,lying,indoors,on back,pillow,bed,on bed,towel,drooling,naked towel,(V peace sign): 事后疲惫入睡
+        sitting on closestool,large windows,indoors,close up,drooling,large breasts,nipples,ass,anus,pussy,after sex,sweat,steam,heavy breathing,thick thighs,bondage,spread legs,arms behind head,(cum,cumdrip,facial,bukkake:1.2),cum in pussy,cum in anus,(cum on hair,cum on breasts:1.2),toilet,public use,uncensored,realspreadpussy,hypnoLora,empty eyes,nude: 马桶失神沾精
+        sitting,close up,drooling,large breasts,nipples,ass,anus,pussy,after sex,sweat,steam,heavy breathing,thick thighs,bondage,spread legs,arms behind head,(cum,cumdrip,facial,bukkake:1.2),cum in pussy,cum in anus,(cum on hair,cum on breasts:1.2),public use,uncensored,realspreadpussy,hypnoLora,empty eyes: 坐姿失神沾精
+        anal beads inside,anal beads in anus,anal beads dangling from anus,anal object insertion: 肛内串珠
+        Anal beads,dangling anal beads,anus,real vaginal,best pussy: 肛珠垂吊
+        analball,anal,anal object insertion: 肛球
+        solo,pussy,anal object insertion,butt plug: 肛塞
+        full photo,girl,on a bed,touching her pussy,looking at the camera,with a (pink buttplug) in her ass: 床上插肛塞
+        a photo of a woman with her legs spread being fucked,penis being inserted into a woman's anus,anal sex: 仰躺张腿肛交
+        a woman with her legs spread being fucked,two penises being inserted into a woman's anus,anal sex: 双屌肛交
+        anal hold,legs together,legs up,anal,hetero,penis,sex,pussy,open mouth,testicles,ass,solo focus: 并腿抬腿肛交
+        solo folded anal,pubic hair,thighhighs,pussy juice,object insertion,anus,sex toy,anal object insertion,skirt,pussy,clitoris,ass,urethra,folded,female pubic hair,lying,knees to chest,long hair,anal,open mouth,solo,blush,legs up: 折腿抱膝肛交
+        folded anal sex,feet,large breasts,open mouth,soles,sex,uncensored,pussy,penis,nude,blush,hetero,sex from behind,folded,toes,thighhighs,full nelson,toeless legwear,ass,nipples,tiara,anal,testicles,reverse suspended congress: 折叠后入肛交
+        on side,anal,penis,lying,breasts,pussy,hetero,looking at viewer,testicles,ass,(blackedscene,nipples): 侧躺肛交
+        photo of enjoying orgasm shocked woman (wearing stockings:1.1) getting missionary anal fucked by huge penis laying on bed,legs up,professional photoshoot,perfect face,eye contact,beautiful eyes,(creampie:1.2),from above: 传教士位肛交
+        (squatting anal),full body,on couch,knees bent,leaning back,gray bedding,fireplace,lamp on be table,anal object insertion: 蹲坐肛交
+        (squatting anal),full body,on couch,knees bent,leaning back,hands supporting her ass,anal object insertion: 蹲坐托臀肛交
+        standing anal,close up,photo of woman getting fucked from behind: 站立后入肛交
+        standing anal,penis,anal,sex,sex from behind,anus: 站立肛交
+        solo,anal fist,anal object insertion: 肛内拳交
+        HDA piledriver,HDA Masterpiece,up side down lying,spread legs,sex: 倒立插入式
+        sole,nude,lying on table,one leg up,from behind,looking back,matured,spread legs,anal,ass,detailed dilated gaping vaginal,(huge penis,huge penis as wide as arms),(pov),sex from behind,grabbing ass,detailed hands,spread anus,uncensored,orgasm,(mating call),detailed leg,large breasts,opened cloth,leaning forward,gaping,open mouth,tongue,requesting sex,showing off anus,detail ass hole,(red choker),(femdom),enchanting expressionless,enjoying,zettai ryouiki,scowling,happiness,(detailed face description),(detailed eyes description),pet girl,nothing happened,legs up shot,lying,focus ass,advanced cg,amazing quality,octane rendering,(detailed pussy),cummings,cumed,suggestive fluid,seductive,alluring,(vomcum),focus ass hole: 桌上单腿后入
+        solo focus,girl being crushed,looking at viewer,facing viewer,sex from over,prone bone,on stomach,face down,face on bed,mount over press sex: 压身俯卧后入
+        woman,horns,sex,(horns grab from behind): 角抓后入
+        pose arm held back,hetero,sex,huge breasts,sex from behind,arm grab,doggystyle,bent over,penis,school uniform,cleavage: 反手后入
+        sex,bent over,creampie,anal,vaginal: 弯腰内射
+        prone bone,sex from behind: 俯卧后入
+        nsfw,sex from behind,testicles,legs grab,completely nude,carrying under arm,facing viewer: 腋下抱持后入
+        gigantic penis,testicles,pussy,sex from behind,reverse upright straddle: 反跨后入
+        Full nelson,penis,sex,reverse suspended congress: 背后锁臂
+        reverse upright straddle,breasts,penis,pussy,sex,vaginal,spread legs,testicles,sex from behind,standing: 站立反跨
+        suspended congress,sex,kiss,carrying sex: 悬挂抱吻
+        (completely nude:1.2),(huge breasts),<lora:reverse suspended congress Redim:1>,(reverse suspended congress:1.2),pussy,vaginal,sex from behind,solo focus,testicles,penis,sex: 反悬挂式
+        reverse suspended congress,sex from behind,penis,anal,bangs,front view,carrying sex: 反悬正面肛交
+        (hands behind body),carrying from behind,<lora:RSCongress:0.2>,penis,reverse suspended congress,anal,spread legs: 反悬背后肛交
+        sex,hetero,penis,suspended congress,standing,vaginal,ass,hands under legs,ass focus,nude: 悬挂托腿
+        cheststand:1.2,sex,penetration,penis,cum,top-down bottom-up,spread legs: 倒立插位
+        HDA Doggystyle,HDA Masterpiece: 后入式
+        arm grab,doggystyle: 抓臂后入
+        1man,sex from behind++: 背后插入
+        1man,top-down bottom-up,doggystyle+++,from behind,sex,penis,ass: 俯拍后入
+        1man,doggystyle,pov,sex from behind,sex,ass: 后入视角
+        doggystyle,standing,sex,sex from behind: 站立后入
+        doggystyle,from behind,sex from behind,a photo of a woman being fucked,hetero,all fours,ass,penis,sex,vaginal,solo focus,anus,pussy: 跪趴后入
+        FBD,hetero,nipples,uncensored,sex,penis,pubic hair,vaginal,torso grab,doggystyle,pussy,pussy up,sex from behind,all fours: 抓腰后入
+        piledriver doggystyle,top-down bottom-up,vaginal,testicles: 倒插后入
+        a photo of a woman,sex from behind,doggystyle,penis,testicles,anal,side view perspective,looking back,looking at viewer,Auburn hair: 侧看回眸后入
+        doggystyle,top-down bottom-up,sex from behind,hold arms down,hold head down,grabbing,pressing: 压头按臂后入
+        solo focus,nude,hetero,large breasts,ass,sex,bed sheet,sexfb,tongue out,open mouth,sweat: 吐舌后入
+        ass,hetero,penis,sex,solo focus,pussy,anus,sex from behind,pov,doggystyle,all fours,back,from behind: 后入特写
+        breasts,hetero,sex,nipples,penis,large breasts,vaginal,navel,hanging breasts,sweat,pussy,blush,open mouth,solo focus,all fours,sex from behind,looking at viewer,clothes lift,indoors,sweater,bangs,doggystyle: 毛衣掀起后入
+        pose sexfrombehind,sex from behind,all fours: 跪姿后入
+        pov,from behind,sex,cum,anal,on all fours,solo focus,on bed,butt,moaning,(raver style:1.3),no panties,anal,pussy: 床上肛交后入
+        doggystyle anal,close up,from above,creampie,looking back: 肛交内射特写
+        prnemx,blackedscene,sex from behind,on stomach,lying,prone bone,penis: 黑皮俯卧后入
+        sex,nude,hetero,tongue out,sweat,bed sheet: 床上吐舌性爱
+        2 girls,group sex,brigitte,anita and charlie having sex together,Side view,variation,hd,ultra cute,desirable woman: 双女互舔后入
+        choking,(doggystyle),big tits,ahegao,heart,(1boy): 后入式窒息
+        HDA DeepPenetration,HDA Masterpiece: 双重插入
+        double penetration,multiple penises,from behind: 背后双插
+        double penetration,multiple penises,from behind,anal: 肛交双插
+        double penetration,multiple penises: 双屌双插
+        penis,sex,pubic hair,group sex,threesome,hetero,nude,vaginal,nipples,multiple penises,uncensored,double penetration,pussy,anal,long hair,testicles,open mouth,completely nude,lips,female pubic hair,grabbing,navel,spread legs,solo focus,realistic,breasts,indoors,small breasts,brown hair,flat chest: 双穴同插
+        double penetration,double sex,pussy object insertion,penis in anal,overflow,tearing up: 含泪双插
+        squatting,( nude),penis,hetero,oral,ass,fellatio: 蹲姿口交
+
+    - name: 组别2
+      color: rgba(255, 145, 147, .4)
+      tags:
+        fellatio,all fours,full body: 跪爬口交
+        large breasts,thick thighs,blush,humiliation,blowjobselfies,penis,saliva,testicles,fellatio: 自拍口交
+        cheek bulge,from side,fellatio,cum on mouth: 鼓腮含精
+        fellatio,pov,cheek poking fellatio,(cheek bulge:1.2),solo focus: 鼓腮口交
+        nsfw,deepthroat,corneo side deepthroat,(veiny penis),corneo yoruichi,cum in mouth,hand on another's head,(detailed background): 侧位深喉
+        fellatio,pov,huge penis,all fours: 巨屌口交
+        kneeling,blowjob: 跪姿口交
+        full sideview woman blonde open eyes blue eyes eha posturecollar exposed nipples very large breast uwe (armbinder:1) corset garter lingerie stockings high heels,facefuck,(deepthroat:1),helpless,sucking dick,forced,cock,penis,ring gag,tied uwe wol ropes kneeling: 强制深喉口爆
+        penis,pov,nipples,nude,simple background,white background: 阴茎特写
+        licking penis,big breast,under the sheet,holding the penis,only the face and chest are visible: 被单下舔屌
+        penis,pov,deepthroat,headgrab,motion lines,closed eyes,tears,cum,cum in mouth,facial,cum in hair: 深喉抓头口交
+        fellajob,breasts,hetero,paizuri,nipples,oral,uncensored,fellatio,looking at viewer,pov,large breasts,blush,bangs,nude,erection,breasts squeezed together: 揉乳口交
+        fellatio gesture,fingers around tongue: 口交手势
+        fellatio under table,fellatio,penis: 桌下口交
+        fellatio,squatting: 蹲式口交
+        deepthroat,cum,pov,head grab: 抓头深喉
+        solo,(grab fellatio,hetero,penis,pov,oral,fellatio,hand on another's head,irrumatio,trembling,cum,saliva:1.1),(background wall:1.1),(tears,one eye closed:1.1),(from above:1.2): 强制口交
+        hetero,penis,solo focus,oral,fellatio,grabbing another's hair,irrumatio,twintail,hairholdingblowjob,<lora:hairholdingblowjob:0.8>,<lora:add detail:1>,((pov)),((front view,look at viewer)),cum in mouth,big breasts: 抓发口交
+        <lora:hhbjbbc:0.8>,hhbjbbc,hetero,solo focus,pubic hair,uncensored,cum,hand on girl's head: 按头口交
+        hofrnpete,penis,woman,fellatio,heart-shaped pupils,demon horns,pov: 恶魔角口交
+        (sitting),implied fellatio,implied fellatio,solo focus,hetero,back,from behind,huge ass: 暗示口交
+        kissing penis: 亲吻阴茎
+        huge breasts,kissing penis paizuri: 吻屌乳交
+        a photo of a woman sticking out her tongue to lick glans: 舔舐龟头
+        (mature female:1.5),pov,oral,hetero,cum,facial,licking,tongue out,big penis: 舔巨屌
+        penis,erection,nude,interracial,looking at viewer,sex,hetero,full lips,penis on face,cum,facial,lying,on back,after fellatio: 事后颜射
+        accurate anatomy,deepthroat,fellatio,looking up,looking at viewer,seductive eyes,sloppy,saliva,cum,all the way to the base,beautiful,stunning,pov,pov crotch,cute,petite,exposed breasts,struggling: 深喉整根
+        woman,penis,solo focus,lips,oral,fellatio,erection,breasts,nipples,looking up,from side: 侧位口交
+        hetero,fellatio++,masturbation++,full body: 口交自慰
+        breasts,penis,tongue out,cum string,oral,pov: 吐舌拉丝
+        hetero,cum,cum in pussy,penis,oral,after sex,fellatio: 事后口交
+        breasts,hetero,penis,nipples,blonde hair,fellatio,paizuri,oral,looking at viewer,large breasts,blush,hairclip,indoors,solo focus,bangs,navel,pov,off shoulder,collarbone,bare shoulders,pubic hair,breasts squeezed together,trembling: 金发揉乳口交
+        penis,hetero,tiles,cum,breasts,tile floor,blush,from side,large breasts,denim,oral,fellatio,facial,solo focus,cum in mouth,white footwear,full body,sweat,erection,profile,sitting,stray pubic hair,brown belt,tile wall,kneeling,after fellatio,cum on hair,off shoulder,streaked hair: 瓷砖跪口交
+        pov crotch desk,hetero,pov,penis,oral,fellatio,red hair,looking at viewer,breasts,blush,under table,ringed eyes,pubic hair,,sidelocks,phone screen,table,bangs,nude,sweat,solo focus,pov crotch,medium breasts,desk,erection: 办公桌下口交
+        solo focus,hetero,large breasts,mature female,simple background,fellatio: 熟女口交
+        blackedscene lying,on stomach,oral,penis,ass,hetero,nude,prnorl,fellatio,lips,uncensored: 趴卧口交
+        (realistic),(Cowboy-shot),ethereal,SittingBlowjobQuiron pose,(bloom:0.5),shallow depth of field,hetero,penis,lips,uncensored,oral,fellatio,forehead pimples,full wet lips: 坐姿口交
+        solo focus,hetero,nude,deepthroat,irrumatio,tears,half-closed eyes,cum: 含泪深喉
+        slittongue,open mouth,tongue,upper body,teeth,fangs,lgtg,tongue,wavy tongue,long tongue,LNGTNG,fellatio,huge penis,NSFW,girl use long to licking my long penis,POV: 裂舌口交
+        Velo,fellatio under mask: 蒙面口交
+        real,photoshoot,realistic,luminescent,atmospheric scene,masterpiece,best quality,(detailed beautiful face,detail skin texture,ultra-detailed body:1.1),cinematic light,inversemouthfuck,hetero,penis,oral,fellatio,nude,closed eyes,realistic,uncensored,solo focus,close-up,testicles,solo focus,pubic hair,facial,anus: 反向深喉
+        (anteaterface:1.2),pov,solo,penis,oral,fellatio,long eyelashes,thick eyelashes,eyeshadow,(risekujikawa:1.1),office,indoors,<lora:vacuum fellatio 2 1:0.9>: 真空口交
+        <lora:vacuumfera2:0.7>,fellatio,penis,pov: 真空吸屌
+        blowjob,fellatio,kneeling,long penis,from side,sweat,absurdres,highres,4k,ray tracing,intricate details,highly detailed,(1girl:perfect face,cute,petite),solo focus: 跪姿口交
+        Fellatio,Blowjob,hand on girl's head,(best quality,:1.2),full body shot,penis,large breasts,fit and petite body,view from side,eyes closed,frown,girl wears black waitress outfit,girl wears black stockings,semen dripping down from mouth,kneeling on the floor,breasts out,in the restaurant,food on the bar counter,shelves: 女仆跪姿口交
+        HDA two-footed footjob,1man,HDA Masterpiece: 双脚足交
+        hetero,pov,penis++,sitting,foot focus,foot on penis,close-up,femdom,testicles,cum: 坐姿足交
+        footjob,two-footed footjob,penis,hetero: 双足夹屌
+        (1girl giving a footjob with her soles:1.3),from above,(smirk:1): 脚底足交
+        footjob(sex position),two-footed footjob,solo focus,[1boy:erection,large penis,:0.1],cum in feet,ejaculation,handsfree ejaculation: 双足射精
+        reverse footjob,pov,penis: 反向足交
+        pov,penis,looking at viewer,solo focus,standing footjob: 站立足交
+        double handjob,handjob,multiple penises,real penis++,penis,hetero,solo focus,group sex,ejaculation,facial,testicles: 双屌手交
+        handjob,1man,1man lying on bed,large perfect penis dripping cum,cum covered: 手交滴精
+        handjob,fondling,(reach-around:1.3),reacharound: 环绕手交
+        licking-nipple handjob: 舔乳手交
+        uncensored,MilkingHandjob,handjob,penis,ejaculation,cum in bucket,dress,looking at penis: 挤奶手交
+        panty job,panties on penis,1girl: 内裤手交
+        holding a big dick in her hand giving a handjob,penis: 握住手交
+        amazon position,hetero,assertive female,penis,pov,vaginal,girl on top,folded,ankle grab: 亚马逊位
+        amazon position,ankle grab,holding another's leg,holding leg,leg grab,sex,pov: 抓踝亚马逊
+        amazon position,sex,pov: 亚马逊式
+        Amazon position,breasts,nipples,completely nude,penis,nude,navel,magical girl,blue eyes,pussy,short hair,sweat,blue hair,cure white: 魔法少女骑乘
+        Amazon position,breasts,nipples,completely nude,penis,nude,navel,blue eyes,pussy,short hair,sweat,blonde hair: 金发亚马逊
+        hetero,sex,cowgirl position,pov,girl on top,straddling,(breast grab),pov hands,perfect hands,pussy,long penis,full body,closed eyes,aroused,bra: 抓乳骑乘
+        (1boy:1.1),sex,(hetero:1.3),sitting,girl on top,(straddling,upright straddle,vaginal,penis),pussy,pussy juice,hug,from behind,leg lock: 骑乘腿锁
+        (1boy),sex,(hetero:1.3),straddling,(girl on top,upright straddle),pussy juice,from side,hug: 骑乘侧抱
+        1man,HDA Cowgirl position,HDA Masterpiece: 骑乘位
+        1man,HDA Cowgirl position,V2.0,HDA Masterpiece: 骑乘位二代
+        cowgirl position,straddling,sex,penis: 骑乘插入
+        penis,testicles,ass,hetero,sex,vaginal,straddling,girl on top,feet,barefoot,soles,pussy,anus,cowgirl position: 赤脚骑乘
+        straddling,cowgirl position,girl on top,sex,(1boy),full body: 骑乘全身
+        sex,cowgirl position,girl on top,straddling,hetero,nude,(penis),pussy,vaginal: 骑乘体位
+        ass,bangs,blush,breasts,bed,curtains,girl on top,hetero,medium breasts,penis,pussy,sex,straddling,( testicles),vaginal sex,lace bra: 蕾丝骑乘
+        girl on top,pov,straddling,assertive female,hetero,guided penetration,gp1,cowgirl position,penis,vaginal: 引导插入骑乘
+        a photo of a woman being fucked and anal sex and reverse cowgirl position and woman on top: 反骑肛交
+        reverse cowgirl position,straddling,sex from behind,ass,sex,penis: 反骑乘
+        reverse cowgirl,beautiful brunette undercut ( caucasian :1) woman supermodel sitting on his lap: 反骑超模
+        nipples,(( penis)),sex,girl on top,squatting,cowgirl position,straddling,vaginal,squatting cowgirl position,hetero: 蹲姿骑乘
+        upright straddle,hug,vaginal,heavy breathing,french kiss,sweat,steam: 跨坐舌吻
+        nipples,(1boy),sex,(hetero),(upright straddle),straddling,vaginal,<lora:upright front above 50:1>,eye contact,looking at another,(open mouth),teeth,sweat,(blush:1.3),chair,hug: 跨坐对视
+        (1boy),sex,(hetero:1.2),looking at another,sitting,girl on top,(straddling,upright straddle),pussy juice,hug,leg lock,<lora:upright front leg lock 2:0.7>,(blush:1.3),(sweat),steam,chair,sitting: 跨坐腿锁
+        bottomless,(1boy),sex,(hetero:1.2),looking at another,sitting,girl on top,(straddling,upright straddle,vaginal,penis,pussy),hug,pussy juice,(blush:1.3),(sweat),steam,bed,used tissue,tissue box,used condom,parted lips: 跨坐床事
+        (rough sex,hetero,vaginal penis,fellatio,missionary,girl on top,straddling,gangbang,group sex:1.4): 粗暴群交
+        shackles,crying,group sex,a captured women,getting,raped,rape,crying open eyes,gangbang,Hands bound,handcuffs,teary eyes,SEX Dungeon: 囚室轮奸
+        spitroast,doggystyle,sex from behind,fellatio,oral,penis,nude,hetero,looking at viewer,lips,multiple penises,all fours: 夹心口交
+        group sex,orgy,missionary,on the back,arm grabbing,long hair,school sweater vest,sweater,short sleeves,shiny skin,big breasts nipples,stomach,navel,open legs,perfect anatomy,cowgirl position,girl on top,penis in vaginal,cum in vagina,big penis,saliva,blush all over the face,lips parted,inside,dynamic angle,looking down viewer,dynamic lighting,close-up,focus only,ahegao,blushing,sweat,open mouth,rolling eyes,tears,tongue out,direct,best quality,masterpiece,ultra high resolution,ceiling,bukkake,saliva bridge,saliva trail: 学生乱交
+        2girls,missionary,sex,lying,spread legs,pov,penis,pussy,multiple girls,from above,harem,lineup: 后宫排排
+        missionary,group sex,spread legs,lying,multiple penises,pov,2girl: 多人传教士
+        blackedscene,breasts,ass,hetero,penis,pussy,dark skin,sex,lips,testicles,straddling,girl on top,group sex,anal,multiple penises,cowgirl position,ass grab,threesome,realistic,interracial,double penetration,enchantingly attractive looking: 黑皮双插
+        on stomach,face,gangbang,group sex,orgy,from above: 趴脸轮奸
+        (3girls,multiple girls:1),sex,pov,cowgirl position,smile,blush,large breasts,looking at viewer,nipples,pussy,pussy juice,penis,thighhighs,garter belt,mature female,school,teacher,glasses,straddling,high heels: 教师骑乘
+        pov spitroast blowjob photo of beautiful blonde woman supermodel getting fucked,masterpiece,perfect lighting,perfect face,eye contact,brown eyes,in bed,hand holding head,creampie: 金发夹心
+        (sandwiched:1.2),double penetration,group sex,hetero,ass,veiny penis,blush,completely nude,vaginal,anal,leg lift,leg up,shoulder to shoulder: 夹心双插
+        gangbang,group sex,orgy,penis: 轮奸
+        HDA female masturbation,HDA Masterpiece: 女性自慰
+        HDA female masturbationV1.2,HDA Masterpiece: 自慰
+        
+    - name: 组别3
+      color: rgba(255, 145, 147, .4)
+      tags:
+        female ejaculation,front view,spread legs,pussy: 张腿潮吹
+        fingering,schlick,masturbation: 指交自慰
+        female masturbation,spread legs,pussy,thighhighs: 过膝袜自慰
+        (female masturbation:1.5),closed eyes,open mouth,orgasm,object insertion,vibrator,dildo,sitting,((looking at viewer)),detailed pussy,wet pussy,((pee)),pleasured expression: 振动自慰
+        spread legs,female masturbation,vibrator,dildo: 阳具自慰
+        1girl masturbating with dildo on kitchen table,close-up,dildo,vibrator,female masturbation,closed eyes,open mouth,orgasm,spread legs,presenting pussy,from below,detailed body,sitting,((looking at viewer)),wet pussy,((pee)),pleasured expression,full body: 厨房桌自慰
+        mating press,hand on penis: 交配压
+        mating press,anus,ass,breasts,folded,hetero,knees to chest,lying,nipples,on back,penis,pussy,sex,solo focus,teeth,testicles,uncensored,vaginal,twintails,cum,balls deep,thighhighs,deep penetration,side view,big balls: 交配压深插
+        mating press,sex,penis,vaginal,testicles,ass,on back: 交配压体位
+        HDA Oral invitation,HDA Masterpiece: 口交邀请
+        HDA Paizuri,HDA Masterpiece: 乳交
+        sucking penis,indoors,pov,(paizuri),nipples,(fellatio),large breasts: 乳交口交
+        paitop,penis,paizuri,lying,on bed,pillow,pov,breasts,breast squeeze: 乳顶乳交
+        paizuri,looking at viewer,blush,smile,nipples,collarbone,hetero,sweat,penis,solo focus,choker,tongue,tongue out,huge breasts,head wings,paizuri,breasts squeezed together,penis: 巨乳夹屌
+        multiple views,paizuri,breasts,hetero,penis,paizuri under clothes,covered nipples,large breasts,cum,blush,breasts squeezed together,bangs,braid,cleavage,looking at viewer,uncensored,pov,pov crotch: 衣内乳交
+        hentai paizuri,2girls,paizuri,breasts,breasts squeezed together,pov,breast grab,large penis,erection,cum on breasts,ahegao,from side,looking at viewer: 双乳夹屌
+        hetero,breasts,penis,pov,uncensored,large breasts,looking at viewer,open mouth,fang,solo focus,cleavage,no hands,huge breasts,bangs,erection,;d,pov crotch,blush: 无手乳交
+        pov,pov crotch,unaligned breasts,motion lines,breast lift,asymmetrical breasts,motion blur,saliva,saliva trail,smirk,hetero,penis,large breasts,nipples nude,close-up,open mouth,tongue: 揉动乳交
+        hetero,spiked hair,uncensored,breasts,black hair,penis,nude,blush,clothed female nude male,sweat,oral,tube top,fellatio,purple pants,crop top,strapless,pants,large breasts: 穿衣乳交
+        naked girl,beautiful breasts,chest,penis in the middle of the breasts,beautiful chest,naked,beautiful girl,sweat,full of semen,sweatingchest masturbating penis,penis on chest: 乳沟射精
+        hentai reverse suspended congress(sex position),full body,1man,sex: 反悬挂式
+        solo,proneposition,prone bone,ass,lying,sex from behind,pillow,pillow hug: 抱枕后入
+        fpov photo with tattoo,large penis,press pussy,pussy,large breasts,nipples: 压阴特写
+        censored,clothed sex,cum,cum in pussy,deep penetration,ejaculation,faceless,female ejaculation,female orgasm,fertilization,grabbing from behind,head back,hetero,huge breasts,impregnation,internal cumshot,lactation,motion lines,navel,nipples,nude,open mouth,orgasm,overflow,ovum,penis,pussy,reverse cowgirl position,reverse upright straddle,sex,sex from behind,solo focus,speed lines,standing,standing sex,torso grab,trembling,uncensored,uterus,vaginal: 站立后入内射
+        cum,hetero,breasts,penis,cum in pussy,on back,panties,pussy,panty pull++,lying,navel,blush,solo focus,open mouth,looking at viewer,pillow,patreon username,medium breasts,after sex,after vaginal,thighs,bare shoulders,web address,ass,bed sheet,bare legs,watermark,purple panties,legs up,anus: 事后内射
+        solo,missionarypose,penis,lying,missionary,vaginal,feet,soles,uncensored: 仰躺传教士
+        photo of woman with expose breasts legspreading legs getting missionary vaginal fucked perfect lighting,extreme close up,laying in bed,creampie: 传教士内射特写
+        analog style,(look at viewer),cinematic light,1penis,perfect pussy,anal sex,missionary position,anal,side view: 侧卧肛交
+        stomach bulge,belly bulge,deep penetration: 小腹凸起
+        heavy breathing,sm,penis,vaginal,from side,breast press,hetero,sex: 侧位性交
+        HDA Missionary,HDA Masterpiece: 传教士体位
+        a photo of a woman being restrained by a metal sex machine and wearing metal breast squeezing machine and breast squeeze and wearing metal collar and a metal rod with a base is inserted into a woman's anus and anal object insertion and arms behind back and spread legs and squatting and tiptoes and two metal rods with bases are spreading her legs and stationary restraints: 性爱机器肛插
+        a photo of a woman being restrained by a metal sex machine and wearing metal breast squeezing machine and breast squeeze and purple breasts and wearing metal collar and a metal rod with a base is inserted into a woman's anus and anal object insertion and arms behind back and spread legs and squatting and tiptoes and two metal rods with bases are spreading her legs and stationary restraints: 性爱机器扩腿
+        a photo of a woman being restrained by a metal sex machine and woman restrained on a huge wooden stick connected to the ground and a metal sex machine connected to a huge wooden stick and wearing metal breast squeezing machine and black rope tied to breasts and breast squeeze and vibrator with black cable inserted into woman's vagina and purple breasts and arms up and bound wrists and bound ankles and bound stomach and bound thighs and bound legs and stationary restraints and vaginal object insertion and woman floating in the air: 悬空性爱机器
+        sex-machine,pussy object insertion: 机器插穴
+        dildo,sex machine: 假屌机器
+        Brain Wash Machine,head-mounted display: 洗脑机
+        HDA standingSex,HDA Masterpiece: 站立性交
+        (1boy),(sex,standing sex1.2),sex from behind,(standing split),vaginal,huge breasts,bottomless,standing on one leg,thighhighs,blush,open mouth,(orgasm,ahegao),(heavy breathing:1.2): 抬腿站立后入
+        breasts,hetero,penis,nipples,looking at viewer,sex,pov,navel,large breasts,sweat,vaginal,sidelocks,solo focus,uncensored,standing,closed mouth,veins,lips,from above: 站立俯拍
+        breasts,hetero,penis,nipples,looking at viewer,sex,pov,navel,large breasts,sweat,vaginal,sidelocks,solo focus,uncensored,standing,from above: 站立直视
+        standing sex,doggystyle: 站姿后入
+        (bent over:1.3),(bentover:1.3),(female on tiptoes:1.3),from side,full body,standing sex,standing doggystyle,hetero,(1girl:perfect face): 踮脚后入
+        sspv1,standing split,flexible,leg lift,leg up,kneepits,split,spread legs,pussy,anus: 站立劈腿
+        standing split,standing on one leg,standing,leg up,solo: 单脚劈腿
+        stealth fingering,2girls,multiple girls,hetero,brown hair,fingering,ass,school uniform,cum,long hair,black hair,skirt,blush,brown eyes,serafuku,braid,cum in pussy,bangs,blunt bangs,looking back,pussy juice,censored,no panties,anal fingering,cumdrip,sweat,pleated skirt,pussy,blurry,ass grab,open mouth: 偷摸指交
+        stealth fingering,train interior,skirt,molestation,hetero,underwear,panties,jewelry,hair ornament,breasts,ass,shirt,thighhighs,purple hair,skirt lift,public indecency,long hair,blush,black skirt,nail polish,hairclip,fingering,clothes lift,pink panties,pussy juice,bracelet,solo focus,large breasts,animal print,leopard print,white shirt,pencil skirt,striped,sweat,from behind,blonde hair,red eyes,looking back,faceless,standing,short sleeves,earrings,bangs,miniskirt,parted lips,dark skin,smile,groping,ass grab,lifted by another,pink nails,arm up,fingernails,dutch angle,red nails,looking at viewer: 电车暗中摸弄
+        stealthaction,stealth fingering,hetero: 暗中手入
+        HDA TentacleSex,HDA Masterpiece: 触手性交
+        (breast sucking:1.5),tentacles,breasts,large breasts,tongue,solo,tongue out,nude,blush,armpits,restrained,arms up,open mouth,ahegao: 触手吸乳
+        tentacle breastgrab,tentacles,grabbing,arms up,tentacles: 触手抓乳
+        transparent tentacles,glass tentacles,tentacle sex: 玻璃触手
+        masterpiece,best quality,sex,hetero,Supermodel figure,orgasm,thigh sex,standing,pussy,cum dripping,hentai: 站立大腿性交
+        from below,looking down,looking at viewer,(penis:1.2),thigh sex,train interior,grabbing own breast,sex from behind,huge breasts,cleavage,cum,nipples: 车内腿交
+        thigh sex,penis: 大腿夹屌
+        hetero,penis,injury,ryona,bound,restrained,collar,high heel boots,eyes closed,cum,facial,bukkake,cum on body,volumetric lighting,intricate details,tonemapping,sharp focus,1girl: SM
+        anal dildo sitting,dildo,anal,anal object insertion: 肛坐假阳具
+        (AnalDildoQuiron style),anal toy,dildo,anal,(anal object insertion): 肛内假阳具
+        anal fingering,hand in ass,own fingers in anus,anal,on side,anus,masturbation: 手指入肛
+        anal gape,creampie,penis,from behind: 肛口内射
+        (anal object insertion)+++,hook in anal,anal hooked,view from behind: 肛门钩挂
+        anal Doggy,anus gape: 后入肛交
+        anal ball wear,anal ball insertion clothing++: 内藏肛球
+        arched back,ass,ass focus,black pantyhose,cameltoe,foreshortening,depth of field,facing away,foreshortening,from behind,hat,highleg,highleg leotard,huge ass,indoors,leaning forward,leotard,pantyhose,sitting,solo,thong leotard,betweenlab: 裤袜骆驼趾
+        ass up,pants down,pantie pull,lifting head: 抬臀
+        ass up wait: 撅臀等待
+        up ass,solo,ass,pussy,top-down bottom-up,from behind: 翘臀后视
+        anus,ass,from behind,spread ass,ass focus,presenting,ass grab,spread anus,bent over,grabbing own ass,top-down bottom-up,hands on own ass: 手扒臀缝
+        hentai breast grab(sex position),1girl and 1man: 抓胸
+        breastechii++,(breasts,blush,smile,large breasts,cleavage,nipples,armpits,looking at another,arm up,one breast out),( behind++,use two hands,grab another breast)++: 双手揉胸
+        breast hold: 抱胸 1
+        breasts on head,breast rest,large breasts,curvy: 乳压头顶
+        one breast out,nipples: 露单乳
+        one breast out,pov across table,breasts,flashing,tank top,sweat,solo,clothes lift,elbow pads,collarbone,lifted by self,suspenders,counter,bangs,sports bra,closed mouth,breast rest,breasts on table,bra,nose blush,upper body,underwear,sitting: 桌旁露乳
+        breast press: 挤胸
+        breast press,2girls,imminent kiss: 双女挤胸
+        (use two hands grab breast,breast massage,breast press): 双手按摩
+        breast sucking,1man: 吸乳
+        looking at viewer,nipples,areolae,(blush),eyelashes,(topless),lying on bed,sleeping,straddling,breast sucking: 跨坐吸乳
+        kissing a girl's tits,tittysuck: 吻吸乳头
+        solo,bpw,huge breasts,lying,on stomach,sleeping,indoors,underwear only: 胸枕
+        large breasts,nipples,shaking body,bouncing breasts,afterimage,motion lines,asymmetrical breasts,cowboy shot,looking at viewer,naughty face,masterpiece,1girl: 胸部弹跳
+        breasts on glass,nipples,breast press,against glass,navel,completely nude,large breasts: 贴玻璃胸
+        breasts squeezed together: 夹乳
+        breast press,from above: 俯视挤胸
+        pov,breast press,lying on person: 躺压乳
+        air plant sex: 空气植物性交
+        sole,chizuruchankaihatsunikki,nude,school table,lying on table,detailed table,one leg up,from behind,looking back,nsfw,matured,spread legs,anal,ass,((detailed dilated gaping vaginal)),[[1man]]],(huge penis,huge penis as wide as arms),(pov),sex from behind,grabbing ass,detailed hands,spread anus,uncensored,orgasm,(mating call),detailed leg,purple hair,long hair,hairclip,purple-red eyes,NTR,large breasts,opened cloth,leaning forward,gaping,open mouth,tongue,requesting sex,showing off anus,detail ass hole,school uniform,green jacket,green pleated skirt,(red choker),(femdom),enchanting expressionless,enjoying,((zettai ryouiki)),scowling,happiness,(detailed face description),(detailed eyes description),pet girl,nothing happened,legs up shot,lying,focus ass,advanced cg,amazing quality,octane rendering,(detailed pussy),cummings,cumed,suggestive fluid,seductive,alluring,(vomcum),focus ass hole: 桌上学校后入
+        slime,very wet,pink slime person,covered in pink slime,slime person,made of pink slime,made of dark magenta slime,Pink SlimeGirl,ahegao,heart shaped pupils,motion lines: 粉色史莱姆
+        slime person,made of slime,made of dark magenta slime,slime girl,ahegao,heart shaped pupils,motion lines,nude++,sex++++,full body: 史莱姆性交
+        Air oral sex: 空气口交
+        sex++,against the floor,full body view,pushed to the ground,laying on stomach++,pinned to the ground)++++: 被推倒在地
+        from behind,all fours,ass,anus,pussy: 后入视角
+        Not looking towards the camera,back,upper body: 背部视角
+        ass,from behind,clothes pull,pants,underwear,looking back,pants pull,anus,pussy,undressing: 后视脱衣
+        toilet use,panty pull,toilet,restroom,panties above knees,panties below knees,sitting,bottomless,pants pull: 坐便
+        anal licking: 舔肛
+        arm hold,hand on own chin: 手托下巴
+
+    - name: 组别4
+      color: rgba(255, 145, 147, .4)
+      tags:
+        global illumination,arms up: 双手举起
+        armwrestling: 掰手腕
+        hair pussy: 阴毛
+        penis,futanari: 扶她
+        sitting,indian style,couch: 印度坐姿
+        pussy,pregnant,skinny,birth,birth white egg: 分娩
+        full body,sitting on bed,(birth:1.2),child birth,pussy focus++,from below,dramatic pose,no panties,pregnant,belly button++,((M legs:1.4,sitting)),((pussy:1.2,nude )),pussy juice stain,((birth child,baby's head out of pussy)),(heavy breathing:1.4),(perspective:1.1),(groin:1.2),open clothes,midriff: 床上分娩
+        body soaping,side view++,(back of viewer),(large breasts,breast press)++,indoors,wet,completely nude,tiles,wet hair,bathroom,mixed bathing,tile wall,soap bubbles,soap,reach-around,soap bottle: 浴室擦身
+        sitting,bondage,restrained: 束缚
+        Frogtie pose,frogtie,bdsm,bondage,bound,bound legs,shibari,rope,spread legs,barefoot,arms behind back: 蛙绑
+        solo,mummification (bound),restrained,gagged,arms at sides,tape,cowboy shot: 裹缚
+        solo,taihou,bdsm,shibari,ribbon,arms behind back,bound arms,crotch rope,bound legs,kneeling,restrained: 绳缚膝跪
+        rouge,truss up,Binding,girl in box,xiangnv,arms behind back,solo,ass,buruma,looking at viewer,rope,bdsm,in box,bound,gym uniform,girl in box,from above,solo: 囚于箱中
+        2girls,multiple girls,hetero,sandwiched,girl sandwich,age difference,ffm threesome: 女女夹心
+        solo,nipples,looking at viewer,wine anal,huge ass,wide hips,large breasts,mature female,pussy,squatting,arms behind head,trembling,sweat,steaming body,facing viewer,clitoris: 肛门酒瓶
+        solo,penis,cum on tongue,open mouth,tongue out,cumdrip,cum on body,form side: 口内射精
+        cum on ass: 臀上沾精
+        cum,cum on breasts: 射在乳上
+        cum on,cum on body: 全身沾精
+        looking at viewer,from above,smirk,(cum,cum on face,cum on breasts,cum on clothes,mouth full of cum:1.1): 沾精满身
+        gangbang,multiple multiple penises,cum on,cum on body: 多人淋精
+        cmhair,facial,excessive cum,bukkake,cum,cum on body,cum string,cum on hair,solo,lips,closed mouth,(solo): 发上沾精
+        cum on forehead++++: 额上沾精
+        hair cumshot,cum on hair,bukkake,cum,looking at viewer,midriff: 发上淋精
+        1boy (penis,erection),(detailed skin texture,skin pores),kneeling,(cum in mouth,cum,projectile cum:1.1),(cum overflow:1.1),(mouth open,tongue out,cum on tongue),(cum on face,cum on hair,cum on breasts,bukkake :1.2),looking at viewer,Hasselblad photography,sharp focus: 跪姿淋精
+        uruha rushia,double bun,(cum in nose:1.1),looking at viewer,solo,nose blush,sweat,shiny [black and (blue:0.8) dress:6]: 鼻内射精
+        cum in nose,vacuum fellatio: 鼻吸精
+        a award winning photo of a beautiful Italian model,modelshoot,(toned:0.8),spreading legs,nude,busty,redhead,smile,bokeh,perfect pussy,closeup,(pubic hair),sweating,cum in pussy,anus: 阴道内射
+        cum on belly: 肚子沾精
+        cum on cloth: 衣物沾精
+        bunny pose,bpv1,fake animal ears,smile,volumetric lighting,upper body: 兔女郎姿势
+        buttjob,solo focus,penis,pov,from side,motion lines: 臀缝夹屌
+        solo,spread pussy: 掰开阴部
+        legs up,spread legs,spread pussy,anus,ass,pussy,pussy juice,solo,half updo,braid: 张腿露阴
+        pov hands,ass grab,ass,from behind,pussy,anus,spread pussy: 身后掰阴
+        spread anus,anus: 掰开肛门
+        anus,ass,huge ass,gaping,ass grab: 张开的肛
+        2girls,1man,cooperative fellatio anilingus: 口交舔肛
+        pussy,hairy pussy,creampie: 毛阴内射
+        pussy,creampie,spread legs: 摊腿内射
+        creamypie: 内射
+        (Girl trembling with sexual climax),(nsfw),(motion lines),crosslegpress,mating press,lying,hetero,penis,sex,ass,vaginal,anus,pussy,cum in pussy,cum,testicles,on back: 交腿交配压
+        (1boy),(cunnilingus),oral,barefoot,bottomless,breasts,clothes lift,feet,female pubic hair,hetero,large breasts,lying,navel,nipples,on back,on bed,pillow,pubic hair,spread legs,toes: 仰躺舔阴
+        2girls,multiple girls,yuri,tongue,looking at viewer,cunnilingus,oral,female pov,solo focus,pussy,spread legs,licking: 百合舔阴
+        2girls,a woman licking another woman's ass,players choice,tongue,pussy,lesbian,ass,saliva,nude,anus,looking at viewer,licking,cunnilingus: 女女舔肛
+        standing cunnilingus,bottomless,pussy,closed eyes,open mouth,cowboy shot: 站立舔穴
+        a photo of (a young woman is sticking out her beautiful tongue to taste and lick the beautiful vulva of another woman lying with her spread legs),(photorealistic:1.4),(Realistic:1.4),wet pussy,pussy juice,parted lips,completely naked,pubic hair,(bed),bedroom,tongue out,perfect thighs,ass,nipples,Comfortable expression and eyes closed: 逼真舔阴
+        2girls,all fours,anal,anal object insertion,ass,ass-to-ass,dildo,kneeling,object insertion,on all four: 双人假阳具
+        feet pose,soles,crossed legs: 双脚交叉
+        sitting,front view,show teos,stretch legs,focus on soles of feet,spread legs: 伸脚露底
+        foot up: 抬脚
+        <barefoot,feet,foot focus,toes,toenail polish: 脚趾美甲
+        phpose,apron,black hair,black pantyhose,blue eyes,feet,foot focus,hair bun,long hair,no shoes,pantyhose,sitting,smell,soles,steam,table,toes,solo,black eyes,maid,couch,maid apron,best quality: 女仆闻脚
+        phpose,feet,foot focus,no shoes,pantyhose,sitting,smell,soles,steam,table,toes,solo,couch,<lora:phpose-000011r:0.8>: 闻脚
+        realistic style,analog photography,polaroid,sitting on bed,showing her feet to the viewer,pov,presenting feet,feet focus: 床边秀足
+        spread legs,(Girl trembling with sexual climax): 张腿
+        Kneeling: 跪姿
+        peeing: 排尿
+        yellow pee,peeing,ahegao,motion line: 失禁小便
+        peeing,goldenjuice: 黄金尿
+        nude,peeing,squatting,river,touching vagina: 河边排尿
+        peeing on penis,hetero,penis,pussy,peeing,pee,solo focus,spread legs: 尿淋阴茎
+        solo(peeing:1.5),spread legs: 张腿排尿
+        diaper,cowboy shot,hand on hip: 尿布
+        lifting weights while a dildo is inserted in her ass: 假阳具健身
+        ass,from behind,no panties,bottomless++,dildo: 背后插假屌
+        dildo,masturbation: 假屌自慰
+        dildo on bike,squating on dildo,side view,motion lines: 骑车假阳具
+        drowning,splashing,waves,water,struggling,(upper body,floating,swimming,ocean): 溺水
+        sex,hetero,lying,sex,deep penetration,(large insertion:1.2),on desk,top view: 桌上性爱
+        electric fan,wind,wind pussy,clothes lift,open mouth,from below,no panties: 电扇掀衣
+        (electric fan:1.2),indoors,standing,white dress,barefoot,(panty pull:1.3),lifted by self,pussy,closed eyes,large breasts,pussy: 风扇掀衣
+        front side view,bright and saturated colors,((beautiful 1girl have  detailed face)),full body,(lower back and hip:1.5),((bottomless:1.4)),arms,ass grabbing,(head and knees on floor,bottom up,kneeling:1.5),eyes,(electric fan behind:1.3),pussy: 电扇掀衣跪
+        sitting girl,sitting girl opening her legs,you can see her vagina and anus,beautiful girl,open leg,vagina,anus,beautiful leg,big breast,beautiful breast,leg open in V,naked,pink breast,detailed vagina: V腿露阴
+        erection under clothes,buttjob over clothes,penis,buttjob: 恋臀
+        exhibitionism,open coat: 开衣暴露
+        exhibitionism,public indecency,flashing,naked coat: 裸体大衣
+        accidental exposure panties: 意外走光
+        (standing),(Kneel down,face in ass): 脸贴屁股
+        breasts,looking at viewer,navel,nipples,hetero,nude,breasts,penis,pubic hair,uncensored,erection: 与男人同站
+        multiple penises,uncensored,cum,penis,hetero,looking at viewer: 多男同站
+        (feetlicking),large breasts,thick thighs,sweat,feet,focus on soles: 舔脚
+        stuck in wall,pussy,anus,ass,through wall,stuck,body less,low body,half body: 卡墙
+        Trapped In Wall,Stuck in wall,solo,low body: 墙洞卡住
+        solo,nipples,stuck,through wallahoge,cropped legs,picture frame,price tag: 穿墙卡住
+        half body,glory wall,photo (object),ass,ass focus,head out of frame: 隔墙露臀
+        half body,stuck,through wall,glory wall: 墙上洞
+        fisting,female fisting,vaginal object insertion,object insertion,fingering,yuri,2girls,multiple girls: 阴道拳交
+        self fisting sex: 自我拳交
+        2girls,futanari pov,sex,pussy: 扶她视角
+        penis,motion lines,anal,sex,futanari,hetero,otoko no ko,femdom,pegging,large breasts,sex from behind,nude,simple background,trembling,twitching: 扶她性爱
+        spitroast: 夹心插入
+        fellatio,sex from behind,double penetration,spitroast: 口交夹心
+        reverse cowgirl position,multiple penises,sex,hetero,pussy,threesome,fellatio,girl on top,spitroast: 反骑夹心
+        spitroast,sex,multiple penises: 夹心
+        group sex,spitroast,fellatio,oral,sex,threesome,sex from behind,double penetration,bent over,standing,from side: 站立夹心
+        HDA spitroast,HDA Masterpiece: 夹心体位
+        solo,((patchouli knowledge)),lying on back,steam,meat,noodles,egg,steak,beef,food on body,collarbone,from above,nyotaimori,blush,embarrassed,steaming body,steam: 女体盛
+        drinking fountain,head down,open mouth,metal washbasin,press button,park: 公园饮水
+        (((extra closeup on face))),(((fisheye lens))),putting clothes into washing machine in laundry,ribbon,twintails,longhair,tie,school uniform,sweat,shy,blush,mature figure proportion: 洗衣机女孩
+        goblin gangbang: 地精轮奸
+        (hetero:1.3),arms behind head,hand in panties,spread legs,sitting,panties: 裤内摸阴
+        have to pee,hand between legs,leaning forward: 憋尿
+
+    - name: 组别5
+      color: rgba(255, 145, 147, .4)
+      tags:
+        have to pee,peeing self: 失禁
+        face to breasts,head between breasts: 脸埋胸
+        ass focus,from behind,spread anus,cum in ass,cumdrip,looking back: 臀缝沾精
+        internal cumshot,x-ray,happy sex,penis: 透视内射
+        high heels,sitting crossed legs: 高跟鞋翘腿
+        solo,kicking: 高踢腿
+        looking at viewer,nude,looking down,hogtied,brown rope,belt,barefoot,on stomach,on grey carpet,white walls,side view: 曲膝捆绑
+        solo,standing,bent over,sex toy,tiptoes,artificial vagina,futanari,huge penis,trembling,motion lines,breast press,ejaculation,masturbation,projectile cum,blush,open mouth,cum,tongue out,bent over,ejaculation,excessive cum: 骑性玩具
+        hug penis,huge penis,oversized penis: 抱大屌
+        sex,pussy,cross-section,internal cumshot,x-ray: X光内射透视
+        hands,fellatio,deepthroat,oral,hug: 拥抱口交
+        instant-loss,looking at viewer,cowboy shot,hetero,sex from behind,vaginal,penis,trembling,pov,heart,motion lines: 瞬间失守
+        (invisible penis:1.5),sex,pussy object insertion: 隐形插入
+        penis,imminent penetration,lying,on back,spread legs: 即将插入
+        kabedon against wall: 壁咚
+        1girl and kabedon pov: 壁咚视角
+        penis in vagina,missionary,facing each other,looking at each other: 对视传教士
+        leaning forward,hands on own knees: 前倾扶膝
+        solo,cowboy shot,looking back,bent over,from below,hands on own knees,back,light rays,lens flare: 弯腰扶膝
+        pov,missionary,legs up,legs grab,from above,wide spread legs,reaching: 传教士抬腿
+        leg up,cowgirl view,leg focus: 抬腿
+        legs up,legs together,lying: 并腿上举
+        solo,raised leg invitation: 抬腿邀请
+        2girls,lesbian cunnilingus,cunnilingus,pussy: 女女舔阴
+        handgun,lick gun: 舔枪
+        spread legs,speculum insertion,metal speculum: 扩阴器
+        blush,spread legs,speculum,anus,pussy,spread pussy: 扩阴展示
+        pregnant,pregnant-x-ray,x-ray,penisincervix: 孕妇X光
+        hand,massage,breasts,hetero,freckles,towel,lotion: 手按胸部
+        nuru massage,(straddling:1.1),lying on person,girl on top,see-through,big breasts,(air mattress:1.1),lotion,shiny,feet,looking at viewer: 凝胶按摩
+        nude,Mirror Sex,doggystyle,anal,large insertion,close up,indoor,on the floor,pov: 镜子性爱
+        index finger inside mouth,one hand pulling mouth: 手指入嘴
+        arms grab,sex from behind: 抱腰后入
+        head between thighs,asphyxiation,thick thighs: 夹腿窒息
+        against glass,ass on glass,from behind,wet: 贴玻璃后臀
+        solo,ass,ass focus,thigh strap,looking at viewer,sitting on glass,smile,huge ass,closed mouth,skindentation,looking back,shorts,v,hair between eyes,from behind,glass,ass on glass,panties: 坐玻璃露臀
+        ass,from behind,multiple girls: 多女露臀
+        multiple insertions,ass,gangbang,triple penetration: 三穴齐插
+        1girl multiple insertions,multiple penises,front view: 正面多插
+        multiple insertions,ass,gangbang,multiple penetration,penis,cowgirl view: 多穴插入
+        multiple insertions,ass,gangbang,multiple penetration,penis,pussy focus,m legs: M腿多插
+        (multiple penises:1),(surrounded:1),(too many:1),face,close-up,penis on face: 群屌
+        facePunch,monster,kaijuu,restrained,grabbing from behind: 怪物抓脸
+        facePunchFull,monster,alien,kaijuu,restrained,grabbing from behind,(punching,motion blur),full body,standing: 怪物拳打
+        facePunchFull,2monsters,alien,kaijuu,restrained,grabbing from behind,(punching,motion blur),full body,standing,stomachKick,monster,(kicking,motion blur),breastPunch: 双怪抓脸
+        (nimod),full body,big tits,bed,thick thighs: 躺卧
+        nipple pull: 拉乳头
+        nipple tweak,pull nipple,topless,front view: 拧乳头
+        nipple chain: 乳头链1
+        nipple cutout,clothing cutout: 乳头镂空1
+        nipple piercing: 乳头穿孔
+        nipple slip: 乳头滑落
+        nursing handjob,breast sucking: 哺乳
+        sankaku,traffic cone,squatting on sankaku,pussy object insertion: 道具坐插
+        inner pussy,standing,multiple views,uterus,x-ray: 阴道内视
+        (dynamic pose:0.4),vibrant colors,onahole personality,personality excrement,slime onahole,on floor: 黏液飞机杯
+        vibrant colors,onahole personality,legsless onahole,slime onahole,armsless onahole,colored skin,pink skin extreme detailed,highest detailed,centered: 粉黏液杯
+        holding phone,covering nipples,covering crotch,mirror,reflection: 单手遮敏感
+        open coat,A professional athlete competing in a sports event while engaging in explicit acts with a fellow competitor on the field,running: 开衣运动
+        open bra: 敞胸罩
+        front hook bra,nipples: 前扣乳罩
+        cinematic lighting,ambient occlusion,shadow,orc,hentai breast grab(sex position),grabbing from behind,breast grab,full body,standing from behind,(arms up:1.1),savannah,looking at viewer,open mouth,ahegao,rolling eyes,sweat,cum: 兽人抓乳
+        (sweat,nipples,breasts,large breasts): 大叔
+        2girls,looking at viewer,blush,open mouth,bangs,navel,nipples,hetero,lying,penis,pussy,spread legs,sex,on back,huge breasts,vaginal,dirndl: 亲子丼
+        2girls,oyakodon mf++,looking at viewer,blush,open mouth,bangs,navel,nipples,hetero,lying,penis,pussy,spread legs,sex,on back,huge breasts,vaginal,dirndl: 亲子丼式
+        panties around ankles,panties pulled down,one pair of panties around ankles: 内裤滑落
+        panties around  one leg,pussy: 单腿挂内裤
+        panties on breasts: 内裤盖乳
+        panties pulled aside fuck++,panties pulled aside: 拨开内裤
+        paw pose: 爪子姿势
+        tweaking own nipple,pov,nipple tweak,grabbing own pectoral: 扭捏乳头
+
+    - name: 组别6
+      color: rgba(255, 145, 147, .4)
+      tags:
+        peeking out upper body: 探头
+        pee on her: 往她身上尿
+        penetration gesture,upper body,blush,naughty face,nervous smile: 插入手势
+        penis over eyes,penis on face: 阴茎挡眼
+        penis under another's clothes,swimsuit,penis to breast: 阴茎在衣服下
+        penis on face,large penis,uncensored,penis awe,cum on face,facial,ahegao,blush: 阴茎在脸上1
+        penis,solo focus,cheek poking,hetero,penis on face,poking,one eye closed,penis awe,erection,cheek squash,large penis,cheek press: 阴茎在脸上2
+        1futa:1.4,futanari,solo,solo focus,nude,glans,(penis milking machine),penis milking,cum milking,(tube:1.2),milking machine,erection,penis,breasts,ahegao,open mouth,blush,laboratory,science fiction,shackles: 阴茎挤奶机
+        breasts,bright pupils,cleavage,apricot eyes,hetero,french braid,parted lips,penis awe,(penis shadow:1.3),steaming body,sweat,upper body,wide-eyed: 阴茎影子
+        solo,penis,smelling,<lora:torogao v3-000010:0.6>,full-face blush,penis on face,large breasts: 嗅阴茎
+        penis awe,upper body,large breasts,surprised,veiny penis,huge penis: 敬畏阴茎
+        solo,penis awe,veiny penis,huge penis: 惊叹阴茎
+        pov crotch,(amazing penis:1.3),handjob,very long penis,cheerful,wavy mouth,(looking at penis:1.3),shiny skin,naughty: 敬畏巨屌
+        penis bigger than body,large breasts: 阴茎比身体大
+        penis in thighhigh: 阴茎插袜
+        penis,pov,penis on ass,ass grab,all fours,looking back,against wall,ass focus: 阴茎贴臀
+        penis on ass pov: 阴茎抵臀
+        penis on breasts++,(1boy),(large penis:1.5),looking at penis,saliva,tongue out,heart-shaped pupils,naughty face,solo focus,penis awe: 阴茎贴乳
+        solo,large breasts,white background,mature female,testicles,large penis++,penis on head,arms behind back,kneeling,looking at viewer: 阴茎顶头
+        1girls,lying,on back,penis,penis on stomach,solo focus,spread legs,pov,legs up: 阴茎贴腹
+        penis worship,(1boy),(huge penis:1.5),(long penis:1.2),veiny penis,(veiny testicles),looking at penis,saliva,tongue out,heart-shaped pupils,naughty face,hetero,mole,symbol-shaped pupils,(testicles),solo focus,penis awe: 恭拜阴茎
+        solo,all fours,spread legs,leg up,pet play: 四足宠物
+        solo,leg up,spread legs,all fours,large breasts,paw pose,squatting: 宠物爪姿
+        cum on face,all fours,open mouth,drooling,saliva,from side,looking at viewer: 宠物沾精
+        stroll with pet: 带宠物散步
+        perfect anatomy,2girl,piggyback,sitting,sitting on another,all fours,girl on all fours,happy,smile,living room: 背人骑乘
+        carrying,piggyback: 背人
+        upside-down,sex,penis,medium breasts: 倒立插入
+        hetero,penis,pussy,pov,spread legs,hands grabbing legs: 抓腿倒立
+        upside-down,piledriver (sex): 倒立叠坐
+        pillow hug,holding pillow,yes-pillow: 抱枕
+        indoors,bedroom,on bed,pillow hug,yes-pillow,solo,embarrassed,full-face blush,white panties,cameltoe,covering mouth,covered navel,sitting,spread legs: 抱枕娇羞
+        crotch rub,pillow humping: 磨枕头
+        pov,cheek pull: 扯脸颊
+        thighhighs,cleavage cutout,closed mouth,athletic,collarbone,(linea alba:1.2),navel,(Tears,complete nude,bare legs,barefoot:1.2),nice hands,perfect hands,(Beautiful Finger),BREAK (pleasure wheel,sex machine,motion blur:1.4),machine,bdsm,bound,bondage,restrained,(pink nipples,inverted nipples,breasts,nipples,spread legs,pussy juice,clitoris,(bouncing breasts,unaligned breasts:1.2),(perfect anatomy),Volumetric Lighting: 欢乐轮
+        shower,peephole,Peep hole Shower: 浴室偷窥
+        penis on ass: 阴茎在屁股上
+        (photorealistic:1.4),stripper pole,between breasts,grabbing own breast,breasts squeezed together,nude,completely nude,skinny: 钢管夹乳
+        ponyplay,all fours,harness,bit gag,horse tail anal plug,drooling,bdsm,CoralVanguard: 马术扮演
+        penis on pussy: 阴茎在阴道上
+        blush,steam,popsicle suck,pov,hands,feeding,from above,open mouth,tongue out: 吃冰棒
+        (lying),open mouth,blush,orgasm,portio massage,electric massager,vibrator,hitachi magic wand,sex toy,trembling,arched back,from side,on back,solo focus: 宫颈按摩
+        lying,penis,(head back:1.3),throat swab,spread legs,head tilt,huge penis,Deep throat,asphyxia,head out of frame,huge breasts,from above,nude,lips: 神喉姿势
+        clothes lift,from below: 提衣服
+        clothing aside,sex,pose clothing aside sex,large penis,hetero,pantyhose,panties: 拨开内衣
+        clothing aside,pose clothing aside,pantyhose,panties,torn,anus,pussy,looking back: 移开内衣
+        anal sex,penis in ass,big penis,vaginal object insertion,vaginal,imminent vaginal: 即将肛交
+        mirror: 照镜子
+        mirror,huge breasts,holding phone: 镜前手机
+        pose partially visible vulva,partially visible vulva,breasts,navel,wet,from below,large breasts,blush,solo focus,thighs,shower head,bangs,looking at viewer,closed mouth,showering,scrunchie,hair ornament,looking down,partially visible vulva,groin,bare shoulders,hair scrunchie,wedgie,cowboy shot,stomach: 淋浴露阴
+        looking down,skirt,standing on one leg,huge breasts,from below,kicking,pantyhose,cleavage,shoes: 单脚站立
+        standing on one leg,panties,cameltoe,looking down,from below,huge breasts,leg up,spread legs,pussy focus,underwear: 单腿站姿
+        pouring milk,milk mustache,milk bottle: 牛奶胡
+        pouring on to self,pouring,pouring onto self,milk,bottle,milk bottle,holding,upper body,holding bottle,cleavage: 乳沟倒奶
+        3girls,solo focus,pov multiple views sex,anime,breasts,nipples,penis,paizuri,hetero,censored,blue eyes,hat,pussy,large breasts,tattoo,sex,ass,between breasts,gloves,necktie,anus,mosaic censoring,smile,grey hair,navel,looking at viewer,hair over one eye,earrings,mole,jewelry,shirt,elbow gloves,short hair,vaginal,multiple views,garrison cap,white shirt,blue headwear,bottomless,fingerless gloves,black gloves,sleeveless shirt,blush,blue necktie,closed mouth,sleeveless,bare shoulders,bangs,mole on breast,straddling,necktie between breasts,bridal gauntlets,heart,collared shirt,girl on top,long hair,white background,arm under breasts: 多视角乳交
+        from below,ass focus,long dress,Striped panties,standing,pantyhose,cum: 裙底内裤
+        solo,breasts,looking at viewer,blush,smile,cleavage,collarbone,completely nude,nude,water,wet,partially submerged,bath,bathtub: 洗澡
+        large breasts,sagging breasts,blush,pov,from below,naughty face: 从下往上看
+        pov arm hug pov,breasts,looking at viewer,blush,smile,open mouth,1boycollarbone,,sidelocks,outdoors,solo focus,collar,shadow,from above,looking up,downblouse: 抱臂
+        solo,arm hug,smile,spoken heart,looking up,(pov,head out of frame): 拥抱手臂2
+        pov strangling,(pov:1.2),tears,solo focus,open mouth,blush,smirk,from above: 勒颈
+        ((((ultra illustrated style:1)))),strangling,breasts,bra,blush,open mouth,navel,bed sheet,hair between eyes,cleavage,implied sex,facing viewer,spread legs,bottomless,collarbone,on bed,ahoge: 勒喉窒息
+        choking: 掐脖窒息
+        torso grab,pov hands,glasses,grabbing,surprised: 抓身
+        solo,projectile cum,ejaculation,cum,cumming,penis,erection,spread leg: 射精
+        lactation into cup,cup,milk,apron,breast squeeze,one breast out,(projectile lactation:1.2): 挤奶
+        blushing,full body picture,stripper girl,pole dancing in a strip club venue,(covered in dollar bills:1.35),in a strip club venue,a bar with a lot of lights and a lot of chairs: 脱衣舞
+        full body,stripper pole,pole,pole dancing,jewelry,bracelet,pantyhose,thighband pantyhose,fishnets,high heels,ass,looking at viewer,looking back,solo focus,crowd,leaning forward,from behind: 脱衣舞女2
+        hetero,penis,sex,kiss,uncensored,nipples,vaginal,closed eyes,pussy,cum,interlocked fingers,holding hands,nude,threesome,cum in pussy,leg lift: 纯爱体位
+        pussy show: 秀阴
+        fingers pull,spread pussy: 指掰阴部
+        ((1girl)),bed,lying,on back,from front,blush,brown eyes,close-up,uncensored,spread legs,pussy juice,real spread pussy: 真实露阴
+        licking armpit: 舔腋窝
+        used condom,condom in mouth,warm lighting,rolling eyes: 口含套
+        covering breasts: 遮胸
+        reverse upright straddle,penis,vaginal,completely nude,open mouth,nose blush,tongue out,breast grab,arms behind back: 反向跨坐
+        realistic,revscs,girl lying,(head between thighs)+++,RAW photo,anal,side view,kneeling: 头在腿间
+        riding machine: 骑机器
+        real,photoshoot,realistic,atmospheric scene,ridingsexscene,solo,nipples,breasts,realistic,closed eyes,nude,open mouth,medium breasts,arms up,from below: 骑乘性爱
+        solo focus,saliva trail,hetero,interracial,uncensored: 舔肛拉丝
+        round breasts,large breasts: 圆胸
+        licking face: 舔脸
+        licking ear: 舔耳
+        sex,sex from behind,lying,on stomach,ass,prone bone,on bed,trembling,motion lines,handheld game console,nintendo switch,holding handheld game console,hetero,head out of frame,solo,solo focus,cum,cum on ass,doggystyle,looking at object,clothed sex: 玩游戏性交
+        holding,holding handheld game console,nintendo switch,bottomless,indoors,on bed,simple background,emotionless sex,distracted: 玩游戏做爱
+        black umbrella,holding,holding umbrella,school uniform,open mouth,pants,rain,school uniform,(shared umbrella),skirt,smile,sweater vest,storm,rain: 共撑伞
+        (shiny skin:1.1),oiled skin,lying,from above,close-up,pussy,high contrast,bright sunlight,parted lips,orgasm,sweat,blush,looking at viewer: 油亮皮肤
+        ((full body portrait)),(lifts clothes,tightens blouse with mouth): 嘴叼衣
+        shirt lift,pants pull,bra,panties: 提衣拉裤
+        skirt lift: 提裙
+        from below,pantyshot,pov hands,skirt,underwear,skirt lift,lifted by another,solo focus,pleated skirt,blush,shirt,white shirt,cowboy shot,standing,ass visible through thighs,scared expression,open mouth: 裙下视角
+        shirt,naked shirt,shirt tug: 拉衣
+        sit cross leg,sitting: 盘腿坐
+        (face,lying,licking pussy,full body,eyes close),sitting on face,facesitting: 坐脸
+
+    - name: 组别7
+      color: rgba(255, 145, 147, .4)
+      tags:
+        slap mark,from behind: 掌印
+        ((((ultra illustrated style:1)))),spanked,slap mark,solo,ass focus,from behind: 臀上掌印
+        bouncing breasts,motion lines: 拍打胸部
+        1man,wpega,Woman sleeping embraced,large breasts,sleeping,smile,(closed eyes),hug,bed: 相拥而眠
+        sleeping1,pussy,penis,from above: 睡奸
+        unconscious,closed eyes,sleeping,((cum on face)),cum in mouth,cum on hair,cum on breast,lying,erection,penis,pov penis: 昏睡颜射
+        Smelling Self: 闻自己
+        smother,breast smothering: 胸部闷窒息
+        smother,sit on face,ass smothering: 臀部闷窒息
+        (snow all over body),(pale skin,blush),cold,winter,freezing (nude) and barefoot woman sitting in deep snow among the street,spread legs,pussy,feet,open mouth,exhaling,natural lighting,scenery: 雪中裸女
+        silk,cocoon,spider web: 丝茧
+        (spraying breast milk from both nipples:1.15),(Woman is spraying breast milk from both nipples to the camera),(breast milk on camera:1.25),(breast milk is dripping from the camera:1.25),breast milk,lactation,lactating,breast milk,breast milk dripping,bend over,(breast close-up),(eyes closed and comfortable expression),blurry foreground,(motion blur),(detailed beautiful face),(8k Incredibly absurdres raw photo of a beautiful 18 year old young Japanese idol:1.2),(breast milk on body,wet body),depth of field,erect nipples,lips,(pov),[from below|from front],breasts,open mouth,areola,nipples,solo focus,indoors,completely nude,(masterpiece:1.2) and (best quality:1.2) and (photorealistic:1.4) and (Realistic:1.4) and Detailed Skin Textures and detailed skin pores and high skin detail,bedroom background: 喷乳
+        Spread Legs in Car,,solo,in the car,car interior: 车内张腿
+        Squat,squatting,from behind,anus,pussy: 蹲姿
+        squatting,with a bone shaped squeakytoy in her mouth,squatting,hands raised,collar,leash,cheerful,pgmodel,sharp focus: 骨头玩具
+        (motion blur:1.2) and (blurry foreground:1.15) and (Woman's pussy juice is squirting onto the camerae:1.2) and (wet lens:1.15),(pussy:0.5),(pussy close-up:0.7),A raw photo of A 18 year old beautiful korean idol,orgasm,detailed facial features,(front view),(squirting from puss:1.2),(squirting:1.2),(pussy juice puddle:1.15),dripping pussy juice,sitting on the wet floor,(legs apart),detailed nipples,(photorealistic:1.2),(Realistic:1.2),Detailed Skin Textures,detailed skin pores,high skin detail: 喷射潮吹
+        kneeling,full body,arms behind back,see-through,wet body: 透明湿身
+        submissive pose,squatting: 顺从姿势
+        (photorealistic:1.4),a photo of a beautiful woman,perfect face,detailed face,sucking dildo,oral,(dildo:1.5): 吸假屌
+        sucking testicles,hetero,solo focus,penis awe,kneeling,[(long penis:1.3),(testicles:1.1)],fellatio,oral: 吸睾丸
+        testicle sucking,penis on face,pov: 舔睾丸
+        suspendedonpenisms,sex,hetero,arm grab,full body,cum: 悬挂阴茎
+        2girls,<lora:symmetrical docking orgy:0.6>,symmetrical docking orgy: 对称性交
+        one hand talking on phone,vaginal,doggystyle,sex from behind,completely nude,blush: 讲电话性爱
+        (((tentacles,too many,too many tentacles,from above,full body,brick pit hole))),square pitfall,floating,looking at viewer,reaching to viewers,from outside,looking up: 坑洞上方触手
+        (tentacles,too many,too many tentacles,full body,from below,high brick wall,in brick pit hole),dungeon pitfall,floating,looking at viewer,foreshortening,pantyshot,spread legs,white panty,legs up,looking down,arms up: 坑洞下方触手
+        (parted lips),(kneeling,thighhighs,black thighhighs,vibrator in thighhighs),thighvibe: 大腿振动器
+        Tobizio,bottomless,spread legs,sitting,clipboard: 托比兹奥
+        toilet,nude,cum,body writing,bukkake,(empty eyes),pussy,tears,cumdrip,collar,cum on breasts,cum on hair,facial: 厕所女孩
+        urinal,piss,drink: 小便训练
+        chikan,grabbing,molestation,public indecency,public use,train interior: 痴汉电车
+        groping,grabbing,train interior,multiple hands: 电车轮奸
+        3girls,TriplePaizuri,Paizuri,upper body: 三人乳交
+        tucked penis,sitting,testicles,penis,ass,from behind,futanari,trap: 藏阴茎
+        high-waist shorts,crop top,ass,underboob: 露下乳
+        penis,under covers: 盖被性爱
+        a girl,upper body,large doll,pinch doll between upper arm to chest side: 夹娃娃
+        (underwearshowcase),girl holding her white panties,full body,front view: 展示内裤
+        undressing shirts,bra: 脱衣
+        shirt lift,lifted by another,clothes pull,assisted exposure: 助力脱衣
+        undressing bra: 脱胸罩
+        undressing,panty pull: 脱内裤
+        (undress top:1.3),(underboob:1.2): 脱上衣
+        nipples,(1boy),sex,(hetero),(upright straddle),straddling,vaginal,eye contact,looking at another,(open mouth),teeth,sweat,(blush:1.3),chair,hug: 正面跨坐
+        (1boy),sex,(hetero:1.2),looking at another,sitting,girl on top,(straddling,upright straddle),pussy juice,hug,leg lock,(blush:1.3),(sweat),steam,chair,sitting: 正面跨坐腿锁
+        bottomless,(1boy),sex,(hetero:1.2),looking at another,sitting,girl on top,(straddling,upright straddle,vaginal,penis,pussy),hug,pussy juice,(blush:1.3),(sweat),steam,bed,used tissue,tissue box,used condom,parted lips: 跨坐床上
+        (1boy:1.1),sex,(hetero:1.3),sitting,girl on top,(straddling,upright straddle,vaginal,penis),pussy,pussy juice,hug,from behind,leg lock: 跨坐背后
+        (1boy),sex,(hetero:1.3),straddling,(girl on top,upright straddle),pussy juice,from side,hug: 跨坐侧面
+        upside-down,lying on back: 倒立
+        upside-down,sex,penis: 倒立性爱
+        from behind,bent over,looking back,ass,ass focus,looking at viewer,all fours,upside-down,hanging breasts,kneepits,looking through legs,udpv1,bare breasts,nipples,pussy,anus: 倒立露阴
+        Vibrator in underwear and legs spread,lying on back,panties: 内裤振动器
+        cute,viewer on leash,femdom,cowboy shot,looking at viewer,light smile,from below: 手持缰绳
+        wake up,yawning,covering mouth: 醒来打哈欠
+        washing back,smile,short hair,brown hair,black hair,red eyes,towel,bath,naked towel,bathroom,mixed bathing: 洗背
+        washing body,holding sponge,sponge,(soap bubbles:1.3),bathroom,sitting,upper body,(armpits:1),tiles,closed mouth,expressionless,arm up,(arm behind head:1.1): 擦澡
+        ((Daytime,park,trees)),ass,(panty pull),looking back,bent over,legs together,thong: 夹臀拉内裤
+        wedgie,panties: 裤卡臀
+        sitting on chair,circle gag mouth: 嘴巴塞环
+        pussy,solo,digital,(arms up,in detailed basement,(bound,bondage,bdsm)),wooden horse: 木制刑具
+        (kabedon,against wall:1.3),blush,couple,looking at another,hetero,height difference,eye contact: 壁咚对视
+        handstand,covering crotch,upside-down: 倒立遮裆
+
+    - name: 组别8
+      color: rgba(255, 145, 147, .4)
+      tags:
+        grabbing legs,female legs in the air: 抱起来
+        upside-down,after sex,cum,cumdrip,ass,lying,on back,fucked silly,sweat,bukkake,trembling,anus,top-down bottom-up: 屁股朝天
+        deepthroat: 深喉
+        gokkun: 吃精
+        gag: 口塞
+        ballgag: 球塞
+        bitgag: 棍塞
+        ring gag: 扩口器
+        cleave gag: 用布勒住嘴
+        panty gag: 用内裤塞口
+        facial: 颜射
+        leash: 宠物链
+        handjob: 手交
+        nipple pull: 拉乳头
+        nipple tweak: 捏乳头
+        lactation: 哺乳大范围
+        breast sucking/nipple suck: 吸乳
+        breast feeding: 喂奶
+        paizuri: 乳交
+        multiple paizuri: 多P乳交
+        breast smother: 闷胸
+        clothed masturbation: 隔衣自慰
+        ejaculation: 射出
+        cum: 射精
+        cum inside: 内射
+        cum on breast: 射在胸上
+        clitoris: 阴蒂
+        fat mons: 肥逼
+        cameltoe: 骆驼趾
+        pussy juice: 爱液
+        female ejaculation: 潮吹
+        grinding: 性器摩擦
+        crotch rub: 胯部摩擦
+        facesitting: 坐在脸上
+        cervix: 子宫口
+        cunnilingus: 舔阴
+        insertion: 插入
+        anal insertion: 肛内插入
+        spread ass: 手掰臀部
+        anilingus: 肛吻
+        enema: 灌肠
+        stomach bulge: 肚子胀
+        playbra lift: 胸罩上推
+        panties around one leg: 单腿挂裤
+        humiliation: 羞耻
+        caught: 被发现
+        walk-in: 进门被发现
+        body writing: 身上有字
+        tally: 在身上计数
+        pegging: 女性假屌
+        femdom: 女奸男（逆推）
+        ganguro: 日本黑妹
+        bestiality: 人兽
+        tribadism: 磨豆腐
+        molestation: 性骚扰
+        voyeurism: 窥阴癖
+        exhibitionism: 裸露癖
+        clothed sex: 穿衣做爱
+        happy sex: 快乐做爱
+        '69': 69式
+        doggystyle: 狗爬式
+        leg lock/upright straddle: 跨坐式
+        missionary: 传教士体位
+        girl on top: 女上体位
+        cowgirl position: 女上正骑
+        reverse cowgirl: 女上反骑
+        slave: 奴隶
+        shibari: 捆绑
+        bondage: 捆绑/奴役
+        bdsm: 绑缚与调教/支配与臣服/施虐与受虐
+        pillory/stocks: 枷锁
+        rope: 绳子
+        bound arms: 手臂捆绑
+        bound wrists: 手腕捆绑
+        crotch rope: 胯下捆绑
+        hogtie: 曲膝捆绑
+        frogtie: 青蛙捆绑
+        suspension: 悬空捆绑
+        spreader bar: 分腿捆绑
+        wooden horse: 木马
+        anal beads: 肛珠
+        egg vibrator: 跳蛋
+        vibrator: 振动自慰器
+        vibrator in thighhighs: 袜内振动器
+        nyotaimori: 女体盛
+        futa pegging,futanari,anal sex: 扶她x男
+
+- name: 画面
+  groups:
+    - name: 画质
+      color: rgba(0, 255, 255, .4)
+      tags:
+        checkered: 格子的
+        lowres: 低分辨率
+        highres: 高分辨率
+        absurdres: 超高分辨率
+        incredibly absurdres: 极高分辨率
+        huge filesize: 超级高分辨率/大文件
+        wallpaper: 壁纸
+        pixel art: 点阵图
+        monochrome: 单色图片
+        colorful: 色彩斑斓的
+        convenient censoring: 方便的遮挡
+
+    - name: 艺术风格
+      color: rgba(0, 255, 255, .4)
+      tags:
+        artbook: 原画
+        game cg: 游戏CG
+        comic: 漫画
+        4koma: 四格
+        animated gif: GIF格式图片
+        dakimakura: 抱枕
+        cosplay: 角色扮演
+        crossover: 穿越
+        dark: 暗的
+        light: 亮的
+        guro: 猎奇
+        realistic: 写实
+        photo: 照片
+        real: 真实
+        landscape/scenery: 风景
+        cityscape: 城市风景
+        science fiction: 科技幻想
+        original: 原创
+        parody: 拙劣的模仿
+        personification: 拟人
+        optical illusion: 视觉错误
+        fine art parody: 名画模仿
+        sketch: 素描
+        traditional media: 传统媒体（手绘稿）
+        watercolor (medium): 透明水彩绘
+        silhouette: 剪影
+        cover: 封面
+        album: 专辑
+        sample: 图上有字样
+        back: 背影像
+        bust: 半身像
+        profile: 侧面绘
+        expressions: 表情绘（各种表情）
+        everyone: 一部作品中的主要人物集齐
+        column lineup: 一列列小图组成大图
+        transparent background: 透明的背景
+        simple background: 简单的背景
+        gradient background: 渐变的背景
+        zoom layer: 背景是前景的放大版
+        8 Bit Game: 8bit游戏
+        1980s anime: 80动画
+        disney movie: 迪士尼电影
+        goth: 哥特摇滚
+        80s movie: 80电影
+        bubble bobble: 泡泡龙
+        style of Pixar: 皮克斯动画
+        Polaroid art: 宝丽来艺术
+        Kaleidoscope Photography: 万花筒摄影
+        opal render: 欧泊渲染
+        chemigram: 色谱图
+        Studio Ghibli: 吉卜力风格
+        dreamlike: 梦幻
+        (faux traditional media): 签绘风格
+        genshin impact: 原神冲击
+        azur lane: 碧蓝航线
+        kantai collection: 舰队收藏
+        rebecca (cyberpunk): 边缘行者
+        chainsaw man: 电锯人
+        Magic Vortex: 魔法旋涡
+        ((dieselpunk)): 柴油朋克
+        magazine scan: 杂志扫描
+        album cover: 专辑封面
+        (lineart): 线条变粗
+        synthwave: 蒸汽波
+        (illustration),(paper figure),(lococo),((impasto)),(shiny skin): 洛可可
+
+    - name: 艺术类型
+      color: rgba(0, 255, 255, .4)
+      tags:
+        monochrome: 单色图片
+        Collage: 拼贴艺术
+        Dalle de verre: 彩色玻璃
+        pixel art: 像素画
+        Encaustic painting: 瓷画
+        Ink wash painting: 水墨画
+        Mezzotint: 铜版雕刻
+        silhouette: 剪影
+        illustration: 插画
+        (((ink))), ((watercolor)): 水彩画
+        illustration,(((ukiyoe))),((sketch)),((japanese art)): 浮世绘
+        ((wash painting)),((ink s...)): 中国风
+        ((dyeing)),((oil painting)),((impasto)): 油画
+        (posing sketch), (monochrome): 黑白草图
+        sketch: 手画草稿
+        (monochrome), (gray scale), (pencil sketch lines: 铅笔速写
+        (watercolor pencil): 彩铅画
+
+    - name: 艺术派系
+      color: rgba(0, 255, 255, .4)
+      tags:
+        ((art nouveau)): 新艺术主义
+        ((classicism)): 古典主义
+        ((futurism)): 未来主义
+        ((Dadaism)): 达达主义
+        ((abstract art)): 抽象艺术
+        ((ASCII art)): ASCII艺术
+
+    - name: 艺术家风格
+      color: rgba(0, 255, 255, .4)
+      tags:
+        ((alphonse mucha)): 穆夏风格
+        ((Monet style)): 莫奈风格
+
+    - name: 光照
+      color: rgba(0, 255, 255, .4)
+      tags:
+        (white lighting:1.2),blue sky background: 白光照明，蓝天背景
+# --- [基础光影控制 - Basic Lighting] ---
+        cinematic lighting: 电影级光照
+        moody lighting: 氛围光照
+        dramatic lighting: 剧烈光影对比
+        dynamic lighting: 动态光照
+        available light: 自然光
+        background light: 背景光
+        rim light: 轮廓光
+        top light: 顶光
+        bottom light: 底光 (通常用于恐怖或反派氛围)
+        side lighting: 侧光
+        
+        # --- [特殊光学效应 - Optical Effects] ---
+        volumetric lighting: 体积光 (丁达尔效应)
+        tyndall effect: 丁达尔效应
+        sun beams: 耶稣光 (圣光斜射)
+        lens flare: 透镜光晕
+        light leaks: 漏光
+        god rays: 射向地面的强光 (圣洁感)
+        ray tracing: 光线追踪 (增加反射真实感)
+        
+        # --- [发光与质感 - Glow & Luster] ---
+        glowing neon lights: 霓虹灯光
+        metallic luster: 金属光泽
+        shiny: 闪闪发光的
+        glowing: 发光的
+        bioluminesence: 生物荧光
+        backlit: 逆光 (强调边缘线条)
+        soft lighting: 柔和光照
+        hard lighting: 强光/硬光
+        
+        # --- [环境与氛围光 - Environment & Atmosphere] ---
+        golden hour: 黄金时段 (日落前的暖黄色光)
+        blue hour: 蓝色时段 (日落后的深蓝色光)
+        candlelight: 烛光
+        firelight: 火光
+        moonlight: 月光
+        starlight: 星光
+        neon trim: 霓虹勾边
+        caustics: 水底折射光纹 (常用于泳池或水下场景)
+        dappled sunlight: 斑驳阳光 (透过树叶的阴影)
+        shadow play: 影戏 (强调光影对比)
+
+    - name: 写实
+      color: rgba(0, 255, 255, .4)
+      tags:
+        realistic: 写实
+        highres: 厚涂（风格）
+        photo (medium): 照片（风格）
+        oil painting: 油画
+        reality: 真实
+        polaroid: 照片(拍立得)
+
+    - name: 素描
+      color: rgba(0, 255, 255, .4)
+      tags:
+        sketch: 素描
+        flat color: 色块
+        monochrome: 单色
+        spot color: 纯色
+        halftone: 半色调
+        greyscale: 灰度
+        high contrast: 高对比度
+        partially colored: 部分着色
+        chromatic aberration: 色差、色失焦
+        contour deepening: 轮廓加深
+        outline: 轮廓线
+        silhouette: 剪影
+
+    - name: 画笔
+      color: rgba(0, 255, 255, .4)
+      tags:
+        traditional media: 传统画布（如纸等）
+        faux traditional media: 签绘风格
+        marker (medium): 马克笔
+        copics: 马克笔（中性灰色）
+        pencil sketch lines: 铅笔速写
+        graphite (medium): 石墨铅笔
+        colored pencil (medium): 彩色铅笔
+        millipen (medium): 绘图笔
+        nib pen (medium): 绘图笔
+        ballpoint pen (medium) : 圆珠笔
+        pastel color: 柔和的色彩
+        watercolor (medium): 水彩
+        acrylic paint (medium): 丙烯漆料画
+        contour deepening: 线条变粗
+
+
+    - name: 背景
+      color: rgba(0, 255, 255, .4)
+      tags:
+# --- [构图、虚实与风格 - Composition & Style] ---
+        depth of field: 景深 (画法)
+        blurry: 背景模糊
+        blurry foreground: 前景模糊
+        flat colors: 纯色背景
+        fantasy: 幻想风格
+        cyberpunk: 赛博朋克
+        ban: 科技幻想
+        flashback: 回忆场景
+        scenery: 风景
+        landscape: 景观
+        
+        # --- [纯色与简约背景 - Solid & Simple] ---
+        simple background: 简单的背景
+        white background: 白色背景
+        black background: 黑色背景
+        transparent background: 透明背景 (PNG素材感)
+        beige background: 米色背景
+        brown background: 棕色背景
+        tan background: 棕褐色背景
+        grey background: 灰色背景
+        two-tone background: 双色调背景
+        gradient background: 渐变背景
+        multicolored background: 多彩背景
+        rainbow background: 彩虹背景
+        
+        # --- [图案与抽象装饰 - Patterns & Abstract] ---
+        abstract background: 抽象背景
+        argyle background: 菱形背景
+        checkered background: 方格背景
+        floral background: 花朵点缀背景
+        halftone background: 网点图背景 (漫画感)
+        heart background: 桃色/爱心背景
+        honeycomb background: 蜂窝风格背景
+        plaid background: 格子呢背景
+        polka dot: 圆点背景
+        striped background: 条纹背景
+        starry background: 星空背景
+        sparkle background: 闪着星光的背景
+        bubble background: 气泡背景
+        clock background: 时钟背景
+        wall of text: 文字背景
+        background text: 背景文字
+        
+        # --- [建筑、城市与自然 - Scene & City] ---
+        cityscape: 城市背景
+        city lights: 城市灯光背景
+        indoor: 室内
+        outdoor: 室外
+        nature: 自然背景
+        forest: 森林背景
+        beach: 海滩背景
+        ocean: 海洋背景
+        underwater: 水下背景
+        sky: 天空
+        clouds: 云朵
+        
+        # --- [画框与特殊视角 - Border & Frames] ---
+        border: 边框
+        pillarboxed: 柱状画布背景 (黑边)
+        windowboxed: 套着画框 (背景)
+        outside border: 一部分画到了背景框外 (破框效果)
+        rounded corners: 圆角背景/画框
+        viewfinder: 相机取景框 (拍摄视角)
+        crop top overhang: 顶部构图悬垂
+
+
+- name: 场景
+  groups:
+    - name: 室外
+      color: rgba(159, 32, 240, .4)
+      tags:
+# --- [你的核心推荐 - User Top Picks] ---
+        fantasic city, red light district, street, starry sky: 红灯区 (迷幻都市+红灯区+星空，极佳的色彩渲染)
+        on train: 火车上 (Illustrious对车厢内光影和透视的处理非常真实)
+        
+        # --- [高出图率空间 - High Performance Spaces] ---
+        cyberpunk city lights, neon lights, rainy night: 赛博霓虹雨夜 (Illustrious的拿手好戏，质感拉满)
+        traditional japanese inn, tatami, sliding doors: 日式旅馆 (和风场景，质感细腻)
+        abandoned warehouse, cinematic lighting, dust motes: 废弃仓库 (光影感极强，适合色气或战斗场景)
+        luxury hotel room, cityscape from window: 豪华酒店 (窗外城市夜景，高级感构图)
+        public restroom, tiled wall, mirror: 公共厕所 (瓷砖反光表现优秀，常用于特定XP)
+        infirmary, clinic, medical equipment: 医务室/诊所 (Illustrious对干净白色的渲染非常到位)
+        
+        # --- [构图增强型场所 - Compositional Backgrounds] ---
+        classroom, empty classroom, sunset lighting: 黄昏教室 (光影层次丰富)
+        swimming pool, underwater, caustics: 游泳池 (水下折射光影非常漂亮)
+        forest, sunlight through trees, dappled sunlight: 森林/林间阳光 (斑驳影效增强立体感)
+        shrine, torii, petals: 鸟居/神社 (经典的构图引导线)
+        rooftop, skyscraper background, railing: 天台/屋顶 (高低落差带来的空间深度)
+        
+        # --- [特定氛围场所 - Atmospheric Locations] ---
+        convenience store, storefront, night: 深夜便利店 (写实光影，富有生活气息)
+        library, bookshelves, ladder: 图书馆 (密集的书架背景能增加画面细节度)
+        beach, seashore, horizon: 海边/地平线 (开阔感，适合全身大构图)
+        dungeon, torchlight, chains: 地牢/火把/锁链 (暗光表现力强)
+        izakaya, lanterns, bar counter: 居酒屋 (暖色调光影，互动感强)
+        
+        # --- [交通与过渡空间 - Transit & Transit] ---
+        train station, platform, railway tracks: 火车站/月台 (强烈的透视线条)
+        airport terminal, airplane window: 机场/机窗 (独特的构图切割)
+        bus stop, rainy day, umbrella: 公交站/雨天 (叙事感极强)
+
+    - name: 城市
+      color: rgba(159, 32, 240, .4)
+      tags:
+        city: 城市
+        cityscape: 城市风景
+        street: 街道
+        downtown: 市中心
+        crowd: 人群
+        alley: 小巷
+        in main street: 大道
+        Intersection: 路口
+        avenue: 大街
+        lawn: 草坪
+        road: 路
+        path: 路径
+        pavement: 路面
+        road sign: 路标
+        traffic cone: 路障
+        lamppost: 路灯
+        power lines: 电线杆和电线
+        fence: 栅栏
+        railing: 栏杆
+        bench: 长凳
+        vending machine: 自动贩卖机
+
+    - name: 室内场景（高度细节向）
+      color: rgba(159, 32, 240, .4)
+      tags:
+# --- [学校与公共空间 - School & Public] ---
+        classroom, empty classroom, sunset lighting: 教室 (黄昏光影/空教室，故事感极强)
+        school hallway, lockers, row of doors: 学校走廊 (储物柜/整齐的门，透视感极佳)
+        library, floor-to-ceiling bookshelves: 图书馆 (通天书架，知性与安静感)
+        infirmary, clinic bed, medical curtain: 医务室 (病床/白色帘子，经典的特定场景)
+        gym storeroom, sports equipment: 体育器材室 (狭窄、堆放垫子，高频色气场景)
+        
+        # --- [卫浴与私密空间 - Restroom & Private] ---
+        public restroom, toilet stall, tiled wall: 公共厕所 (隔间/瓷砖墙，写实质感)
+        shower room, glass door, steam: 淋浴间 (磨砂玻璃/水蒸气，若隐若现感)
+        changing room, locker, bench: 更衣室 (长凳/储物柜，运动后的氛围)
+        onse inn, wood bucket, hot spring: 日式浴场 (木桶/温泉，和风情调)
+        
+        # --- [宾馆与奢华空间 - Hotel & Luxury] ---
+        love hotel, neon lights, heart-shaped bed: 爱情旅馆 (霓虹灯/爱心床，极具暗示性)
+        luxury hotel room, floor-to-ceiling windows: 豪华套房 (落地窗/城景，高级感)
+        motel room, dimly lit, messy bed: 汽车旅馆 (昏暗/凌乱，电影质感)
+        elevator interior, mirror, brushed metal: 电梯内部 (镜面反射/拉丝金属，狭窄空间感)
+        
+        # --- [餐饮与社交空间 - Dining & Social] ---
+        cafeteria, long tables, trays: 食堂/餐厅 (长桌/托盘，生活化场景)
+        cafe, coffee shop, window seat: 咖啡馆 (靠窗位/温馨氛围)
+        bar counter, liquor bottles, dimmed lighting: 酒吧吧台 (酒瓶/暗光，成熟暧昧氛围)
+        karaoke box, sofa, tambourine: KTV包厢 (彩色射灯/沙发，私密社交场景)
+        
+        # --- [办公与专业空间 - Office & Professional] ---
+        office, cubicle, computer, paperwork: 办公室 (隔间/电脑/文件，社畜或制服场景)
+        conference room, long table, whiteboard: 会议室 (长桌/白板，严肃或反差感)
+        principal's office, leather sofa, plaque: 校长室 (皮沙发/奖牌，权力暗示场景)
+        science lab, beakers, test tubes: 实验室 (烧杯/试管，理智与禁欲感)
+
+        # --- [核心：BD/地牢空间 - Hardcore Dungeon] ---
+        bdsm dungeon, dungeon cell, shackles: BDSM地牢 (牢房/枷锁/沉重的石墙)
+        torture chamber, stone walls, damp: 拷问室 (潮湿的石墙/阴森感)
+        iron bars, cell door, prison interior: 铁窗/牢房门 (典型的囚禁视角)
+        wooden cross, saltire, wall shackles: 木质十字架/圣安德烈十字 (墙上的手铐)
+        suspension rig, ropes from ceiling: 悬吊架 (从天花板垂下的绳索)
+        padded cell, white walls, soft floor: 精神病院软包房 (白色墙壁/防撞软垫/束缚感)
+        
+        # --- [高频：本子叙事场景 - Narrative Trope Scenes] ---
+        public restroom, toilet stall, glory hole: 公厕隔间 (带孔/狭窄/瓷砖反光)
+        gym storeroom, stacked mats, sports equipment: 体育器材室 (堆叠的跳箱/垫子/灰尘感)
+        infirmary, medical curtain, clinic bed: 保健室 (拉起的白色帘子/狭窄病床)
+        changing room, locker room, wooden bench: 更衣室 (排状储物柜/木质长凳)
+        tentacle pit, slimy walls, organic interior: 触手巢穴 (粘液墙壁/有机生物组织室内)
+        secret basement, dimly lit, cardboard boxes: 秘密地下室 (昏暗/纸箱/隐蔽感)
+        # --- [室内环境增强 (增强情调) - Atmosphere & Details] ---
+        shafts of light, dust motes: 丁达尔光柱 (光柱中飘动的尘埃，神级电影感)
+        window shadows, blinds shadow: 窗影/百叶窗阴影 (投射在皮肤上的条纹，增加色气值)
+        scattered clothes, discarded shoes: 散落的衣物/鞋子 (最直接的叙事暗示)
+        puddle on floor, wet floor: 地板水洼 (配合浴室/厕所，增加潮湿感)
+        cables, messy wires: 杂乱的电线 (增加写实感或赛博感)
+        indoor plants, potted plant: 室内绿植 (为冰冷的房间增加生气)
+
+
+- name: 镜头
+  groups:
+    - name: 镜头类型
+      color: rgba(99, 201, 2, .4)
+      tags:
+        cropped legs: 七分腿
+# --- [远景与环境控制 - Environment Focused] ---
+        panorama: 全景 (超宽视野)
+        extreme wide shot: 超广角全景 (环境主导，角色很小)
+        wide shot: 广角镜头 (全景镜头)
+        landscape: 风景镜头 (侧重横向环境)
+        scenery: 强调背景风景
+        
+        # --- [角色构图比例 - Character Framing] ---
+        full body:1.2: 全身像 (从头到脚)
+        full shot:1.2: 全身镜头 (包含完整角色与部分环境)
+        cowboy shot: 牛仔镜头 (上半身到大腿中部，动漫最稳构图)
+        medium shot: 中景镜头 (腰部以上)
+        mid shot: 中景镜头 (与 medium shot 通用)
+        upper body: 上半身
+        lower body: 下半身 (强调腿部/下体)
+        bust: 半身像 (胸部以上)
+        portrait: 肖像 (脸/肩/胸，头像常用)
+        close-up: 特写 (脸部细节)
+        face focus: 脸部焦点
+        
+        # --- [视角与方位 - Angle & Orientation] ---
+        front view: 正视图
+        side view: 侧视图
+        profile: 侧面肖像 (portrait 的侧脸版)
+        three-quarter view: 三分之二侧面 (最显身材/脸型的角度)
+        back view: 背面视角 (from behind)
+        from above: 俯视视角 (high angle)
+        from below: 仰视视角 (low angle / 压迫感)
+        bird's-eye view: 鸟瞰视角 (垂直向下)
+        worm's-eye view: 虫瞻视角 (极致仰视)
+        
+        # --- [特殊分镜与边框 - Framing Effects] ---
+        split screen: 分镜 (多格漫画感)
+        multiple views: 多视角 (同屏展示不同角度)
+        white border: 白框 (增加插画感)
+        letterboxing: 电影黑边 (上下黑条)
+        viewfinder: 取景器视角
+        
+        # --- [推荐组合：Illustrious 实战脚本] ---
+        wide shot, landscape, cityscape: 广阔城市全景 (环境压倒角色，适合大片感)
+        cowboy shot, full body, three-quarter view: 经典动漫构图 (身材比例最协调)
+        bust, portrait, close-up, face focus: 精致肖像特写 (脸部细节拉满)
+        full shot, from behind, back view: 完整背面全身 (翘臀/背影视角)
+        lower body, close-up, from below: 下半身特写/仰视 (绝对领域/长腿控必备)
+
+    - name: 特写 & 焦点镜头
+      color: rgba(99, 201, 2, .4)
+      tags:
+        # --- [镜头缩放 - Camera Zoom] ---
+        close-up: 特写镜头 (强调局部)
+        extreme close-up: 极特写 (眼睛/嘴唇/手指放大)
+        macro shot: 微距镜头 (极细微的纹理，如皮肤毛孔、水滴)
+        
+        # --- [焦点控制 - Focus Tags] ---
+        solo focus: 聚焦单人 (多角色场景中锁定主角)
+        face focus: 聚焦面部 (神情神态)
+        eyes focus: 聚焦眼睛 (眼神交流)
+        breast focus: 聚焦胸部 (between breasts 突出胸间)
+        hip focus: 聚焦臀部 (ass focus 屁股焦点)
+        crotch focus: 聚焦裆部 (between legs 强调两腿之间)
+        foot focus: 聚焦脚部 (soles focus 脚底焦点)
+        hand focus: 聚焦手部 (between fingers 突出指间)
+        vehicle focus: 聚焦载具
+        
+        # --- [窥视与走光视角 - Peeking & Voyeurism] ---
+        peeking: 偷窥 (从缝隙、遮挡物后看)
+        peeping: 窥视 (更强调“窥淫”视角)
+        peeking out: 探头偷窥 (动作姿态)
+        midriff peek: 露肚脐 (上衣过短露出)
+        armpit peek: 腋窝特写 (侧面视角常见)
+        panty peek: 内裤走光 (从裙底或缝隙漏出)
+        pantyshot: 内裤镜头 (正面展示)
+        pussy peek: 私处特写 (通常配合下体聚焦)
+        caught: 被抓现行 (惊讶/羞涩的神情配合)
+        
+        # --- [特殊表现手法 - Special Rendering] ---
+        cross-section: 剖面图 (经典的本子内视图)
+        x-ray: X射线 (透视效果)
+        inset: 镜头内嵌 (大图角落插入小图特写)
+        
+        # --- [推荐组合：Illustrious 实战焦点] ---
+        close-up, face focus, eyes focus, looking at viewer: 极高互动感 (眼神直刺人心)
+        macro shot, foot focus, soles focus, wrinkled soles: 足控极致 (刻画脚底褶皱纹理)
+        close-up, ass focus, between legs, crotch focus: 下体核心焦点 (高张力构图)
+        panty peek, peeking, caught, low angle: 经典偷窥视角 (叙事性极强)
+        extreme close-up, tongue out, drooling, saliva focus: 舌尖/唾液特写 (极度色气)
+
+    - name: 其他构图
+      color: rgba(99, 201, 2, .4)
+      tags:
+# --- [高低视角控制 - Vertical Angles] ---
+        high angle: 高角度俯拍 (表现角色可爱/弱势)
+        from above: 从上方俯视 (常用俯角)
+        bird's eye view: 鸟瞰视角 (极高垂直俯视)
+        eye level: 平视视角 (自然、写实、中性)
+        low angle: 低角度仰拍 (表现角色强势/威严)
+        from below: 从下方仰视 (常用仰角)
+        worm's eye view: 蛙眼视角 (极低位置向上看)
+        upskirt: 裙底视角 (经典仰视变体)
+        
+        # --- [方位与动态视角 - Directional Views] ---
+        frontal view: 正面视角
+        three-quarter view: 3/4侧面视角 (最显身材的角度)
+        side view: 侧视图
+        back view: 背面视角 (from behind)
+        turn one's back: 转身姿态
+        looking back over shoulder: 回头看 (扭身回头，极具诱惑力)
+        looking at viewer: 直视观众 (增加互动感/眼神对视)
+        
+        # --- [镜头特殊效果 - Lens & Cinematic] ---
+        dutch angle: 荷兰角 (镜头倾斜，营造不安或艺术感)
+        fisheye lens: 鱼眼镜头 (边缘强烈扭曲，空间感极强)
+        foreshortening: 透视夸张 (近大远小，常用于强调伸出的手或腿)
+        aerial: 空中视角 (带点漂浮感)
+        panoramic: 全景/宽幅
+        multiple views: 多视角分解 (同屏展示不同角度)
+        mirror selfie: 对镜自拍 (reflection shot 反射镜头)
+        phone screen: 手机屏幕视角 (常用于自拍或直播 UI)
+        
+        # --- [光影与虚实控制 - Focus & Lighting] ---
+        depth of field: 景深 (背景虚化)
+        out of focus background: 背景失焦 (bokeh 背景光斑)
+        sharp focus: 锐利焦点 (主体极其清晰)
+        backlighting: 逆光 (营造轮廓光效果)
+        rim lighting: 边缘光 (强调身体曲线，勾勒轮廓线)
+        silhouette: 剪影 (逆光黑影，强调形状)
+        soft lighting: 柔光 (磨皮感)
+        cinematic lighting: 电影光效 (增加画面厚重感)
+
+        # --- [推荐组合：Illustrious 构图脚本] ---
+        upskirt, from below, low angle, worm's eye view: 极低仰视裙底 (视觉冲击力最强)
+        mirror selfie, three-quarter view, reflection shot: 真实对镜感 (多重影像层次)
+        multiple views, split screen, diptych: 角色设定图感 (多角度对比展示)
+        silhouette, backlighting, rim lighting, cityscape: 神秘/浪漫氛围 (城市剪影)
+        dutch angle, high angle, depth of field, bokeh: 艺术感俯视 (不安又梦幻的氛围)
+
+    - name: 镜头角度（视角 & 拍摄方向强化版）
+      color: rgba(99, 201, 2, .4)
+      tags:
+        low angle view thighs focus thighs close-up: 从大腿看
+# --- [基础方位与电影感 - Standard & Cinematic] ---
+        front view: 正面视角
+        from side: 侧面视角 (profile view 纯侧面轮廓)
+        three-quarter view: 3/4视角 (展示角色立体感的黄金角度)
+        from above: 从上方 (high angle view 俯视)
+        from below: 从下方 (low angle view 仰视)
+        from back: 后背视角 (from behind / back view)
+        from outside: 由室外向室内 (透过窗户/门口)
+        eye level view: 平视视角 (自然中性)
+        overhead view: 头顶俯视 (bird's eye view 鸟瞰全景)
+        worm's eye view: 蛙眼视角 (极低仰视，夸张腿长与身高)
+        dynamic angle, cinematic angle: 动态/电影角度 (增加画面张力)
+        
+        # --- [第一人称与互动视角 - POV & Interaction] ---
+        pov view: 第一人称视角 (观众即主角)
+        self pov: 角色自视视角 (看到自己的手/脚/身体)
+        one pov hand: 一只手的视角 (伸向角色/抚摸感)
+        reverse pov: 反向第一人称 (被注视感)
+        over the shoulder view: 过肩视角 (增加临场对话感)
+        looking at viewer: 直视观众 (高互动性)
+        
+        # --- [色气与欲望焦点 - Fetish & NSFW Angles] ---
+        upskirt angle: 裙底角度 (low angle upskirt 低仰拍)
+        ass up view: 翘臀向上视角 (bent over view 弯腰翘臀)
+        from below ass focus: 从下仰视臀部焦点
+        thigh gap view: 腿缝仰视 (配合逆光增强通透感)
+        between legs view: 腿间视角 (crotch low angle 裆部仰视)
+        feet up view: 脚部向上视角 (soles up view 脚底朝上)
+        armpit up view: 腋下仰视 (抬臂展示)
+        cleavage down view: 从上俯视乳沟 (俯视大视野)
+        side boob view: 侧乳视角 (back boob view 后背露侧胸)
+        navel up view: 肚脐仰视 (露腰+低角度)
+        mirror low angle: 镜中低角度 (反射全身或裙底)
+        
+        # --- [艺术畸变与特殊镜头 - Distortions & Creative] ---
+        dutch angle: 倾斜角度 (dutch angle tilt 强烈倾斜 / 不安感)
+        extreme dutch angle: 极端倾斜 (疯狂/失衡感)
+        foreshortening: 透视法 (近大远小，强调伸出的肢体)
+        fisheye: 鱼眼镜头 (fisheye distortion 边缘强烈扭曲)
+        barrel distortion: 桶形畸变 (广角边缘弯曲感)
+        forced perspective: 强制透视 (大小对比夸张)
+        security camera angle: 监控视角 (hidden camera view 偷窥感)
+        reflection angle: 反射视角 (多重镜像)
+        silhouette angle: 逆光剪影 (强调轮廓)
+        rim light angle: 边缘光角度 (勾勒身形曲线)
+        
+        # --- [推荐组合：Illustrious 实战视角脚本] ---
+        low angle, upskirt angle, panty peek, thigh focus: 经典裙底偷拍 (视觉重心在大腿)
+        ass up view, from behind, ass focus, bent over view: 后背大翘臀 (极度张力构图)
+        feet up view, soles up view, foot focus, wrinkled soles: 足底特写 (细腻纹理表现)
+        between legs view, crotch focus, low angle, pussy peek: 下体核心视角 (极近距离)
+        fisheye distortion, wide shot, security camera angle: 赛博/诡异广角 (监控偷窥风)
+
+    - name: 效果
+      color: rgba(99, 201, 2, .4)
+      tags:
+        depth of field: 景深（协调人景）
+        lens flare: 镜头光晕
+        motion blur: 运动导致的模糊
+        motion lines: 体现运动的线
+        speed lines: 速度线
+        bokeh: 焦散
+        chromatic aberration: 色差
+        overexposure: 过曝
+        contour deepening: 等高线强化
+
+    - name: 主角视线 & 头部动作（眼神 & 注视方向）
+      color: rgba(99, 201, 2, .4)
+      tags:
+# --- [核心视线方向 - Gaze Direction] ---
+        looking at viewer: 直视观众 (最稳的眼神接触)
+        eye contact: 眼神交流 (加强对视感)
+        looking away: 望向别处 (建议配合 averted gaze 使用)
+        averted gaze: 视线回避 (害羞、心虚或不想看镜头，非常有效)
+        looking to the side: 看向侧面 (sideways glance 侧头斜睨)
+        looking up: 仰视/向上看 (upturned eyes 上翻眼)
+        looking down: 俯视/向下看 (downcast eyes 垂眼)
+        looking back: 回眸 (looking back over shoulder 经典的转头看)
+        facing away: 面向别处 (身体和脸都转开)
+        looking ahead: 目视前方 (不看镜头，看画面的正前方)
+        
+        # --- [眼神强度与情绪 - Eye Intensity] ---
+        stare: 凝视 (intense stare 强烈死盯)
+        glare: 怒视 (narrowed eyes 眯眼冷视)
+        blank stare: 空洞眼神 (失神/坏掉/空洞)
+        seductive glance: 魅惑眼神 (半睁眼 half-lidded eyes)
+        shy glance: 羞涩偷瞄 (averted gaze 组合)
+        wide-eyed: 瞪大眼睛 (惊恐或兴奋)
+        yandere stare: 病娇死盯 (瞳孔缩小、无神)
+        
+        # --- [头部动作细节 - Head Pose] ---
+        head tilt: 歪头 (加上 left/right 指定方向)
+        head down: 低头 (head bowed 深度低头)
+        head up: 抬头 (head raised 挺胸抬头)
+        chin up: 抬起下巴 (高傲/挑衅)
+        head back: 仰头 (常用于大笑或受孕等大尺度表情)
+        head turned: 转头 (配合 side view)
+        neck tilt: 歪脖子 (强调颈部曲线，非常色气)
+        
+        # --- [交互式注视 - Interactive Looking] ---
+        looking at another: 看着别人 (双人场景必备)
+        looking at phone: 看手机 (现代感)
+        looking at hand: 盯着自己的手 (惊讶或观察)
+        looking at mirror: 照镜子 (looking at reflection 看着倒影)
+        looking through fingers: 从指缝看 (害羞/不敢看又想看)
+        looking through hair: 透过刘海看 (神秘/诱惑)
+        
+        # --- [动作增强 (让视觉更自然) - Pose Details] ---
+        hand on cheek: 手托腮 (可爱/思考)
+        hand on chin: 手摸下巴 (深思/反派感)
+        hair tuck behind ear: 撩发至耳后 (极其温柔的动作)
+        hair flip: 甩头发 (动态感)
+
+        # 推荐组合示例（直接复制使用）
+        looking at viewer,head tilt,sideways glance,seductive glance: 歪头侧目诱惑直视（经典可爱撩人）
+        looking back over shoulder,looking at viewer,three-quarter view,hair flip: 回头甩发直视观众（性感回头杀）
+        looking up,from below,wide-eyed,eye-contact: 从下仰视大眼直视（楚楚可怜/萌系）
+        looking away,averted gaze,head down,blush: 视线回避低头脸红（傲娇/害羞神器）
+        looking at viewer with ahegao,tongue out,stare,intense stare: 阿黑颜死盯观众（极端高潮直视）
+        looking through hair,looking at viewer,seductive glance,neck tilt: 透过刘海侧颈诱惑（神秘色气）
