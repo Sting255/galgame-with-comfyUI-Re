@@ -1,6 +1,12 @@
 import Database from 'better-sqlite3';
+import { assertNotDowngrade } from '../../db/releaseGuard.js';
+import { SCHEMA_VERSION } from '../../db/index.js';
 
-/** 只读检查 staging，不运行迁移、不接触当前数据库。旧版附加表可由正常迁移补齐。 */
+/**
+ * 只读检查 staging，不运行迁移、不接触当前数据库。旧版附加表可由正常迁移补齐。
+ * 2026-11-20：来自更新版本的备份在导入前就拒绝 —— 否则替换完库、重启时才被降级保护拦下，
+ * 用户会得到一个打不开的安装（当前库已被换掉）。
+ */
 export function validateBackupDatabase(file) {
   let db;
   try {
@@ -9,6 +15,7 @@ export function validateBackupDatabase(file) {
     if (result.length !== 1 || result[0].integrity_check !== 'ok') {
       throw new Error('SQLite 完整性检查未通过');
     }
+    assertNotDowngrade(db, { schemaVersion: SCHEMA_VERSION });
     for (const [table, required] of Object.entries({
       characters: ['id', 'name', 'display_name', 'base_prompt'],
       messages: ['id', 'conversation_id', 'role', 'content'],

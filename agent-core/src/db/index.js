@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../config.js';
 import { initSettingsHandle, loadSystemSettings } from './settings.js';
+import { assertNotDowngrade, recordAppRelease, readAppRelease } from './releaseGuard.js';
 import { initWorldRepository, migrateWorldLanguageStyle } from './worldRepository.js';
 import { migrateLorebooks } from './lorebookRepository.js';
 import { migratePresets } from './presetRepository.js';
@@ -157,12 +158,16 @@ export function getDb() {
     }
     // 建表之后的轻量维护（详见 runStartupDbMaintenance）
     try {
+      // 降级保护：库来自更新的版本时，在任何建表 / 迁移之前拒绝，这份库一个字节都不改
+      assertNotDowngrade(db, { schemaVersion: SCHEMA_VERSION });
       initSchema(db);
       cleanupOrphanedInFlight(db);
       runStartupDbMaintenance(db);
       // P1-13：结构迁移在业务维护之后跑，且失败直接抛出去关库。
       // 既有 migrateXxx 都是幂等的列检查，可以安全重跑；新增结构变更走 SCHEMA_MIGRATIONS。
       runSchemaMigrations(db);
+      // 全部成功才记下「被哪个版本打开过」（只升不降），供将来的旧版本拒绝打开
+      if (recordAppRelease(db)) console.log(`[db] 数据版本标记更新为 v${readAppRelease()}`);
     } catch (error) {
       db.close();
       db = undefined;
