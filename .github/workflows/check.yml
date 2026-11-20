@@ -46,10 +46,10 @@ jobs:
         run: npm --prefix agent-core audit --package-lock-only --omit=dev --audit-level=high --registry=https://registry.npmjs.org
       - name: Frontend production dependency audit
         run: npm --prefix web-ui audit --package-lock-only --omit=dev --audit-level=high --registry=https://registry.npmjs.org
-      # P2-05：用 lint:budget（--max-warnings 52）而不是普通 lint。
+      # P2-05：用 lint:budget（--max-warnings 49）而不是普通 lint。
       # 普通 lint 只报不拦，687 条 warning 的常态等于没有门禁；设上限后
-      # 新增告警会让 CI 红，而存量 52 条（props 变异 / v-html / 保留常量）有明确记录。
-      # 修掉一批就把这个数字往下调。
+      # 新增告警会让 CI 红，而存量 49 条（props 变异 / v-html / 保留常量）有明确记录。
+      # 修掉一批就把这个数字往下调（2026-11-20 由 52 收紧到 49）。
       - name: Frontend lint (warning budget)
         run: npm --prefix web-ui run lint:budget
       - name: Production build

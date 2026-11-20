@@ -8,7 +8,7 @@
     "build": "node build.mjs",
     "preview": "vite preview",
     "lint": "eslint src",
-    "lint:budget": "eslint src --max-warnings 52",
+    "lint:budget": "eslint src --max-warnings 49",
     "split-fonts": "node split-fonts.mjs"
   },
   "dependencies": {
@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@typescript-eslint/parser": "^8.68.0",
+    "@typescript-eslint/parser": "^8.73.0",
     "@vitejs/plugin-vue": "^5.2.0",
     "cn-font-split": "^7.4.3",
     "eslint": "^10.9.1",
