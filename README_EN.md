@@ -6,7 +6,7 @@ A Galgame-inspired AI companion app. The characters you create have their own pe
 
 Most AI chat bots answer questions. Linshe tries to make the character feel like **someone who keeps living while you are away**.
 
-> This is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI), currently at **v4.2.2**, fully synced with upstream v4.2.1. Feature walkthrough below is kept in Chinese — the UI itself is Chinese-only.
+> This is a personal enhanced fork of [Linshe.EXE](https://github.com/icecranberry/galgame-with-comfyUI), currently at **v4.5.0**, synced with upstream v4.5.0 (game center, official TRPG simulator, community games, player expression standings). Feature walkthrough below is kept in Chinese — the UI itself is Chinese-only.
 
 ## Download & install
 
@@ -26,7 +26,7 @@ The bundle ships its own Node runtime, dependencies and built frontend — no ne
 - **Scene images** — generate pictures from the conversation and character appearance; ComfyUI and NovelAI supported, with gallery, standing art and upscaling
 - **Voice** — read chat and standing-touch lines aloud; API voice cloning or local IndexTTS 2.0
 - **Customization** — personas, world settings, model profiles; warm-paper and dark themes
-- **Multi-device** — desktop browser, or an Android WebView shell pointing at the same PC
+- **Multi-device** — desktop browser, or a phone browser on the same LAN pointing at your PC (the Android shell is no longer maintained)
 
 Chat logs, characters and images stay on your own machine. Content is only sent to the model or image provider you configure.
 
