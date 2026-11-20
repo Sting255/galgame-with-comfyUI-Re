@@ -36,13 +36,29 @@ import { createTownActorRegistry } from './town/townActorRegistry.js';
 import { runProgramDayRollover } from './programDayRollover.js';
 // 上游 v3.9.0 合并：朋友圈回填自己会刷新到期日程，补发进行中时本调度器的日程刷新让位
 import { isMomentBackfillRunning } from './momentBackfill.js';
-// 上游 v4.0.0 合并：媒体内容页到点补帖与状态自愈（日报由 runProgramDayRollover 统一调度，此处不重复）
+// 上游 v4.0.0 合并：媒体内容页到点补帖与状态自愈
 import { maybeAutoGenerate as maybeAutoGenerateMedia, resetStaleMediaGenerating, initializeMediaAutoSchedule } from './mediaService.js';
 
 const CHECK_INTERVAL = 1 * 60 * 1000; // 1 分钟
 
 let timer = null;
 let processing = false;
+// 日报模块按需加载（会拉起 LLM / 生图依赖，与 programDayRollover 同样用动态 import）
+let newspaperModule = null;
+
+/**
+ * 日报重试驱动（2026-11-20，规划 N5）。
+ *
+ * 世界翻篇只在程序日期变化时敲一次门；那一次没出成（零点全员在睡、网关抖动、配图缺）时，
+ * newspaperService 里的延期 / 失败冷却 / 补图冷却原本没有任何人再调用 —— 11-19 就整天没出刊。
+ * 这里每个 tick 调一次，节奏完全由 newspaperService 自己的冷却决定：
+ * 当天已出且配图齐全、处于延期或冷却期、已在生成中，都是零开销返回。
+ */
+function maybeRetryNewspaper() {
+  (newspaperModule ||= import('./newspaperService.js'))
+    .then(mod => mod.maybeGenerateDailyNewspaper())
+    .catch(err => console.warn('[replyQueue] 日报重试驱动失败（已忽略）:', err?.message || err));
+}
 
 // ── 公开 API ──
 
@@ -88,6 +104,9 @@ async function tick() {
     runProgramDayRollover({ reason: 'tick' }).catch(err => {
       console.warn('[rollover] tick 触发失败（已忽略）:', err?.message || err);
     });
+
+    // 0.1 日报重试：翻篇那一次没出成时按日报自己的冷却节奏补出（fire-and-forget）
+    maybeRetryNewspaper();
 
     // 0.5 媒体内容页：仅到点补一批新帖（fire-and-forget，内部节流与并发守卫）。
     // dev 启动时已初始化等待间隔；配图只由新批次或前端按需触发。

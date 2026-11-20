@@ -25,7 +25,7 @@ import { config } from '../config.js';
 // 原来用 `getProgramDateKey()`（真实日期）⇒ 用户把时间推进一天，报纸还是真实日期那一期、
 // 新的一天没有报纸（`getTodayNewspaper()` 查不到 ⇒ 前端一直空着）。这里统一换成程序日期口径。
 // 注意：`publish_date` 存的仍是 `YYYY-MM-DD`，历史回看 `getNewspaperByDate` 不受影响。
-import { getProgramDateKey, getProgramNow } from './programTime.js';
+import { getProgramDateKey, getProgramNow, parseSqlUtc } from './programTime.js';
 import { getLightNoteWithWeather } from './timeLight.js';
 import { extractFirstJson, repairJson } from './eventGenerator.js';
 import { buildCharacterPersona } from './characterPersona.js';
@@ -295,8 +295,8 @@ export function maybeGenerateDailyNewspaper(now = getProgramNow()) {
     .then(() => { consecutiveFails = 0; return { ok: true }; })
     .catch(err => {
       if (err.code === 'NEWSPAPER_PUBLISH_DEFERRED') {
-        deferredUntil = Date.now() + FAIL_RETRY_DELAY_MS;
-        console.log(`[newspaper] 发布延期：${err.message}`);
+        deferredUntil = Number.isFinite(err.retryAtMs) ? err.retryAtMs : Date.now() + FAIL_RETRY_DELAY_MS;
+        console.log(`[newspaper] 发布延期：${err.message}（约 ${Math.max(1, Math.round((deferredUntil - Date.now()) / 60000))} 分钟后再看）`);
         return { ok: false, deferred: true, error: err.message, retryAt: new Date(deferredUntil).toISOString() };
       }
       lastFailedAt = Date.now();
@@ -364,6 +364,16 @@ function checkNewspaperCharacter(db, characterId) {
 
 /** 抽当天特稿主角（同步查询；导出供回归测试——此函数曾被误写成 async 导致调用处拿到 Promise） */
 export function pickFeaturedCharacter(db) {
+  return pickFeaturedCandidates(db).featured;
+}
+
+/**
+ * 抽主角并说明抽不到的原因（2026-11-20，规划 N5）。
+ * 零点翻篇时全员在睡，原来直接返回 null、当天就再也不出刊；现在把「都在睡」与「根本没有可选角色」分开，
+ * 前者按最早醒来时间延期重试。
+ * @returns {{ featured: object|null, candidates: number, blocked: Array<{reason: string, retryAt: string|null}> }}
+ */
+function pickFeaturedCandidates(db) {
   // 需要同时具备聊天（事件注入）与朋友圈（吐槽帖）两条链路，两边都禁用的角色不抽。
   // 注意必须是同步函数：曾误写成 async 而调用处没 await，featured 变成 Promise，
   // id/display_name 全变 undefined，报纸主角链接与提示词一起失效。
@@ -373,7 +383,25 @@ export function pickFeaturedCharacter(db) {
     WHERE events_disabled = 0 AND (moments_disabled IS NULL OR moments_disabled = 0) AND COALESCE(is_system, 0) = 0
     ORDER BY RANDOM()
   `).all();
-  return candidates.find(character => checkNewspaperCharacter(db, character.id).allowed) || null;
+  const blocked = [];
+  for (const character of candidates) {
+    const gate = checkNewspaperCharacter(db, character.id);
+    if (gate.allowed) return { featured: character, candidates: candidates.length, blocked };
+    blocked.push({ reason: gate.reason, retryAt: gate.retryAt });
+  }
+  return { featured: null, candidates: candidates.length, blocked };
+}
+
+/** 主角都在睡时，最多等多久再看一次：取最早醒来时间，但至少 1 分钟、至多 1 小时 */
+const FEATURED_RETRY_MIN_MS = 60 * 1000;
+const FEATURED_RETRY_MAX_MS = 60 * 60 * 1000;
+
+function featuredRetryAt(blocked, now = Date.now()) {
+  const times = blocked
+    .map(item => parseSqlUtc(item.retryAt)?.getTime() ?? NaN)
+    .filter(Number.isFinite);
+  const earliest = times.length ? Math.min(...times) : now + FAIL_RETRY_DELAY_MS;
+  return Math.min(Math.max(earliest, now + FEATURED_RETRY_MIN_MS), now + FEATURED_RETRY_MAX_MS);
 }
 
 // 变身日概率（世界状态日内，变身 vs 服装 = 50% vs 50%；本地口径保留五五开，上游是 0.4）
@@ -427,11 +455,19 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
     return getTodayNewspaper();
   }
 
-  const featured = pickFeaturedCharacter(db);
+  const pick = pickFeaturedCandidates(db);
+  const featured = pick.featured;
   if (!featured?.id) {
-    // pickFeaturedCharacter 正常时必带 id；没有说明数据异常，宁可这期不出也不能落一份没有主角链接的报纸
-    console.error('[newspaper] Picked character has no valid id, abort this round:', featured);
-    return null;
+    // 抽不到主角不是成功：抛「延期」让调度入口按冷却重试（原来 return null 被当成功，当天再也不出刊）
+    const sleeping = pick.blocked.filter(item => item.reason === GATE_REASON.SLEEPING).length;
+    const err = new Error(pick.candidates === 0
+      ? '没有可做主角的角色（需开着朋友圈与奇遇、且不是系统角色）'
+      : sleeping === pick.candidates
+        ? `可做主角的 ${pick.candidates} 位角色都在睡，等有人醒来再出刊`
+        : `可做主角的 ${pick.candidates} 位角色此刻都不能公开（${[...new Set(pick.blocked.map(item => item.reason))].join('、')}）`);
+    err.code = 'NEWSPAPER_PUBLISH_DEFERRED';
+    err.retryAtMs = pick.candidates === 0 ? Date.now() + FAIL_RETRY_DELAY_MS : featuredRetryAt(pick.blocked);
+    throw err;
   }
   const withWorldState = Math.random() < WORLD_STATE_PROBABILITY;
   const worldSetting = getWorldSetting();
@@ -491,6 +527,7 @@ export async function generateDailyNewspaper({ replace = false, backgroundImages
     }
     const err = new Error(`${featured.display_name}：${finalGate.reason}`);
     err.code = 'NEWSPAPER_PUBLISH_DEFERRED';
+    err.retryAtMs = featuredRetryAt([finalGate]);
     throw err;
   }
 
