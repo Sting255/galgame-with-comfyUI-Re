@@ -33,6 +33,10 @@ def download_endpoints():
 def configure_hub_network():
     import huggingface_hub
     if not hasattr(huggingface_hub, 'configure_http_backend'):
+        # IndexTTS 的 uv.lock 固定 huggingface_hub 0.35（transformers 4.52 要求 <1.0），正常不会走到这里。
+        # 1.x 去掉了这个钩子：镜像绝对跳转保留元数据与默认超时都不会生效，必须让人看得见，而不是静默跳过。
+        print('警告：当前 huggingface_hub 版本不提供 configure_http_backend，'
+              '镜像跳转兼容与默认超时未启用；请使用 IndexTTS 锁定的依赖版本。', file=sys.stderr, flush=True)
         return
     import requests
     mirror_hosts = {urlparse(endpoint).netloc for endpoint in download_endpoints() if urlparse(endpoint).hostname != 'huggingface.co'}

@@ -18,6 +18,15 @@ downloader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(downloader)
 
 
+def _hub_has_http_backend_hook():
+    """IndexTTS 的 uv.lock 固定 huggingface_hub 0.35；1.x 去掉了 configure_http_backend。
+    镜像跳转用例只在锁定版本（有该钩子）的运行时里有意义，其它解释器里跳过而不是报错。"""
+    if not importlib.util.find_spec('huggingface_hub'):
+        return False
+    import huggingface_hub
+    return hasattr(huggingface_hub, 'configure_http_backend')
+
+
 class DownloadRetryTests(unittest.TestCase):
     def test_network_error_inheriting_value_error_still_tries_the_mirror(self):
         class CachedNetworkFailure(OSError, ValueError): pass
@@ -30,7 +39,7 @@ class DownloadRetryTests(unittest.TestCase):
             self.assertEqual(downloader.retry_download(transfer), 'ok')
         self.assertEqual(len(calls), 2)
 
-    @unittest.skipUnless(importlib.util.find_spec('huggingface_hub'), 'requires the bundled Hub dependency')
+    @unittest.skipUnless(_hub_has_http_backend_hook(), 'requires the Hub 0.x pinned by IndexTTS (configure_http_backend)')
     def test_mirror_absolute_head_redirects_preserve_metadata_and_verified_tls(self):
         import requests
         import huggingface_hub

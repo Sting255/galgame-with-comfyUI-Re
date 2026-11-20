@@ -77,3 +77,19 @@ jobs:
         run: npm ci --prefix agent-core
       - name: Backend regression tests (in-memory DB)
         run: npm --prefix agent-core test
+
+  # 2026-11-20（规划 N3 / A3）：TTS 服务的纯 Python 测试。
+  #
+  # 只用标准库就能跑：需要 Hub / 原生音频 / 已部署离线包的用例按条件自动跳过，
+  # 不装 torch、不下模型、不用 GPU。目的不是验收合成，而是让下载重试、离线包部署、
+  # 服务协议这些纯逻辑改坏时 CI 能红。Python 版本与 tts-service/setup.ps1 的 3.11 对齐。
+  tts-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: TTS service tests (stdlib only)
+        run: python -I -m unittest discover -s tts-service/test
