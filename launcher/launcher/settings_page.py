@@ -2,7 +2,6 @@
 设置页 —— ComfyUI 路径、开关、镜像源、仓库信息、数据迁移。
 """
 import os
-import shutil
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from PySide6.QtGui import QFont, QFontDatabase
 from .switch import Switch
+from .data_migration import MigrationError, MigrationResult, migrate_install, running_service_processes
 
 
 class ClickableLabel(QLabel):
@@ -45,11 +45,7 @@ MIGRATE_ITEMS = [
     ("dir",  "agent-core/data"),
     ("file", "agent-core/.env"),
 ]
-
-# 图片压缩 cursor 只对原安装有效；迁移后复制它会让新版本误以为旧 PNG 已处理完。
-MIGRATE_EXCLUDE_RELATIVE_PATHS = {
-    os.path.join("agent-core", "data", "image-compressor-state.json"),
-}
+# 排除项（图片压缩 cursor）与库快照等规则见 data_migration.py
 
 
 # ==================================================================
@@ -57,89 +53,37 @@ MIGRATE_EXCLUDE_RELATIVE_PATHS = {
 # ==================================================================
 
 class MigrateWorker(QThread):
-    """在后台线程中执行数据迁移，通过信号报告进度。"""
+    """在后台线程中执行数据迁移，通过信号报告进度。逻辑见 data_migration.migrate_install。"""
 
     progress = Signal(int, int)        # (current, total) 文件计数
     current_item = Signal(str)         # 正在复制的项目名称
-    item_done = Signal(str, bool, str) # (item_path, success, error_message)
+    item_done = Signal(str, bool, str) # (item_path, success, error_message)（保留兼容，当前不发射）
     all_done = Signal(list, list)      # (success_items, failed_items)
 
-    def __init__(self, source_root: str, target_root: str, items: list[tuple[str, str]]):
+    def __init__(self, source_root: str, target_root: str, items: list[tuple[str, str]] | None = None):
         super().__init__()
         self._source = source_root
         self._target = target_root
-        self._items = items
+        self.result: MigrationResult | None = None
 
     def run(self):
-        # 第一步：统计所有待复制文件总数
-        total_files = 0
-        file_list: list[tuple[str, str, str]] = []  # (item_label, src, dst)
-
-        for item_type, rel_path in self._items:
-            src = os.path.join(self._source, rel_path)
-            if item_type == "file":
-                if os.path.isfile(src):
-                    file_list.append((rel_path, src, os.path.join(self._target, rel_path)))
-                    total_files += 1
-            elif item_type == "dir":
-                if os.path.isdir(src):
-                    for root, _, files in os.walk(src):
-                        for f in files:
-                            src_file = os.path.join(root, f)
-                            rel_file = os.path.relpath(src_file, self._source)
-                            if os.path.normpath(rel_file) in MIGRATE_EXCLUDE_RELATIVE_PATHS:
-                                continue
-                            dst_file = os.path.join(self._target, rel_file)
-                            file_list.append((rel_path, src_file, dst_file))
-                            total_files += 1
-
-        if total_files == 0:
-            self.all_done.emit([], ["未找到任何可迁移的文件"])
+        try:
+            self.result = migrate_install(
+                self._source, self._target,
+                on_progress=self.progress.emit, on_item=self.current_item.emit,
+            )
+        except MigrationError as exc:
+            self.all_done.emit([], [str(exc)])
             return
-
-        # 第二步：逐文件复制，发射进度
-        success_items: set[str] = set()
-        failed_items: list[str] = []
-        copied = 0
-        last_reported_item = ""
-
-        for item_label, src_file, dst_file in file_list:
-            # 报告当前正在处理的项目
-            if item_label != last_reported_item:
-                last_reported_item = item_label
-                self.current_item.emit(item_label)
-
-            try:
-                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-                shutil.copy2(src_file, dst_file)
-                success_items.add(item_label)
-            except Exception as e:
-                failed_items.append(f"{os.path.relpath(src_file, self._source)} ({e})")
-
-            copied += 1
-            self.progress.emit(copied, total_files)
-
-        # 区分成功和失败的项目
-        all_items = [rel for _, rel in self._items]
-        ok = [it for it in all_items if it in success_items and it not in [f.split(" ")[0] for f in failed_items]]
-        # 重新检测：检查目标是否确实存在
-        final_ok = []
-        final_fail = []
-        for item_type, rel_path in self._items:
-            src = os.path.join(self._source, rel_path)
-            dst = os.path.join(self._target, rel_path)
-            src_exists = os.path.isfile(src) if item_type == "file" else os.path.isdir(src)
-            dst_exists = os.path.isfile(dst) if item_type == "file" else os.path.isdir(dst)
-            if not src_exists:
-                continue  # 源不存在，跳过（不视为失败）
-            if dst_exists:
-                final_ok.append(rel_path)
-            else:
-                # 查找对应的错误信息
-                err_detail = next((f for f in failed_items if f.startswith(rel_path)), "未知错误")
-                final_fail.append(err_detail)
-
-        self.all_done.emit(final_ok, final_fail)
+        except Exception as exc:   # 兜底：任何意外都要让界面拿到终态
+            self.all_done.emit([], [f"迁移失败（{exc}），迁移前的数据保持不变。"])
+            return
+        done = []
+        if self.result.copied_files or self.result.databases:
+            done.append("agent-core/data")
+        if self.result.env_copied:
+            done.append("agent-core/.env")
+        self.all_done.emit(done, [])
 
 
 # ==================================================================
@@ -584,19 +528,27 @@ class SettingsPage(QWidget):
             self._set_migrate_status("❌ 源目录和目标目录相同，无需迁移", error=True)
             return
 
+        # 先查一次服务是否还在运行，给出即时提示（后台线程开始前还会再查一次）
+        try:
+            running = running_service_processes([source, target])
+        except MigrationError as exc:
+            self._set_migrate_status(f"❌ {exc}", error=True)
+            return
+        if running:
+            names = "、".join(f"{name}（PID {pid}）" for pid, name, _ in running[:4])
+            self._set_migrate_status(f"❌ 还有服务在运行：{names}。请先停止两个版本的服务再迁移。", error=True)
+            return
+
         # 确认对话框
-        item_lines = "\n".join(
-            f"  • {rel}" for _, rel in MIGRATE_ITEMS
-        )
         reply = QMessageBox.question(
             self,
             "确认数据迁移",
-            f"即将从以下路径复制数据：\n\n"
+            f"即将从以下路径迁移数据：\n\n"
             f"源 (旧版本):\n  {source}\n\n"
             f"目标 (当前版本):\n  {target}\n\n"
-            f"将复制以下内容：\n"
-            f"{item_lines}"
-            f"\n\n目标目录中已有的文件将被覆盖。\n"
+            f"将迁移：\n  • agent-core/data（数据库做一致快照并校验完整性）\n  • agent-core/.env\n\n"
+            f"目标中原有的 data 会改名为 data.pre-migrate-时间 保留，原有 .env 也会另存一份；"
+            f"任何一步失败都会恢复到迁移前的状态。旧版本目录不会被改动。\n"
             f"向量索引不迁移（属于可重建的派生数据），新版本首次启动会自动重建。\n\n"
             f"确定要执行迁移吗？",
             QMessageBox.Yes | QMessageBox.No,
@@ -642,24 +594,25 @@ class SettingsPage(QWidget):
 
     def _on_migrate_done(self, success_items: list[str], failed_items: list[str]):
         """迁移完成。"""
+        result = getattr(self._migrate_worker, "result", None)
         self._migrate_worker = None
         self.migrate_select_btn.setEnabled(True)
         self.migrate_start_btn.setEnabled(True)
 
         if failed_items:
-            msg_parts = []
-            if success_items:
-                msg_parts.append(f"✓ 成功: {', '.join(success_items)}")
-            msg_parts.append(f"❌ 失败: {', '.join(failed_items)}")
-            self._set_migrate_status("\n".join(msg_parts), error=True)
-            self.migrate_progress.setFormat("⚠ 部分失败")
+            self._set_migrate_status("❌ " + "\n".join(failed_items), error=True)
+            self.migrate_progress.setFormat("⚠ 未迁移")
             self.migrate_progress.setStyleSheet(_progress_bar_style(error=True))
         else:
-            self._set_migrate_status(
-                f"✓ 迁移完成! 已复制 {len(success_items)} 项数据。\n"
-                f"旧版本数据已保留，您可以在确认新版本正常后手动删除旧版本。",
-                error=False,
-            )
+            lines = [f"✓ 迁移完成：复制 {result.copied_files if result else 0} 个文件"]
+            if result and result.databases:
+                lines.append("数据库完整性：" + "、".join(f"{name} {verdict}" for name, verdict in result.databases.items()))
+            if result and result.data_backup:
+                lines.append(f"原数据已保留在 {os.path.basename(result.data_backup)}")
+            if result and result.skipped_links:
+                lines.append(f"跳过 {result.skipped_links} 个目录链接（未跟随）")
+            lines.append("旧版本数据未改动；确认新版本正常后可手动删除旧版本。升级后请不要再用旧版本打开新数据。")
+            self._set_migrate_status("\n".join(lines), error=False)
             self.migrate_progress.setFormat("✓ 完成")
             self.migrate_progress.setStyleSheet(_progress_bar_style(done=True))
 
