@@ -56,6 +56,8 @@
 
 ## 游戏化 UI（2026-09-09 起）
 
+> 2026-11-20 小镇冻结：下文提到的 `TownDialogueStage.vue`、`TownPaperPanel.vue`、`TownWalletPanel.vue`、`TownBoardPanel.vue`、`TownVenueServicePanel.vue` 已随小镇页删除，相关段落只保留为视觉语言的历史说明；冻结范围与仍在使用的入口见 `AGENTS.md`「小镇（已冻结）」。游戏化的视觉原则（暖纸、墨色硬描边、厚底按钮）仍适用于现存的游戏化组件。
+
 小镇世界内的玩法界面全面向游戏舞台靠拢，以 `TownDialogueStage.vue` 的 SVG 暖纸不规则对话框为锚点，不再使用 SaaS 后台卡片堆叠。
 
 * 游戏浮层使用可见纸张/木板质感、暖纸底色、墨色文字和硬描边；允许不规则 SVG 外框、厚底按钮、立绘舞台、任务回合条、工作牌和结算收据。
@@ -147,7 +149,7 @@
 
 - 特殊交互元素（长按发送键、礼物卡片、视觉小说选项、下拉菜单项、整卡入口等已有独立设计的）用 `<div role="button">` + 自包含样式实现，不套通用组件，也不使用 `<button>` 标签。
 - 弹窗遮罩层级靠透明度表达——页面遮罩 `rgba(0,0,0,.45)`、面板内加载/生成遮罩用 `--glass-bg`（暖色仍呈半透明白），不用模糊；毛玻璃（backdrop-filter）仅用于 `.card` 表面氛围，不用于遮罩层（滚动时逐帧重合成是卡顿来源）。
-- 镇内生活类面板统一使用共用暖纸外壳 `TownPaperPanel.vue`（标题条 + 暖纸卷轴内容区 + 收据式脚注），钱袋（`TownWalletPanel.vue`）与公告站（`TownBoardPanel.vue`）都由它包裹，不再各自重画浮层；进店玩法面板（`TownVenueServicePanel.vue`）沿用同一外壳与结算收据语言。新增建筑 / NPC 玩法面板应复用该外壳，只替换标题、角色与内容，不另起视觉体系。
+- 镇内生活类面板统一使用共用暖纸外壳 `TownPaperPanel.vue`（标题条 + 暖纸卷轴内容区 + 收据式脚注），钱袋（`TownWalletPanel.vue`）与公告站（`TownBoardPanel.vue`）都由它包裹，不再各自重画浮层；进店玩法面板（`TownVenueServicePanel.vue`）沿用同一外壳与结算收据语言。新增建筑 / NPC 玩法面板应复用该外壳，只替换标题、角色与内容，不另起视觉体系。（历史约定：这些组件已随小镇页删除，小镇冻结期间不再新增建筑 / NPC 玩法面板。）
 
 ## 设计原则
 

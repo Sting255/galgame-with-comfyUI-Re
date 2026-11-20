@@ -151,7 +151,12 @@ router.get('/', (req, res) => {
 
   // 建筑功能模板事件（building_feature 来源）：规则执行、内容预生成，复用奇遇容器呈现。
   // 打开奇遇页属于纯浏览，不触发任何 LLM/生图调用。
-  const buildingFeatureEvents = (() => {
+  //
+  // 2026-11-20 小镇冻结：本 fork 不挂载 /api/town，这类事件卡片里的操作（报价、执行、取消）
+  // 全部会 404。冻结期间不再列出，避免给用户一个点了就报错的入口；数据表与运行时代码原样保留，
+  // 将来恢复小镇时把 TOWN_ROUTES_MOUNTED 改回 true 并重新挂载路由即可。
+  const TOWN_ROUTES_MOUNTED = false;
+  const buildingFeatureEvents = !TOWN_ROUTES_MOUNTED ? [] : (() => {
     try { return listTownBuildingFeatureEvents(); } catch { return []; }
   })();
 

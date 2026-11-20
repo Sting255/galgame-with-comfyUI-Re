@@ -36,5 +36,20 @@ console.log('检查范围：程序源码与文档；排除玩家数据、素材�
 console.log(`源码 ${source.length} 个文件；文档 ${docs.length} 份；本地链接与导航 ${errors.length ? '未通过' : '通过'}`);
 console.log('体积最大的源码（仅用于安排拆分，不代表可删除）：');
 for (const item of sizes.sort((a, b) => b.lines - a.lines).slice(0, 10)) console.log(`  ${String(item.lines).padStart(5)} 行  ${item.file}`);
+
+// 小镇冻结（2026-11-20）：冻结目录外引用冻结代码的文件只许减少、不许增加。
+// 只提示不阻断：新增依赖时请先确认是否真的需要复用冻结代码，再更新这里的基线。
+const FROZEN_DIRS = ['agent-core/src/services/town/', 'web-ui/src/components/town/'];
+const FROZEN_FILES = ['agent-core/src/db/townSchema.js', 'web-ui/src/api/townLife.js', 'web-ui/src/api/townBuildingFeatures.js'];
+const FROZEN_IMPORT = /\bfrom\s+['"][^'"]*(?:services\/town\/|components\/town\/|\/town\/|api\/townLife|api\/townBuildingFeatures|townSchema)[^'"]*['"]|import\(\s*['"][^'"]*(?:services\/town\/|components\/town\/)[^'"]*['"]\s*\)/;
+const FROZEN_DEPENDENT_BASELINE = 20;
+const frozenDependents = sizes.map(item => item.file)
+  .filter(file => !FROZEN_DIRS.some(dir => file.startsWith(dir)) && !FROZEN_FILES.includes(file))
+  .filter(file => FROZEN_IMPORT.test(fs.readFileSync(path.join(root, file), 'utf8')));
+console.log(`小镇冻结：冻结目录外仍引用冻结代码的文件 ${frozenDependents.length} 个（基线 ${FROZEN_DEPENDENT_BASELINE}，只许减少）`);
+if (frozenDependents.length > FROZEN_DEPENDENT_BASELINE) {
+  console.warn('  ⚠ 新增了对冻结小镇代码的依赖，请确认是否必要：');
+  for (const file of frozenDependents) console.warn(`    ${file}`);
+}
 for (const error of errors) console.error(`  ${error}`);
 if (errors.length) process.exitCode = 1;

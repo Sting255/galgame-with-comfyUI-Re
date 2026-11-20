@@ -18,15 +18,16 @@ Avoid unnecessary secondary labels and descriptions. Let the layout do the expla
 
 整个游戏模块（`web-ui/src/views/GameCenter.vue`、`GamePlayer.vue`、`web-ui/src/games/` 与 `games/official/`）按用户要求独立制作 UI，不使用任何 Linshe 组件。游戏中心沿用本地 `game-test` 分支的游戏馆风格及 `GameAction` / `GameOverlay`，独立游戏保持各自视觉语言。主站其他页面继续遵循下方统一组件约定。窗口、页签和页面切换保留300ms过渡，关闭动画完成后再卸载。
 
-## 小镇游戏化 UI
+## 小镇（已冻结，2026-11-20）
 
-小镇玩法以「奇遇」为唯一链路：NPC 互动（`TownResidentActions.vue`）发出邀请 → 服务线索/特殊奇遇走 LLM 叙事事件 → 玩家在奇遇页（`EventsView.vue`）用选项推进。建筑服务（按摩、喝酒、喝咖啡等）、NPC 邀请与 NPC 服务都由奇遇承载，不做步骤式结算面板。
+上游的「世界 / 小镇」页已在本 fork 移除，后端不挂载 `/api/town`。小镇代码**保留但冻结**：不删除、不加新功能、不纳入结构重构，也不得留下用户点了会报错的入口。
 
-1. 小镇内的 UI 设计以「在地图上点击 NPC 后打开的对话框」为直接参考，优先复用 `web-ui/src/components/town/TownDialogueStage.vue` 的立绘舞台、暖纸不规则对话框、墨色描边和游戏选项布局，整体偏向游戏化。
-2. 金币钱包、NPC 赠礼/交易是仅存的轻结算（`TownWalletPanel.vue`、`TownNpcTradePanel.vue`）；新的玩法一律优先奇遇叙事，不要重新引入步骤机/表单式面板。
-3. 镇内生活面板复用 `TownPaperPanel.vue`；对话与人物互动优先复用 `TownDialogueStage.vue`，不得另造不一致的视觉体系。
-4. 按钮、输入框、选择框、开关和弹窗继续遵循下方统一组件约定；配色、尺寸和反馈沿用 `docs/design-system.md` 与现有 token。
-5. 修改完成后，对照点击 NPC 打开的对话框检查视觉一致性，并验证桌面、移动端及暖色 / 暗夜主题。
+1. 冻结范围：`agent-core/src/services/town/`、`agent-core/src/db/townSchema.js`、`web-ui/src/components/town/`、`web-ui/src/api/townLife.js`、`web-ui/src/api/townBuildingFeatures.js`。数据表与迁移原样保留，不要删表或改表结构。
+2. 禁止在冻结目录里新增功能；禁止新写对冻结代码的依赖。`node scripts/project-health.mjs` 会统计冻结目录外仍引用冻结代码的文件数，只许减少；确实必须新增时先说明理由，再更新脚本里的基线。
+3. 结构重构（拆 `routes/chat.js`、`db/index.js` 等）时，涉及小镇的引用原样保留，只挪位置、不改行为。
+4. 冻结期间仍在使用的少数入口：背包里小镇货摊买来的礼物（`TownServiceStage` 的 `gift` 会话，走 `/api/items`）、表情立绘编辑器复用的 `TownImageEditor` / `TownPromptPanel`（传入自己的保存与裁剪回调）、对话里的 `TownVnChoice`。改这些组件时只修复，不扩展小镇玩法。
+5. 建筑服务奇遇（`building_feature`）的操作依赖 `/api/town`，冻结期间 `routes/events.js` 不再列出（`TOWN_ROUTES_MOUNTED = false`）。
+6. 以前写在这里的小镇 UI 约定所引用的 `TownResidentActions`、`TownDialogueStage`、`TownPaperPanel`、`TownWalletPanel`、`TownNpcTradePanel` 已随小镇页删除，不要再按那些约定施工。将来恢复小镇时需要重新立项：挂载路由、补回组件并重写本节。
 
 ## 统一组件（Linshe）
 
